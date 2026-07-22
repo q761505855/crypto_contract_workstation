@@ -1,15 +1,34 @@
+import { useState } from 'react'
+import { ChartWorkspace } from '../chart/ChartWorkspace'
+import {
+  ModeSwitch,
+  type WorkstationMode,
+} from '../components/ModeSwitch'
+import {
+  LiveStatus,
+  ReplayControls,
+  SimulationPanel,
+} from '../components/panels'
 import './app.css'
 
 export default function App() {
+  const [mode, setMode] = useState<WorkstationMode>('history')
+
   return (
     <main className="app-shell">
       <header className="app-header">
         <h1>加密货币合约回放工作站</h1>
-        <span className="mode-badge">历史模拟</span>
+        <ModeSwitch mode={mode} onChange={setMode} />
       </header>
-      <section className="phase-card">
-        <p>Phase 1：静态图表基础</p>
-      </section>
+      <div className="workspace-grid">
+        <ChartWorkspace />
+        {mode === 'history' ? <SimulationPanel /> : <LiveStatus />}
+      </div>
+      {mode === 'history' ? <ReplayControls /> : null}
+      <footer className="status-footer">
+        <span>KLineChart Pro</span>
+        <span>{mode === 'history' ? '历史训练模拟' : '实时只读'}</span>
+      </footer>
     </main>
   )
 }
