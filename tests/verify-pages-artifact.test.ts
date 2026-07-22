@@ -137,6 +137,34 @@ describe('verify:pages', () => {
     })
   })
 
+  it('does not recursively decode a numeric ampersand into an external scheme', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script src="https&#38;colon;//cdn.example.test/missing.js"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /https&#38;colon;\/\/cdn\.example\.test\/missing\.js.*must begin/i,
+      ),
+    })
+  })
+
+  it('does not recursively decode a numeric ampersand into a file extension', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script src="/crypto_contract_workstation/assets/missing&#38;period;js"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).resolves.toMatchObject({
+      stdout: expect.stringContaining('verification passed'),
+    })
+  })
+
   it('rejects character-reference traversal even when it resolves to an existing asset', async () => {
     const rootDirectory = await createArtifact(
       '<script src="/crypto_contract_workstation/assets/&period;&period;&sol;assets/index.js"></script>',

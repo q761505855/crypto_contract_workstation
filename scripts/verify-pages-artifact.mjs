@@ -47,11 +47,34 @@ export function findSecretLikeValues(content) {
   return [...content.matchAll(SECRET_PATTERN)].map((match) => match[0])
 }
 
-export function decodeHtmlCharacterReferences(value) {
+function decodeHtmlCharacterReferences(value) {
   const originalUrl = value
-  let decodedValue = value.replace(
-    /&#(?:[xX]([\dA-Fa-f]+)|(\d+));?/g,
-    (reference, hexadecimalDigits, decimalDigits) => {
+  return value.replace(
+    /&#(?:[xX][^\s&;]*|[^\s&;]*);?|&[A-Za-z][A-Za-z\d]*;/g,
+    (reference) => {
+      if (!reference.startsWith('&#')) {
+        const name = reference.slice(1, -1)
+        if (
+          !Object.prototype.hasOwnProperty.call(
+            HTML_NAMED_CHARACTER_REFERENCES,
+            name,
+          )
+        ) {
+          throw new Error(
+            `Unsupported HTML named character reference "${reference}" in asset URL "${originalUrl}"`,
+          )
+        }
+        return HTML_NAMED_CHARACTER_REFERENCES[name]
+      }
+
+      const numericReference =
+        /^&#(?:[xX]([\dA-Fa-f]+)|(\d+))(;?)([\s\S]*)$/.exec(reference)
+      if (!numericReference) {
+        throw new Error(
+          `Malformed HTML numeric character reference "${reference}" in asset URL "${originalUrl}"`,
+        )
+      }
+      const [, hexadecimalDigits, decimalDigits, , suffix] = numericReference
       const codePoint = Number.parseInt(
         hexadecimalDigits ?? decimalDigits,
         hexadecimalDigits === undefined ? 10 : 16,
@@ -64,37 +87,9 @@ export function decodeHtmlCharacterReferences(value) {
           `Invalid HTML numeric character reference "${reference}" in asset URL "${originalUrl}": code point is not a valid Unicode scalar value`,
         )
       }
-      return String.fromCodePoint(codePoint)
+      return `${String.fromCodePoint(codePoint)}${suffix}`
     },
   )
-
-  const malformedNumericReference = /&#(?:[xX][^\s&;]*|[^\s&;]*);?/.exec(
-    decodedValue,
-  )
-  if (malformedNumericReference) {
-    throw new Error(
-      `Malformed HTML numeric character reference "${malformedNumericReference[0]}" in asset URL "${originalUrl}"`,
-    )
-  }
-
-  decodedValue = decodedValue.replace(
-    /&([A-Za-z][A-Za-z\d]*);/g,
-    (reference, name) => {
-      if (
-        !Object.prototype.hasOwnProperty.call(
-          HTML_NAMED_CHARACTER_REFERENCES,
-          name,
-        )
-      ) {
-        throw new Error(
-          `Unsupported HTML named character reference "${reference}" in asset URL "${originalUrl}"`,
-        )
-      }
-      return HTML_NAMED_CHARACTER_REFERENCES[name]
-    },
-  )
-
-  return decodedValue
 }
 
 function findTagEnd(html, start) {
