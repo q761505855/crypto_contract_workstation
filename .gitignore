@@ -1,4 +1,6 @@
 .worktrees/
+node_modules/
+dist/
 .superpowers/sdd/task-*-brief.md
 .superpowers/sdd/task-*-report.md
 .superpowers/sdd/review-*.diff
