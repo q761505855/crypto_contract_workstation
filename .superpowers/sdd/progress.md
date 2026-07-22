@@ -11,5 +11,5 @@
 | 3. KLineChart Pro adapter | Completed | `bf92d2b` | `9768e75` | Approved; minor pre-mount assertion suggestion deferred |
 | 4. React chart host | Completed | `fa2f538` | `5ca33b7` | Approved; UTF-8 label verified, minor factory-call assertion deferred |
 | 5. History/live layout | Completed | `d6c8ebf` | `6cb4e34` | Approved; minor chart-identity assertion suggestion deferred |
-| 6. Browser smoke test | In progress | — | — | Pending |
-| 7. CI, Pages, and docs | Pending | — | — | Pending |
+| 6. Browser smoke test | Completed | `ec86b75` | `124b5f8` | Approved after important Playwright artifact-ignore fix; minor RED-specificity note retained |
+| 7. CI, Pages, and docs | In progress | — | — | Pending |
