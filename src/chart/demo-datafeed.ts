@@ -42,19 +42,51 @@ function periodToMilliseconds(period: Period): number {
   return period.multiplier * unit
 }
 
-function candleAt(timestamp: number, index: number): KLineData {
-  const baseline = 60_000 + index * 8
-  const wave = Math.sin(index / 6) * 120
-  const open = baseline + wave
-  const close = open + Math.cos(index / 4) * 45
+function stableHash(input: string): number {
+  let hash = 2_166_136_261
+  for (let index = 0; index < input.length; index += 1) {
+    hash = Math.imul(hash ^ input.charCodeAt(index), 16_777_619)
+  }
+  return hash >>> 0
+}
+
+function stableUnit(seed: number, bucket: number, salt: number): number {
+  let value = (seed ^ Math.imul(bucket, 0x9e3779b1) ^ salt) >>> 0
+  value ^= value >>> 16
+  value = Math.imul(value, 0x85ebca6b)
+  value ^= value >>> 13
+  value = Math.imul(value, 0xc2b2ae35)
+  value ^= value >>> 16
+  return (value >>> 0) / 0x1_0000_0000
+}
+
+function candleAt(
+  timestamp: number,
+  symbol: SymbolInfo,
+  period: Period,
+  interval: number,
+): KLineData {
+  const bucket = Math.floor(timestamp / interval)
+  const seed = stableHash(
+    `${symbol.ticker.toUpperCase()}:${period.multiplier}:${period.timespan}`,
+  )
+  const baseline =
+    60_000 +
+    (seed % 500) +
+    Math.sin(bucket * 0.11 + (seed % 360)) * 320 +
+    Math.cos(bucket * 0.037 + (seed % 97)) * 180
+  const open = baseline + (stableUnit(seed, bucket, 0x1a2b3c4d) - 0.5) * 90
+  const close = open + (stableUnit(seed, bucket, 0x5e6f7788) - 0.5) * 130
+  const volume = 100 + Math.floor(stableUnit(seed, bucket, 0x9abcdeff) * 300)
+  const wick = 20 + stableUnit(seed, bucket, 0x10293847) * 35
   return {
     timestamp,
     open,
-    high: Math.max(open, close) + 30,
-    low: Math.min(open, close) - 30,
+    high: Math.max(open, close) + wick,
+    low: Math.min(open, close) - wick,
     close,
-    volume: 100 + (index % 20) * 15,
-    turnover: close * (100 + (index % 20) * 15),
+    volume,
+    turnover: close * volume,
   }
 }
 
@@ -76,15 +108,15 @@ export class DemoDatafeed implements Datafeed {
   ): Promise<KLineData[]> {
     const interval = periodToMilliseconds(period)
     const safeTo = Math.min(to, this.now())
+    const alignedEnd = Math.floor(safeTo / interval) * interval
     const alignedStart = Math.ceil(from / interval) * interval
-    const start = Math.max(alignedStart, safeTo - interval * 499)
+    const start = Math.max(alignedStart, alignedEnd - interval * 499)
+    if (start > alignedEnd) {
+      return []
+    }
     const rows: KLineData[] = []
-    for (
-      let timestamp = start, index = 0;
-      timestamp <= safeTo;
-      timestamp += interval, index += 1
-    ) {
-      rows.push(candleAt(timestamp, index))
+    for (let timestamp = start; timestamp <= alignedEnd; timestamp += interval) {
+      rows.push(candleAt(timestamp, _symbol, period, interval))
     }
     return rows
   }
