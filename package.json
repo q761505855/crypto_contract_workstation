@@ -13,6 +13,7 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "verify:pages": "node scripts/verify-pages-artifact.mjs",
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
