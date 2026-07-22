@@ -1,0 +1,57 @@
+:root {
+  color: #d8dee9;
+  background: #0b0f14;
+  font-family:
+    Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 1024px;
+  height: 100%;
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100%;
+  background: #0b0f14;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid #242c37;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.mode-badge {
+  color: #66c2ff;
+}
+
+.phase-card {
+  margin: 24px;
+  padding: 24px;
+  border: 1px solid #242c37;
+  border-radius: 8px;
+  background: #121821;
+}
