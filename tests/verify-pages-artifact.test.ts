@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 const temporaryDirectories: string[] = []
 const execFile = promisify(executeFile)
 const verifierPath = join(process.cwd(), 'scripts', 'verify-pages-artifact.mjs')
+const requiredAttributionFiles = {
+  'THIRD_PARTY_NOTICES.txt': 'KLineChart notices',
+  'licenses/Apache-2.0.txt': 'Apache License',
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -17,13 +21,24 @@ afterEach(async () => {
   )
 })
 
-async function createArtifact(indexHtml: string, assetContents = '') {
+async function createArtifact(
+  indexHtml: string,
+  assetContents = '',
+  attributionFiles: Record<string, string> = requiredAttributionFiles,
+) {
   const rootDirectory = await mkdtemp(join(tmpdir(), 'pages-artifact-'))
   const directory = join(rootDirectory, 'dist')
   temporaryDirectories.push(rootDirectory)
   await mkdir(join(directory, 'assets'), { recursive: true })
   await writeFile(join(directory, 'index.html'), indexHtml)
   await writeFile(join(directory, 'assets', 'index.js'), assetContents)
+  await Promise.all(
+    Object.entries(attributionFiles).map(async ([path, content]) => {
+      const filePath = join(directory, path)
+      await mkdir(join(filePath, '..'), { recursive: true })
+      await writeFile(filePath, content)
+    }),
+  )
   return rootDirectory
 }
 
@@ -32,9 +47,26 @@ function runVerifier(rootDirectory: string) {
 }
 
 describe('verify:pages', () => {
-  it('accepts repository-based assets with no secret-like values', async () => {
+  it.each([
+    ['third-party notice', { 'licenses/Apache-2.0.txt': 'Apache License' }, /THIRD_PARTY_NOTICES\.txt/],
+    ['Apache license', { 'THIRD_PARTY_NOTICES.txt': 'KLineChart notices' }, /licenses[\\/]Apache-2\.0\.txt/],
+  ])('requires the deployed %s', async (_, attributionFiles, diagnostic) => {
     const rootDirectory = await createArtifact(
       '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+      '',
+      attributionFiles,
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(diagnostic),
+    })
+  })
+
+  it('accepts repository-based assets with deployed attribution files', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+      '',
+      requiredAttributionFiles,
     )
 
     await expect(runVerifier(rootDirectory)).resolves.toMatchObject({

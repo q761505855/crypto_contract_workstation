@@ -1,0 +1,21 @@
+Third-Party Notices
+===================
+
+This application includes the following Apache-2.0 licensed packages:
+
+@klinecharts/pro 0.1.1
+License: Apache-2.0
+Repository: https://github.com/klinecharts/pro
+
+klinecharts 9.8.12
+License: Apache-2.0
+Homepage: https://klinecharts.com/
+Repository: https://github.com/klinecharts/KLineChart
+
+The following notice text is preserved from the installed klinecharts package:
+
+KLineChart
+Copyright (c) 2019 lihu
+
+TradingView Lightweight Charts
+Copyright (с) 2019 TradingView, Inc. https://www.tradingview.com

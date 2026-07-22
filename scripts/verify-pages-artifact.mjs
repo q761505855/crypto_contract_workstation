@@ -6,6 +6,10 @@ export const PAGES_BASE_PATH = '/crypto_contract_workstation/'
 
 const SECRET_PATTERN = /ghp_|github_pat_|API_KEY|SECRET_KEY/g
 const EXTERNAL_URL_PATTERN = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i
+const REQUIRED_ATTRIBUTION_FILES = Object.freeze([
+  'THIRD_PARTY_NOTICES.txt',
+  'licenses/Apache-2.0.txt',
+])
 const HTML_NAMED_CHARACTER_REFERENCES = Object.freeze({
   amp: '&',
   apos: "'",
@@ -211,6 +215,12 @@ export async function verifyPagesArtifact(distDirectory = 'dist') {
   }
 
   const problems = []
+  const artifactFiles = new Set(files.map((file) => resolve(file)))
+  for (const requiredFile of REQUIRED_ATTRIBUTION_FILES) {
+    if (!artifactFiles.has(resolve(artifactDirectory, requiredFile))) {
+      problems.push(`Required attribution file "${requiredFile}" is missing`)
+    }
+  }
   for (const file of files) {
     const content = await readFile(file, 'utf8')
     for (const value of findSecretLikeValues(content)) {
@@ -229,7 +239,6 @@ export async function verifyPagesArtifact(distDirectory = 'dist') {
   }
 
   const assetUrls = findAssetUrls(indexHtml)
-  const artifactFiles = new Set(files.map((file) => resolve(file)))
   let localAssetCount = 0
   for (const url of assetUrls) {
     let decodedUrl

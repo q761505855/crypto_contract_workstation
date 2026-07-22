@@ -1,5 +1,9 @@
 # Crypto Contract Replay Workstation
 
+## Third-party notices
+
+Third-party notices are in [public/THIRD_PARTY_NOTICES.txt](./public/THIRD_PARTY_NOTICES.txt), and the complete Apache License 2.0 copy is in [public/licenses/Apache-2.0.txt](./public/licenses/Apache-2.0.txt). Vite copies both files from `public/` into the GitHub Pages `dist/` artifact during production builds.
+
 纯前端的币安 USDT 永续合约历史回放与实时行情工作站。
 
 ## 当前阶段

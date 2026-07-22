@@ -1,6 +1,10 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
+function normalizeWorkflow(source: string): string {
+  return source.replace(/\r\n?/g, '\n')
+}
+
 function capture(source: string, pattern: RegExp): string {
   const match = source.match(pattern)
   expect(match).not.toBeNull()
@@ -36,8 +40,25 @@ function expectNoSecrets(source: string) {
 }
 
 describe('deployment configuration', () => {
+  it('normalizes CRLF workflow text before structural parsing', () => {
+    const workflow = [
+      'on:',
+      '  workflow_dispatch:',
+      'permissions:',
+      '  contents: read',
+    ].join('\r\n')
+
+    const normalized = normalizeWorkflow(workflow)
+
+    expect(capture(normalized, /^on:\n([\s\S]*?)^permissions:/m)).toBe(
+      '  workflow_dispatch:\n',
+    )
+  })
+
   it('keeps CI triggers, permissions, current actions, and checks in the verify job', async () => {
-    const workflow = await readFile('.github/workflows/ci.yml', 'utf8')
+    const workflow = normalizeWorkflow(
+      await readFile('.github/workflows/ci.yml', 'utf8'),
+    )
     const triggers = capture(workflow, /^on:\n([\s\S]*?)^permissions:/m)
     const permissions = capture(workflow, /^permissions:\n([\s\S]*?)^jobs:/m)
     const verifyJob = capture(workflow, /^  verify:\n([\s\S]*)$/m)
@@ -58,9 +79,8 @@ describe('deployment configuration', () => {
   })
 
   it('keeps the Pages build and deploy contract structurally valid', async () => {
-    const workflow = await readFile(
-      '.github/workflows/deploy-pages.yml',
-      'utf8',
+    const workflow = normalizeWorkflow(
+      await readFile('.github/workflows/deploy-pages.yml', 'utf8'),
     )
     const packageJson = JSON.parse(await readFile('package.json', 'utf8')) as {
       scripts: Record<string, string>
