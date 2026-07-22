@@ -95,6 +95,104 @@ describe('verify:pages', () => {
     })
   })
 
+  it('rejects decimal character-reference extensions with and without a semicolon', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script src="/crypto_contract_workstation/assets/missing&#46;js"></script>',
+        '<script src="/crypto_contract_workstation/assets/also-missing&#46js"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /missing&#46;js.*does not exist[\s\S]*also-missing&#46js.*does not exist/,
+      ),
+    })
+  })
+
+  it('rejects a hexadecimal character-reference extension', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script src="/crypto_contract_workstation/assets/missing&#x2E;js"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(/missing&#x2E;js.*does not exist/),
+    })
+  })
+
+  it('rejects a named character-reference extension', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script src="/crypto_contract_workstation/assets/missing&period;js"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(/missing&period;js.*does not exist/),
+    })
+  })
+
+  it('rejects character-reference traversal even when it resolves to an existing asset', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/&period;&period;&sol;assets/index.js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(/&period;&period;&sol;.*path traversal/i),
+    })
+  })
+
+  it('accepts an existing asset with character-reference query delimiters', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/index.js&quest;v=1&amp;x=2&num;module"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).resolves.toMatchObject({
+      stdout: expect.stringContaining('verification passed'),
+    })
+  })
+
+  it('reports an out-of-range numeric character reference with the offending URL', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/index&#x110000;js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /Invalid HTML numeric character reference.*index&#x110000;js/i,
+      ),
+    })
+  })
+
+  it('reports a malformed numeric character reference with the offending URL', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/index&#xZZ;js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /Malformed HTML numeric character reference.*index&#xZZ;js/i,
+      ),
+    })
+  })
+
+  it('fails closed on an unsupported named character reference', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/index&copy;js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /Unsupported HTML named character reference.*index&copy;js/i,
+      ),
+    })
+  })
+
   it('accepts an existing asset with a query and fragment', async () => {
     const rootDirectory = await createArtifact(
       [

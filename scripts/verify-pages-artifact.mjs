@@ -6,6 +6,20 @@ export const PAGES_BASE_PATH = '/crypto_contract_workstation/'
 
 const SECRET_PATTERN = /ghp_|github_pat_|API_KEY|SECRET_KEY/g
 const EXTERNAL_URL_PATTERN = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i
+const HTML_NAMED_CHARACTER_REFERENCES = Object.freeze({
+  amp: '&',
+  apos: "'",
+  bsol: '\\',
+  colon: ':',
+  gt: '>',
+  lt: '<',
+  num: '#',
+  percnt: '%',
+  period: '.',
+  quest: '?',
+  quot: '"',
+  sol: '/',
+})
 const RAW_TEXT_ELEMENTS = new Set([
   'iframe',
   'noembed',
@@ -31,6 +45,56 @@ async function listFiles(directory) {
 
 export function findSecretLikeValues(content) {
   return [...content.matchAll(SECRET_PATTERN)].map((match) => match[0])
+}
+
+export function decodeHtmlCharacterReferences(value) {
+  const originalUrl = value
+  let decodedValue = value.replace(
+    /&#(?:[xX]([\dA-Fa-f]+)|(\d+));?/g,
+    (reference, hexadecimalDigits, decimalDigits) => {
+      const codePoint = Number.parseInt(
+        hexadecimalDigits ?? decimalDigits,
+        hexadecimalDigits === undefined ? 10 : 16,
+      )
+      if (
+        codePoint > 0x10ffff ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ) {
+        throw new Error(
+          `Invalid HTML numeric character reference "${reference}" in asset URL "${originalUrl}": code point is not a valid Unicode scalar value`,
+        )
+      }
+      return String.fromCodePoint(codePoint)
+    },
+  )
+
+  const malformedNumericReference = /&#(?:[xX][^\s&;]*|[^\s&;]*);?/.exec(
+    decodedValue,
+  )
+  if (malformedNumericReference) {
+    throw new Error(
+      `Malformed HTML numeric character reference "${malformedNumericReference[0]}" in asset URL "${originalUrl}"`,
+    )
+  }
+
+  decodedValue = decodedValue.replace(
+    /&([A-Za-z][A-Za-z\d]*);/g,
+    (reference, name) => {
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          HTML_NAMED_CHARACTER_REFERENCES,
+          name,
+        )
+      ) {
+        throw new Error(
+          `Unsupported HTML named character reference "${reference}" in asset URL "${originalUrl}"`,
+        )
+      }
+      return HTML_NAMED_CHARACTER_REFERENCES[name]
+    },
+  )
+
+  return decodedValue
 }
 
 function findTagEnd(html, start) {
@@ -96,7 +160,7 @@ function findAssetUrlsInTag(tagSource) {
   return urls
 }
 
-export function findLocalAssetUrls(indexHtml) {
+export function findAssetUrls(indexHtml) {
   const urls = []
   const lowerHtml = indexHtml.toLowerCase()
   let index = 0
@@ -130,7 +194,13 @@ export function findLocalAssetUrls(indexHtml) {
       index = closingTagEnd === -1 ? indexHtml.length : closingTagEnd + 1
     }
   }
-  return urls.filter((url) => !EXTERNAL_URL_PATTERN.test(url))
+  return urls
+}
+
+export function findLocalAssetUrls(indexHtml) {
+  return findAssetUrls(indexHtml).filter(
+    (url) => !EXTERNAL_URL_PATTERN.test(url),
+  )
 }
 
 export async function verifyPagesArtifact(distDirectory = 'dist') {
@@ -163,11 +233,20 @@ export async function verifyPagesArtifact(distDirectory = 'dist') {
     throw new Error(`Unable to read Pages entry file ${indexPath}: ${error.message}`)
   }
 
-  const assetUrls = findLocalAssetUrls(indexHtml)
+  const assetUrls = findAssetUrls(indexHtml)
   const artifactFiles = new Set(files.map((file) => resolve(file)))
   let localAssetCount = 0
   for (const url of assetUrls) {
-    const encodedPath = url.split(/[?#]/, 1)[0]
+    let decodedUrl
+    try {
+      decodedUrl = decodeHtmlCharacterReferences(url)
+    } catch (error) {
+      problems.push(error.message)
+      continue
+    }
+    if (EXTERNAL_URL_PATTERN.test(decodedUrl)) continue
+
+    const encodedPath = decodedUrl.split(/[?#]/, 1)[0]
     let decodedPath
     try {
       decodedPath = decodeURIComponent(encodedPath)
