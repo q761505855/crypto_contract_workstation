@@ -52,4 +52,16 @@ describe('verify:pages', () => {
       stderr: expect.stringMatching(/github_pat_|\/assets\/index\.css/),
     })
   })
+
+  it('rejects a correctly prefixed asset URL when the file is missing', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/missing.js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /\/crypto_contract_workstation\/assets\/missing\.js.*does not exist/,
+      ),
+    })
+  })
 })

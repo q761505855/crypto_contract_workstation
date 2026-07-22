@@ -38,6 +38,10 @@ jobs:
           VITE_BASE_PATH: /crypto_contract_workstation/
       - name: Verify Pages artifact
         run: npm run verify:pages
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Pages browser smoke test
+        run: npm run test:e2e:pages
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:

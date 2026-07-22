@@ -9,10 +9,12 @@
   },
   "scripts": {
     "dev": "vite",
+    "preview": "vite preview",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:pages": "playwright test --config=playwright.pages.config.ts",
     "verify:pages": "node scripts/verify-pages-artifact.mjs",
     "check": "npm run typecheck && npm run test && npm run build"
   },

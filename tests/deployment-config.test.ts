@@ -71,6 +71,11 @@ describe('deployment configuration', () => {
     const deployJob = capture(workflow, /^  deploy:\n([\s\S]*)$/m)
     const buildStep = captureStep(buildJob, 'Build Pages artifact')
     const verifyStep = captureStep(buildJob, 'Verify Pages artifact')
+    const installBrowserStep = captureStep(
+      buildJob,
+      'Install Playwright Chromium',
+    )
+    const browserTestStep = captureStep(buildJob, 'Pages browser smoke test')
     const uploadStep = captureStep(buildJob, 'Upload Pages artifact')
     const deployStep = captureStep(deployJob, 'Deploy')
 
@@ -91,12 +96,24 @@ describe('deployment configuration', () => {
       ].join('\n'),
     )
     expect(buildJob.slice(buildJob.indexOf(buildStep) + buildStep.length)).toMatch(
-      /^\n      - name: Verify Pages artifact\n        run: npm run verify:pages\n      - name: Upload Pages artifact/m,
+      /^\n      - name: Verify Pages artifact\n        run: npm run verify:pages\n      - name: Install Playwright Chromium\n        run: npx playwright install --with-deps chromium\n      - name: Pages browser smoke test\n        run: npm run test:e2e:pages\n      - name: Upload Pages artifact/m,
     )
     expect(verifyStep).toBe(
       ['      - name: Verify Pages artifact', '        run: npm run verify:pages'].join(
         '\n',
       ),
+    )
+    expect(installBrowserStep).toBe(
+      [
+        '      - name: Install Playwright Chromium',
+        '        run: npx playwright install --with-deps chromium',
+      ].join('\n'),
+    )
+    expect(browserTestStep).toBe(
+      [
+        '      - name: Pages browser smoke test',
+        '        run: npm run test:e2e:pages',
+      ].join('\n'),
     )
     expect(uploadStep).toBe(
       [
@@ -112,6 +129,8 @@ describe('deployment configuration', () => {
       '        uses: actions/configure-pages@v5',
       '        run: npm run build',
       '        run: npm run verify:pages',
+      '        run: npx playwright install --with-deps chromium',
+      '        run: npm run test:e2e:pages',
       '        uses: actions/upload-pages-artifact@v4',
     ])
     expect(deployJob).toMatch(
@@ -127,6 +146,9 @@ describe('deployment configuration', () => {
     )
     expect(packageJson.scripts['verify:pages']).toBe(
       'node scripts/verify-pages-artifact.mjs',
+    )
+    expect(packageJson.scripts['test:e2e:pages']).toBe(
+      'playwright test --config=playwright.pages.config.ts',
     )
     expectNoSecrets(workflow)
   })

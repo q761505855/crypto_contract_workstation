@@ -59,6 +59,7 @@ export async function verifyPagesArtifact(distDirectory = 'dist') {
   }
 
   const assetUrls = findLocalAssetUrls(indexHtml)
+  const artifactFiles = new Set(files.map((file) => resolve(file)))
   if (assetUrls.length === 0) {
     problems.push('No local JavaScript or CSS asset URLs found in index.html')
   }
@@ -67,6 +68,15 @@ export async function verifyPagesArtifact(distDirectory = 'dist') {
       problems.push(
         `Asset URL "${url}" must begin with ${PAGES_BASE_PATH}`,
       )
+      continue
+    }
+    const urlPath = url.split(/[?#]/, 1)[0]
+    const assetPath = resolve(
+      artifactDirectory,
+      decodeURIComponent(urlPath.slice(PAGES_BASE_PATH.length)),
+    )
+    if (!artifactFiles.has(assetPath)) {
+      problems.push(`Asset URL "${url}" does not exist inside ${artifactDirectory}`)
     }
   }
 
