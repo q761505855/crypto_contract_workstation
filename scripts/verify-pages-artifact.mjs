@@ -5,7 +5,7 @@ import { relative, resolve } from 'node:path'
 export const PAGES_BASE_PATH = '/crypto_contract_workstation/'
 
 const SECRET_PATTERN = /ghp_|github_pat_|API_KEY|SECRET_KEY/g
-const ASSET_URL_PATTERN = /\b(?:src|href)\s*=\s*["']([^"']+\.(?:js|css)(?:\?[^"']*)?)["']/gi
+const ASSET_URL_PATTERN = /\b(?:src|href)\s*=\s*["']([^"']+\.(?:js|css)(?:[?#][^"']*)?)["']/gi
 
 async function listFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true })

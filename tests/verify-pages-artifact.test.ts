@@ -64,4 +64,19 @@ describe('verify:pages', () => {
       ),
     })
   })
+
+  it('rejects a missing asset URL with a fragment', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script src="/crypto_contract_workstation/assets/missing.js#module"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /\/crypto_contract_workstation\/assets\/missing\.js#module.*does not exist/,
+      ),
+    })
+  })
 })

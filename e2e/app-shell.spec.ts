@@ -74,8 +74,6 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     .click({ position: { x: 1, y: 1 } })
 
   const widget = page.locator('.klinecharts-pro-widget')
-  await page.getByRole('heading', { level: 1 }).hover()
-  const beforeDrawing = await widget.screenshot()
   await page
     .locator('.klinecharts-pro-drawing-bar .item')
     .first()
@@ -92,13 +90,15 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     widgetBox.x + widgetBox.width * 0.4,
     widgetBox.y + widgetBox.height * 0.25,
   )
+  await page.getByRole('heading', { level: 1 }).hover()
+  const beforeCommit = await widget.screenshot()
   await page.mouse.click(
     widgetBox.x + widgetBox.width * 0.65,
     widgetBox.y + widgetBox.height * 0.35,
   )
   await page.getByRole('heading', { level: 1 }).hover()
-  const afterDrawing = await widget.screenshot()
-  expect(afterDrawing.equals(beforeDrawing)).toBe(false)
+  const afterCommit = await widget.screenshot()
+  expect(afterCommit.equals(beforeCommit)).toBe(false)
   await expectCanvasContent(page)
 
   const originalChartHost = await chartHost.elementHandle()
