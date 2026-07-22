@@ -79,4 +79,107 @@ describe('verify:pages', () => {
       ),
     })
   })
+
+  it('rejects a percent-encoded missing JavaScript extension', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script src="/crypto_contract_workstation/assets/missing%2Ejs"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /\/crypto_contract_workstation\/assets\/missing%2Ejs.*does not exist/,
+      ),
+    })
+  })
+
+  it('accepts an existing asset with a query and fragment', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js?v=1#module"></script>',
+        '<script src="https://cdn.example.test/missing.js"></script>',
+        '<script src="//cdn.example.test/missing.js"></script>',
+        '<script src="data:text/javascript,console.log(1)"></script>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).resolves.toMatchObject({
+      stdout: expect.stringContaining('verification passed'),
+    })
+  })
+
+  it('rejects raw traversal even when it resolves to an existing asset', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/../assets/index.js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(/assets\/\.\.\/assets.*path traversal/i),
+    })
+  })
+
+  it('rejects percent-encoded traversal even when it resolves to an existing asset', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/%2E%2E/assets/index.js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(/%2E%2E.*path traversal/i),
+    })
+  })
+
+  it('reports malformed percent encoding with the offending URL', async () => {
+    const rootDirectory = await createArtifact(
+      '<script src="/crypto_contract_workstation/assets/index%ZZ.js"></script>',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /Malformed percent-encoding.*\/crypto_contract_workstation\/assets\/index%ZZ\.js/i,
+      ),
+    })
+  })
+
+  it('rejects an artifact with local attributes but no JavaScript or CSS', async () => {
+    const rootDirectory = await createArtifact(
+      '<img src="/crypto_contract_workstation/assets/image.png">',
+    )
+
+    await expect(runVerifier(rootDirectory)).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        'No local JavaScript or CSS asset URLs found in index.html',
+      ),
+    })
+  })
+
+  it('ignores similarly named data attributes', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<div data-src="/crypto_contract_workstation/assets/missing.js"></div>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).resolves.toMatchObject({
+      stdout: expect.stringContaining('verification passed'),
+    })
+  })
+
+  it('collects src and href only from actual HTML attributes', async () => {
+    const rootDirectory = await createArtifact(
+      [
+        '<!-- src="/outside/comment.js" -->',
+        '<script src="/crypto_contract_workstation/assets/index.js"></script>',
+        '<script>const fake = \'<link href="/outside/inline.css">\'</script>',
+        '<div title=\'src="/outside/title.js"\'></div>',
+        '<div @src="/outside/at.js" foo.src="/outside/dot.js"></div>',
+      ].join(''),
+    )
+
+    await expect(runVerifier(rootDirectory)).resolves.toMatchObject({
+      stdout: expect.stringContaining('verification passed'),
+    })
+  })
 })
