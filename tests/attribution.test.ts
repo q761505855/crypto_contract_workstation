@@ -1,10 +1,15 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
+import { normalizeNewlines } from './text-format'
 
 describe('third-party attribution', () => {
   it('records KLineChart packages, versions, licenses, and upstream notices', async () => {
-    const notice = await readFile('public/THIRD_PARTY_NOTICES.txt', 'utf8')
-    const upstreamNotice = await readFile('node_modules/klinecharts/NOTICE', 'utf8')
+    const notice = normalizeNewlines(
+      await readFile('public/THIRD_PARTY_NOTICES.txt', 'utf8'),
+    )
+    const upstreamNotice = normalizeNewlines(
+      await readFile('node_modules/klinecharts/NOTICE', 'utf8'),
+    )
 
     expect(notice).toContain('@klinecharts/pro 0.1.1')
     expect(notice).toContain('Apache-2.0')
@@ -16,8 +21,14 @@ describe('third-party attribution', () => {
   })
 
   it('ships a recognizably complete Apache License 2.0 copy', async () => {
-    const license = await readFile('public/licenses/Apache-2.0.txt', 'utf8')
+    const license = normalizeNewlines(
+      await readFile('public/licenses/Apache-2.0.txt', 'utf8'),
+    )
+    const upstreamLicense = normalizeNewlines(
+      await readFile('node_modules/@klinecharts/pro/LICENSE', 'utf8'),
+    )
 
+    expect(license).toBe(upstreamLicense)
     expect(license).toContain('Apache License\n                           Version 2.0, January 2004')
     expect(license).toContain('TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION')
     expect(license).toContain('9. Accepting Warranty or Additional Liability.')
