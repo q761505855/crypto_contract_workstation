@@ -35,4 +35,20 @@ describe('third-party attribution', () => {
     expect(license).toContain('END OF TERMS AND CONDITIONS')
     expect(license).toContain('APPENDIX: How to apply the Apache License to your work.')
   })
+
+  it('records decimal.js and ships its complete MIT license', async () => {
+    const notice = normalizeNewlines(
+      await readFile('public/THIRD_PARTY_NOTICES.txt', 'utf8'),
+    )
+    const license = normalizeNewlines(
+      await readFile('public/licenses/decimal.js-MIT.txt', 'utf8'),
+    )
+    const upstreamLicense = normalizeNewlines(
+      await readFile('node_modules/decimal.js/LICENCE.md', 'utf8'),
+    )
+
+    expect(notice).toContain('decimal.js 10.6.0')
+    expect(notice).toContain('License: MIT')
+    expect(license.trimEnd()).toBe(upstreamLicense.trimEnd())
+  })
 })

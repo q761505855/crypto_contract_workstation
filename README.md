@@ -2,22 +2,91 @@
 
 ## Third-party notices
 
-Third-party notices are in [public/THIRD_PARTY_NOTICES.txt](./public/THIRD_PARTY_NOTICES.txt), and the complete Apache License 2.0 copy is in [public/licenses/Apache-2.0.txt](./public/licenses/Apache-2.0.txt). Vite copies both files from `public/` into the GitHub Pages `dist/` artifact during production builds.
+Third-party notices are in [public/THIRD_PARTY_NOTICES.txt](./public/THIRD_PARTY_NOTICES.txt), with complete license texts in [public/licenses](./public/licenses). Vite copies these files from `public/` into the GitHub Pages `dist/` artifact during production builds.
 
 纯前端的币安 USDT 永续合约历史回放与实时行情工作站。
 
 ## 当前阶段
 
-Phase 1 提供：
+Phase 1 至 Phase 6 提供：
 
 - Vite + React + TypeScript 静态应用；
 - KLineChart Pro 图表；
 - 交易对、周期、指标、画线、时区、截图和全屏能力；
 - 历史模拟与实时只读的工作台布局；
-- 确定性演示行情；
+- 币安正在交易的 USDT 永续合约列表和搜索；
+- 普通历史 K 线与标记价格历史 K 线下载；
+- 自动分页、排序、去重、OHLC 校验和缺口补齐；
+- IndexedDB 本地行情缓存和离线回退；
+- 数据范围、数量、缺口、下载进度和缓存删除；
+- 可配置的币安公开 REST 基础地址；
+- 历史回放会话创建、加载和刷新恢复；
+- 上一根、下一根、1x/2x/5x/10x 播放、跳转结束和重置；
+- 回放期间的未来 K 线与指标输入隔离；
+- IndexedDB 回放进度自动保存；
+- 历史回放中的逐仓模拟账户与单向净持仓；
+- 按保证金或数量开仓、同向加仓、数量/比例减仓和全平；
+- 手续费、滑点、已实现/未实现盈亏的十进制计算；
+- 止盈、止损与使用标记价格 K 线判断的近似强平；
+- 持仓线、止盈线、止损线、预估强平线和成交标记；
+- 模拟账户、仓位、成交、账户流水和会话统计的 IndexedDB 自动保存；
+- 实时只读模式的币安普通 K 线与标记价格 K 线 WebSocket；
+- 实时连接状态、最后消息时间、延迟、K 线完成状态和标记价格；
+- 断线指数退避重连、REST 强制补缺和已完成实时 K 线缓存；
+- 配置、当前行情、单个回放会话及全部本地数据的 JSON 导入导出；
+- GitHub 私有仓库手动备份、差异比较、SHA 冲突处理和云端恢复；
+- 历史行情按交易对、周期、年月拆分并使用 gzip 压缩上传；
 - GitHub Pages 部署。
 
-Phase 1 不连接币安，也不执行模拟交易。相关能力将在后续阶段实现。
+模拟交易只在历史回放模式中运行；实时模式只读取公开行情。项目不会请求交易所凭据，也不会发送真实订单。
+
+## 下载历史数据
+
+1. 启动应用并点击右上角“数据管理”；
+2. 刷新币安合约列表，选择交易对和周期；
+3. 设置开始时间和结束时间；
+4. 下载普通 K 线、标记价格 K 线或两类数据；
+5. 下载结果会保存在当前浏览器的 IndexedDB 中。
+
+图表读取顺序为本地缓存优先、币安公开接口补缺。币安接口不可用但本地已有数据时，页面继续显示缓存并给出提示。
+
+## 开始历史回放
+
+1. 在图表或“数据管理”中选择交易对和周期；
+2. 可输入“图表时间”直接跳转，或拖动图表确定回放起点；
+3. 创建回放时自动使用图表视口最右侧 K 线作为起点；结束时间可选，留空时回放到最新已完成 K 线；
+4. 点击“创建回放”，系统会检查缓存并自动补齐普通 K 线；
+5. 创建时可设置初始资金、杠杆、手续费率、滑点率和强平参数；
+6. 在右侧面板按保证金金额或仓位数量模拟开多、开空、加仓、减仓和全平；
+7. 持仓后可设置止盈和止损；系统从下一根 K 线开始依次检查强平、止损和止盈；
+8. 使用上一根、下一根、播放速度、跳转结束和重置控制进度；
+9. 刷新页面后，活动会话、账户、持仓、成交和回放进度会自动恢复。
+
+活动回放会话只向图表和指标提供当前回放时间及以前的 K 线。产生交易后禁止回退；重置会话会清空该会话的模拟账户、持仓和交易记录。预估强平采用训练用近似模型，不代表币安实际强平结果。
+
+## 查看实时行情
+
+1. 点击顶部“实时行情”；
+2. 图表先从 IndexedDB 和 REST 加载所选交易对、周期的最近历史；
+3. 可在页面底部输入“图表时间”，直接加载并跳转到对应历史位置；
+4. 页面随后连接币安 USDⓈ-M 公共 WebSocket，持续更新当前 K 线和标记价格；
+5. 已完成 K 线自动写入 IndexedDB；
+6. 断线后页面显示状态，按指数退避重连，并在重连前通过 REST 强制刷新缺失区间。
+
+实时模式不显示模拟交易面板或任何下单按钮。
+
+## 备份与 GitHub 同步
+
+1. 打开右上角“数据管理”，在“本地备份”中导出配置、当前行情、单个会话或全部数据；
+2. 导入 JSON 备份时，应用会先完整校验格式、时间顺序、重复记录和数值，再写入 IndexedDB；
+3. 如需云端备份，准备一个已有初始提交的 GitHub 私有仓库，并创建仅授权该仓库 `Contents: Read and write` 的 Fine-grained Token；
+4. 填写仓库所有者、仓库名、分支和 Token，先测试连接，再比较或上传所选数据；
+5. 拉取会先校验 `manifest.json`、文件大小和 SHA-256，全部通过后才合并到本地；
+6. Token 只保留在当前页面内存中，不写入 localStorage、IndexedDB、备份文件或同步日志，刷新或点击“断开并清除 Token”后即清除。
+
+IndexedDB 始终是运行时主存储，GitHub 只作为个人手动备份。行情文件按
+`market-data/{symbol}/{timeframe}/{year}/{month}.json.gz` 保存；上传按顺序进行，
+更新已有文件时使用远端 SHA 检查冲突。
 
 ## 本地运行
 
@@ -27,6 +96,8 @@ npm run dev
 ```
 
 打开终端显示的本地地址。
+
+Windows 也可以直接双击 `start-dev.bat`。依赖已经安装时，脚本会跳过 `npm ci`。
 
 ## 验证
 

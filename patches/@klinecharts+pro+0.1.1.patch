@@ -1,0 +1,50 @@
+diff --git a/node_modules/@klinecharts/pro/dist/index.d.ts b/node_modules/@klinecharts/pro/dist/index.d.ts
+index 1cb6404..c8b46ef 100644
+--- a/node_modules/@klinecharts/pro/dist/index.d.ts
++++ b/node_modules/@klinecharts/pro/dist/index.d.ts
+@@ -1,4 +1,4 @@
+-import { DeepPartial, KLineData, Styles } from 'klinecharts';
++import { Chart, DeepPartial, KLineData, Styles } from 'klinecharts';
+ 
+ export interface SymbolInfo {
+ 	ticker: string;
+@@ -52,6 +52,7 @@ export interface ChartPro {
+ 	getSymbol(): SymbolInfo;
+ 	setPeriod(period: Period): void;
+ 	getPeriod(): Period;
++	getChart(): Chart;
+ }
+ export declare class DefaultDatafeed implements Datafeed {
+ 	constructor(apiKey: string);
+@@ -79,6 +80,7 @@ export declare class KLineChartPro implements ChartPro {
+ 	getSymbol(): SymbolInfo;
+ 	setPeriod(period: Period): void;
+ 	getPeriod(): Period;
++	getChart(): Chart;
+ }
+ declare function load(key: string, ls: any): void;
+ 
+diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
+index 6f78d0e..7aad2d0 100644
+--- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
++++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
+@@ -3389,7 +3389,8 @@ const Dl = (e) => {
+     setSymbol: p,
+     getSymbol: () => y(),
+     setPeriod: M,
+-    getPeriod: () => L()
++    getPeriod: () => L(),
++    getChart: () => n
+   });
+   const c1 = () => {
+     n == null || n.resize();
+@@ -3994,6 +3995,9 @@ class jl {
+   getPeriod() {
+     return this._chartApi.getPeriod();
+   }
++  getChart() {
++    return this._chartApi.getChart();
++  }
+ }
+ D5.forEach((e) => {
+   h5(e);

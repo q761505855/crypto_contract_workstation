@@ -11,6 +11,7 @@ const verifierPath = join(process.cwd(), 'scripts', 'verify-pages-artifact.mjs')
 const requiredAttributionFiles = {
   'THIRD_PARTY_NOTICES.txt': 'KLineChart notices',
   'licenses/Apache-2.0.txt': 'Apache License',
+  'licenses/decimal.js-MIT.txt': 'MIT License',
 }
 
 afterEach(async () => {
@@ -48,8 +49,30 @@ function runVerifier(rootDirectory: string) {
 
 describe('verify:pages', () => {
   it.each([
-    ['third-party notice', { 'licenses/Apache-2.0.txt': 'Apache License' }, /THIRD_PARTY_NOTICES\.txt/],
-    ['Apache license', { 'THIRD_PARTY_NOTICES.txt': 'KLineChart notices' }, /licenses[\\/]Apache-2\.0\.txt/],
+    [
+      'third-party notice',
+      {
+        'licenses/Apache-2.0.txt': 'Apache License',
+        'licenses/decimal.js-MIT.txt': 'MIT License',
+      },
+      /THIRD_PARTY_NOTICES\.txt/,
+    ],
+    [
+      'Apache license',
+      {
+        'THIRD_PARTY_NOTICES.txt': 'KLineChart notices',
+        'licenses/decimal.js-MIT.txt': 'MIT License',
+      },
+      /licenses[\\/]Apache-2\.0\.txt/,
+    ],
+    [
+      'decimal.js MIT license',
+      {
+        'THIRD_PARTY_NOTICES.txt': 'KLineChart notices',
+        'licenses/Apache-2.0.txt': 'Apache License',
+      },
+      /licenses[\\/]decimal\.js-MIT\.txt/,
+    ],
   ])('requires the deployed %s', async (_, attributionFiles, diagnostic) => {
     const rootDirectory = await createArtifact(
       '<script src="/crypto_contract_workstation/assets/index.js"></script>',

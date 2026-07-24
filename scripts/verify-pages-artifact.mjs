@@ -9,6 +9,7 @@ const EXTERNAL_URL_PATTERN = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i
 const REQUIRED_ATTRIBUTION_FILES = Object.freeze([
   'THIRD_PARTY_NOTICES.txt',
   'licenses/Apache-2.0.txt',
+  'licenses/decimal.js-MIT.txt',
 ])
 const HTML_NAMED_CHARACTER_REFERENCES = Object.freeze({
   amp: '&',

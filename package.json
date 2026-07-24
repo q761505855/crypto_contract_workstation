@@ -8,6 +8,7 @@
     "npm": ">=11.0.0"
   },
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "vite",
     "preview": "vite preview",
     "build": "tsc -b && vite build",
@@ -20,6 +21,8 @@
   },
   "dependencies": {
     "@klinecharts/pro": "0.1.1",
+    "decimal.js": "10.6.0",
+    "idb": "8.0.3",
     "klinecharts": "9.8.12",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -32,7 +35,9 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.4",
+    "fake-indexeddb": "6.2.5",
     "jsdom": "29.1.1",
+    "patch-package": "8.0.1",
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vitest": "4.1.10"

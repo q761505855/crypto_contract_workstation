@@ -4,6 +4,7 @@ import type {
   Period,
   SymbolInfo,
 } from '@klinecharts/pro'
+import type { ChartIndicatorPreferences } from './indicator-preferences'
 
 export const DEFAULT_SYMBOL: SymbolInfo = Object.freeze({
   exchange: 'BINANCE',
@@ -41,17 +42,25 @@ export const DEFAULT_SUB_INDICATORS = Object.freeze(['VOL', 'MACD'])
 export function createChartOptions(
   container: HTMLElement,
   datafeed: Datafeed,
+  symbol: SymbolInfo = DEFAULT_SYMBOL,
+  period: Period = SUPPORTED_PERIODS[3],
+  indicatorPreferences: ChartIndicatorPreferences | null = null,
 ): ChartProOptions {
   return {
     container,
     datafeed,
     drawingBarVisible: true,
     locale: 'zh-CN',
-    mainIndicators: [...DEFAULT_MAIN_INDICATORS],
-    period: SUPPORTED_PERIODS[3],
+    mainIndicators:
+      indicatorPreferences?.main.map((indicator) => indicator.name) ??
+      [...DEFAULT_MAIN_INDICATORS],
+    period,
     periods: [...SUPPORTED_PERIODS],
-    subIndicators: [...DEFAULT_SUB_INDICATORS],
-    symbol: { ...DEFAULT_SYMBOL },
+    subIndicators:
+      indicatorPreferences?.sub.flatMap((pane) =>
+        pane.indicators.map((indicator) => indicator.name),
+      ) ?? [...DEFAULT_SUB_INDICATORS],
+    symbol: { ...symbol },
     theme: 'dark',
     timezone: 'Asia/Shanghai',
   }
