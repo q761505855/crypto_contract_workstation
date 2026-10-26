@@ -126,13 +126,8 @@ describe('ProChartAdapter', () => {
       { timestamp: target, open: 2, high: 3, low: 1.5, close: 2.5 },
       { timestamp: 2_700_000, open: 3, high: 4, low: 2.5, close: 3.5 },
     ]
-    const applyNewData = vi.fn(
-      (
-        _data: unknown,
-        _more: boolean,
-        callback?: () => void,
-      ) => callback?.(),
-    )
+    let onDataReady: (() => void) | undefined
+    const applyNewData = vi.fn(() => onDataReady?.())
     const coreChart = {
       getDataList: vi.fn(() => [
         { timestamp: 0 },
@@ -146,6 +141,8 @@ describe('ProChartAdapter', () => {
         realTo: 1.8,
       })),
       applyNewData,
+      subscribeAction: vi.fn((_type, callback) => { onDataReady = callback }),
+      unsubscribeAction: vi.fn(() => { onDataReady = undefined }),
       scrollToTimestamp: vi.fn(),
       getBarSpace: vi.fn(() => 10),
       scrollByDistance: vi.fn(),
@@ -179,8 +176,9 @@ describe('ProChartAdapter', () => {
     expect(applyNewData).toHaveBeenCalledWith(
       candles,
       true,
-      expect.any(Function),
     )
+    expect(coreChart.subscribeAction).toHaveBeenCalledWith('onDataReady', expect.any(Function))
+    expect(coreChart.unsubscribeAction).toHaveBeenCalledWith('onDataReady', expect.any(Function))
     expect(coreChart.scrollToTimestamp).toHaveBeenCalledWith(target, 0)
     expect(coreChart.scrollByDistance).toHaveBeenCalledWith(10, 0)
   })

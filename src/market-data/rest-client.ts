@@ -1,4 +1,5 @@
 import { nextOpenTime } from './intervals'
+import { BinanceRequestGuard, createBrowserRequestGuard } from './request-guard'
 import {
   normalizeExchangeInfo,
   normalizeKlines,
@@ -11,8 +12,7 @@ import type {
 } from './models'
 
 const DEFAULT_BASE_URL = 'https://fapi.binance.com'
-const PAGE_LIMIT = 1_000
-const MAX_RETRIES = 3
+const PAGE_LIMIT = 499
 
 type FetchLike = typeof fetch
 type Sleep = (milliseconds: number) => Promise<void>
@@ -20,6 +20,7 @@ type Sleep = (milliseconds: number) => Promise<void>
 export interface DownloadRangeOptions {
   signal?: AbortSignal
   onProgress?: (progress: DownloadProgress) => void
+  onPage?: (candles: readonly MarketCandle[]) => void | Promise<void>
 }
 
 function normalizedBaseUrl(value: string): string {
@@ -37,12 +38,15 @@ async function defaultSleep(milliseconds: number): Promise<void> {
 
 export class BinanceRestClient {
   private baseUrl: string
+  private requestQueue: Promise<unknown> = Promise.resolve()
+  private pendingRequests = 0
 
   constructor(
     baseUrl = DEFAULT_BASE_URL,
     private readonly fetcher: FetchLike = fetch,
     private readonly now: () => number = Date.now,
-    private readonly sleep: Sleep = defaultSleep,
+    sleep: Sleep = defaultSleep,
+    private readonly guard: BinanceRequestGuard = createBrowserRequestGuard(now, sleep),
   ) {
     this.baseUrl = normalizedBaseUrl(baseUrl)
   }
@@ -68,8 +72,12 @@ export class BinanceRestClient {
     to: number,
     options: DownloadRangeOptions = {},
   ): Promise<MarketCandle[]> {
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      throw new Error('行情请求时间必须为有效时间戳')
+    }
+    to = Math.min(to, this.now())
     const result = new Map<number, MarketCandle>()
-    let cursor = from
+    let cursor = Math.max(0, from)
     let page = 0
 
     while (cursor <= to) {
@@ -97,6 +105,7 @@ export class BinanceRestClient {
       for (const candle of rows) {
         result.set(candle.openTime, candle)
       }
+      await options.onPage?.(rows)
       options.onProgress?.({
         kind,
         received: rows.length,
@@ -118,61 +127,28 @@ export class BinanceRestClient {
     )
   }
 
-  private async getJson(
+  private getJson(
     path: string,
     params: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<unknown> {
     const query = new URLSearchParams(params)
     const url = `${this.baseUrl}${path}${query.size > 0 ? `?${query}` : ''}`
-
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
-      let response: Response
-      try {
-        response = await this.fetcher.call(globalThis, url, {
-          headers: { Accept: 'application/json' },
-          signal,
-        })
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          throw error
-        }
-        throw new Error(
-          `无法连接币安公开行情接口：${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        )
-      }
-
-      if (response.ok) {
-        return response.json()
-      }
-
-      if ((response.status === 418 || response.status === 429) && attempt < 2) {
-        const retryAfter = Number(response.headers.get('Retry-After'))
-        const waitMilliseconds = Number.isFinite(retryAfter)
-          ? Math.max(1_000, retryAfter * 1_000)
-          : 1_000 * 2 ** attempt
-        await this.sleep(waitMilliseconds)
-        continue
-      }
-
-      let detail = ''
-      try {
-        const payload = (await response.json()) as {
-          code?: unknown
-          msg?: unknown
-        }
-        if (typeof payload.msg === 'string') {
-          detail = `：${payload.msg}`
-        }
-      } catch {
-        // The HTTP status remains sufficient when the body is not JSON.
-      }
-      throw new Error(`币安行情请求失败（HTTP ${response.status}）${detail}`)
+    if (this.pendingRequests >= 2) {
+      return Promise.reject(new Error('请求处理中，已停止新增远程请求，避免堆积；请稍后手动操作。'))
     }
-
-    throw new Error('币安行情请求重试次数已用尽')
+    this.pendingRequests += 1
+    const request = this.requestQueue
+      .catch(() => undefined)
+      .then(() => this.guard.request(
+        () => this.fetcher.call(globalThis, url, {
+          headers: { Accept: 'application/json' }, signal,
+        }),
+        signal,
+      ))
+      .finally(() => { this.pendingRequests -= 1 })
+    this.requestQueue = request.catch(() => undefined)
+    return request
   }
 }
 

@@ -235,7 +235,7 @@ export function ReplayControls({
         onJump={onJumpToTime}
       />
       <span className="replay-position">
-        {session.symbol.ticker} {session.period.text} · 当前：
+        {session.symbol.ticker} · 步进 {session.period.text} · 当前：
         {displayTime(session.currentTime)} · {session.currentIndex + 1}/
         {session.candleCount}
       </span>

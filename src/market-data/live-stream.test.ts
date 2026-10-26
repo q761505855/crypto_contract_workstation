@@ -78,7 +78,7 @@ describe('parseLiveKline', () => {
 })
 
 describe('BinanceLiveStream', () => {
-  it('catches up, streams both candle kinds, and stores closed candles', async () => {
+  it('streams and stores both candle kinds without REST catch-up', async () => {
     const sockets: FakeSocket[] = []
     const service = {
       refreshCandles: vi.fn(async () => [] as MarketCandle[]),
@@ -98,6 +98,10 @@ describe('BinanceLiveStream', () => {
       service,
       socketFactory,
       () => 61_000,
+      undefined,
+      undefined,
+      undefined,
+      async () => undefined,
     )
 
     const unsubscribe = stream.subscribe({
@@ -109,7 +113,7 @@ describe('BinanceLiveStream', () => {
       ),
     })
     await vi.waitFor(() => expect(socketFactory).toHaveBeenCalledOnce())
-    expect(service.refreshCandles).toHaveBeenCalledTimes(2)
+    expect(service.refreshCandles).not.toHaveBeenCalled()
 
     sockets[0].onopen?.()
     sockets[0].onmessage?.({
@@ -136,11 +140,11 @@ describe('BinanceLiveStream', () => {
     expect(sockets[0].close).toHaveBeenCalledOnce()
   })
 
-  it('backs off, reconnects, and runs REST catch-up again', async () => {
+  it('backs off and reconnects without making any REST requests', async () => {
     const sockets: FakeSocket[] = []
     const scheduled: { callback?: () => void } = {}
     const schedule = vi.fn((callback: () => void, delay: number) => {
-      expect(delay).toBe(1_000)
+      expect(delay).toBe(10_000)
       scheduled.callback = callback
       return 7
     })
@@ -158,6 +162,8 @@ describe('BinanceLiveStream', () => {
       () => 120_000,
       schedule,
       vi.fn(),
+      undefined,
+      async () => undefined,
     )
     const connections: string[] = []
 
@@ -178,7 +184,45 @@ describe('BinanceLiveStream', () => {
     }
     scheduled.callback()
     await vi.waitFor(() => expect(sockets).toHaveLength(2))
-    expect(service.refreshCandles).toHaveBeenCalledTimes(4)
+    expect(service.refreshCandles).not.toHaveBeenCalled()
     expect(connections).toContain('reconnecting')
+  })
+
+  it('stops reconnecting after three unstable connections even when sockets open', async () => {
+    const sockets: FakeSocket[] = []
+    let retry: (() => void) | undefined
+    const schedule = vi.fn((callback: () => void) => { retry = callback; return 1 })
+    const refreshCandles = vi.fn()
+    const onStatus = vi.fn()
+    const service = { refreshCandles, saveRealtimeCandle: vi.fn() }
+    const stream = new BinanceLiveStream(
+      service,
+      () => { const socket = new FakeSocket(); sockets.push(socket); return socket },
+      () => 120_000, schedule, vi.fn(), undefined, async () => undefined,
+    )
+    stream.subscribe({ symbol: 'BTCUSDT', timeframe: '1m', onKline: vi.fn(), onStatus })
+    for (let index = 0; index < 4; index += 1) {
+      await vi.waitFor(() => expect(sockets).toHaveLength(index + 1))
+      sockets[index].onopen?.()
+      sockets[index].onclose?.()
+      if (index < 3) retry?.()
+    }
+    expect(schedule).toHaveBeenCalledTimes(3)
+    expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ warning: expect.stringContaining('已停止自动重连') }))
+    expect(refreshCandles).not.toHaveBeenCalled()
+  })
+
+  it('does not connect or schedule retries when the shared protection rejects a socket', async () => {
+    const socketFactory = vi.fn()
+    const schedule = vi.fn()
+    const onStatus = vi.fn()
+    const stream = new BinanceLiveStream(
+      { saveRealtimeCandle: vi.fn() }, socketFactory, Date.now, schedule, vi.fn(), undefined,
+      async () => { throw new Error('已暂停新增远程请求') },
+    )
+    stream.subscribe({ symbol: 'BTCUSDT', timeframe: '1m', onKline: vi.fn(), onStatus })
+    await vi.waitFor(() => expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ connection: 'disconnected', warning: '已暂停新增远程请求' })))
+    expect(socketFactory).not.toHaveBeenCalled()
+    expect(schedule).not.toHaveBeenCalled()
   })
 })

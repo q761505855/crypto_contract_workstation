@@ -185,10 +185,9 @@ export default function App() {
     const active = replaySessionRef.current
     if (
       active !== null &&
-      (active.symbol.ticker !== next.symbol.ticker ||
-        active.period.text !== next.period.text)
+      active.symbol.ticker !== next.symbol.ticker
     ) {
-      setMarketWarning('回放会话进行中，不能切换交易对或周期。')
+      setMarketWarning('回放会话进行中，不能切换交易对。')
       setChartReloadKey((current) => current + 1)
       return
     }
@@ -290,10 +289,9 @@ export default function App() {
   function applyMarketSelection(next: MarketSelection): void {
     if (
       replay.session !== null &&
-      (replay.session.symbol.ticker !== next.symbol.ticker ||
-        replay.session.period.text !== next.period.text)
+      replay.session.symbol.ticker !== next.symbol.ticker
     ) {
-      if (!window.confirm('切换交易对或周期需要结束当前回放会话，是否继续？')) {
+      if (!window.confirm('切换交易对需要结束当前回放会话，是否继续？')) {
         return
       }
       void replay.endSession().then(() => setMarketSelection(next))

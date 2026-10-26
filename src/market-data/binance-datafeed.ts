@@ -20,7 +20,7 @@ import {
   type LiveStreamSubscriptionInput,
 } from './live-stream'
 
-const MAX_CHART_CANDLES = 500
+const MAX_CHART_CANDLES = 499
 
 interface LiveStreamPort {
   subscribe(input: LiveStreamSubscriptionInput): () => void
@@ -106,13 +106,15 @@ export class BinanceDatafeed implements Datafeed {
   ): Promise<KLineData[]> {
     const timeframe = periodToTimeframe(period)
     this.onSelectionChange?.({ symbol, period })
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to < 0) return []
     const alignedTo = alignOpenTime(to, timeframe, 'floor')
     const cappedFrom = shiftOpenTime(
       alignedTo,
       timeframe,
       -(MAX_CHART_CANDLES - 1),
     )
-    const effectiveFrom = Math.max(from, cappedFrom)
+    const effectiveFrom = Math.max(0, from, cappedFrom)
+    if (effectiveFrom > to) return []
     try {
       const candles = await this.service.loadCandles(
         'trade',

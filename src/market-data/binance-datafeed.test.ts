@@ -84,7 +84,7 @@ describe('BinanceDatafeed', () => {
     ])
   })
 
-  it('caps chart requests to 500 candles and maps stored decimals', async () => {
+  it('caps chart requests to one low-weight page and maps stored decimals', async () => {
     const loadCandles = vi.fn(async () => [
       {
         symbol: 'BTCUSDT',
@@ -130,7 +130,7 @@ describe('BinanceDatafeed', () => {
       'trade',
       'BTCUSDT',
       '1m',
-      501 * 60_000,
+      502 * 60_000,
       1_000 * 60_000,
       expect.any(Object),
     )

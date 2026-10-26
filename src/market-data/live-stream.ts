@@ -1,21 +1,15 @@
 import type { KLineData } from 'klinecharts'
-import { alignOpenTime, shiftOpenTime } from './intervals'
+import { createBrowserRequestGuard } from './request-guard'
 import type { CandleKind, MarketCandle } from './models'
 import type { LiveMarketStatus } from './live-models'
 import { INITIAL_LIVE_STATUS } from './live-models'
 import { normalizeKline } from './normalizer'
 
 export const DEFAULT_STREAM_BASE_URL = 'wss://fstream.binance.com'
-const MAX_RECONNECT_DELAY = 30_000
+const MAX_RECONNECT_DELAY = 60_000
+const MAX_RECONNECT_ATTEMPTS = 3
 
 interface LiveMarketDataService {
-  refreshCandles(
-    kind: CandleKind,
-    symbol: string,
-    timeframe: string,
-    from: number,
-    to: number,
-  ): Promise<MarketCandle[]>
   saveRealtimeCandle(
     kind: CandleKind,
     candle: MarketCandle,
@@ -163,6 +157,8 @@ export class BinanceLiveStream {
     private readonly cancelSchedule: CancelSchedule = (id) =>
       window.clearTimeout(id),
     private readonly baseUrl = DEFAULT_STREAM_BASE_URL,
+    private readonly authorizeSocket: () => Promise<void> = () =>
+      createBrowserRequestGuard().authorizeSocket(),
   ) {}
 
   subscribe(input: LiveStreamSubscriptionInput): () => void {
@@ -171,65 +167,11 @@ export class BinanceLiveStream {
     let socket: WebSocketLike | null = null
     let reconnectTimer: number | null = null
     let reconnectAttempt = 0
-    let lastClosedOpenTime: number | null = null
     let status: LiveMarketStatus = { ...INITIAL_LIVE_STATUS }
 
     const publish = (patch: Partial<LiveMarketStatus>) => {
       status = { ...status, ...patch }
       input.onStatus({ ...status })
-    }
-
-    const catchUp = async () => {
-      const end = this.now()
-      const from =
-        lastClosedOpenTime === null
-          ? shiftOpenTime(
-              alignOpenTime(end, input.timeframe, 'floor'),
-              input.timeframe,
-              -2,
-            )
-          : lastClosedOpenTime
-      const [tradeResult, markResult] = await Promise.allSettled([
-        this.service.refreshCandles(
-          'trade',
-          symbol,
-          input.timeframe,
-          from,
-          end,
-        ),
-        this.service.refreshCandles(
-          'mark',
-          symbol,
-          input.timeframe,
-          from,
-          end,
-        ),
-      ])
-      if (disposed) return
-      if (tradeResult.status === 'fulfilled') {
-        for (const candle of tradeResult.value) {
-          input.onKline(toKLineData(candle))
-          if (candle.isClosed) {
-            lastClosedOpenTime = Math.max(
-              lastClosedOpenTime ?? candle.openTime,
-              candle.openTime,
-            )
-          }
-        }
-      }
-      const failures = [tradeResult, markResult]
-        .filter(
-          (result): result is PromiseRejectedResult =>
-            result.status === 'rejected',
-        )
-        .map((result) =>
-          result.reason instanceof Error
-            ? result.reason.message
-            : String(result.reason),
-        )
-      if (failures.length > 0) {
-        publish({ warning: `实时补缺失败：${failures.join('；')}` })
-      }
     }
 
     const connect = async (reconnecting: boolean) => {
@@ -238,7 +180,12 @@ export class BinanceLiveStream {
         connection: reconnecting ? 'reconnecting' : 'connecting',
         reconnectAttempt,
       })
-      await catchUp()
+      try {
+        await this.authorizeSocket()
+      } catch (error) {
+        if (!disposed) publish({ connection: 'disconnected', warning: (error as Error).message })
+        return
+      }
       if (disposed) return
       const streamSymbol = symbol.toLowerCase()
       const streams = [
@@ -260,12 +207,13 @@ export class BinanceLiveStream {
         return
       }
       const currentSocket = socket
+      let openedAt: number | null = null
       currentSocket.onopen = () => {
         if (disposed || socket !== currentSocket) return
-        reconnectAttempt = 0
+        openedAt = this.now()
         publish({
           connection: 'connected',
-          reconnectAttempt: 0,
+          reconnectAttempt,
         })
       }
       currentSocket.onmessage = (event) => {
@@ -285,10 +233,12 @@ export class BinanceLiveStream {
             return
           }
           const receivedAt = this.now()
+          if (openedAt !== null && receivedAt - openedAt >= 60_000) reconnectAttempt = 0
           const patch: Partial<LiveMarketStatus> = {
             lastMessageTime: receivedAt,
             latencyMs: Math.max(0, receivedAt - parsed.eventTime),
             warning: '',
+            reconnectAttempt,
           }
           if (parsed.kind === 'trade') {
             patch.candleClosed = parsed.candle.isClosed
@@ -298,9 +248,6 @@ export class BinanceLiveStream {
           }
           publish(patch)
           if (parsed.candle.isClosed) {
-            if (parsed.kind === 'trade') {
-              lastClosedOpenTime = parsed.candle.openTime
-            }
             void this.service
               .saveRealtimeCandle(parsed.kind, parsed.candle)
               .catch((error: unknown) => {
@@ -336,10 +283,14 @@ export class BinanceLiveStream {
 
     const scheduleReconnect = () => {
       if (disposed || reconnectTimer !== null) return
+      if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+        publish({ connection: 'disconnected', warning: '实时连接连续失败，已停止自动重连。请稍后手动切换模式重试。' })
+        return
+      }
       reconnectAttempt += 1
       const delay = Math.min(
         MAX_RECONNECT_DELAY,
-        1_000 * 2 ** (reconnectAttempt - 1),
+        10_000 * 2 ** (reconnectAttempt - 1),
       )
       publish({ reconnectAttempt })
       reconnectTimer = this.schedule(() => {

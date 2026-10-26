@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { alignOpenTime, nextOpenTime } from '../src/market-data/intervals'
 
 const intervalMilliseconds: Record<string, number> = {
   '1m': 60_000,
@@ -18,7 +19,8 @@ const intervalMilliseconds: Record<string, number> = {
   '1M': 30 * 86_400_000,
 }
 
-async function mockBinance(page: import('@playwright/test').Page) {
+async function mockBinance(page: import('@playwright/test').Page, pacedClock = false) {
+  if (pacedClock) await page.clock.install()
   await page.routeWebSocket('wss://fstream.binance.com/**', (socket) => {
     const streams = new URL(socket.url()).searchParams.get('streams') ?? ''
     const streamMatch = /^([^@/]+)@kline_([^/]+)/.exec(streams)
@@ -70,6 +72,8 @@ async function mockBinance(page: import('@playwright/test').Page) {
     }, 100)
   })
   await page.route('https://fapi.binance.com/**', async (route) => {
+    // Exercise the real guard limits while advancing time between mock replies.
+    if (pacedClock) await page.clock.fastForward(7_000)
     const url = new URL(route.request().url())
     if (url.pathname === '/fapi/v1/exchangeInfo') {
       await route.fulfill({
@@ -111,9 +115,9 @@ async function mockBinance(page: import('@playwright/test').Page) {
       const limit = Number(url.searchParams.get('limit') ?? 500)
       const rows: unknown[][] = []
       for (
-        let openTime = Math.ceil(start / interval) * interval;
+        let openTime = alignOpenTime(start, timeframe, 'ceil');
         openTime <= end && rows.length < limit;
-        openTime += interval
+        openTime = nextOpenTime(openTime, timeframe)
       ) {
         const offset = (openTime / interval) % 200
         const open = 60_000 + offset
@@ -125,7 +129,7 @@ async function mockBinance(page: import('@playwright/test').Page) {
           (Math.min(open, close) - 12).toFixed(2),
           close.toFixed(2),
           '100.5',
-          openTime + interval - 1,
+          nextOpenTime(openTime, timeframe) - 1,
           '6030000',
           100,
           '0',
@@ -249,10 +253,14 @@ async function expectCanvasContent(page: import('@playwright/test').Page) {
 
 test('exercises Pro chart interactions and the production path', async ({ page }) => {
   test.setTimeout(90_000)
-  await mockBinance(page)
+  await mockBinance(page, true)
   const github = await mockGitHub(page)
   const notFoundResponses: string[] = []
   const runtimeErrors: string[] = []
+  const deprecatedApiWarnings: string[] = []
+  page.on('console', (message) => {
+    if (message.text().includes('deprecated')) deprecatedApiWarnings.push(message.text())
+  })
   page.on('response', (response) => {
     const url = new URL(response.url())
     if (
@@ -554,11 +562,58 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await simulationPanel.getByRole('button', { name: '设置止损' }).click()
   await expect(simulationPanel).toContainText('70000 / 50000')
 
+  let releasePeriodRequest!: () => void
+  const periodRequestGate = new Promise<void>((resolve) => { releasePeriodRequest = resolve })
+  const periodRequestReady = page.waitForRequest((request) => {
+    const url = new URL(request.url())
+    return url.pathname === '/fapi/v1/klines' && url.searchParams.get('interval') === '1d'
+  }, { timeout: 10_000 })
+  const slowPeriodRoute = async (route: import('@playwright/test').Route) => {
+    if (new URL(route.request().url()).searchParams.get('interval') === '1d') {
+      await periodRequestGate
+    }
+    await route.fallback()
+  }
+  await page.route('https://fapi.binance.com/fapi/v1/klines*', slowPeriodRoute)
+  await compactPeriod.selectOption('1d')
+  await periodRequestReady
+  const latestPeriodRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url())
+    return url.pathname === '/fapi/v1/klines' && url.searchParams.get('interval') === '3m'
+  }, { timeout: 10_000 })
+  await compactPeriod.selectOption('3m')
+  releasePeriodRequest()
+  await latestPeriodRequest
+  await expect(compactPeriod).toHaveValue('3m')
+  await expect(page.locator('.status-footer')).toContainText('ETHUSDT · 3m')
+  await page.unroute('https://fapi.binance.com/fapi/v1/klines*', slowPeriodRoute)
+
+  // Period changes keep the same replay clock, account and open position.
+  for (const timeframe of ['1w', '1M', '1d', '5m', '15m', '1h']) {
+    await compactPeriod.selectOption(timeframe)
+    await expect(compactPeriod).toHaveValue(timeframe)
+    await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText(timeframe)
+    await expect(page.locator('.status-footer')).toContainText(`ETHUSDT · ${timeframe}`)
+    await expect(page.locator('.status-footer')).not.toContainText('不能切换')
+    await expect(replayControls).toContainText('1/6')
+    await expect(simulationPanel.getByText('多仓', { exact: true })).toBeVisible()
+    await expect(simulationPanel).toContainText('70000 / 50000')
+    await expect(
+      simulationPanel.getByText('成交次数', { exact: true }).locator('..').locator('dd'),
+    ).toHaveText('3')
+    await expectCanvasContent(page)
+  }
+
+  await compactPeriod.selectOption('5m')
+  await expect(compactPeriod).toHaveValue('5m')
   await replayControls.getByRole('button', { name: '下一根' }).click()
   await expect(replayControls).toContainText('2/6')
   await expect(
     simulationPanel.getByText('多仓', { exact: true }),
   ).toBeVisible()
+
+  await compactPeriod.selectOption('1h')
+  await expect(compactPeriod).toHaveValue('1h')
 
   const originalChartHost = await chartHost.elementHandle()
   expect(originalChartHost).not.toBeNull()
@@ -689,4 +744,89 @@ test('exercises Pro chart interactions and the production path', async ({ page }
 
   expect(notFoundResponses).toEqual([])
   expect(runtimeErrors).toEqual([])
+  expect(deprecatedApiWarnings).toEqual([])
+})
+
+test('stops remote requests after HTTP 418 and keeps cached chart data usable', async ({ page }) => {
+  await page.clock.install()
+  await page.setViewportSize({ width: 1146, height: 900 })
+  await mockBinance(page)
+  const runtimeErrors: string[] = []
+  page.on('pageerror', (error) => runtimeErrors.push(error.message))
+  await page.goto('./')
+  await expectCanvasContent(page)
+  let banRequests = 0
+  await page.route('https://fapi.binance.com/**', async (route) => {
+    banRequests += 1
+    await route.fulfill({
+      status: 418,
+      headers: { 'Retry-After': '120' },
+      json: { code: -1003, msg: 'IP banned' },
+    })
+  })
+  const selector = page.getByLabel('图表周期')
+  await selector.selectOption('1m')
+  await expect(page.locator('.status-footer')).toContainText('HTTP 418')
+  await expect(page.locator('.status-footer')).toContainText('已暂停新增远程请求')
+  for (const timeframe of ['1w', '1M', '15m']) {
+    await selector.selectOption(timeframe)
+    await expect(page.locator('.status-footer')).toContainText(`BTCUSDT · ${timeframe}`)
+  }
+  await expectCanvasContent(page)
+  await page.getByTestId('open-data-manager').click()
+  await expect(page.getByTestId('data-manager').getByRole('alert')).toContainText('HTTP 418')
+  expect(banRequests).toBe(1)
+  await page.reload()
+  await expect(page.locator('.status-footer')).toContainText('HTTP 418')
+  expect(banRequests).toBe(1)
+
+  const otherPage = await page.context().newPage()
+  await otherPage.route('https://fapi.binance.com/**', async (route) => {
+    banRequests += 1
+    await route.fulfill({ status: 418, json: {} })
+  })
+  await otherPage.goto('./')
+  await expect(otherPage.locator('.status-footer')).toContainText('HTTP 418')
+  expect(banRequests).toBe(1)
+  await otherPage.close()
+
+  await page.getByTestId('open-data-manager').click()
+  const protection = page.getByRole('region', { name: '行情请求保护' })
+  const resume = protection.getByRole('button', { name: '手动恢复远程请求' })
+  await expect(resume).toBeDisabled()
+  await page.clock.fastForward(31 * 60_000)
+  await expect(resume).toBeEnabled()
+  await expect(protection).toContainText('不会自动恢复')
+  expect(banRequests).toBe(1)
+  await resume.click()
+  await expect(protection).toContainText('保守限速已启用')
+  expect(banRequests).toBe(1)
+  expect(runtimeErrors).toEqual([])
+})
+
+test('prevents parallel requests from another page while one page holds the request lock', async ({ page }) => {
+  await mockBinance(page)
+  let release!: () => void
+  let started!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const ready = new Promise<void>((resolve) => { started = resolve })
+  await page.route('https://fapi.binance.com/**', async (route) => {
+    started()
+    await gate
+    await route.fallback()
+  })
+  await page.goto('./')
+  await ready
+  const otherPage = await page.context().newPage()
+  let otherRequests = 0
+  await otherPage.route('https://fapi.binance.com/**', async (route) => {
+    otherRequests += 1
+    await route.fulfill({ json: [] })
+  })
+  await otherPage.goto('./')
+  await expect(otherPage.locator('.status-footer')).toContainText('其他页面正在请求')
+  expect(otherRequests).toBe(0)
+  release()
+  await expectCanvasContent(page)
+  await otherPage.close()
 })

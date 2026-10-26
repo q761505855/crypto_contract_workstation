@@ -7,6 +7,7 @@ import {
   type SymbolInfo,
 } from '@klinecharts/pro'
 import type {
+  ActionType,
   Chart,
   Indicator,
   IndicatorCreate,
@@ -24,6 +25,7 @@ import {
 } from '../market-data/intervals'
 
 const DASHED_LINE = 'dashed' as LineType
+const ON_DATA_READY = 'onDataReady' as ActionType
 
 export interface SimulationTradeOverlay {
   id: string
@@ -152,7 +154,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     )
     const from = shiftOpenTime(target, period.text, -249)
     const to = Math.min(
-      shiftOpenTime(target, period.text, 250),
+      shiftOpenTime(target, period.text, 249),
       Date.now(),
     )
     const sequence = ++this.reloadSequence
@@ -171,12 +173,16 @@ export class ProChartAdapter implements ChartAdapterPort {
         ? candle
         : nearest,
     ).timestamp
-    coreChart.applyNewData(candles, true, () => {
+    const positionChart = () => {
+      coreChart.unsubscribeAction(ON_DATA_READY, positionChart)
+      if (sequence !== this.reloadSequence) return
       coreChart.scrollToTimestamp(actual, 0)
       // KLineCharts treats `visible.to` as an exclusive boundary and its
       // timestamp positioning leaves one bar visible after the target.
       coreChart.scrollByDistance(coreChart.getBarSpace(), 0)
-    })
+    }
+    coreChart.subscribeAction(ON_DATA_READY, positionChart)
+    coreChart.applyNewData(candles, true)
     return actual
   }
 

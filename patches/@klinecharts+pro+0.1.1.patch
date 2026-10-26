@@ -25,9 +25,18 @@ index 1cb6404..c8b46ef 100644
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..7aad2d0 100644
+index 6f78d0e..ceb1a24 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
+@@ -3362,7 +3362,7 @@ function V1(e, t, n, r) {
+   }, n, r)) ?? null;
+ }
+ const Dl = (e) => {
+-  let t, n = null, r, a = !1;
++  let t, n = null, r, dataRequestSequence = 0;
+   const [i, o] = $(e.theme), [s, c] = $(e.styles), [C, u] = $(e.locale), [y, p] = $(e.symbol), [L, M] = $(e.period), [P, K] = $(!1), [w, Q] = $([...e.mainIndicators]), [S, A] = $({}), [b, O] = $(!1), [H, t1] = $({
+     key: e.timezone,
+     text: b9(e.timezone, e.locale)
 @@ -3389,7 +3389,8 @@ const Dl = (e) => {
      setSymbol: p,
      getSymbol: () => y(),
@@ -38,7 +47,103 @@ index 6f78d0e..7aad2d0 100644
    });
    const c1 = () => {
      n == null || n.resize();
-@@ -3994,6 +3995,9 @@ class jl {
+@@ -3405,28 +3406,23 @@ const Dl = (e) => {
+         break;
+       }
+       case "day": {
+-        _ = _ - _ % (60 * 60 * 1e3), E = _ - v * h.multiplier * 24 * 60 * 60 * 1e3;
++        const date = new Date(_);
++        _ = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()), E = _ - v * h.multiplier * 24 * 60 * 60 * 1e3;
+         break;
+       }
+       case "week": {
+-        const X = new Date(_).getDay(), f1 = X === 0 ? 6 : X - 1;
+-        _ = _ - f1 * 60 * 60 * 24;
+-        const m1 = new Date(_);
+-        _ = new Date(`${m1.getFullYear()}-${m1.getMonth() + 1}-${m1.getDate()}`).getTime(), E = v * h.multiplier * 7 * 24 * 60 * 60 * 1e3;
++        const date = new Date(_), day = date.getUTCDay(), offset = day === 0 ? 6 : day - 1;
++        _ = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - offset), E = _ - v * h.multiplier * 7 * 24 * 60 * 60 * 1e3;
+         break;
+       }
+       case "month": {
+-        const r1 = new Date(_), X = r1.getFullYear(), f1 = r1.getMonth() + 1;
+-        _ = new Date(`${X}-${f1}-01`).getTime(), E = v * h.multiplier * 30 * 24 * 60 * 60 * 1e3;
+-        const m1 = new Date(E);
+-        E = new Date(`${m1.getFullYear()}-${m1.getMonth() + 1}-01`).getTime();
++        const date = new Date(_), year = date.getUTCFullYear(), month = date.getUTCMonth();
++        _ = Date.UTC(year, month, 1), E = Date.UTC(year, month - v * h.multiplier, 1);
+         break;
+       }
+       case "year": {
+-        const X = new Date(_).getFullYear();
+-        _ = new Date(`${X}-01-01`).getTime(), E = v * h.multiplier * 365 * 24 * 60 * 60 * 1e3;
+-        const f1 = new Date(E);
+-        E = new Date(`${f1.getFullYear()}-01-01`).getTime();
++        const year = new Date(_).getUTCFullYear();
++        _ = Date.UTC(year, 0, 1), E = Date.UTC(year - v * h.multiplier, 0, 1);
+         break;
+       }
+     }
+@@ -3475,10 +3471,18 @@ const Dl = (e) => {
+     e.subIndicators.forEach((f) => {
+       const v = V1(n, f, !0);
+       v && (h[f] = v);
+-    }), A(h), n == null || n.loadMore((f) => {
+-      a = !0, (async () => {
+-        const _ = L(), [E] = D1(_, f, 1), [r1] = D1(_, E, 500), X = await e.datafeed.getHistoryKLineData(y(), _, r1, E);
+-        n == null || n.applyMoreData(X, X.length > 0), a = !1;
++    }), A(h), n == null || n.setLoadDataCallback(({ type, data, callback }) => {
++      if (type !== "forward" || data === null) {
++        callback([], false);
++        return;
++      }
++      const sequence = dataRequestSequence;
++      const f = data.timestamp, symbol = y(), period = L();
++      (async () => {
++        const [E] = D1(period, f, 1), [r1] = D1(period, E, 500), X = await e.datafeed.getHistoryKLineData(symbol, period, r1, E);
++        if (sequence === dataRequestSequence) {
++          callback(X, X.length > 0);
++        }
+       })();
+     }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
+       if (f.indicatorName)
+@@ -3525,20 +3529,23 @@ const Dl = (e) => {
+     const h = y();
+     h != null && h.priceCurrency ? (r.innerHTML = h == null ? void 0 : h.priceCurrency.toLocaleUpperCase(), r.style.display = "flex") : r.style.display = "none", n == null || n.setPriceVolumePrecision((h == null ? void 0 : h.pricePrecision) ?? 2, (h == null ? void 0 : h.volumePrecision) ?? 0);
+   }), a1((h) => {
+-    if (!a) {
+-      h && e.datafeed.unsubscribe(h.symbol, h.period);
+-      const f = y(), v = L();
+-      return a = !0, k(!0), (async () => {
++    h && e.datafeed.unsubscribe(h.symbol, h.period);
++    const f = y(), v = L(), sequence = ++dataRequestSequence;
++    k(!0);
++    (async () => {
++      try {
+         const [E, r1] = D1(v, new Date().getTime(), 500), X = await e.datafeed.getHistoryKLineData(f, v, E, r1);
++        if (sequence !== dataRequestSequence) return;
+         n == null || n.applyNewData(X, X.length > 0), e.datafeed.subscribe(f, v, (f1) => {
+-          n == null || n.updateData(f1);
+-        }), a = !1, k(!1);
+-      })(), {
+-        symbol: f,
+-        period: v
+-      };
+-    }
+-    return h;
++          if (sequence === dataRequestSequence) {
++            n == null || n.updateData(f1);
++          }
++        });
++      } finally {
++        if (sequence === dataRequestSequence) k(!1);
++      }
++    })();
++    return { symbol: f, period: v };
+   }), a1(() => {
+     const h = i();
+     n == null || n.setStyles(h);
+@@ -3994,6 +4001,9 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }

@@ -5,7 +5,12 @@ import type {
   SymbolInfo,
 } from '@klinecharts/pro'
 import type { KLineData } from 'klinecharts'
-import { shiftOpenTime } from '../market-data/intervals'
+import {
+  alignOpenTime,
+  nextOpenTime,
+  previousOpenTime,
+  shiftOpenTime,
+} from '../market-data/intervals'
 import type { MarketDataService } from '../market-data/market-data-service'
 import type { MarketCandle, MarketSelection } from '../market-data/models'
 import type { ReplayContext } from './models'
@@ -26,6 +31,7 @@ interface Subscription {
   symbol: SymbolInfo
   period: Period
   callback: DatafeedSubscribeCallback
+  visibleUntil?: number
 }
 
 function requiresRestart(
@@ -44,6 +50,7 @@ function requiresRestart(
 export class ReplayDatafeed implements Datafeed {
   private context: ReplayContext | null = null
   private subscription: Subscription | null = null
+  private readonly historyContexts = new Map<string, ReplayContext>()
   private onSelectionChange?: (selection: MarketSelection) => void
   private onWarning?: (message: string) => void
 
@@ -73,6 +80,7 @@ export class ReplayDatafeed implements Datafeed {
 
   setReplayContext(context: ReplayContext | null): void {
     const previous = this.context
+    if (requiresRestart(previous, context)) this.historyContexts.clear()
     this.context = context === null ? null : { ...context }
     const subscription = this.subscription
     if (subscription !== null) {
@@ -120,19 +128,23 @@ export class ReplayDatafeed implements Datafeed {
       }
       return candles
     }
-    if (
-      symbol.ticker.toUpperCase() !== context.symbol ||
-      period.text !== context.timeframe
-    ) {
-      this.onWarning?.('回放会话进行中，不能切换交易对或周期。')
+    if (symbol.ticker.toUpperCase() !== context.symbol) {
+      this.onWarning?.('回放会话进行中，不能切换交易对。')
       return []
     }
-    const visibleTo = Math.min(to, context.currentTime)
+    // A replay step reveals a whole source candle. Other chart periods share
+    // that same exclusive time boundary, regardless of their bucket size.
+    const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
+    const visibleTo = Math.min(
+      to,
+      alignOpenTime(visibleUntil - 1, period.text, 'floor'),
+    )
     const visibleFrom =
       from > visibleTo
-        ? shiftOpenTime(visibleTo, context.timeframe, -499)
+        ? shiftOpenTime(visibleTo, period.text, -498)
         : from
-    const candles = await this.base.getHistoryKLineData(
+    const candles = await this.loadVisibleCandles(
+      context,
       symbol,
       period,
       visibleFrom,
@@ -141,7 +153,10 @@ export class ReplayDatafeed implements Datafeed {
     if (requiresRestart(context, this.context)) {
       return this.getHistoryKLineData(symbol, period, from, to)
     }
-    return candles.filter((candle) => candle.timestamp <= context.currentTime)
+    if (visibleTo === alignOpenTime(visibleUntil - 1, period.text, 'floor')) {
+      this.historyContexts.set(this.selectionKey(symbol, period), context)
+    }
+    return candles
   }
 
   subscribe(
@@ -149,9 +164,22 @@ export class ReplayDatafeed implements Datafeed {
     period: Period,
     callback: DatafeedSubscribeCallback,
   ): void {
-    this.subscription = { symbol, period, callback }
+    const history = this.historyContexts.get(this.selectionKey(symbol, period))
+    const visibleContext = history ?? this.context
+    this.subscription = {
+      symbol,
+      period,
+      callback,
+      visibleUntil:
+        visibleContext === null
+          ? undefined
+          : nextOpenTime(visibleContext.currentTime, visibleContext.timeframe),
+    }
     if (this.context === null) {
       this.base.subscribe(symbol, period, callback)
+    } else if (history !== undefined && history.currentTime < this.context.currentTime) {
+      // Playback may advance while the chart is loading its new period.
+      void this.emitCurrentCandle(this.context)
     }
   }
 
@@ -171,35 +199,120 @@ export class ReplayDatafeed implements Datafeed {
     const subscription = this.subscription
     if (
       subscription === null ||
-      subscription.symbol.ticker.toUpperCase() !== context.symbol ||
-      subscription.period.text !== context.timeframe
+      subscription.symbol.ticker.toUpperCase() !== context.symbol
     ) {
       return
     }
     try {
-      const candles = await this.service.loadCandles(
-        'trade',
-        context.symbol,
-        context.timeframe,
-        context.currentTime,
-        context.currentTime,
+      const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
+      const from = alignOpenTime(
+        Math.min(subscription.visibleUntil ?? visibleUntil, visibleUntil) - 1,
+        subscription.period.text,
+        'floor',
       )
+      const candles =
+        subscription.period.text === context.timeframe
+          ? (await this.service.loadCandles(
+              'trade',
+              context.symbol,
+              context.timeframe,
+              from,
+              context.currentTime,
+            ))
+              .filter((candle) =>
+                candle.openTime >= from && candle.openTime <= context.currentTime,
+              )
+              .sort((left, right) => left.openTime - right.openTime)
+              .map(toKLineData)
+          : await this.loadVisibleCandles(
+            context,
+            subscription.symbol,
+            subscription.period,
+            from,
+            alignOpenTime(visibleUntil - 1, subscription.period.text, 'floor'),
+          )
       if (
         this.context?.sessionId !== context.sessionId ||
-        this.context.currentTime !== context.currentTime
+        this.context.currentTime !== context.currentTime ||
+        this.subscription !== subscription
       ) {
         return
       }
-      const candle = candles.find(
-        (item) => item.openTime === context.currentTime,
-      )
-      if (candle !== undefined) {
-        subscription.callback(toKLineData(candle))
+      for (const candle of candles) {
+        subscription.callback(candle)
       }
+      subscription.visibleUntil = visibleUntil
     } catch (error) {
       this.onWarning?.(
         error instanceof Error ? error.message : String(error),
       )
     }
+  }
+
+  private async loadVisibleCandles(
+    context: ReplayContext,
+    symbol: SymbolInfo,
+    period: Period,
+    from: number,
+    to: number,
+  ): Promise<KLineData[]> {
+    const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
+    const lastOpen = alignOpenTime(visibleUntil - 1, period.text, 'floor')
+    const partial = nextOpenTime(lastOpen, period.text) > visibleUntil
+    const completeTo = Math.min(
+      to,
+      partial ? previousOpenTime(lastOpen, period.text) : lastOpen,
+    )
+    const candles =
+      from <= completeTo
+        ? (await this.base.getHistoryKLineData(symbol, period, from, completeTo))
+            .filter((candle) =>
+              candle.timestamp >= from &&
+              candle.timestamp <= completeTo &&
+              nextOpenTime(candle.timestamp, period.text) <= visibleUntil,
+            )
+        : []
+    if (!partial || lastOpen < from || lastOpen > to) return candles
+
+    // Never use the finished higher-period candle: its OHLC and volume would
+    // reveal the future. Rebuild only the visible part from completed candles.
+    const sourceTimeframe =
+      alignOpenTime(lastOpen, context.timeframe, 'floor') === lastOpen
+        ? context.timeframe
+        : '1m'
+    try {
+      const source = (await this.service.loadCandles(
+        'trade',
+        context.symbol,
+        sourceTimeframe,
+        lastOpen,
+        visibleUntil - 1,
+      ))
+        .filter((candle) =>
+          candle.openTime >= lastOpen &&
+          nextOpenTime(candle.openTime, sourceTimeframe) <= visibleUntil,
+        )
+        .sort((left, right) => left.openTime - right.openTime)
+      if (source.length > 0) {
+        const first = toKLineData(source[0])
+        const aggregate = { ...first, timestamp: lastOpen }
+        for (const candle of source.slice(1)) {
+          aggregate.high = Math.max(aggregate.high, Number(candle.high))
+          aggregate.low = Math.min(aggregate.low, Number(candle.low))
+          aggregate.close = Number(candle.close)
+          aggregate.volume = (aggregate.volume ?? 0) + Number(candle.volume)
+          aggregate.turnover =
+            (aggregate.turnover ?? 0) + Number(candle.quoteVolume)
+        }
+        candles.push(aggregate)
+      }
+    } catch (error) {
+      this.onWarning?.(error instanceof Error ? error.message : String(error))
+    }
+    return candles
+  }
+
+  private selectionKey(symbol: SymbolInfo, period: Period): string {
+    return `${symbol.ticker.toUpperCase()}:${period.text}`
   }
 }

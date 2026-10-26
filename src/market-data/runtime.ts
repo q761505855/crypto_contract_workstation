@@ -10,10 +10,12 @@ import { IndexedDbSimulationStateStore } from '../storage/simulation-state-store
 import { ReplayDatafeed } from '../replay/replay-datafeed'
 import { WorkstationBackupService } from '../storage/backup-service'
 import { GitHubSyncService } from '../github-sync/sync-service'
+import { BinanceRequestGuard, createBrowserRequestGuard } from './request-guard'
 
 const BASE_URL_PREFERENCE = 'marketData.binanceBaseUrl'
 
 export interface MarketDataRuntime {
+  requestGuard: BinanceRequestGuard
   datafeed: BinanceDatafeed
   replayDatafeed: ReplayDatafeed
   service: MarketDataService
@@ -33,11 +35,13 @@ function savedBaseUrl(): string {
 
 export function createMarketDataRuntime(): MarketDataRuntime {
   const store = new IndexedDbMarketDataStore()
-  const client = new BinanceRestClient(savedBaseUrl())
+  const requestGuard = createBrowserRequestGuard()
+  const client = new BinanceRestClient(savedBaseUrl(), fetch, Date.now, undefined, requestGuard)
   const service = new MarketDataService(client, store)
   const datafeed = new BinanceDatafeed(service)
   const backups = new WorkstationBackupService()
   return {
+    requestGuard,
     datafeed,
     replayDatafeed: new ReplayDatafeed(datafeed, service),
     service,

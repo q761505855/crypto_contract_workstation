@@ -22,6 +22,7 @@ import {
   type MarketDataRuntime,
 } from '../market-data/runtime'
 import { BackupSyncPanel } from './BackupSyncPanel'
+import { RequestProtection } from './RequestProtection'
 
 interface DataManagerProps {
   open: boolean
@@ -347,6 +348,15 @@ export function DataManager({
             关闭
           </button>
         </header>
+        {runtime.requestGuard !== undefined && (
+          <RequestProtection
+            guard={runtime.requestGuard}
+            onResumed={() => {
+              setError('')
+              setStatus('远程请求已恢复；需要数据时请手动刷新或下载。')
+            }}
+          />
+        )}
 
         <section>
           <h3>行情接口</h3>

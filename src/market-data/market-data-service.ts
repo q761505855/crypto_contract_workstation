@@ -1,4 +1,5 @@
 import { findMissingRanges } from './gaps'
+import { alignOpenTime } from './intervals'
 import type {
   CandleKind,
   DownloadProgress,
@@ -17,6 +18,8 @@ export interface LoadCandlesOptions {
 
 export class MarketDataService {
   private symbols: MarketSymbol[] | null = null
+  private symbolsRequest: Promise<MarketSymbol[]> | null = null
+  private readonly seriesQueues = new Map<string, Promise<void>>()
 
   constructor(
     private readonly client: BinanceRestClient,
@@ -39,8 +42,21 @@ export class MarketDataService {
       return this.symbols.map((symbol) => ({ ...symbol }))
     }
 
+    if (this.symbolsRequest !== null) {
+      return (await this.symbolsRequest).map((symbol) => ({ ...symbol }))
+    }
+    const request = this.loadSymbols(options.signal)
+    this.symbolsRequest = request
     try {
-      const remote = await this.client.getExchangeSymbols(options.signal)
+      return await request
+    } finally {
+      if (this.symbolsRequest === request) this.symbolsRequest = null
+    }
+  }
+
+  private async loadSymbols(signal?: AbortSignal): Promise<MarketSymbol[]> {
+    try {
+      const remote = await this.client.getExchangeSymbols(signal)
       await this.store.putSymbols(remote)
       this.symbols = remote
       return remote.map((symbol) => ({ ...symbol }))
@@ -62,7 +78,31 @@ export class MarketDataService {
     to: number,
     options: LoadCandlesOptions = {},
   ): Promise<MarketCandle[]> {
+    const key = `${kind}:${symbol.toUpperCase()}:${timeframe}`
+    return this.queueSeries(key, () => this.loadSeries(
+      kind, symbol, timeframe, from, to, options,
+    ))
+  }
+
+  private async loadSeries(
+    kind: CandleKind,
+    symbol: string,
+    timeframe: string,
+    from: number,
+    to: number,
+    options: LoadCandlesOptions,
+  ): Promise<MarketCandle[]> {
+    options.signal?.throwIfAborted()
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      throw new Error('行情请求时间必须为有效时间戳')
+    }
     const normalizedSymbol = symbol.toUpperCase()
+    const symbols = this.symbols ?? await this.store.getSymbols()
+    const onboardDate = symbols.find((item) => item.symbol === normalizedSymbol)?.onboardDate
+    from = Math.max(0, from, onboardDate === undefined
+      ? 0
+      : alignOpenTime(onboardDate, timeframe, 'floor'))
+    if (from > to) return []
     let cached = await this.store.getCandles(
       kind,
       normalizedSymbol,
@@ -85,7 +125,7 @@ export class MarketDataService {
           timeframe,
           range.from,
           range.to,
-          options,
+          { ...options, onPage: (candles) => this.store.putCandles(kind, candles) },
         )
         await this.store.putCandles(kind, downloaded)
       }
@@ -124,15 +164,24 @@ export class MarketDataService {
     from: number,
     to: number,
   ): Promise<MarketCandle[]> {
-    const downloaded = await this.client.downloadRange(
-      kind,
-      symbol.toUpperCase(),
-      timeframe,
-      from,
-      to,
-    )
-    await this.store.putCandles(kind, downloaded)
-    return downloaded
+    const normalizedSymbol = symbol.toUpperCase()
+    return this.queueSeries(`${kind}:${normalizedSymbol}:${timeframe}`, async () => {
+      const downloaded = await this.client.downloadRange(
+        kind, normalizedSymbol, timeframe, Math.max(0, from), to,
+        { onPage: (candles) => this.store.putCandles(kind, candles) },
+      )
+      await this.store.putCandles(kind, downloaded)
+      return downloaded
+    })
+  }
+
+  private queueSeries<T>(key: string, action: () => Promise<T>): Promise<T> {
+    const result = (this.seriesQueues.get(key) ?? Promise.resolve()).then(action)
+    const settled = result.then(() => undefined, () => undefined)
+    this.seriesQueues.set(key, settled)
+    return result.finally(() => {
+      if (this.seriesQueues.get(key) === settled) this.seriesQueues.delete(key)
+    })
   }
 
   async inspectSeries(
