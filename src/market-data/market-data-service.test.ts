@@ -76,6 +76,84 @@ class MemoryStore implements MarketDataStore {
 }
 
 describe('MarketDataService', () => {
+  it('fills a page ahead and reuses it for later replay steps', async () => {
+    const store = new MemoryStore()
+    const downloadRange = vi.fn(async (_kind, _symbol, _timeframe, from: number, to: number) =>
+      Array.from({ length: (to - from) / 60_000 + 1 }, (_, index) => candle(from + index * 60_000)))
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    await expect(service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 0)).resolves.toEqual([candle(0)])
+    expect(downloadRange).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m', 0, 498 * 60_000, expect.any(Object))
+    for (let index = 1; index < 30; index += 1) {
+      await expect(service.loadReplayCandles('trade', 'BTCUSDT', '1m', index * 60_000, index * 60_000)).resolves.toEqual([candle(index * 60_000)])
+    }
+    expect(downloadRange).toHaveBeenCalledOnce()
+  })
+
+  it('combines nearby holes into a single request instead of one request per missing candle', async () => {
+    const store = new MemoryStore()
+    store.candles.trade = [candle(0), candle(2 * 60_000), candle(4 * 60_000)]
+    const downloadRange = vi.fn(async (_kind, _symbol, _timeframe, from: number, to: number) =>
+      Array.from({ length: (to - from) / 60_000 + 1 }, (_, index) => candle(from + index * 60_000)))
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    await service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 10 * 60_000, { prefetchTo: 10 * 60_000 })
+    expect(downloadRange).toHaveBeenCalledOnce()
+    expect(downloadRange).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m', 60_000, 10 * 60_000, expect.any(Object))
+  })
+
+  it('shares an in-flight batch between overlapping replay windows', async () => {
+    const store = new MemoryStore()
+    const downloadRange = vi.fn(async (_kind, _symbol, _timeframe, from: number, to: number) =>
+      Array.from({ length: (to - from) / 60_000 + 1 }, (_, index) => candle(from + index * 60_000)))
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    const results = await Promise.all([
+      service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 2 * 60_000),
+      service.loadReplayCandles('trade', 'BTCUSDT', '1m', 60_000, 4 * 60_000),
+    ])
+    expect(results.map((items) => items.length)).toEqual([3, 4])
+    expect(downloadRange).toHaveBeenCalledOnce()
+  })
+
+  it('does not repeat a failed batch on every replay step and allows an explicit retry', async () => {
+    const store = new MemoryStore()
+    const downloadRange = vi.fn(async () => { throw new Error('HTTP 429 protection paused') })
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    const onWarning = vi.fn()
+    for (let index = 0; index < 5; index += 1) {
+      await expect(service.loadReplayCandles('mark', 'BTCUSDT', '1m', index * 60_000, index * 60_000, { onWarning })).resolves.toEqual([])
+    }
+    expect(downloadRange).toHaveBeenCalledOnce()
+    expect(onWarning).toHaveBeenCalledWith(expect.stringContaining('不会逐根重试'))
+    service.resetReplayRequests()
+    await service.loadReplayCandles('mark', 'BTCUSDT', '1m', 0, 0)
+    expect(downloadRange).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not re-request a successfully attempted range that returned no data', async () => {
+    const store = new MemoryStore()
+    const downloadRange = vi.fn(async () => [])
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    await service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 60_000)
+    await service.loadReplayCandles('trade', 'BTCUSDT', '1m', 60_000, 2 * 60_000)
+    expect(downloadRange).toHaveBeenCalledOnce()
+  })
+
+  it('caps prefetch at the selected replay end', async () => {
+    const store = new MemoryStore()
+    const downloadRange = vi.fn(async () => [])
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    await service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 0, { prefetchTo: 5 * 60_000 })
+    expect(downloadRange).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m', 0, 5 * 60_000, expect.any(Object))
+  })
+
+  it('reads only completed cached candles and never downloads missing replay data', async () => {
+    const store = new MemoryStore()
+    store.candles.trade = [candle(0), { ...candle(60_000), isClosed: false }]
+    const downloadRange = vi.fn()
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    await expect(service.loadCachedCandles('trade', 'btcusdt', '1m', 0, 120_000)).resolves.toEqual([candle(0)])
+    await expect(service.loadCachedCandles('mark', 'BTCUSDT', '1m', 0, 120_000)).resolves.toEqual([])
+    expect(downloadRange).not.toHaveBeenCalled()
+  })
   it('shares downloaded candles between concurrent overlapping requests', async () => {
     const store = new MemoryStore()
     const downloadRange = vi.fn(async (

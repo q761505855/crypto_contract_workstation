@@ -8,9 +8,9 @@ import type { KLineData } from 'klinecharts'
 import {
   alignOpenTime,
   nextOpenTime,
-  previousOpenTime,
   shiftOpenTime,
 } from '../market-data/intervals'
+import { findMissingRanges } from '../market-data/gaps'
 import type { MarketDataService } from '../market-data/market-data-service'
 import type { MarketCandle, MarketSelection } from '../market-data/models'
 import type { ReplayContext } from './models'
@@ -51,6 +51,7 @@ export class ReplayDatafeed implements Datafeed {
   private context: ReplayContext | null = null
   private subscription: Subscription | null = null
   private readonly historyContexts = new Map<string, ReplayContext>()
+  private sessionData: { id: string; candles: readonly MarketCandle[] } | null = null
   private onSelectionChange?: (selection: MarketSelection) => void
   private onWarning?: (message: string) => void
 
@@ -76,6 +77,10 @@ export class ReplayDatafeed implements Datafeed {
 
   getReplayContext(): ReplayContext | null {
     return this.context === null ? null : { ...this.context }
+  }
+
+  setSessionCandles(id: string | null, candles: readonly MarketCandle[] = []): void {
+    this.sessionData = id === null ? null : { id, candles }
   }
 
   setReplayContext(context: ReplayContext | null): void {
@@ -212,9 +217,8 @@ export class ReplayDatafeed implements Datafeed {
       )
       const candles =
         subscription.period.text === context.timeframe
-          ? (await this.service.loadCandles(
-              'trade',
-              context.symbol,
+          ? (await this.loadLocalCandles(
+              context,
               context.timeframe,
               from,
               context.currentTime,
@@ -255,61 +259,110 @@ export class ReplayDatafeed implements Datafeed {
     period: Period,
     from: number,
     to: number,
+    allowFill = true,
   ): Promise<KLineData[]> {
     const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
     const lastOpen = alignOpenTime(visibleUntil - 1, period.text, 'floor')
-    const partial = nextOpenTime(lastOpen, period.text) > visibleUntil
-    const completeTo = Math.min(
-      to,
-      partial ? previousOpenTime(lastOpen, period.text) : lastOpen,
-    )
-    const candles =
-      from <= completeTo
-        ? (await this.base.getHistoryKLineData(symbol, period, from, completeTo))
-            .filter((candle) =>
-              candle.timestamp >= from &&
-              candle.timestamp <= completeTo &&
-              nextOpenTime(candle.timestamp, period.text) <= visibleUntil,
-            )
-        : []
-    if (!partial || lastOpen < from || lastOpen > to) return candles
+    to = Math.min(to, lastOpen)
+    from = Math.max(from, shiftOpenTime(alignOpenTime(to, period.text, 'floor'), period.text, -498))
+    if (from > to) return []
+    const cached = (await this.loadLocalCandles(context, period.text, from, to))
+      .filter((candle) => nextOpenTime(candle.openTime, period.text) <= visibleUntil)
+    const visible = new Map(cached.map((candle) => [candle.openTime, toKLineData(candle)]))
 
-    // Never use the finished higher-period candle: its OHLC and volume would
-    // reveal the future. Rebuild only the visible part from completed candles.
+    // Larger periods can be built locally from the source period. Smaller or
+    // incompatible buckets require minute candles. Use local data first, then
+    // fill missing ranges through the shared batch loader without inventing
+    // intrabar movement or retrying the same failed range on every step.
     const sourceTimeframe =
-      alignOpenTime(lastOpen, context.timeframe, 'floor') === lastOpen
+      alignOpenTime(lastOpen, context.timeframe, 'floor') === lastOpen &&
+      alignOpenTime(nextOpenTime(lastOpen, period.text), context.timeframe, 'floor') === nextOpenTime(lastOpen, period.text) &&
+      nextOpenTime(lastOpen, context.timeframe) <= nextOpenTime(lastOpen, period.text)
         ? context.timeframe
         : '1m'
-    try {
-      const source = (await this.service.loadCandles(
-        'trade',
-        context.symbol,
-        sourceTimeframe,
-        lastOpen,
-        visibleUntil - 1,
-      ))
-        .filter((candle) =>
-          candle.openTime >= lastOpen &&
-          nextOpenTime(candle.openTime, sourceTimeframe) <= visibleUntil,
-        )
-        .sort((left, right) => left.openTime - right.openTime)
-      if (source.length > 0) {
-        const first = toKLineData(source[0])
-        const aggregate = { ...first, timestamp: lastOpen }
-        for (const candle of source.slice(1)) {
+    const lastComplete = nextOpenTime(lastOpen, period.text) <= visibleUntil
+      ? lastOpen
+      : shiftOpenTime(lastOpen, period.text, -1)
+    const completeGaps = findMissingRanges(cached, period.text, from, Math.min(to, lastComplete))
+    const needsPartial = lastOpen <= to && nextOpenTime(lastOpen, period.text) > visibleUntil
+    if (sourceTimeframe !== period.text && (completeGaps.length > 0 || needsPartial)) {
+      const sourceFrom = completeGaps.length > 0 ? completeGaps[0].from : lastOpen
+      const sourceTo = Math.min(nextOpenTime(alignOpenTime(to, period.text, 'floor'), period.text), visibleUntil) - 1
+      const source = (await this.loadLocalCandles(context, sourceTimeframe, sourceFrom, sourceTo))
+        .filter((candle) => nextOpenTime(candle.openTime, sourceTimeframe) <= visibleUntil)
+      const groups = new Map<number, MarketCandle[]>()
+      for (const candle of source) {
+        const open = alignOpenTime(candle.openTime, period.text, 'floor')
+        if (open < from || open > to || visible.has(open)) continue
+        const group = groups.get(open) ?? []
+        group.push(candle)
+        groups.set(open, group)
+      }
+      for (const [open, group] of groups) {
+        const end = Math.min(nextOpenTime(open, period.text), visibleUntil) - 1
+        if (findMissingRanges(group, sourceTimeframe, open, end).length > 0) continue
+        const aggregate = { ...toKLineData(group[0]), timestamp: open }
+        for (const candle of group.slice(1)) {
           aggregate.high = Math.max(aggregate.high, Number(candle.high))
           aggregate.low = Math.min(aggregate.low, Number(candle.low))
           aggregate.close = Number(candle.close)
           aggregate.volume = (aggregate.volume ?? 0) + Number(candle.volume)
-          aggregate.turnover =
-            (aggregate.turnover ?? 0) + Number(candle.quoteVolume)
+          aggregate.turnover = (aggregate.turnover ?? 0) + Number(candle.quoteVolume)
         }
-        candles.push(aggregate)
+        visible.set(open, aggregate)
       }
-    } catch (error) {
-      this.onWarning?.(error instanceof Error ? error.message : String(error))
     }
-    return candles
+    const result = [...visible.values()].sort((left, right) => left.timestamp - right.timestamp)
+    const missingComplete = findMissingRanges(
+      result.map((candle) => ({ openTime: candle.timestamp }) as MarketCandle),
+      period.text, Math.max(0, from), Math.min(to, lastComplete),
+    )
+    const missingPartial = needsPartial && !visible.has(lastOpen)
+    if (allowFill && (missingComplete.length > 0 || missingPartial)) {
+      const prefetchTo = context.endTime === undefined ? undefined
+        : nextOpenTime(context.endTime, context.timeframe) - 1
+      const options = { prefetchTo, onWarning: (message: string) => this.onWarning?.(message) }
+      if (missingComplete.length > 0) {
+        await this.service.loadReplayCandles(
+          'trade', context.symbol, period.text,
+          missingComplete[0].from, missingComplete.at(-1)!.to, options,
+        )
+      }
+      if (missingPartial) {
+        await this.service.loadReplayCandles(
+          'trade', context.symbol, sourceTimeframe,
+          lastOpen, visibleUntil - 1, options,
+        )
+      }
+      return this.loadVisibleCandles(context, symbol, period, from, to, false)
+    }
+    if (visible.size === 0 || missingPartial) this.warnMissingPeriod(period)
+    return result
+  }
+
+  private async loadLocalCandles(
+    context: ReplayContext,
+    timeframe: string,
+    from: number,
+    to: number,
+  ): Promise<MarketCandle[]> {
+    const session = this.sessionData?.id === context.sessionId && timeframe === context.timeframe
+      ? this.sessionData.candles
+      : []
+    if (session.length > 0 && from >= session[0].openTime && to < nextOpenTime(session.at(-1)!.openTime, timeframe)) {
+      return session.filter((candle) => candle.openTime >= from && candle.openTime <= to)
+    }
+    const cached = await this.service.loadCachedCandles('trade', context.symbol, timeframe, from, to)
+    const local = new Map(cached.filter((candle) => candle.openTime >= from && candle.openTime <= to && candle.isClosed)
+      .map((candle) => [candle.openTime, candle]))
+    for (const candle of session) {
+      if (candle.openTime >= from && candle.openTime <= to) local.set(candle.openTime, candle)
+    }
+    return [...local.values()].sort((left, right) => left.openTime - right.openTime)
+  }
+
+  private warnMissingPeriod(period: Period): void {
+    this.onWarning?.(`本地 ${period.text} 数据仍不完整，批量补缺暂未完成；不会逐根重复请求，受保护限制时请在数据管理中恢复或手动重试。`)
   }
 
   private selectionKey(symbol: SymbolInfo, period: Period): string {

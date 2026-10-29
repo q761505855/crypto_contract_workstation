@@ -508,6 +508,10 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     .fill('2026-07-22T05:00')
   await replayControls.getByRole('button', { name: '创建回放' }).click()
   await expect(replayControls).toContainText('1/6')
+  const replayRequests: string[] = []
+  const recordReplayRequest = (request: import('@playwright/test').Request) => {
+    if (new URL(request.url()).hostname === 'fapi.binance.com') replayRequests.push(request.url())
+  }
 
   const simulationPanel = page.getByTestId('simulation-panel')
   await expect(simulationPanel.getByText('钱包余额')).toBeVisible()
@@ -562,31 +566,9 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await simulationPanel.getByRole('button', { name: '设置止损' }).click()
   await expect(simulationPanel).toContainText('70000 / 50000')
 
-  let releasePeriodRequest!: () => void
-  const periodRequestGate = new Promise<void>((resolve) => { releasePeriodRequest = resolve })
-  const periodRequestReady = page.waitForRequest((request) => {
-    const url = new URL(request.url())
-    return url.pathname === '/fapi/v1/klines' && url.searchParams.get('interval') === '1d'
-  }, { timeout: 10_000 })
-  const slowPeriodRoute = async (route: import('@playwright/test').Route) => {
-    if (new URL(route.request().url()).searchParams.get('interval') === '1d') {
-      await periodRequestGate
-    }
-    await route.fallback()
-  }
-  await page.route('https://fapi.binance.com/fapi/v1/klines*', slowPeriodRoute)
   await compactPeriod.selectOption('1d')
-  await periodRequestReady
-  const latestPeriodRequest = page.waitForRequest((request) => {
-    const url = new URL(request.url())
-    return url.pathname === '/fapi/v1/klines' && url.searchParams.get('interval') === '3m'
-  }, { timeout: 10_000 })
   await compactPeriod.selectOption('3m')
-  releasePeriodRequest()
-  await latestPeriodRequest
   await expect(compactPeriod).toHaveValue('3m')
-  await expect(page.locator('.status-footer')).toContainText('ETHUSDT · 3m')
-  await page.unroute('https://fapi.binance.com/fapi/v1/klines*', slowPeriodRoute)
 
   // Period changes keep the same replay clock, account and open position.
   for (const timeframe of ['1w', '1M', '1d', '5m', '15m', '1h']) {
@@ -601,19 +583,35 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     await expect(
       simulationPanel.getByText('成交次数', { exact: true }).locator('..').locator('dd'),
     ).toHaveText('3')
+    await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
     await expectCanvasContent(page)
   }
 
   await compactPeriod.selectOption('5m')
   await expect(compactPeriod).toHaveValue('5m')
-  await replayControls.getByRole('button', { name: '下一根' }).click()
-  await expect(replayControls).toContainText('2/6')
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  page.on('request', recordReplayRequest)
+  for (let index = 2; index <= 4; index += 1) {
+    await replayControls.getByRole('button', { name: '下一根' }).click()
+    await expect(replayControls).toContainText(`${index}/6`)
+  }
   await expect(
     simulationPanel.getByText('多仓', { exact: true }),
   ).toBeVisible()
 
   await compactPeriod.selectOption('1h')
   await expect(compactPeriod).toHaveValue('1h')
+  await replayControls.getByLabel('回放速度').selectOption('10')
+  await replayControls.getByRole('button', { name: '播放', exact: true }).click()
+  await page.clock.runFor(1_000)
+  await expect(replayControls).toContainText('6/6')
+  expect(replayRequests.length).toBeLessThanOrEqual(1)
+  for (const requestUrl of replayRequests) {
+    const url = new URL(requestUrl)
+    expect(url.searchParams.get('interval')).toBe('5m')
+    expect(Number(url.searchParams.get('endTime')) - Number(url.searchParams.get('startTime'))).toBeGreaterThan(5 * 60_000)
+  }
+  page.off('request', recordReplayRequest)
 
   const originalChartHost = await chartHost.elementHandle()
   expect(originalChartHost).not.toBeNull()
@@ -644,7 +642,7 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await expect(
     page.getByRole('heading', { name: '加密货币合约回放工作站' }),
   ).toBeVisible()
-  await expect(page.getByTestId('replay-controls')).toContainText('2/6')
+  await expect(page.getByTestId('replay-controls')).toContainText('6/6')
   await expect(page.getByTestId('simulation-panel')).toContainText(
     '70000 / 50000',
   )

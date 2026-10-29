@@ -260,6 +260,7 @@ export default function App() {
             symbol: replay.session.symbol.ticker.toUpperCase(),
             timeframe: replay.session.period.text,
             currentTime: replay.session.currentTime,
+            endTime: replay.session.endTime,
           }
         : null
     const previous = previousReplayContextRef.current

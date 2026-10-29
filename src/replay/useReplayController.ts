@@ -44,6 +44,7 @@ export interface ReplayController {
   setHasTrades(hasTrades: boolean): void
   subscribeCandle(listener: ReplayCandleListener): () => void
   clearError(): void
+  getCurrentCandle(): MarketCandle | null
 }
 
 export function useReplayController(
@@ -100,12 +101,13 @@ export function useReplayController(
 
   const hydrate = useCallback(
     async (saved: ReplaySession): Promise<void> => {
-      const candles = await runtime.service.loadCandles(
+      const candles = await runtime.service.loadReplayCandles(
         'trade',
         saved.symbol.ticker,
         saved.period.text,
         saved.startTime,
         saved.endTime,
+        { prefetchTo: saved.endTime },
       )
       const gaps = findMissingRanges(
         candles,
@@ -123,6 +125,7 @@ export function useReplayController(
         candles,
       )
       engineRef.current = engine
+      runtime.replayDatafeed.setSessionCandles(saved.id, candles)
       publish(engine)
     },
     [publish, runtime],
@@ -174,6 +177,7 @@ export function useReplayController(
       setIsPlaying(false)
       setError('')
       try {
+        runtime.service.resetReplayRequests()
         validateSimulationConfig(
           input.tradingConfig ?? DEFAULT_TRADING_CONFIG,
         )
@@ -205,11 +209,24 @@ export function useReplayController(
             `所选区间仍有 ${gaps.length} 个历史数据缺口，请先补齐数据。`,
           )
         }
+        // Prepare mark prices once for the session. Never fill them one bar at
+        // a time during playback. Missing marks remain an explicit simulation
+        // warning when remote preparation is unavailable or rate-limited.
+        try {
+          await runtime.service.loadReplayCandles(
+            'mark', input.symbol.ticker, input.period.text,
+            candles[0].openTime, effectiveEnd,
+            { prefetchTo: effectiveEnd },
+          )
+        } catch {
+          // Existing cached mark prices can still be used offline.
+        }
         const engine = ReplayEngine.create(
           { ...input, endTime: effectiveEnd },
           candles,
         )
         engineRef.current = engine
+        runtime.replayDatafeed.setSessionCandles(engine.snapshot().id, candles)
         publish(engine)
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -234,6 +251,7 @@ export function useReplayController(
           engineRef.current.setActive(false)
           queueSave(engineRef.current.snapshot())
         }
+        runtime.service.resetReplayRequests()
         await hydrate(saved)
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -257,6 +275,7 @@ export function useReplayController(
       ])
     }
     engineRef.current = null
+    runtime.replayDatafeed.setSessionCandles(null)
     setSession(null)
   }, [runtime])
 
@@ -356,6 +375,11 @@ export function useReplayController(
 
   const pause = useCallback(() => setIsPlaying(false), [])
 
+  const getCurrentCandle = useCallback(() => {
+    const candle = engineRef.current?.currentCandle()
+    return candle === undefined ? null : { ...candle }
+  }, [])
+
   const setHasTrades = useCallback(
     (hasTrades: boolean) => {
       const engine = engineRef.current
@@ -409,5 +433,6 @@ export function useReplayController(
     setHasTrades,
     subscribeCandle,
     clearError: () => setError(''),
+    getCurrentCandle,
   }
 }

@@ -1,5 +1,5 @@
 import { findMissingRanges } from './gaps'
-import { alignOpenTime } from './intervals'
+import { alignOpenTime, nextOpenTime, previousOpenTime, shiftOpenTime } from './intervals'
 import type {
   CandleKind,
   DownloadProgress,
@@ -16,10 +16,22 @@ export interface LoadCandlesOptions {
   onWarning?: (message: string) => void
 }
 
+export interface ReplayLoadOptions extends LoadCandlesOptions {
+  prefetchTo?: number
+}
+
+interface ReplayBatch {
+  from: number
+  to: number
+  ready: Promise<void>
+}
+
 export class MarketDataService {
   private symbols: MarketSymbol[] | null = null
   private symbolsRequest: Promise<MarketSymbol[]> | null = null
   private readonly seriesQueues = new Map<string, Promise<void>>()
+  private readonly replayBatches = new Map<string, ReplayBatch[]>()
+  private readonly replayFailures = new Map<string, string>()
 
   constructor(
     private readonly client: BinanceRestClient,
@@ -84,6 +96,95 @@ export class MarketDataService {
     ))
   }
 
+  async loadCachedCandles(
+    kind: CandleKind,
+    symbol: string,
+    timeframe: string,
+    from: number,
+    to: number,
+  ): Promise<MarketCandle[]> {
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      throw new Error('本地行情读取时间必须为有效时间戳')
+    }
+    if (Math.max(0, from) > to) return []
+    return (await this.store.getCandles(
+      kind, symbol.toUpperCase(), timeframe, Math.max(0, from), to,
+    ))
+      .filter((candle) => candle.isClosed)
+      .sort((left, right) => left.openTime - right.openTime)
+  }
+
+  resetReplayRequests(): void {
+    this.replayBatches.clear()
+    this.replayFailures.clear()
+  }
+
+  async loadReplayCandles(
+    kind: CandleKind,
+    symbol: string,
+    timeframe: string,
+    from: number,
+    to: number,
+    options: ReplayLoadOptions = {},
+  ): Promise<MarketCandle[]> {
+    const cached = await this.loadCachedCandles(kind, symbol, timeframe, from, to)
+    const latestClosed = previousOpenTime(alignOpenTime(Date.now(), timeframe, 'floor'), timeframe)
+    const requestedTo = Math.min(to, latestClosed)
+    const gaps = findMissingRanges(cached, timeframe, Math.max(0, from), requestedTo)
+    if (gaps.length === 0) return cached
+    const key = `${kind}:${symbol.toUpperCase()}:${timeframe}`
+    const previousFailure = this.replayFailures.get(key)
+    if (previousFailure !== undefined) {
+      options.onWarning?.(previousFailure)
+      return cached
+    }
+    const batches = this.replayBatches.get(key) ?? []
+    this.replayBatches.set(key, batches)
+    fill: for (const gap of gaps) {
+      let cursor = gap.from
+      while (cursor <= gap.to) {
+        options.signal?.throwIfAborted()
+        const existing = batches.find((batch) => cursor >= batch.from && cursor <= batch.to)
+        if (existing !== undefined) {
+          await existing.ready
+          if (this.replayFailures.has(key)) break fill
+          cursor = nextOpenTime(existing.to, timeframe)
+          continue
+        }
+        // Fill a page ahead, rather than issuing a one-candle request on every
+        // step. Keep both successful and failed attempts for this replay run.
+        const batchFrom = cursor
+        const batchTo = Math.min(
+          shiftOpenTime(batchFrom, timeframe, 498),
+          latestClosed,
+          options.prefetchTo ?? Infinity,
+        )
+        if (batchTo < batchFrom) break
+        const batch: ReplayBatch = { from: batchFrom, to: alignOpenTime(batchTo, timeframe, 'floor'), ready: Promise.resolve() }
+        batches.push(batch)
+        batch.ready = (async () => {
+          try {
+            await this.loadCandles(kind, symbol, timeframe, batch.from, batch.to, {
+              ...options,
+              onWarning: (message) => {
+                this.replayFailures.set(key, message)
+                options.onWarning?.(message)
+              },
+            })
+          } catch (reason) {
+            const message = `批量补缺已停止，不会逐根重试：${reason instanceof Error ? reason.message : String(reason)}`
+            this.replayFailures.set(key, message)
+            options.onWarning?.(message)
+          }
+        })()
+        await batch.ready
+        if (this.replayFailures.has(key)) break fill
+        cursor = nextOpenTime(batch.to, timeframe)
+      }
+    }
+    return this.loadCachedCandles(kind, symbol, timeframe, from, to)
+  }
+
   private async loadSeries(
     kind: CandleKind,
     symbol: string,
@@ -116,9 +217,13 @@ export class MarketDataService {
       from,
       to,
     )
+    const downloadRanges = missingRanges.length > 1 &&
+      shiftOpenTime(missingRanges[0].from, timeframe, 498) >= missingRanges.at(-1)!.to
+      ? [{ from: missingRanges[0].from, to: missingRanges.at(-1)!.to }]
+      : missingRanges
 
     try {
-      for (const range of missingRanges) {
+      for (const range of downloadRanges) {
         const downloaded = await this.client.downloadRange(
           kind,
           normalizedSymbol,

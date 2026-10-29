@@ -210,6 +210,7 @@ export function DataManager({
     setBusy(true)
     setError('')
     setStatus('正在检查本地缓存和数据缺口…')
+    runtime.service.resetReplayRequests()
     try {
       let remainingGapCount = 0
       for (const kind of kinds) {
@@ -352,6 +353,7 @@ export function DataManager({
           <RequestProtection
             guard={runtime.requestGuard}
             onResumed={() => {
+              runtime.service.resetReplayRequests()
               setError('')
               setStatus('远程请求已恢复；需要数据时请手动刷新或下载。')
             }}

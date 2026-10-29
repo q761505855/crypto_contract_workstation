@@ -54,4 +54,5 @@ export interface ReplayContext {
   symbol: string
   timeframe: string
   currentTime: number
+  endTime?: number
 }

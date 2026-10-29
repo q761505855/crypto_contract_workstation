@@ -17,6 +17,7 @@ import type {
   ReplayController,
 } from '../replay/useReplayController'
 import { SimulationEngine } from './simulation-engine'
+import type { MarketCandle } from '../market-data/models'
 
 export interface SimulationController {
   state: SimulationState | null
@@ -41,6 +42,7 @@ export function useSimulationController(
 ): SimulationController {
   const engineRef = useRef<SimulationEngine | null>(null)
   const sessionRef = useRef(replay.session)
+  const markCandlesRef = useRef(new Map<number, MarketCandle>())
   const saveQueueRef = useRef(Promise.resolve())
   const [state, setState] = useState<SimulationState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -78,16 +80,24 @@ export function useSimulationController(
     let cancelled = false
     if (session === null) {
       engineRef.current = null
+      markCandlesRef.current.clear()
       setState(null)
       setBusy(false)
       return
     }
     setBusy(true)
     setError('')
-    void runtime.simulationStates
-      .load(session.id)
-      .then((saved) => {
+    void Promise.all([
+      runtime.simulationStates.load(session.id),
+      runtime.service.loadReplayCandles(
+        'mark', session.symbol.ticker, session.period.text,
+        session.startTime, session.endTime,
+        { prefetchTo: session.endTime },
+      ),
+    ])
+      .then(([saved, marks]) => {
         if (cancelled) return
+        markCandlesRef.current = new Map(marks.map((candle) => [candle.openTime, candle]))
         const engine =
           saved === undefined
             ? SimulationEngine.create(session)
@@ -124,28 +134,11 @@ export function useSimulationController(
       }
       const engine = engineRef.current
       if (engine === null) return
-      let markCandle = null
-      if (engine.snapshot().position !== null) {
-        try {
-          const markCandles = await runtime.service.loadCandles(
-            'mark',
-            session.symbol.ticker,
-            session.period.text,
-            event.candle.openTime,
-            event.candle.openTime,
-          )
-          markCandle =
-            markCandles.find(
-              (candle) => candle.openTime === event.candle.openTime,
-            ) ?? null
-        } catch {
-          markCandle = null
-        }
-      }
+      const markCandle = markCandlesRef.current.get(event.candle.openTime) ?? null
       engine.processCandle(event.candle, markCandle)
       publish(engine)
     },
-    [publish, runtime],
+    [publish],
   )
 
   useEffect(
@@ -158,21 +151,12 @@ export function useSimulationController(
     if (session === null) {
       throw new Error('请先创建历史回放会话')
     }
-    const candles = await runtime.service.loadCandles(
-      'trade',
-      session.symbol.ticker,
-      session.period.text,
-      session.currentTime,
-      session.currentTime,
-    )
-    const candle = candles.find(
-      (item) => item.openTime === session.currentTime,
-    )
-    if (candle === undefined) {
+    const candle = replay.getCurrentCandle()
+    if (candle === null) {
       throw new Error('当前回放 K 线不存在')
     }
     return candle
-  }, [runtime])
+  }, [replay.getCurrentCandle])
 
   const preview = useCallback(
     async (
