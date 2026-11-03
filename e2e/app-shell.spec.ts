@@ -27,7 +27,9 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
     const url = new URL(socket.url())
     expect(url.pathname).toBe('/market/stream')
     const streams = new Set((url.searchParams.get('streams') ?? '').split('/'))
+    let latestPrice = '60005'
     const sendPrice = (price: string) => {
+      latestPrice = price
       const eventTime = Date.now()
       for (const stream of streams) {
         const [symbolText, type] = stream.split('@')
@@ -55,9 +57,10 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
         else if (method === 'UNSUBSCRIBE') streams.delete(stream)
       }
       socket.send(JSON.stringify({ result: null, id }))
-      if (method === 'SUBSCRIBE') setTimeout(() => sendPrice('60005'), 100)
+      // A delayed subscription reply must not overwrite a newer simulated trade.
+      if (method === 'SUBSCRIBE') setTimeout(() => sendPrice(latestPrice), 100)
     })
-    setTimeout(() => sendPrice('60005'), 100)
+    setTimeout(() => sendPrice(latestPrice), 100)
   })
   await page.route('https://fapi.binance.com/**', async (route) => {
     // Exercise the real guard limits while advancing time between mock replies.
@@ -781,8 +784,8 @@ test('exercises Pro chart interactions and the production path', async ({ page }
 
 async function trackPriceAxis(page: import('@playwright/test').Page) {
   await page.addInitScript(() => {
-    const labels = new Map<HTMLCanvasElement, { value: number; y: number }[]>()
-    Object.assign(window, { priceAxisTestLabels: labels })
+    const labels = new Map<HTMLCanvasElement, { text: string; x: number; y: number }[]>()
+    Object.assign(window, { chartAxisTestLabels: labels })
     const fillText = CanvasRenderingContext2D.prototype.fillText
     const clearRect = CanvasRenderingContext2D.prototype.clearRect
     CanvasRenderingContext2D.prototype.clearRect = function (...args) {
@@ -790,11 +793,9 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
       return Reflect.apply(clearRect, this, args)
     }
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
-      if (/^-?[\d,]+\.\d+$/.test(text)) {
-        const entries = labels.get(this.canvas) ?? []
-        entries.push({ value: Number(text.replaceAll(',', '')), y })
-        labels.set(this.canvas, entries)
-      }
+      const entries = labels.get(this.canvas) ?? []
+      entries.push({ text, x, y })
+      labels.set(this.canvas, entries)
       return Reflect.apply(fillText, this, [text, x, y, ...args])
     }
   })
@@ -802,15 +803,22 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
   const axis = page.locator('[k-line-chart-id] > div > div:first-child > div:last-child')
   const readTicks = () => axis.locator('canvas').first().evaluate((canvas) =>
     (window as unknown as {
-      priceAxisTestLabels: Map<HTMLCanvasElement, { value: number; y: number }[]>
-    }).priceAxisTestLabels.get(canvas) ?? [],
+      chartAxisTestLabels: Map<HTMLCanvasElement, { text: string; x: number; y: number }[]>
+    }).chartAxisTestLabels.get(canvas)?.filter(({ text }) => /^-?[\d,]+\.\d+$/.test(text))
+      .map(({ text, y }) => ({ value: Number(text.replaceAll(',', '')), y })) ?? [],
+  )
+  const timeAxis = page.locator('[k-line-chart-id] > div > div:last-child canvas').first()
+  const readTimeTicks = () => timeAxis.evaluate((canvas) =>
+    (window as unknown as {
+      chartAxisTestLabels: Map<HTMLCanvasElement, { text: string; x: number; y: number }[]>
+    }).chartAxisTestLabels.get(canvas) ?? [],
   )
   const pricePerPixel = async () => {
     const labels = (await readTicks()).filter((label) => label.value > 10_000)
     if (labels.length < 2) return 0
     return Math.abs((labels[1].value - labels[0].value) / (labels[1].y - labels[0].y))
   }
-  return { axis, readTicks, pricePerPixel }
+  return { axis, readTicks, pricePerPixel, readTimeTicks }
 }
 
 test('restores product favorites and the selected product after reload', async ({ page }) => {
@@ -897,7 +905,7 @@ test('fits candles with balanced padding and toggles indicator information witho
 
 test('zooms the price range with the wheel over the price axis while preserving the time scale', async ({ page }) => {
   await mockBinance(page)
-  const { axis, pricePerPixel } = await trackPriceAxis(page)
+  const { axis, pricePerPixel, readTimeTicks } = await trackPriceAxis(page)
   await page.goto('./')
   const mode = page.getByRole('group', { name: '价格范围模式' })
   const auto = mode.getByRole('button', { name: '自动', exact: true })
@@ -905,13 +913,14 @@ test('zooms the price range with the wheel over the price axis while preserving 
   await expect(auto).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(pricePerPixel).toBeGreaterThan(0)
   const initial = await pricePerPixel()
-  const timeAxis = page.locator('[k-line-chart-id] > div > div:last-child canvas').first()
-  const initialTimeAxis = await timeAxis.screenshot()
+  await expect.poll(async () => (await readTimeTicks()).length).toBeGreaterThan(1)
+  const initialTimeTicks = await readTimeTicks()
   await axis.hover()
   await page.mouse.wheel(0, -100)
   await expect.poll(pricePerPixel).toBeLessThan(initial * 0.95)
   await expect(manual).toHaveAttribute('aria-pressed', 'true')
-  expect((await timeAxis.screenshot()).equals(initialTimeAxis)).toBe(true)
+  // Compare the rendered labels and coordinates, independent of PNG encoding/rasterization.
+  await expect.poll(readTimeTicks).toEqual(initialTimeTicks)
   await page.mouse.wheel(0, 100)
   await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
   await page.mouse.wheel(0, 100)
@@ -928,6 +937,7 @@ test('zooms the price range with the wheel over the price axis while preserving 
   await auto.click()
   await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
   await expect(auto).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(readTimeTicks).toEqual(initialTimeTicks)
   await page.screenshot({ path: 'test-results/price-range-mode.png' })
 })
 
