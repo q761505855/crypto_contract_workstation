@@ -23,6 +23,8 @@ import {
   alignOpenTime,
   shiftOpenTime,
 } from '../market-data/intervals'
+import { registerSupertrendIndicator } from './supertrend'
+import { registerPivotsIndicator } from './pivots-indicator'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -66,7 +68,26 @@ export interface ChartAdapterPort {
 
 export type ChartProFactory = (options: ChartProOptions) => ChartPro
 
-const createProChart: ChartProFactory = (options) => new KLineChartPro(options)
+const pivotHistoryReset = new WeakMap<ChartPro, () => void>()
+
+const createProChart: ChartProFactory = (options) => {
+  registerSupertrendIndicator()
+  let chart: ChartPro | undefined
+  const resetPivotHistory = registerPivotsIndicator(options.datafeed, () => {
+    const replay = (options.datafeed as Datafeed & {
+      getReplayContext?: () => { sessionId: string; currentTime: number; timeframe: string } | null
+    }).getReplayContext?.()
+    return {
+      symbol: chart?.getSymbol() ?? options.symbol,
+      period: chart?.getPeriod() ?? options.period,
+      confirmedUntil: replay ? shiftOpenTime(replay.currentTime, replay.timeframe, 1) : Date.now(),
+      sessionKey: replay?.sessionId ?? 'live',
+    }
+  })
+  chart = new KLineChartPro(options)
+  pivotHistoryReset.set(chart, resetPivotHistory)
+  return chart
+}
 
 export class ProChartAdapter implements ChartAdapterPort {
   private chart: ChartPro | null = null
@@ -117,6 +138,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       Date.now(),
     )
     if (sequence !== this.reloadSequence) return
+    pivotHistoryReset.get(chart)?.()
     coreChart.applyNewData(candles, candles.length > 0)
   }
 
@@ -182,6 +204,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       coreChart.scrollByDistance(coreChart.getBarSpace(), 0)
     }
     coreChart.subscribeAction(ON_DATA_READY, positionChart)
+    pivotHistoryReset.get(chart)?.()
     coreChart.applyNewData(candles, true)
     return actual
   }

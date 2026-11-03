@@ -103,9 +103,10 @@ export class BinanceDatafeed implements Datafeed {
     period: Period,
     from: number,
     to: number,
+    notifySelection = true,
   ): Promise<KLineData[]> {
     const timeframe = periodToTimeframe(period)
-    this.onSelectionChange?.({ symbol, period })
+    if (notifySelection) this.onSelectionChange?.({ symbol, period })
     if (!Number.isFinite(from) || !Number.isFinite(to) || to < 0) return []
     const alignedTo = alignOpenTime(to, timeframe, 'floor')
     const cappedFrom = shiftOpenTime(

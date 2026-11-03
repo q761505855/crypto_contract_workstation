@@ -6,6 +6,33 @@
   font-synthesis: none;
 }
 
+.klinecharts-pro-indicator-setting-modal-content {
+  grid-template-columns: minmax(0, 1fr) 200px;
+  max-height: min(65vh, 520px);
+  overflow-y: auto;
+  padding-right: 8px;
+  column-gap: 12px;
+}
+
+.klinecharts-pro-parameter-control {
+  width: 200px;
+  min-height: 30px;
+  color: var(--klinecharts-pro-text-color);
+  background: var(--klinecharts-pro-popover-background-color);
+  border: 1px solid var(--klinecharts-pro-border-color);
+  border-radius: 3px;
+}
+
+.klinecharts-pro-parameter-control[type='checkbox'] {
+  width: 18px;
+  min-height: 18px;
+  accent-color: var(--klinecharts-pro-primary-color);
+}
+
+.klinecharts-pro-parameter-control:disabled {
+  opacity: 0.4;
+}
+
 * {
   box-sizing: border-box;
 }

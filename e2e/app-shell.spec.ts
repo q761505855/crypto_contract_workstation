@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { alignOpenTime, nextOpenTime } from '../src/market-data/intervals'
+import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
 
 const intervalMilliseconds: Record<string, number> = {
   '1m': 60_000,
@@ -743,6 +744,126 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   expect(notFoundResponses).toEqual([])
   expect(runtimeErrors).toEqual([])
   expect(deprecatedApiWarnings).toEqual([])
+})
+
+test('adds Supertrend to the main chart and restores its parameters after reload', async ({ page }) => {
+  await mockBinance(page)
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.goto('./')
+  await expectCanvasContent(page)
+
+  const readSupertrend = () => page.evaluate(() => {
+    const preferences = JSON.parse(localStorage.getItem('chart.indicators.v1') ?? 'null')
+    return preferences?.main.find((indicator: { name: string }) => indicator.name === 'SUPERTREND') ?? null
+  })
+  const openIndicators = () => page.getByText('指标', { exact: true }).click()
+  const closeModal = () => page.locator('.klinecharts-pro-modal .close-icon')
+    .click({ position: { x: 1, y: 1 } })
+  const row = page.locator('.klinecharts-pro-indicator-modal-list li.row')
+    .filter({ hasText: 'Supertrend(超级趋势)' })
+
+  await openIndicators()
+  await expect(row).toHaveCount(1)
+  await row.click({ position: { x: 5, y: 20 } })
+  await expect(row.locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
+  await closeModal()
+  await expect.poll(readSupertrend).toMatchObject({ calcParams: [10, 3], visible: true })
+  const widget = page.locator('.klinecharts-pro-widget')
+  // The indicator toolbar is drawn on canvas; click its second-row gear.
+  await widget.click({ position: { x: 152, y: 59 } })
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  await expect(settings.getByText('ATR 周期', { exact: true })).toBeVisible()
+  await expect(settings.getByText('ATR 倍数', { exact: true })).toBeVisible()
+  const inputs = settings.locator('input')
+  await expect(inputs.nth(0)).toHaveValue('10')
+  await expect(inputs.nth(1)).toHaveValue('3')
+  await inputs.nth(0).fill('7')
+  await inputs.nth(0).blur()
+  await inputs.nth(1).fill('2.5')
+  await inputs.nth(1).blur()
+  await page.getByText('确定', { exact: true }).click()
+  await expect.poll(readSupertrend).toMatchObject({ calcParams: [7, 2.5], visible: true })
+  await page.reload()
+  await expectCanvasContent(page)
+  await openIndicators()
+  await expect(row.locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
+  await closeModal()
+  await expect.poll(readSupertrend).toMatchObject({ calcParams: [7, 2.5], visible: true })
+
+  await page.getByRole('heading', { level: 1 }).hover()
+  const enabled = await widget.screenshot()
+  await openIndicators()
+  await row.click({ position: { x: 5, y: 20 } })
+  await closeModal()
+  await expect.poll(readSupertrend).toBeNull()
+  await page.getByRole('heading', { level: 1 }).hover()
+  expect((await widget.screenshot()).equals(enabled)).toBe(false)
+  await page.reload()
+  await openIndicators()
+  await expect(row.locator('.klinecharts-pro-checkbox')).not.toHaveClass(/checked/)
+  expect(errors).toEqual([])
+})
+
+test('renders standard pivot levels and persists type, timeframe, labels and level settings', async ({ page }) => {
+  await mockBinance(page, true)
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.addInitScript((defaults) => {
+    if (!localStorage.getItem('pivots-test-seeded')) {
+      localStorage.setItem('pivots-test-seeded', 'true')
+      defaults[1] = 'Daily'
+      defaults[2] = 3
+      localStorage.setItem('chart.indicators.v1', JSON.stringify({
+        schemaVersion: 1, main: [{ name: 'PIVOTS', calcParams: defaults, visible: true, styles: null }], sub: [],
+      }))
+    }
+    const drawn: string[] = []
+    Object.assign(window, { pivotTestLabels: drawn })
+    const original = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (/^(P|[RS][1-5]) \(/.test(text)) drawn.push(text)
+      if (maxWidth === undefined) original.call(this, text, x, y)
+      else original.call(this, text, x, y, maxWidth)
+    }
+  }, [...PIVOTS_DEFAULT_PARAMS])
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { pivotTestLabels: string[] }).pivotTestLabels.some((label) => label.startsWith('P (')),
+  )).toBe(true)
+  await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText('15m')
+  const readPivots = () => page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!).main.find((item: { name: string }) => item.name === 'PIVOTS'))
+  const widget = page.locator('.klinecharts-pro-widget')
+  await widget.click({ position: { x: 188, y: 37 } })
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  await expect(settings.getByLabel('枢轴类型')).toHaveValue('Traditional')
+  await settings.getByLabel('枢轴类型').selectOption('DM')
+  await expect(settings.getByLabel('R2 显示', { exact: true })).toBeDisabled()
+  await settings.getByLabel('枢轴类型').selectOption('Camarilla')
+  await expect(settings.getByLabel('R5 显示', { exact: true })).toBeEnabled()
+  await settings.getByLabel('枢轴周期').selectOption('Weekly')
+  await settings.locator('.klinecharts-pro-input input').nth(0).fill('2')
+  await settings.locator('.klinecharts-pro-input input').nth(0).blur()
+  await settings.getByLabel('显示标签', { exact: true }).uncheck()
+  await settings.getByLabel('标签位置').selectOption('Right')
+  await settings.locator('.klinecharts-pro-input input').nth(1).fill('2')
+  await settings.locator('.klinecharts-pro-input input').nth(1).blur()
+  await settings.getByLabel('P 显示', { exact: true }).uncheck()
+  await settings.getByLabel('R1 颜色', { exact: true }).fill('#12abcd')
+  await page.getByText('确定', { exact: true }).click()
+  await expect.poll(async () => (await readPivots()).calcParams.slice(0, 10))
+    .toEqual(['Camarilla', 'Weekly', 2, true, false, true, 'Right', 2, false, '#fb8c00'])
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(async () => (await readPivots()).calcParams[11]).toBe('#12abcd')
+  await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText('15m')
+  await page.getByText('指标', { exact: true }).click()
+  const row = page.locator('.klinecharts-pro-indicator-modal-list li.row').filter({ hasText: 'Pivots(标准枢轴点)' })
+  await expect(row.locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  expect((await readPivots()).calcParams.slice(0, 3)).toEqual(['Camarilla', 'Weekly', 2])
+  expect(errors).toEqual([])
 })
 
 test('stops remote requests after HTTP 418 and keeps cached chart data usable', async ({ page }) => {

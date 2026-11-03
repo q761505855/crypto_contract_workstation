@@ -14,6 +14,7 @@ import { findMissingRanges } from '../market-data/gaps'
 import type { MarketDataService } from '../market-data/market-data-service'
 import type { MarketCandle, MarketSelection } from '../market-data/models'
 import type { ReplayContext } from './models'
+import { readIndicatorHistory } from '../market-data/indicator-history'
 
 function toKLineData(candle: MarketCandle): KLineData {
   return {
@@ -118,18 +119,16 @@ export class ReplayDatafeed implements Datafeed {
     period: Period,
     from: number,
     to: number,
+    notifySelection = true,
   ): Promise<KLineData[]> {
-    this.onSelectionChange?.({ symbol, period })
+    if (notifySelection) this.onSelectionChange?.({ symbol, period })
     const context = this.context
     if (context === null) {
-      const candles = await this.base.getHistoryKLineData(
-        symbol,
-        period,
-        from,
-        to,
-      )
+      const candles = await (notifySelection
+        ? this.base.getHistoryKLineData(symbol, period, from, to)
+        : readIndicatorHistory(this.base, symbol, period, from, to))
       if (requiresRestart(context, this.context)) {
-        return this.getHistoryKLineData(symbol, period, from, to)
+        return this.getHistoryKLineData(symbol, period, from, to, notifySelection)
       }
       return candles
     }
@@ -156,7 +155,7 @@ export class ReplayDatafeed implements Datafeed {
       visibleTo,
     )
     if (requiresRestart(context, this.context)) {
-      return this.getHistoryKLineData(symbol, period, from, to)
+      return this.getHistoryKLineData(symbol, period, from, to, notifySelection)
     }
     if (visibleTo === alignOpenTime(visibleUntil - 1, period.text, 'floor')) {
       this.historyContexts.set(this.selectionKey(symbol, period), context)

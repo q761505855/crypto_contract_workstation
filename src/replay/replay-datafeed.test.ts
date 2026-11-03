@@ -5,6 +5,7 @@ import type { MarketCandle } from '../market-data/models'
 import { nextOpenTime } from '../market-data/intervals'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { ReplayDatafeed } from './replay-datafeed'
+import { readIndicatorHistory } from '../market-data/indicator-history'
 
 const minute = 60_000
 const period = (text: string): Period => SUPPORTED_PERIODS.find((item) => item.text === text)!
@@ -37,6 +38,16 @@ function fixture(candles = Array.from({ length: 60 }, (_, index) => candle(index
 }
 
 describe('ReplayDatafeed', () => {
+  it('keeps indicator reads inside the replay boundary without changing chart selection', async () => {
+    const { feed } = fixture()
+    const selection = vi.fn()
+    feed.setSelectionListener(selection)
+    feed.setReplayContext(context)
+    const result = await readIndicatorHistory(feed, DEFAULT_SYMBOL, period('1m'), 0, 60 * minute)
+    expect(result.map((item) => item.timestamp)).toEqual([0, minute])
+    expect(selection).not.toHaveBeenCalled()
+  })
+
   it('reads replay history locally and filters out future candles', async () => {
     const { feed, base, service } = fixture()
     feed.setReplayContext(context)

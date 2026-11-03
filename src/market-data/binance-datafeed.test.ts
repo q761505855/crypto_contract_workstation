@@ -3,8 +3,19 @@ import type { MarketDataService } from './market-data-service'
 import { BinanceDatafeed } from './binance-datafeed'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import type { LiveStreamSubscriptionInput } from './live-stream'
+import { readIndicatorHistory } from './indicator-history'
 
 describe('BinanceDatafeed', () => {
+  it('uses normal candle loading for indicator history without changing chart selection', async () => {
+    const loadCandles = vi.fn(async () => [])
+    const feed = new BinanceDatafeed({ loadCandles } as unknown as MarketDataService)
+    const selection = vi.fn()
+    feed.setSelectionListener(selection)
+    await readIndicatorHistory(feed, DEFAULT_SYMBOL, SUPPORTED_PERIODS[0], 0, 60_000)
+    expect(loadCandles).toHaveBeenCalledOnce()
+    expect(selection).not.toHaveBeenCalled()
+  })
+
   it('searches the dynamic USDT perpetual symbol list', async () => {
     const service = {
       getSymbols: vi.fn(async () => [
