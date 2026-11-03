@@ -13,7 +13,7 @@ import { SUPPORTED_PERIODS } from './chart-config'
 import {
   calculatePivots, PIVOT_LEVELS, PIVOTS_DEFAULT_PARAMS, pivotSettings,
   pivotPeriodStart, pivotSourceTimeframe, resolvePivotAnchor, shiftPivotPeriod,
-  type PivotLevel, type PivotSegment, type PivotValue,
+  type PivotSegment, type PivotValue,
 } from './pivots'
 
 export interface PivotChartContext {
@@ -147,14 +147,11 @@ export function registerPivotsIndicator(feed: Datafeed, getContext: () => PivotC
     calc: latestPivotCalculation(calculate, getContext),
     draw: (params) => drawPivots(params, getContext().period.text),
     createTooltipDataSource: ({ indicator, crosshair, defaultStyles }) => {
-      const settings = pivotSettings(indicator.calcParams)
       const value: PivotValue = indicator.result[crosshair.dataIndex ?? indicator.result.length - 1] ?? {}
       return {
-        name: 'Pivots', calcParamsText: `(${settings.type},${settings.anchor})`,
+        name: 'Pivots', calcParamsText: '',
         icons: defaultStyles.tooltip.icons.filter((icon) => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
-        values: value.message ? [{ title: '', value: value.message }] : PIVOT_LEVELS
-          .filter((key) => typeof value[key] === 'number')
-          .map((key: PivotLevel) => ({ title: { text: `${key}: `, color: settings.levels[key].color }, value: { text: value[key]!.toFixed(indicator.precision), color: settings.levels[key].color } })),
+        values: value.message ? [{ title: '', value: value.message }] : [],
       }
     },
   }

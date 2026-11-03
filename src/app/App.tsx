@@ -85,6 +85,7 @@ function simulationPriceText(price: number, precision: number): string {
 
 export default function App() {
   const [mode, setMode] = useState<WorkstationMode>('history')
+  const [sidePanelHidden, setSidePanelHidden] = useState(false)
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
   const [marketRuntime] = useState(createMarketDataRuntime)
   const [marketSelection, setMarketSelection] = useState<MarketSelection>({
@@ -307,6 +308,14 @@ export default function App() {
         <h1>加密货币合约回放工作站</h1>
         <div className="header-actions">
           <button
+            aria-controls="workspace-side-panel"
+            aria-expanded={!sidePanelHidden}
+            onClick={() => setSidePanelHidden((hidden) => !hidden)}
+            type="button"
+          >
+            {sidePanelHidden ? '显示侧栏' : '隐藏侧栏'}
+          </button>
+          <button
             data-testid="open-data-manager"
             onClick={() => setDataManagerOpen(true)}
             type="button"
@@ -316,7 +325,7 @@ export default function App() {
           <ModeSwitch mode={mode} onChange={changeMode} />
         </div>
       </header>
-      <div className="workspace-grid">
+      <div className={`workspace-grid${sidePanelHidden ? ' side-panel-hidden' : ''}`}>
         <ChartWorkspace
           datafeed={marketRuntime.replayDatafeed}
           jumpRequest={chartJumpRequest}
@@ -328,14 +337,16 @@ export default function App() {
           simulationOverlays={simulationOverlays}
           symbol={marketSelection.symbol}
         />
-        {mode === 'history' ? (
-          <SimulationPanel
-            session={replay.session}
-            simulation={simulation}
-          />
-        ) : (
-          <LiveStatus status={liveStatus} />
-        )}
+        <div className="workspace-side-panel" hidden={sidePanelHidden} id="workspace-side-panel">
+          {mode === 'history' ? (
+            <SimulationPanel
+              session={replay.session}
+              simulation={simulation}
+            />
+          ) : (
+            <LiveStatus status={liveStatus} />
+          )}
+        </div>
       </div>
       {mode === 'history' ? (
         <ReplayControls

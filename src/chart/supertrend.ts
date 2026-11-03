@@ -2,16 +2,66 @@ import {
   registerIndicator,
   type IndicatorSeries,
   type IndicatorTemplate,
+  type IndicatorDrawParams,
   type KLineData,
   type LineType,
 } from 'klinecharts'
 
 export const SUPERTREND_NAME = 'SUPERTREND'
-export const SUPERTREND_DEFAULT_PARAMS = [10, 3] as const
+export const SUPERTREND_DEFAULT_PARAMS = [10, 3, 88] as const
 
 export interface SupertrendValue {
   up?: number
   down?: number
+}
+
+/** Fill each continuous trend between the band and the candle body midpoint. */
+export function drawSupertrendFill({
+  ctx, indicator, kLineDataList, visibleRange, bounding, xAxis, yAxis,
+}: IndicatorDrawParams<SupertrendValue>): boolean {
+  const from = Math.max(0, Math.floor(visibleRange.from) - 1)
+  const to = Math.min(kLineDataList.length - 1, Math.ceil(visibleRange.to))
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, bounding.width, bounding.height)
+  ctx.clip()
+  // Keep candles and other indicators legible beneath the transparent fill.
+  // Older saved indicators only have ATR period and multiplier.
+  const transparency = indicator.calcParams?.[2] ?? SUPERTREND_DEFAULT_PARAMS[2]
+  ctx.globalAlpha = (100 - (Number.isFinite(transparency)
+    ? Math.min(100, Math.max(0, transparency))
+    : SUPERTREND_DEFAULT_PARAMS[2])) / 100
+  ctx.globalCompositeOperation = 'destination-over'
+  for (const [lineIndex, key] of (['up', 'down'] as const).entries()) {
+    ctx.fillStyle = indicator.styles?.lines?.[lineIndex]?.color
+      ?? (key === 'up' ? '#26a69a' : '#ef5350')
+    let start = from
+    while (start <= to) {
+      if (!Number.isFinite(indicator.result[start]?.[key])) {
+        start += 1
+        continue
+      }
+      let end = start
+      while (end < to && Number.isFinite(indicator.result[end + 1]?.[key])) end += 1
+      if (end > start) {
+        ctx.beginPath()
+        ctx.moveTo(xAxis.convertToPixel(start), yAxis.convertToPixel(indicator.result[start][key]!))
+        for (let index = start + 1; index <= end; index += 1) {
+          ctx.lineTo(xAxis.convertToPixel(index), yAxis.convertToPixel(indicator.result[index][key]!))
+        }
+        for (let index = end; index >= start; index -= 1) {
+          const candle = kLineDataList[index]
+          ctx.lineTo(xAxis.convertToPixel(index), yAxis.convertToPixel((candle.open + candle.close) / 2))
+        }
+        ctx.closePath()
+        ctx.fill()
+      }
+      start = end + 1
+    }
+  }
+  ctx.restore()
+  // Retain the library's line rendering, tooltip values and editable styles.
+  return false
 }
 
 /**
@@ -86,6 +136,13 @@ export const supertrendIndicator: IndicatorTemplate<SupertrendValue> = {
     indicator.calcParams[0],
     indicator.calcParams[1],
   ),
+  draw: drawSupertrendFill,
+  createTooltipDataSource: ({ indicator, defaultStyles }) => ({
+    name: 'Supertrend',
+    calcParamsText: '',
+    values: [],
+    icons: defaultStyles.tooltip.icons.filter((icon) => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
+  }),
 }
 
 export function registerSupertrendIndicator(): void {

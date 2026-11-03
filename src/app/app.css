@@ -113,6 +113,19 @@ button:disabled {
   min-height: 0;
 }
 
+.workspace-grid.side-panel-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace-side-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-side-panel > .side-panel {
+  height: 100%;
+}
+
 .chart-workspace,
 .chart-host {
   width: 100%;

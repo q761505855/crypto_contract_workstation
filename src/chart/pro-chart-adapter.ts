@@ -57,6 +57,7 @@ export interface ChartAdapterPort {
   setPeriod(period: Period): void
   setSymbol(symbol: SymbolInfo): void
   reloadData(): Promise<void>
+  resize?(): void
   setTheme(theme: string): void
   setTimezone(timezone: string): void
   getIndicatorPreferences?(): ChartIndicatorPreferences
@@ -109,6 +110,10 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setTheme(theme: string): void {
     this.requireChart().setTheme(theme)
+  }
+
+  resize(): void {
+    this.coreChart?.resize()
   }
 
   setTimezone(timezone: string): void {

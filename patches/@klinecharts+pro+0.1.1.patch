@@ -25,10 +25,10 @@ index 1cb6404..c8b46ef 100644
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..fcb2ea8 100644
+index 6f78d0e..5a2b379 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-@@ -2294,6 +2294,10 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
+@@ -2294,6 +2294,11 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
  })();
  q(["click"]);
  const Ur = "指标", Yr = "主图指标", Vr = "副图指标", Hr = "设置", Gr = "时区", Xr = "截屏", Jr = "全屏", Wr = "退出全屏", qr = "保存", ea = "确定", ta = "取消", na = "MA(移动平均线)", ra = "EMA(指数平滑移动平均线)", aa = "SMA", ia = "BOLL(布林线)", sa = "BBI(多空指数)", oa = "SAR(停损点指向指标)", ca = "VOL(成交量)", la = "MACD(指数平滑异同移动平均线)", ua = "KDJ(随机指标)", Ca = "RSI(相对强弱指标)", fa = "BIAS(乖离率)", ga = "BRAR(情绪指标)", ya = "CCI(顺势指标)", ha = "DMI(动向指标)", da = "CR(能量指标)", ma = "PSY(心理线)", pa = "DMA(平行线差指标)", va = "TRIX(三重指数平滑平均线)", _a = "OBV(能量潮指标)", La = "VR(成交量变异率)", $a = "WR(威廉指标)", ba = "MTM(动量指标)", xa = "EMV(简易波动指标)", ka = "ROC(变动率指标)", Aa = "PVT(价量趋势指标)", Ma = "AO(动量震荡指标)", wa = "世界统一时间", Sa = "(UTC-10) 檀香山", Ta = "(UTC-8) 朱诺", Ia = "(UTC-7) 洛杉矶", Na = "(UTC-5) 芝加哥", Da = "(UTC-4) 多伦多", Ba = "(UTC-3) 圣保罗", Pa = "(UTC+1) 伦敦", Oa = "(UTC+2) 柏林", Ea = "(UTC+3) 巴林", Ka = "(UTC+4) 迪拜", Fa = "(UTC+5) 阿什哈巴德", ja = "(UTC+6) 阿拉木图", Za = "(UTC+7) 曼谷", Qa = "(UTC+8) 上海", Ra = "(UTC+9) 东京", za = "(UTC+10) 悉尼", Ua = "(UTC+12) 诺福克岛", Ya = "水平直线", Va = "水平射线", Ha = "水平线段", Ga = "垂直直线", Xa = "垂直射线", Ja = "垂直线段", Wa = "直线", qa = "射线", ei = "线段", ti = "箭头", ni = "价格线", ri = "价格通道线", ai = "平行直线", ii = "斐波那契回调直线", si = "斐波那契回调线段", oi = "斐波那契圆环", ci = "斐波那契螺旋", li = "斐波那契速度阻力扇", ui = "斐波那契趋势扩展", Ci = "江恩箱", fi = "矩形", gi = "平行四边形", yi = "圆", hi = "三角形", di = "三浪", mi = "五浪", pi = "八浪", vi = "任意浪", _i = "ABCD形态", Li = "XABCD形态", $i = "弱磁模式", bi = "强磁模式", xi = "商品搜索", ki = "商品代码", Ai = "参数1", Mi = "参数2", wi = "参数3", Si = "参数4", Ti = "参数5", Ii = "周期", Ni = "标准差", Di = "蜡烛图类型", Bi = "全实心", Pi = "全空心", Oi = "涨空心", Ei = "跌空心", Ki = "OHLC", Fi = "面积图", ji = "最新价显示", Zi = "最高价显示", Qi = "最低价显示", Ri = "指标最新值显示", zi = "价格轴类型", Ui = "线性轴", Yi = "百分比轴", Vi = "对数轴", Hi = "倒置坐标", Gi = "网格线显示", Xi = "恢复默认", Ji = {
@@ -36,10 +36,11 @@ index 6f78d0e..fcb2ea8 100644
 +  supertrend: "Supertrend(超级趋势)",
 +  atr_period: "ATR 周期",
 +  atr_multiplier: "ATR 倍数",
++  fill_transparency: "填充透明度（%）",
    indicator: Ur,
    main_indicator: Yr,
    sub_indicator: Vr,
-@@ -2409,6 +2413,10 @@ const Ur = "指标", Yr = "主图指标", Vr = "副图指标", Hr = "设置", Gr
+@@ -2409,6 +2414,11 @@ const Ur = "指标", Yr = "主图指标", Vr = "副图指标", Hr = "设置", Gr
    grid_show: Gi,
    restore_default: Xi
  }, Wi = "Indicator", qi = "Main Indicator", es = "Sub Indicator", ts = "Setting", ns = "Timezone", rs = "Screenshot", as = "Full Screen", is = "Exit", ss = "Save", os = "Confirm", cs = "Cancel", ls = "MA(Moving Average)", us = "EMA(Exponential Moving Average)", Cs = "SMA", fs = "BOLL(Bolinger Bands)", gs = "BBI(Bull And Bearlndex)", ys = "SAR(Stop and Reverse)", hs = "VOL(Volume)", ds = "MACD(Moving Average Convergence / Divergence)", ms = "KDJ(KDJ Index)", ps = "RSI(Relative Strength Index)", vs = "BIAS(Bias Ratio)", _s = "BRAR(情绪指标)", Ls = "CCI(Commodity Channel Index)", $s = "DMI(Directional Movement Index)", bs = "CR(能量指标)", xs = "PSY(Psychological Line)", ks = "DMA(Different of Moving Average)", As = "TRIX(Triple Exponentially Smoothed Moving Average)", Ms = "OBV(On Balance Volume)", ws = "VR(Volatility Volume Ratio)", Ss = "WR(Williams %R)", Ts = "MTM(Momentum Index)", Is = "EMV(Ease of Movement Value)", Ns = "ROC(Price Rate of Change)", Ds = "PVT(Price and Volume Trend)", Bs = "AO(Awesome Oscillator)", Ps = "UTC", Os = "(UTC-10) Honolulu", Es = "(UTC-8) Juneau", Ks = "(UTC-7) Los Angeles", Fs = "(UTC-5) Chicago", js = "(UTC-4) Toronto", Zs = "(UTC-3) Sao Paulo", Qs = "(UTC+1) London", Rs = "(UTC+2) Berlin", zs = "(UTC+3) Bahrain", Us = "(UTC+4) Dubai", Ys = "(UTC+5) Ashkhabad", Vs = "(UTC+6) Almaty", Hs = "(UTC+7) Bangkok", Gs = "(UTC+8) Shanghai", Xs = "(UTC+9) Tokyo", Js = "(UTC+10) Sydney", Ws = "(UTC+12) Norfolk", qs = "Horizontal Line", eo = "Horizontal Ray", to = "Horizontal Segment", no = "Vertical Line", ro = "Vertical Ray", ao = "Vertical Segment", io = "Trend Line", so = "Ray", oo = "Segment", co = "Arrow", lo = "Price Line", uo = "Price Channel Line", Co = "Parallel Line", fo = "Fibonacci Line", go = "Fibonacci Segment", yo = "Fibonacci Circle", ho = "Fibonacci Spiral", mo = "Fibonacci Sector", po = "Fibonacci Extension", vo = "Gann Box", _o = "Rect", Lo = "Parallelogram", $o = "Circle", bo = "Triangle", xo = "Three Waves", ko = "Five Waves", Ao = "Eight Waves", Mo = "Any Waves", wo = "ABCD Pattern", So = "XABCD Pattern", To = "Weak Magnet", Io = "Strong Magnet", No = {
@@ -47,10 +48,11 @@ index 6f78d0e..fcb2ea8 100644
 +  supertrend: "Supertrend",
 +  atr_period: "ATR period",
 +  atr_multiplier: "ATR multiplier",
++  fill_transparency: "Fill transparency (%)",
    indicator: Wi,
    main_indicator: qi,
    sub_indicator: es,
-@@ -2816,7 +2824,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
+@@ -2816,7 +2826,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
          return [(() => {
            const t = L9.cloneNode(!0);
            return m(t, () => l("main_indicator", e.locale)), t;
@@ -59,7 +61,7 @@ index 6f78d0e..fcb2ea8 100644
            const n = e.mainIndicators.includes(t);
            return (() => {
              const r = $9.cloneNode(!0);
-@@ -3115,6 +3123,281 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3115,6 +3125,282 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
      return Z(() => G(t, "src", e.url)), t;
    }
  }), bl = {
@@ -336,12 +338,13 @@ index 6f78d0e..fcb2ea8 100644
 +],
 +  SUPERTREND: [
 +    { paramNameKey: "atr_period", precision: 0, min: 1, default: 10 },
-+    { paramNameKey: "atr_multiplier", precision: 2, min: 0.01, default: 3 }
++    { paramNameKey: "atr_multiplier", precision: 2, min: 0.01, default: 3 },
++    { paramNameKey: "fill_transparency", precision: 2, min: 0, max: 100, default: 88 }
 +  ],
    AO: [
      { paramNameKey: "params_1", precision: 0, min: 1, default: 5 },
      { paramNameKey: "params_2", precision: 0, min: 1, default: 34 }
-@@ -3267,7 +3550,9 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3267,12 +3553,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
        return m(a, () => r(e.params.indicatorName).map((i, o) => [(() => {
          const s = kl.cloneNode(!0);
          return m(s, () => l(i.paramNameKey, e.locale)), s;
@@ -352,7 +355,23 @@ index 6f78d0e..fcb2ea8 100644
          style: {
            width: "200px"
          },
-@@ -3341,6 +3626,29 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+         get value() {
+-          return t()[o] ?? "";
++          return t()[o] ?? i.default ?? "";
+         },
+         get precision() {
+           return i.precision;
+@@ -3280,6 +3568,9 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+         get min() {
+           return i.min;
+         },
++        get max() {
++          return i.max ?? Number.MAX_SAFE_INTEGER;
++        },
+         onChange: (s) => {
+           const c = B.clone(t());
+           c[o] = s, n(c);
+@@ -3341,6 +3632,29 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
  };
  q(["click"]);
  const Il = /* @__PURE__ */ g('<i class="icon-close klinecharts-pro-load-icon"></i>'), Nl = /* @__PURE__ */ g('<div class="klinecharts-pro-content"><div class="klinecharts-pro-widget"></div></div>');
@@ -382,15 +401,15 @@ index 6f78d0e..fcb2ea8 100644
  function V1(e, t, n, r) {
    return t === "VOL" && (r = {
      gap: {
-@@ -3349,6 +3657,7 @@ function V1(e, t, n, r) {
+@@ -3349,6 +3663,7 @@ function V1(e, t, n, r) {
      ...r
    }), (e == null ? void 0 : e.createIndicator({
      name: t,
-+    ...(t === "PIVOTS" ? {} : {
++    ...(["PIVOTS", "SUPERTREND"].includes(t) ? {} : {
      // @ts-expect-error
      createTooltipDataSource: ({
        indicator: a,
-@@ -3359,10 +3668,11 @@ function V1(e, t, n, r) {
+@@ -3359,10 +3674,11 @@ function V1(e, t, n, r) {
          icons: o
        };
      }
@@ -403,7 +422,7 @@ index 6f78d0e..fcb2ea8 100644
    const [i, o] = $(e.theme), [s, c] = $(e.styles), [C, u] = $(e.locale), [y, p] = $(e.symbol), [L, M] = $(e.period), [P, K] = $(!1), [w, Q] = $([...e.mainIndicators]), [S, A] = $({}), [b, O] = $(!1), [H, t1] = $({
      key: e.timezone,
      text: b9(e.timezone, e.locale)
-@@ -3389,7 +3699,8 @@ const Dl = (e) => {
+@@ -3389,7 +3705,8 @@ const Dl = (e) => {
      setSymbol: p,
      getSymbol: () => y(),
      setPeriod: M,
@@ -413,7 +432,7 @@ index 6f78d0e..fcb2ea8 100644
    });
    const c1 = () => {
      n == null || n.resize();
-@@ -3405,28 +3716,23 @@ const Dl = (e) => {
+@@ -3405,28 +3722,23 @@ const Dl = (e) => {
          break;
        }
        case "day": {
@@ -450,7 +469,7 @@ index 6f78d0e..fcb2ea8 100644
          break;
        }
      }
-@@ -3475,10 +3781,18 @@ const Dl = (e) => {
+@@ -3475,10 +3787,18 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -473,7 +492,7 @@ index 6f78d0e..fcb2ea8 100644
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3525,20 +3839,23 @@ const Dl = (e) => {
+@@ -3525,20 +3845,23 @@ const Dl = (e) => {
      const h = y();
      h != null && h.priceCurrency ? (r.innerHTML = h == null ? void 0 : h.priceCurrency.toLocaleUpperCase(), r.style.display = "flex") : r.style.display = "none", n == null || n.setPriceVolumePrecision((h == null ? void 0 : h.pricePrecision) ?? 2, (h == null ? void 0 : h.volumePrecision) ?? 0);
    }), a1((h) => {
@@ -509,7 +528,7 @@ index 6f78d0e..fcb2ea8 100644
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3994,6 +4311,9 @@ class jl {
+@@ -3994,6 +4317,9 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }

@@ -778,8 +778,122 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   expect(deprecatedApiWarnings).toEqual([])
 })
 
+test('zooms the price range with the wheel over the price axis while preserving the time scale', async ({ page }) => {
+  await mockBinance(page)
+  await page.addInitScript(() => {
+    const labels = new Map<HTMLCanvasElement, { value: number; y: number }[]>()
+    Object.assign(window, { priceAxisTestLabels: labels })
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    const clearRect = CanvasRenderingContext2D.prototype.clearRect
+    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+      labels.set(this.canvas, [])
+      return Reflect.apply(clearRect, this, args)
+    }
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
+      if (/^-?[\d,]+\.\d+$/.test(text)) {
+        const entries = labels.get(this.canvas) ?? []
+        entries.push({ value: Number(text.replaceAll(',', '')), y })
+        labels.set(this.canvas, entries)
+      }
+      return Reflect.apply(fillText, this, [text, x, y, ...args])
+    }
+  })
+  await page.goto('./')
+  // The first pane's last widget is its price axis; its base canvas contains ticks.
+  const axis = page.locator('[k-line-chart-id] > div > div:first-child > div:last-child')
+  const pricePerPixel = () => axis.locator('canvas').first().evaluate((canvas) => {
+    const labels = (window as unknown as {
+      priceAxisTestLabels: Map<HTMLCanvasElement, { value: number; y: number }[]>
+    }).priceAxisTestLabels.get(canvas)?.filter((label) => label.value > 10_000) ?? []
+    if (labels.length < 2) return 0
+    return Math.abs((labels[1].value - labels[0].value) / (labels[1].y - labels[0].y))
+  })
+  await expect.poll(pricePerPixel).toBeGreaterThan(0)
+  const initial = await pricePerPixel()
+  const timeAxis = page.locator('[k-line-chart-id] > div > div:last-child canvas').first()
+  const initialTimeAxis = await timeAxis.screenshot()
+  await axis.hover()
+  await page.mouse.wheel(0, -100)
+  await expect.poll(pricePerPixel).toBeLessThan(initial * 0.95)
+  expect((await timeAxis.screenshot()).equals(initialTimeAxis)).toBe(true)
+  await page.mouse.wheel(0, 100)
+  await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
+  await page.mouse.wheel(0, 100)
+  await expect.poll(pricePerPixel).toBeGreaterThan(initial * 1.05)
+  await axis.dblclick()
+  await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
+})
+
+test('toggles the sidebar in both modes and resizes the existing chart without losing panel input', async ({ page }) => {
+  await mockBinance(page, true)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const chartHost = page.getByTestId('chart-host')
+  const originalHost = await chartHost.elementHandle()
+  const panel = page.getByTestId('simulation-panel')
+  const replayControls = page.getByTestId('replay-controls')
+  await replayControls.getByLabel('图表跳转时间').fill('2026-07-22T00:00')
+  await replayControls.getByRole('button', { name: '跳转' }).click()
+  await expect(replayControls.getByText(/起点：/)).toContainText('2026/7/22')
+  await replayControls.getByLabel('回放结束时间').fill('2026-07-22T05:00')
+  await replayControls.getByRole('button', { name: '创建回放' }).click()
+  const input = panel.getByLabel('保证金金额', { exact: true })
+  await input.fill('1234')
+  const initialWidth = (await chartHost.boundingBox())!.width
+  const canvasWidth = () => chartHost.locator('canvas').first().evaluate((canvas) => canvas.width)
+  const initialCanvasWidth = await canvasWidth()
+  await page.getByRole('button', { name: '隐藏侧栏' }).click()
+  await page.clock.runFor(50)
+  await expect(panel).toBeHidden()
+  await expect(page.getByRole('button', { name: '显示侧栏' })).toHaveAttribute('aria-expanded', 'false')
+  await expect.poll(async () => (await chartHost.boundingBox())!.width).toBeGreaterThan(initialWidth + 300)
+  await expect.poll(canvasWidth).toBeGreaterThan(initialCanvasWidth)
+  await page.getByRole('button', { name: '显示侧栏' }).click()
+  await page.clock.runFor(50)
+  await expect(panel).toBeVisible()
+  await expect(input).toHaveValue('1234')
+  await expect.poll(canvasWidth).toBe(initialCanvasWidth)
+
+  await page.getByRole('button', { name: '实时行情' }).click()
+  await expect(page.getByTestId('live-status')).toBeVisible()
+  await page.getByRole('button', { name: '隐藏侧栏' }).click()
+  await page.clock.runFor(50)
+  await expect(page.getByTestId('live-status')).toBeHidden()
+  await expect.poll(canvasWidth).toBeGreaterThan(initialCanvasWidth)
+  await page.getByRole('button', { name: '历史模拟' }).click()
+  await expect(page.getByTestId('simulation-panel')).toBeHidden()
+  await page.getByRole('button', { name: '显示侧栏' }).click()
+  await page.clock.runFor(50)
+  await expect(page.getByTestId('simulation-panel')).toBeVisible()
+  expect(await originalHost!.evaluate((node) => node === document.querySelector('[data-testid="chart-host"]'))).toBe(true)
+})
+
 test('adds Supertrend to the main chart and restores its parameters after reload', async ({ page }) => {
   await mockBinance(page)
+  await page.addInitScript(() => {
+    const fills: { color: string; alpha: number }[] = []
+    const titles: string[] = []
+    const settings: { x: number; y: number }[] = []
+    let title = ''
+    Object.assign(window, { supertrendTestFills: fills, supertrendTestTitles: titles, supertrendTestSettings: settings })
+    const original = CanvasRenderingContext2D.prototype.fill
+    CanvasRenderingContext2D.prototype.fill = function (...args: unknown[]) {
+      if (this.globalCompositeOperation === 'destination-over') fills.push({ color: String(this.fillStyle), alpha: this.globalAlpha })
+      return Reflect.apply(original, this, args)
+    }
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
+      if (/^Supertrend|^上涨:|^下跌:/.test(text)) titles.push(text)
+      if (/^Supertrend|^(MA|VOL|MACD)\(/.test(text)) title = text
+      if (text === '\ue902' && title === 'Supertrend') {
+        const transform = this.getTransform()
+        const point = new DOMPoint(x, y).matrixTransform(transform)
+        const rect = this.canvas.getBoundingClientRect()
+        settings.push({ x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio })
+      }
+      return Reflect.apply(fillText, this, [text, x, y, ...args])
+    }
+  })
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   await page.goto('./')
@@ -800,30 +914,53 @@ test('adds Supertrend to the main chart and restores its parameters after reload
   await row.click({ position: { x: 5, y: 20 } })
   await expect(row.locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
   await closeModal()
-  await expect.poll(readSupertrend).toMatchObject({ calcParams: [10, 3], visible: true })
+  await expect.poll(readSupertrend).toMatchObject({ calcParams: [10, 3, 88], visible: true })
+  const fillColors = () => page.evaluate(() =>
+    [...new Set((window as unknown as { supertrendTestFills: { color: string }[] }).supertrendTestFills.map((fill) => fill.color))],
+  )
+  const latestFillAlpha = () => page.evaluate(() =>
+    (window as unknown as { supertrendTestFills: { alpha: number }[] }).supertrendTestFills.at(-1)?.alpha,
+  )
+  await expect.poll(fillColors).toEqual(expect.arrayContaining(['#26a69a', '#ef5350']))
+  expect(await page.evaluate(() => [...new Set(
+    (window as unknown as { supertrendTestTitles: string[] }).supertrendTestTitles,
+  )])).toEqual(['Supertrend'])
   const widget = page.locator('.klinecharts-pro-widget')
   // The indicator toolbar is drawn on canvas; click its second-row gear.
-  await widget.click({ position: { x: 152, y: 59 } })
+  const gear = await page.evaluate(() =>
+    (window as unknown as { supertrendTestSettings: { x: number; y: number }[] }).supertrendTestSettings.at(-1),
+  )
+  expect(gear).toBeDefined()
+  await page.mouse.click(gear!.x + 3, gear!.y + 3)
   const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
   await expect(settings.getByText('ATR 周期', { exact: true })).toBeVisible()
   await expect(settings.getByText('ATR 倍数', { exact: true })).toBeVisible()
+  await expect(settings.getByText('填充透明度（%）', { exact: true })).toBeVisible()
   const inputs = settings.locator('input')
   await expect(inputs.nth(0)).toHaveValue('10')
   await expect(inputs.nth(1)).toHaveValue('3')
+  await expect(inputs.nth(2)).toHaveValue('88')
   await inputs.nth(0).fill('7')
   await inputs.nth(0).blur()
   await inputs.nth(1).fill('2.5')
   await inputs.nth(1).blur()
+  await inputs.nth(2).fill('40')
+  await inputs.nth(2).blur()
   await page.getByText('确定', { exact: true }).click()
-  await expect.poll(readSupertrend).toMatchObject({ calcParams: [7, 2.5], visible: true })
+  await expect.poll(readSupertrend).toMatchObject({ calcParams: [7, 2.5, 40], visible: true })
+  await expect.poll(latestFillAlpha).toBe(0.6)
+  await expect.poll(fillColors).toEqual(expect.arrayContaining(['#26a69a', '#ef5350']))
   await page.reload()
   await expectCanvasContent(page)
   await openIndicators()
   await expect(row.locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
   await closeModal()
-  await expect.poll(readSupertrend).toMatchObject({ calcParams: [7, 2.5], visible: true })
+  await expect.poll(readSupertrend).toMatchObject({ calcParams: [7, 2.5, 40], visible: true })
+  await expect.poll(latestFillAlpha).toBe(0.6)
 
+  await expect.poll(fillColors).toEqual(expect.arrayContaining(['#26a69a', '#ef5350']))
   await page.getByRole('heading', { level: 1 }).hover()
+  await page.screenshot({ path: 'test-results/supertrend-fill.png' })
   const enabled = await widget.screenshot()
   await openIndicators()
   await row.click({ position: { x: 5, y: 20 } })
@@ -851,10 +988,12 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
       }))
     }
     const drawn: string[] = []
-    Object.assign(window, { pivotTestLabels: drawn })
+    const titles: string[] = []
+    Object.assign(window, { pivotTestLabels: drawn, pivotTestTitles: titles })
     const original = CanvasRenderingContext2D.prototype.fillText
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
       if (/^(P|[RS][1-5]) \(/.test(text)) drawn.push(text)
+      if (/^Pivots|^(P|[RS][1-5]):/.test(text)) titles.push(text)
       if (maxWidth === undefined) original.call(this, text, x, y)
       else original.call(this, text, x, y, maxWidth)
     }
@@ -864,10 +1003,13 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { pivotTestLabels: string[] }).pivotTestLabels.some((label) => label.startsWith('P (')),
   )).toBe(true)
+  expect(await page.evaluate(() => [...new Set(
+    (window as unknown as { pivotTestTitles: string[] }).pivotTestTitles,
+  )])).toEqual(['Pivots'])
   await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText('15m')
   const readPivots = () => page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!).main.find((item: { name: string }) => item.name === 'PIVOTS'))
   const widget = page.locator('.klinecharts-pro-widget')
-  await widget.click({ position: { x: 188, y: 37 } })
+  await widget.click({ position: { x: 83, y: 37 } })
   const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
   await expect(settings.getByLabel('枢轴类型')).toHaveValue('Traditional')
   await settings.getByLabel('枢轴类型').selectOption('DM')

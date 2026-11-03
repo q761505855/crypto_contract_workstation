@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest'
-import type { KLineData } from 'klinecharts'
+import { describe, expect, it, vi } from 'vitest'
+import type { IndicatorDrawParams, KLineData } from 'klinecharts'
 import {
   calculateSupertrend,
+  drawSupertrendFill,
   supertrendIndicator,
+  type SupertrendValue,
 } from './supertrend'
 
 const candles: KLineData[] = [
@@ -68,9 +70,56 @@ describe('Supertrend', () => {
   })
 
   it('calculates with the configured parameters', () => {
-    expect(supertrendIndicator.calcParams).toEqual([10, 3])
+    expect(supertrendIndicator.calcParams).toEqual([10, 3, 88])
     const indicator = { calcParams: [3, 1.5] } as Parameters<typeof supertrendIndicator.calc>[1]
     expect(supertrendIndicator.calc(candles, indicator))
       .toEqual(calculateSupertrend(candles, 3, 1.5))
+  })
+
+  it('fills separate red/green regions to body midpoints without bridging reversals or warmup', () => {
+    const regions: { color: unknown; alpha: number; points: number[][] }[] = []
+    let points: number[][] = []
+    const ctx = {
+      save: vi.fn(), restore: vi.fn(), rect: vi.fn(), clip: vi.fn(), closePath: vi.fn(),
+      beginPath: () => { points = [] },
+      moveTo: (x: number, y: number) => points.push([x, y]),
+      lineTo: (x: number, y: number) => points.push([x, y]),
+      fillStyle: '', globalAlpha: 1,
+      fill: () => regions.push({ color: ctx.fillStyle, alpha: ctx.globalAlpha, points }),
+    }
+    const params = {
+      ctx,
+      kLineDataList: candles.map((candle, index) => ({
+        ...candle, open: index === 3 ? 14 : index === 4 ? 19 : candle.open,
+      })),
+      indicator: { result: calculateSupertrend(candles, 3, 1) },
+      visibleRange: { from: 0, to: 7 },
+      bounding: { width: 100, height: 100 },
+      xAxis: { convertToPixel: (index: number) => index * 10 },
+      yAxis: { convertToPixel: (price: number) => 100 - price },
+    } as unknown as IndicatorDrawParams<SupertrendValue>
+
+    expect(drawSupertrendFill(params)).toBe(false)
+    expect(regions.map(({ color, alpha }) => ({ color, alpha }))).toEqual([
+      { color: '#26a69a', alpha: 0.12 },
+      { color: '#ef5350', alpha: 0.12 },
+    ])
+    expect(regions[0].points.map(([x]) => x)).toEqual([30, 40, 40, 30])
+    expect(regions[0].points.slice(-2)).toEqual([[40, 82], [30, 85]])
+    expect(regions[1].points.map(([x]) => x)).toEqual([50, 60, 60, 50])
+    expect(ctx.restore).toHaveBeenCalledOnce()
+    regions.length = 0
+    drawSupertrendFill({ ...params, visibleRange: { from: 6, to: 7, realFrom: 6, realTo: 7 } })
+    expect(regions).toHaveLength(1)
+    expect(regions[0].color).toBe('#ef5350')
+
+    for (const [transparency, expectedAlpha] of [[0, 1], [40, 0.6], [100, 0], [-1, 1], [101, 0], [NaN, 0.12]]) {
+      regions.length = 0
+      drawSupertrendFill({
+        ...params,
+        indicator: { ...params.indicator, calcParams: [3, 1, transparency] },
+      })
+      expect(regions.map(({ alpha }) => alpha)).toEqual([expectedAlpha, expectedAlpha])
+    }
   })
 })

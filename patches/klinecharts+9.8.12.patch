@@ -1,0 +1,36 @@
+diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
+index 86b1dce..a5a1f29 100644
+--- a/node_modules/klinecharts/dist/index.esm.js
++++ b/node_modules/klinecharts/dist/index.esm.js
+@@ -12438,13 +12438,30 @@ var Event = /** @class */ (function () {
+         return true;
+     };
+     Event.prototype.mouseWheelVertEvent = function (e, scale) {
+-        var widget = this._findWidgetByEvent(e).widget;
++        var target = this._findWidgetByEvent(e);
++        var widget = target.widget;
+         var event = this._makeWidgetEvent(e, widget);
+         var name = widget === null || widget === void 0 ? void 0 : widget.getName();
+         if (name === WidgetNameConstants.MAIN) {
+             this._chart.getChartStore().getTimeScaleStore().zoom(scale, { x: event.x, y: event.y });
+             return true;
+         }
++        if (name === WidgetNameConstants.Y_AXIS && target.pane !== null) {
++            var yAxis = target.pane.getAxisComponent();
++            if (!yAxis.getScrollZoomEnabled()) return false;
++            var current = yAxis.getRange();
++            var newRange = current.range * Math.exp(-scale * 0.1);
++            var difference = (newRange - current.range) / 2;
++            var from = current.from - difference;
++            var to = current.to + difference;
++            var realFrom = yAxis.convertToRealValue(from);
++            var realTo = yAxis.convertToRealValue(to);
++            if (!(newRange > 0) || !(to > from) || !Number.isFinite(realFrom) || !Number.isFinite(realTo)) return false;
++            // Use the same manual range and redraw path as dragging the Y axis.
++            yAxis.setRange({ from: from, to: to, range: newRange, realFrom: realFrom, realTo: realTo, realRange: realTo - realFrom });
++            this._chart.adjustPaneViewport(false, true, true, true);
++            return true;
++        }
+         return false;
+     };
+     Event.prototype.mouseDownEvent = function (e) {

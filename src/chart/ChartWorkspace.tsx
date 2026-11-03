@@ -92,6 +92,10 @@ export function ChartWorkspace({
       )
     }
     const host = hostRef.current
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(() => adapter?.resize?.())
+    resizeObserver?.observe(host)
     const openSymbolPicker = (event: MouseEvent) => {
       const target = event.target
       if (
@@ -104,7 +108,10 @@ export function ChartWorkspace({
       }
     }
     host.addEventListener('click', openSymbolPicker, true)
-    return () => host.removeEventListener('click', openSymbolPicker, true)
+    return () => {
+      resizeObserver?.disconnect()
+      host.removeEventListener('click', openSymbolPicker, true)
+    }
   }, [])
 
   useEffect(() => {
