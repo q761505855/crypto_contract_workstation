@@ -10,6 +10,12 @@ import {
   FAVORITE_SYMBOLS_STORAGE_KEY,
   readFavoriteSymbols,
 } from '../market-data/favorites'
+import {
+  SELECTED_SYMBOL_STORAGE_KEY,
+  readSelectedSymbol,
+  validateSelectedSymbol,
+} from '../market-data/symbol-preferences'
+import type { SymbolInfo } from '@klinecharts/pro'
 import type {
   MarketCandle,
   MarketSymbol,
@@ -41,6 +47,7 @@ export type BackupKind =
 export interface BackupPreferences {
   binanceRestBaseUrl: string
   favoriteSymbols: string[]
+  selectedSymbol?: SymbolInfo
   chartIndicators?: ChartIndicatorPreferences
 }
 
@@ -175,6 +182,7 @@ function validatePreferences(value: unknown): BackupPreferences {
   return {
     binanceRestBaseUrl,
     favoriteSymbols,
+    ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
     ...(item.chartIndicators === undefined
       ? {}
       : {
@@ -735,10 +743,12 @@ export function validateBackupEnvelope(value: unknown): BackupEnvelope {
 function defaultPreferences(storage: StorageLike): BackupPreferences {
   const favoriteSymbols = readFavoriteSymbols(storage)
   const chartIndicators = loadChartIndicatorPreferences(storage)
+  const selectedSymbol = readSelectedSymbol(storage)
   return {
     binanceRestBaseUrl:
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
     favoriteSymbols,
+    ...(selectedSymbol === null ? {} : { selectedSymbol }),
     ...(chartIndicators === null ? {} : { chartIndicators }),
   }
 }
@@ -878,6 +888,9 @@ export class WorkstationBackupService {
           CHART_INDICATORS_PREFERENCE,
           JSON.stringify(envelope.data.preferences.chartIndicators),
         )
+      }
+      if (envelope.data.preferences.selectedSymbol !== undefined) {
+        this.storage.setItem(SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(envelope.data.preferences.selectedSymbol))
       }
     }
     return {

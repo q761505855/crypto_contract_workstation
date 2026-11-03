@@ -26,6 +26,7 @@ import {
   SimulationPanel,
 } from '../components/panels'
 import type { MarketSelection } from '../market-data/models'
+import { readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
 import {
   INITIAL_LIVE_STATUS,
   type LiveMarketStatus,
@@ -88,10 +89,10 @@ export default function App() {
   const [sidePanelHidden, setSidePanelHidden] = useState(false)
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
   const [marketRuntime] = useState(createMarketDataRuntime)
-  const [marketSelection, setMarketSelection] = useState<MarketSelection>({
-    symbol: DEFAULT_SYMBOL,
+  const [marketSelection, setMarketSelection] = useState<MarketSelection>(() => ({
+    symbol: readSelectedSymbol() ?? DEFAULT_SYMBOL,
     period: SUPPORTED_PERIODS[3],
-  })
+  }))
   const [marketWarning, setMarketWarning] = useState('')
   const [liveStatus, setLiveStatus] = useState<LiveMarketStatus>({
     ...INITIAL_LIVE_STATUS,
@@ -224,6 +225,10 @@ export default function App() {
     },
     [],
   )
+
+  useEffect(() => {
+    saveSelectedSymbol(marketSelection.symbol)
+  }, [marketSelection.symbol])
 
   useEffect(() => {
     marketRuntime.replayDatafeed.setSelectionListener(syncMarketSelection)

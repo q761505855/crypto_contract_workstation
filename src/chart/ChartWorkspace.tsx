@@ -53,6 +53,8 @@ export function ChartWorkspace({
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
+  const [priceRangeAuto, setPriceRangeAuto] = useState(true)
+  const [indicatorInfoVisible, setIndicatorInfoVisible] = useState(true)
   const adapterRef = useRef<ChartAdapterPort | null>(null)
   const symbolRef = useRef(symbol)
   const periodRef = useRef(period)
@@ -120,6 +122,15 @@ export function ChartWorkspace({
       adapterRef.current?.setSymbol(symbol)
     }
   }, [symbol])
+
+  useEffect(() => {
+    const adapter = adapterRef.current
+    if (adapter?.getPriceRangeAuto === undefined) return
+    const synchronize = () => setPriceRangeAuto(adapter.getPriceRangeAuto?.() ?? true)
+    synchronize()
+    const interval = window.setInterval(synchronize, 100)
+    return () => window.clearInterval(interval)
+  }, [])
 
   useEffect(() => {
     if (periodRef.current.text !== period.text) {
@@ -248,9 +259,46 @@ export function ChartWorkspace({
     })
   }
 
+  function changePriceRangeMode(auto: boolean): void {
+    adapterRef.current?.setPriceRangeAuto?.(auto)
+    setPriceRangeAuto(auto)
+  }
+
+  function toggleIndicatorInfo(): void {
+    const visible = !indicatorInfoVisible
+    adapterRef.current?.setIndicatorInfoVisible?.(visible)
+    setIndicatorInfoVisible(visible)
+  }
+
   return (
     <section className="chart-workspace" aria-label="行情图表">
       <div className="chart-host" data-testid="chart-host" ref={hostRef} />
+      <button
+        aria-label={indicatorInfoVisible ? '隐藏指标信息' : '显示指标信息'}
+        aria-expanded={indicatorInfoVisible}
+        className="indicator-info-toggle"
+        onClick={toggleIndicatorInfo}
+        title={indicatorInfoVisible ? '隐藏指标信息' : '显示指标信息'}
+        type="button"
+      >
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12">
+          <path d={indicatorInfoVisible ? 'M2 8 L6 4 L10 8' : 'M2 4 L6 8 L10 4'} />
+        </svg>
+      </button>
+      <div className="price-range-mode" role="group" aria-label="价格范围模式">
+        <button
+          aria-pressed={priceRangeAuto}
+          onClick={() => changePriceRangeMode(true)}
+          title="自动锁定价格范围"
+          type="button"
+        >自动</button>
+        <button
+          aria-pressed={!priceRangeAuto}
+          onClick={() => changePriceRangeMode(false)}
+          title="手动缩放价格范围"
+          type="button"
+        >手动</button>
+      </div>
       <label className="compact-period-selector">
         <span>周期</span>
         <select

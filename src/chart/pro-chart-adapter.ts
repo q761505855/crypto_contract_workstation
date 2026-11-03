@@ -14,6 +14,7 @@ import type {
   LineType,
   OverlayCreate,
 } from 'klinecharts'
+import { TooltipShowRule } from 'klinecharts'
 import type {
   ChartIndicatorPreferences,
   ChartIndicatorSetting,
@@ -58,6 +59,9 @@ export interface ChartAdapterPort {
   setSymbol(symbol: SymbolInfo): void
   reloadData(): Promise<void>
   resize?(): void
+  setPriceRangeAuto?(auto: boolean): void
+  getPriceRangeAuto?(): boolean
+  setIndicatorInfoVisible?(visible: boolean): void
   setTheme(theme: string): void
   setTimezone(timezone: string): void
   getIndicatorPreferences?(): ChartIndicatorPreferences
@@ -86,6 +90,10 @@ const createProChart: ChartProFactory = (options) => {
     }
   })
   chart = new KLineChartPro(options)
+  chart.getChart().setPaneOptions({
+    id: 'candle_pane',
+    gap: { top: 0.08, bottom: 0.08 },
+  })
   pivotHistoryReset.set(chart, resetPivotHistory)
   return chart
 }
@@ -114,6 +122,20 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   resize(): void {
     this.coreChart?.resize()
+  }
+
+  setPriceRangeAuto(auto: boolean): void {
+    this.requireCoreChart().setPriceRangeAuto(auto)
+  }
+
+  getPriceRangeAuto(): boolean {
+    return this.requireCoreChart().getPriceRangeAuto()
+  }
+
+  setIndicatorInfoVisible(visible: boolean): void {
+    this.requireCoreChart().setStyles({
+      indicator: { tooltip: { showRule: visible ? TooltipShowRule.Always : TooltipShowRule.None } },
+    })
   }
 
   setTimezone(timezone: string): void {

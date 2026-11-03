@@ -255,6 +255,7 @@ export class GitHubSyncService {
             schemaVersion: 1,
             binanceRestBaseUrl: preferences.binanceRestBaseUrl,
             chartIndicators: preferences.chartIndicators,
+            selectedSymbol: preferences.selectedSymbol,
           }),
           category: 'config',
         },
@@ -572,6 +573,7 @@ export class GitHubSyncService {
           schemaVersion?: unknown
           binanceRestBaseUrl?: unknown
           chartIndicators?: unknown
+          selectedSymbol?: unknown
         }
         if (
           value.schemaVersion !== 1 ||
@@ -580,6 +582,9 @@ export class GitHubSyncService {
           throw new Error(`${entry.path} 格式无效`)
         }
         preferences.binanceRestBaseUrl = value.binanceRestBaseUrl
+        if (value.selectedSymbol !== undefined) {
+          preferences.selectedSymbol = value.selectedSymbol as BackupPreferences['selectedSymbol']
+        }
         if (value.chartIndicators !== undefined) {
           preferences.chartIndicators =
             value.chartIndicators as BackupPreferences['chartIndicators']

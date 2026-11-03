@@ -20,7 +20,7 @@ const intervalMilliseconds: Record<string, number> = {
   '1M': 30 * 86_400_000,
 }
 
-async function mockBinance(page: import('@playwright/test').Page, pacedClock = false) {
+async function mockBinance(page: import('@playwright/test').Page, pacedClock = false, symbolPrices: Record<string, number> = {}) {
   if (pacedClock) await page.clock.install()
   const liveSockets: Array<{ sendPrice(price: string): void; streams: Set<string> }> = []
   await page.routeWebSocket('wss://fstream.binance.com/**', (socket) => {
@@ -102,19 +102,20 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
       const end = Number(url.searchParams.get('endTime'))
       const limit = Number(url.searchParams.get('limit') ?? 500)
       const rows: unknown[][] = []
+      const priceScale = (symbolPrices[url.searchParams.get('symbol') ?? ''] ?? 60_000) / 60_000
       for (
         let openTime = alignOpenTime(start, timeframe, 'ceil');
         openTime <= end && rows.length < limit;
         openTime = nextOpenTime(openTime, timeframe)
       ) {
         const offset = (openTime / interval) % 200
-        const open = 60_000 + offset
-        const close = open + Math.sin(offset) * 20
+        const open = (60_000 + offset) * priceScale
+        const close = open + Math.sin(offset) * 20 * priceScale
         rows.push([
           openTime,
           open.toFixed(2),
-          (Math.max(open, close) + 12).toFixed(2),
-          (Math.min(open, close) - 12).toFixed(2),
+          (Math.max(open, close) + 12 * priceScale).toFixed(2),
+          (Math.min(open, close) - 12 * priceScale).toFixed(2),
           close.toFixed(2),
           '100.5',
           nextOpenTime(openTime, timeframe) - 1,
@@ -778,8 +779,7 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   expect(deprecatedApiWarnings).toEqual([])
 })
 
-test('zooms the price range with the wheel over the price axis while preserving the time scale', async ({ page }) => {
-  await mockBinance(page)
+async function trackPriceAxis(page: import('@playwright/test').Page) {
   await page.addInitScript(() => {
     const labels = new Map<HTMLCanvasElement, { value: number; y: number }[]>()
     Object.assign(window, { priceAxisTestLabels: labels })
@@ -798,16 +798,111 @@ test('zooms the price range with the wheel over the price axis while preserving 
       return Reflect.apply(fillText, this, [text, x, y, ...args])
     }
   })
-  await page.goto('./')
   // The first pane's last widget is its price axis; its base canvas contains ticks.
   const axis = page.locator('[k-line-chart-id] > div > div:first-child > div:last-child')
-  const pricePerPixel = () => axis.locator('canvas').first().evaluate((canvas) => {
-    const labels = (window as unknown as {
+  const readTicks = () => axis.locator('canvas').first().evaluate((canvas) =>
+    (window as unknown as {
       priceAxisTestLabels: Map<HTMLCanvasElement, { value: number; y: number }[]>
-    }).priceAxisTestLabels.get(canvas)?.filter((label) => label.value > 10_000) ?? []
+    }).priceAxisTestLabels.get(canvas) ?? [],
+  )
+  const pricePerPixel = async () => {
+    const labels = (await readTicks()).filter((label) => label.value > 10_000)
     if (labels.length < 2) return 0
     return Math.abs((labels[1].value - labels[0].value) / (labels[1].y - labels[0].y))
+  }
+  return { axis, readTicks, pricePerPixel }
+}
+
+test('restores product favorites and the selected product after reload', async ({ page }) => {
+  await mockBinance(page, true)
+  await page.goto('./')
+  const symbolLabel = page.locator('.klinecharts-pro-period-bar .symbol')
+  await symbolLabel.click()
+  const picker = page.getByTestId('symbol-picker')
+  await picker.getByRole('tab', { name: '全部' }).click()
+  await picker.getByRole('button', { name: '收藏 BTCUSDT', exact: true }).click()
+  await picker.getByRole('button', { name: '收藏 ETHUSDT', exact: true }).click()
+  await picker.getByRole('button', { name: '选择 ETHUSDT' }).click()
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('marketData.selectedSymbol') ?? 'null')?.ticker)).toBe('ETHUSDT')
+  await page.reload()
+  await expect(symbolLabel).toHaveText('ETHUSDT')
+  await symbolLabel.click()
+  await expect(picker.getByRole('tab', { name: '收藏', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(picker.getByRole('button', { name: '选择 BTCUSDT' })).toBeVisible()
+  await expect(picker.getByRole('button', { name: '选择 ETHUSDT' })).toBeVisible()
+  await picker.getByRole('button', { name: '取消收藏 BTCUSDT', exact: true }).click()
+  await page.reload()
+  await expect(symbolLabel).toHaveText('ETHUSDT')
+  await symbolLabel.click()
+  await expect(picker.getByRole('button', { name: '选择 ETHUSDT' })).toBeVisible()
+  await expect(picker.getByRole('button', { name: '选择 BTCUSDT' })).toHaveCount(0)
+})
+
+test('fits candles with balanced padding and toggles indicator information without hiding plots', async ({ page }) => {
+  await mockBinance(page)
+  const { axis, pricePerPixel } = await trackPriceAxis(page)
+  await page.addInitScript(() => {
+    localStorage.setItem('chart.indicators.v1', JSON.stringify({
+      schemaVersion: 1,
+      main: [{ name: 'SUPERTREND', calcParams: [10, 50, 88], visible: true, styles: null }],
+      sub: [{ indicators: [{ name: 'MACD', calcParams: [12, 26, 9], visible: true, styles: null }] }],
+    }))
+    const texts = new Map<HTMLCanvasElement, string[]>()
+    Object.assign(window, { indicatorInfoTestTexts: texts })
+    const clearRect = CanvasRenderingContext2D.prototype.clearRect
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+      texts.set(this.canvas, [])
+      return Reflect.apply(clearRect, this, args)
+    }
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
+      if (/^Supertrend|^MACD\(/.test(text)) {
+        const entries = texts.get(this.canvas) ?? []
+        entries.push(text)
+        texts.set(this.canvas, entries)
+      }
+      return Reflect.apply(fillText, this, [text, x, y, ...args])
+    }
   })
+  // All candles share known extrema. Supertrend is deliberately far outside them.
+  await page.route(/\/fapi\/v1\/klines\?/, async (route) => {
+    const url = new URL(route.request().url())
+    const rows = []
+    const end = Number(url.searchParams.get('endTime'))
+    for (let time = alignOpenTime(Number(url.searchParams.get('startTime')), '15m', 'ceil'); time <= end && rows.length < 500; time += 900_000) {
+      rows.push([time, '60000', '60010', '59990', '60000', '100', time + 899_999, '6000000', 100, '0', '0', '0'])
+    }
+    await route.fulfill({ json: rows })
+  })
+  await page.goto('./')
+  await expect.poll(pricePerPixel).toBeGreaterThan(0)
+  const candleHeightRatio = async () => 20 / ((await pricePerPixel()) * (await axis.boundingBox())!.height)
+  await expect.poll(candleHeightRatio).toBeCloseTo(1 / 1.16, 2)
+  const titleTexts = () => page.evaluate(() => [...new Set(
+    [...(window as unknown as { indicatorInfoTestTexts: Map<HTMLCanvasElement, string[]> }).indicatorInfoTestTexts.values()].flat(),
+  )])
+  await expect.poll(titleTexts).toEqual(expect.arrayContaining(['Supertrend', 'MACD(12,26,9)']))
+  const mainCanvas = page.locator('[k-line-chart-id] > div > div:first-child > div:first-child canvas').first()
+  await page.getByRole('heading', { level: 1 }).hover()
+  const plotsBefore = await mainCanvas.evaluate((canvas) => canvas.toDataURL())
+  await page.getByRole('button', { name: '隐藏指标信息', exact: true }).click()
+  await expect.poll(titleTexts).toEqual([])
+  await expect(page.getByRole('button', { name: '显示指标信息', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  expect(await mainCanvas.evaluate((canvas) => canvas.toDataURL()) === plotsBefore).toBe(true)
+  await expect.poll(candleHeightRatio).toBeCloseTo(1 / 1.16, 2)
+  await page.getByRole('button', { name: '显示指标信息', exact: true }).click()
+  await expect.poll(titleTexts).toEqual(expect.arrayContaining(['Supertrend', 'MACD(12,26,9)']))
+  await page.screenshot({ path: 'test-results/candle-auto-range.png' })
+})
+
+test('zooms the price range with the wheel over the price axis while preserving the time scale', async ({ page }) => {
+  await mockBinance(page)
+  const { axis, pricePerPixel } = await trackPriceAxis(page)
+  await page.goto('./')
+  const mode = page.getByRole('group', { name: '价格范围模式' })
+  const auto = mode.getByRole('button', { name: '自动', exact: true })
+  const manual = mode.getByRole('button', { name: '手动', exact: true })
+  await expect(auto).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(pricePerPixel).toBeGreaterThan(0)
   const initial = await pricePerPixel()
   const timeAxis = page.locator('[k-line-chart-id] > div > div:last-child canvas').first()
@@ -815,6 +910,7 @@ test('zooms the price range with the wheel over the price axis while preserving 
   await axis.hover()
   await page.mouse.wheel(0, -100)
   await expect.poll(pricePerPixel).toBeLessThan(initial * 0.95)
+  await expect(manual).toHaveAttribute('aria-pressed', 'true')
   expect((await timeAxis.screenshot()).equals(initialTimeAxis)).toBe(true)
   await page.mouse.wheel(0, 100)
   await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
@@ -822,6 +918,55 @@ test('zooms the price range with the wheel over the price axis while preserving 
   await expect.poll(pricePerPixel).toBeGreaterThan(initial * 1.05)
   await axis.dblclick()
   await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
+  await expect(auto).toHaveAttribute('aria-pressed', 'true')
+  await manual.click()
+  await expect(manual).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
+  await axis.hover()
+  await page.mouse.wheel(0, 100)
+  await expect.poll(pricePerPixel).toBeGreaterThan(initial * 1.05)
+  await auto.click()
+  await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
+  await expect(auto).toHaveAttribute('aria-pressed', 'true')
+  await page.screenshot({ path: 'test-results/price-range-mode.png' })
+})
+
+test('resets the manual price range when switching between differently priced instruments', async ({ page }) => {
+  await mockBinance(page, true, { BTCUSDT: 74_000, ETHUSDT: 25 })
+  const { axis, readTicks } = await trackPriceAxis(page)
+  await page.goto('./')
+  const meanPrice = async () => {
+    const ticks = await readTicks()
+    return ticks.reduce((sum, tick) => sum + tick.value, 0) / ticks.length
+  }
+  const mode = page.getByRole('group', { name: '价格范围模式' })
+  const auto = mode.getByRole('button', { name: '自动', exact: true })
+  const manual = mode.getByRole('button', { name: '手动', exact: true })
+  await expect.poll(meanPrice).toBeGreaterThan(70_000)
+  const axisBox = (await axis.boundingBox())!
+  await page.mouse.move(axisBox.x + axisBox.width / 2, axisBox.y + axisBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(axisBox.x + axisBox.width / 2, axisBox.y + axisBox.height / 2 + 50, { steps: 5 })
+  await page.mouse.up()
+  await page.clock.runFor(150)
+  await expect(manual).toHaveAttribute('aria-pressed', 'true')
+
+  const selectSymbol = async (symbol: string) => {
+    await page.locator('.klinecharts-pro-period-bar .symbol').click()
+    const picker = page.getByTestId('symbol-picker')
+    await picker.getByRole('tab', { name: '全部' }).click()
+    await picker.getByRole('button', { name: `选择 ${symbol}` }).click()
+    await page.clock.runFor(150)
+    await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+    await expect(auto).toHaveAttribute('aria-pressed', 'true')
+  }
+  await selectSymbol('ETHUSDT')
+  await expect.poll(meanPrice).toBeGreaterThan(20)
+  await expect.poll(meanPrice).toBeLessThan(30)
+  await manual.click()
+  await selectSymbol('BTCUSDT')
+  await expect.poll(meanPrice).toBeGreaterThan(70_000)
+  await expect.poll(meanPrice).toBeLessThan(80_000)
 })
 
 test('toggles the sidebar in both modes and resizes the existing chart without losing panel input', async ({ page }) => {
@@ -840,7 +985,11 @@ test('toggles the sidebar in both modes and resizes the existing chart without l
   const input = panel.getByLabel('保证金金额', { exact: true })
   await input.fill('1234')
   const initialWidth = (await chartHost.boundingBox())!.width
-  const canvasWidth = () => chartHost.locator('canvas').first().evaluate((canvas) => canvas.width)
+  const canvasWidth = async () => {
+    // ResizeObserver schedules canvas drawing on the next animation frame.
+    await page.clock.runFor(50)
+    return chartHost.locator('canvas').first().evaluate((canvas) => canvas.width)
+  }
   const initialCanvasWidth = await canvasWidth()
   await page.getByRole('button', { name: '隐藏侧栏' }).click()
   await page.clock.runFor(50)
@@ -989,11 +1138,17 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
     }
     const drawn: string[] = []
     const titles: string[] = []
-    Object.assign(window, { pivotTestLabels: drawn, pivotTestTitles: titles })
+    const settings: { x: number; y: number }[] = []
+    Object.assign(window, { pivotTestLabels: drawn, pivotTestTitles: titles, pivotTestSettings: settings })
     const original = CanvasRenderingContext2D.prototype.fillText
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
       if (/^(P|[RS][1-5]) \(/.test(text)) drawn.push(text)
       if (/^Pivots|^(P|[RS][1-5]):/.test(text)) titles.push(text)
+      if (text === '\ue902') {
+        const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        settings.push({ x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio })
+      }
       if (maxWidth === undefined) original.call(this, text, x, y)
       else original.call(this, text, x, y, maxWidth)
     }
@@ -1008,8 +1163,11 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   )])).toEqual(['Pivots'])
   await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText('15m')
   const readPivots = () => page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!).main.find((item: { name: string }) => item.name === 'PIVOTS'))
-  const widget = page.locator('.klinecharts-pro-widget')
-  await widget.click({ position: { x: 83, y: 37 } })
+  const gear = await page.evaluate(() =>
+    (window as unknown as { pivotTestSettings: { x: number; y: number }[] }).pivotTestSettings.at(-1),
+  )
+  expect(gear).toBeDefined()
+  await page.mouse.click(gear!.x + 3, gear!.y + 3)
   const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
   await expect(settings.getByLabel('枢轴类型')).toHaveValue('Traditional')
   await settings.getByLabel('枢轴类型').selectOption('DM')

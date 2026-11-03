@@ -5,6 +5,7 @@ import {
   type ChartIndicatorPreferences,
 } from '../chart/indicator-preferences'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
+import { SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
 import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
 import { IndexedDbMarketDataStore } from './market-data-store'
@@ -88,6 +89,7 @@ function session(): ReplaySession {
 }
 
 async function seed(databaseName: string, preferences: MemoryPreferences) {
+  preferences.setItem(SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(DEFAULT_SYMBOL))
   preferences.setItem('marketData.binanceBaseUrl', 'https://example.test')
   preferences.setItem(
     'marketData.favoriteSymbols',
@@ -178,6 +180,7 @@ describe('WorkstationBackupService', () => {
         targetPreferences.getItem(CHART_INDICATORS_PREFERENCE) ?? 'null',
       ),
     ).toEqual(indicatorPreferences())
+    expect(JSON.parse(targetPreferences.getItem(SELECTED_SYMBOL_STORAGE_KEY) ?? 'null')).toEqual(DEFAULT_SYMBOL)
   })
 
   it('exports one market series and one complete session independently', async () => {

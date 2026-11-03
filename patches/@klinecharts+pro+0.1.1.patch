@@ -25,7 +25,7 @@ index 1cb6404..c8b46ef 100644
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..5a2b379 100644
+index 6f78d0e..5716c51 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 @@ -2294,6 +2294,11 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
@@ -492,9 +492,12 @@ index 6f78d0e..5a2b379 100644
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3525,20 +3845,23 @@ const Dl = (e) => {
+@@ -3524,21 +3844,26 @@ const Dl = (e) => {
+   }), a1(() => {
      const h = y();
      h != null && h.priceCurrency ? (r.innerHTML = h == null ? void 0 : h.priceCurrency.toLocaleUpperCase(), r.style.display = "flex") : r.style.display = "none", n == null || n.setPriceVolumePrecision((h == null ? void 0 : h.pricePrecision) ?? 2, (h == null ? void 0 : h.volumePrecision) ?? 0);
++    // A new instrument must never inherit the previous instrument's manual range.
++    n == null || n.setPriceRangeAuto(true);
    }), a1((h) => {
 -    if (!a) {
 -      h && e.datafeed.unsubscribe(h.symbol, h.period);
@@ -528,7 +531,7 @@ index 6f78d0e..5a2b379 100644
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3994,6 +4317,9 @@ class jl {
+@@ -3994,6 +4319,9 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }

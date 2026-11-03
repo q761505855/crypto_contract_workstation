@@ -50,6 +50,10 @@ export function createChartOptions(
     container,
     datafeed,
     drawingBarVisible: true,
+    styles: {
+      candle: { tooltip: { offsetLeft: 24 } },
+      indicator: { tooltip: { offsetLeft: 24 } },
+    },
     locale: 'zh-CN',
     mainIndicators:
       indicatorPreferences?.main.map((indicator) => indicator.name) ??

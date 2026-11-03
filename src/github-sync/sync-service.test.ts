@@ -62,6 +62,7 @@ function backup(): BackupEnvelope {
       preferences: {
         binanceRestBaseUrl: 'https://fapi.binance.com',
         favoriteSymbols: ['BTCUSDT'],
+        selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },
         chartIndicators: {
           schemaVersion: 1,
           main: [
@@ -189,6 +190,7 @@ describe('GitHubSyncService', () => {
     )!
     expect(JSON.parse(decoder.decode(preferences.bytes))).toMatchObject({
       chartIndicators: backup().data.preferences?.chartIndicators,
+      selectedSymbol: backup().data.preferences?.selectedSymbol,
     })
   })
 
