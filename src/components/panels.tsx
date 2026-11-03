@@ -589,6 +589,10 @@ export function LiveStatus({ status }: { status: LiveMarketStatus }) {
           </dd>
         </div>
         <div>
+          <dt>最新价格</dt>
+          <dd>{status.lastPrice ?? '—'}</dd>
+        </div>
+        <div>
           <dt>标记价格</dt>
           <dd>{status.markPrice ?? '—'}</dd>
         </div>

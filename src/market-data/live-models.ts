@@ -9,6 +9,7 @@ export interface LiveMarketStatus {
   lastMessageTime: number | null
   latencyMs: number | null
   candleClosed: boolean | null
+  lastPrice: string | null
   markPrice: string | null
   reconnectAttempt: number
   warning: string
@@ -19,6 +20,7 @@ export const INITIAL_LIVE_STATUS: LiveMarketStatus = {
   lastMessageTime: null,
   latencyMs: null,
   candleClosed: null,
+  lastPrice: null,
   markPrice: null,
   reconnectAttempt: 0,
   warning: '',

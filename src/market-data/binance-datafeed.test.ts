@@ -155,6 +155,7 @@ describe('BinanceDatafeed', () => {
     let subscriptionInput: LiveStreamSubscriptionInput | null = null
     const stop = vi.fn()
     const liveStream = {
+      setKeepAlive: vi.fn(),
       subscribe: vi.fn((input: LiveStreamSubscriptionInput) => {
         subscriptionInput = input
         return stop
@@ -175,6 +176,7 @@ describe('BinanceDatafeed', () => {
     expect(liveStream.subscribe).not.toHaveBeenCalled()
 
     datafeed.setLiveEnabled(true)
+    expect(liveStream.setKeepAlive).toHaveBeenLastCalledWith(true)
     expect(liveStream.subscribe).toHaveBeenCalledOnce()
     expect(subscriptionInput).toMatchObject({
       symbol: 'BTCUSDT',
@@ -185,6 +187,7 @@ describe('BinanceDatafeed', () => {
       lastMessageTime: 1,
       latencyMs: 2,
       candleClosed: false,
+      lastPrice: '101',
       markPrice: '100',
       reconnectAttempt: 0,
       warning: '',
@@ -194,6 +197,7 @@ describe('BinanceDatafeed', () => {
     )
 
     datafeed.setLiveEnabled(false)
+    expect(liveStream.setKeepAlive).toHaveBeenLastCalledWith(false)
     expect(stop).toHaveBeenCalledOnce()
     expect(statusListener).toHaveBeenLastCalledWith(
       expect.objectContaining({ connection: 'disconnected' }),

@@ -1,16 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MarketCandle } from './models'
-import { BinanceLiveStream, parseLiveKline } from './live-stream'
+import { BinanceLiveStream, parseLiveKline, parseLiveMarkPrice } from './live-stream'
+import { SocketCooldownError } from './request-guard'
 
 function payload(
-  event: 'kline' | 'markPrice_kline',
+  event: 'kline',
   options: { closed?: boolean; eventTime?: number } = {},
 ) {
   return {
-    stream:
-      event === 'kline'
-        ? 'btcusdt@kline_1m'
-        : 'btcusdt@markPriceKline_1m',
+    stream: 'btcusdt@kline_1m',
     data: {
       e: event,
       E: options.eventTime ?? 60_500,
@@ -23,7 +21,7 @@ function payload(
         o: '100',
         h: '110',
         l: '90',
-        c: event === 'kline' ? '105' : '104',
+        c: '105',
         v: '12',
         q: '1260',
         n: 8,
@@ -39,10 +37,17 @@ class FakeSocket {
   onerror: (() => void) | null = null
   onclose: (() => void) | null = null
   close = vi.fn()
+  send = vi.fn()
+}
+
+function markPayload(price = '104', symbol = 'BTCUSDT') {
+  return { stream: `${symbol.toLowerCase()}@markPrice@1s`, data: {
+    e: 'markPriceUpdate', E: 60_500, s: symbol, p: price,
+  } }
 }
 
 describe('parseLiveKline', () => {
-  it('normalizes trade and mark-price kline messages', () => {
+  it('normalizes trade klines and the documented mark-price messages', () => {
     expect(parseLiveKline(payload('kline', { closed: true }))).toMatchObject({
       kind: 'trade',
       eventTime: 60_500,
@@ -57,14 +62,9 @@ describe('parseLiveKline', () => {
         isClosed: true,
       },
     })
-    expect(parseLiveKline(payload('markPrice_kline'))).toMatchObject({
-      kind: 'mark',
-      candle: {
-        close: '104',
-        volume: '0',
-        isClosed: false,
-      },
-    })
+    expect(parseLiveMarkPrice(markPayload())).toEqual({ symbol: 'BTCUSDT', eventTime: 60_500, price: '104' })
+    expect(() => parseLiveMarkPrice(markPayload('NaN'))).toThrow('不是有效数字')
+    expect(() => parseLiveMarkPrice(markPayload('-1'))).toThrow('标记价格无效')
   })
 
   it('rejects unsupported or malformed messages', () => {
@@ -78,16 +78,109 @@ describe('parseLiveKline', () => {
 })
 
 describe('BinanceLiveStream', () => {
-  it('streams and stores both candle kinds without REST catch-up', async () => {
+  it('reuses one socket across rapid period changes and delayed history loads', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = new FakeSocket()
+      const socketFactory = vi.fn(() => socket)
+      const authorize = vi.fn(async () => undefined)
+      const stream = new BinanceLiveStream(
+        { saveRealtimeCandle: vi.fn() }, socketFactory, () => 61_000,
+        undefined, undefined, undefined, authorize,
+      )
+      stream.setKeepAlive(true)
+      const first = vi.fn()
+      let stop = stream.subscribe({ symbol: 'BTCUSDT', timeframe: '1m', onKline: first, onStatus: vi.fn() })
+      await vi.advanceTimersByTimeAsync(0)
+      socket.onopen?.()
+      stop()
+      // The chart may wait for REST history for longer than the connection guard interval.
+      await vi.advanceTimersByTimeAsync(12_000)
+      const intermediate = vi.fn()
+      stop = stream.subscribe({ symbol: 'BTCUSDT', timeframe: '5m', onKline: intermediate, onStatus: vi.fn() })
+      stop()
+      const latest = vi.fn()
+      const status = vi.fn()
+      stop = stream.subscribe({ symbol: 'BTCUSDT', timeframe: '15m', onKline: latest, onStatus: status })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(socketFactory).toHaveBeenCalledOnce()
+      expect(authorize).toHaveBeenCalledOnce()
+      expect(socket.close).not.toHaveBeenCalled()
+      expect(socket.send.mock.calls.map(([message]) => JSON.parse(message))).toEqual([
+        { method: 'SUBSCRIBE', params: ['btcusdt@kline_15m'], id: '1' },
+        { method: 'UNSUBSCRIBE', params: ['btcusdt@kline_1m'], id: '2' },
+      ])
+      socket.onmessage?.({ data: JSON.stringify({ result: null, id: '1' }) })
+      socket.onmessage?.({ data: JSON.stringify(payload('kline')) })
+      const current = payload('kline')
+      current.data.k.i = '15m'
+      socket.onmessage?.({ data: JSON.stringify(current) })
+      current.data.k.c = '106'
+      socket.onmessage?.({ data: JSON.stringify(current) })
+      socket.onmessage?.({ data: JSON.stringify(markPayload()) })
+      expect(first).not.toHaveBeenCalled()
+      expect(intermediate).not.toHaveBeenCalled()
+      expect(latest).toHaveBeenCalledTimes(2)
+      expect(latest).toHaveBeenLastCalledWith(expect.objectContaining({ close: 106 }))
+      expect(status).toHaveBeenLastCalledWith(expect.objectContaining({ lastPrice: '106', markPrice: '104', warning: '' }))
+      stream.setKeepAlive(false)
+      stop()
+      expect(socket.close).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('waits for socket spacing once and cancels a pending connection on unsubscribe', async () => {
+    vi.useFakeTimers()
+    try {
+      const socketFactory = vi.fn(() => new FakeSocket())
+      const authorize = vi.fn()
+        .mockRejectedValueOnce(new SocketCooldownError(10_000))
+        .mockResolvedValue(undefined)
+      const stream = new BinanceLiveStream(
+        { saveRealtimeCandle: vi.fn() }, socketFactory, Date.now,
+        undefined, undefined, undefined, authorize,
+      )
+      const onStatus = vi.fn()
+      const stop = stream.subscribe({ symbol: 'BTCUSDT', timeframe: '1m', onKline: vi.fn(), onStatus })
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(socketFactory).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(socketFactory).toHaveBeenCalledOnce()
+      expect(authorize).toHaveBeenCalledTimes(2)
+      stop()
+      authorize.mockRejectedValueOnce(new SocketCooldownError(10_000))
+      const cancel = stream.subscribe({ symbol: 'ETHUSDT', timeframe: '5m', onKline: vi.fn(), onStatus })
+      await vi.advanceTimersByTimeAsync(0)
+      cancel()
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(socketFactory).toHaveBeenCalledOnce()
+      expect(authorize).toHaveBeenCalledTimes(3)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('does not create a socket after authorization finishes for a disposed subscription', async () => {
+    let authorize!: () => void
+    const pending = new Promise<void>((resolve) => { authorize = resolve })
+    const socketFactory = vi.fn(() => new FakeSocket())
+    const stream = new BinanceLiveStream(
+      { saveRealtimeCandle: vi.fn() }, socketFactory, Date.now,
+      undefined, undefined, undefined, () => pending,
+    )
+    const stop = stream.subscribe({ symbol: 'BTCUSDT', timeframe: '1m', onKline: vi.fn(), onStatus: vi.fn() })
+    stop()
+    authorize()
+    await pending
+    expect(socketFactory).not.toHaveBeenCalled()
+  })
+
+  it('updates unfinished trade prices and stores only completed candles without REST catch-up', async () => {
     const sockets: FakeSocket[] = []
     const service = {
       refreshCandles: vi.fn(async () => [] as MarketCandle[]),
       saveRealtimeCandle: vi.fn(async () => undefined),
     }
     const socketFactory = vi.fn((url: string) => {
-      expect(url).toContain(
-        'btcusdt@kline_1m/btcusdt@markPriceKline_1m',
-      )
+      expect(url).toBe('wss://fstream.binance.com/market/stream?streams=btcusdt@kline_1m/btcusdt@markPrice@1s')
       const socket = new FakeSocket()
       sockets.push(socket)
       return socket
@@ -117,8 +210,15 @@ describe('BinanceLiveStream', () => {
 
     sockets[0].onopen?.()
     sockets[0].onmessage?.({
-      data: JSON.stringify(payload('markPrice_kline')),
+      data: JSON.stringify(markPayload()),
     })
+    sockets[0].onmessage?.({ data: JSON.stringify(payload('kline')) })
+    expect(klines).toHaveLength(1)
+    expect(service.saveRealtimeCandle).not.toHaveBeenCalled()
+    const updated = payload('kline')
+    updated.data.k.c = '106'
+    sockets[0].onmessage?.({ data: JSON.stringify(updated) })
+    expect(klines.at(-1)).toMatchObject({ close: 106 })
     sockets[0].onmessage?.({
       data: JSON.stringify(payload('kline', { closed: true })),
     })
@@ -209,6 +309,10 @@ describe('BinanceLiveStream', () => {
     }
     expect(schedule).toHaveBeenCalledTimes(3)
     expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ warning: expect.stringContaining('已停止自动重连') }))
+    // Changing the chart selection must not restart an exhausted retry budget.
+    stream.subscribe({ symbol: 'BTCUSDT', timeframe: '5m', onKline: vi.fn(), onStatus })
+    await Promise.resolve()
+    expect(sockets).toHaveLength(4)
     expect(refreshCandles).not.toHaveBeenCalled()
   })
 

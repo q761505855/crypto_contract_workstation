@@ -22,55 +22,42 @@ const intervalMilliseconds: Record<string, number> = {
 
 async function mockBinance(page: import('@playwright/test').Page, pacedClock = false) {
   if (pacedClock) await page.clock.install()
+  const liveSockets: Array<{ sendPrice(price: string): void; streams: Set<string> }> = []
   await page.routeWebSocket('wss://fstream.binance.com/**', (socket) => {
-    const streams = new URL(socket.url()).searchParams.get('streams') ?? ''
-    const streamMatch = /^([^@/]+)@kline_([^/]+)/.exec(streams)
-    if (streamMatch === null) {
-      throw new Error(`Unexpected Binance WebSocket URL: ${socket.url()}`)
-    }
-    const symbol = streamMatch[1].toUpperCase()
-    const timeframe = streamMatch[2]
-    const interval = intervalMilliseconds[timeframe]
-    const eventTime = Date.now()
-    const openTime = Math.floor(eventTime / interval) * interval
-    const kline = {
-      t: openTime,
-      T: openTime + interval - 1,
-      s: symbol,
-      i: timeframe,
-      o: '60000',
-      h: '60020',
-      l: '59980',
-      c: '60005',
-      v: '12',
-      q: '720060',
-      n: 18,
-      x: false,
-    }
-    setTimeout(() => {
-      socket.send(
-        JSON.stringify({
-          stream: 'ethusdt@markPriceKline_1h',
-          data: {
-            e: 'markPrice_kline',
-            E: eventTime,
-            s: symbol,
-            k: { ...kline, c: '60004' },
+    const url = new URL(socket.url())
+    expect(url.pathname).toBe('/market/stream')
+    const streams = new Set((url.searchParams.get('streams') ?? '').split('/'))
+    const sendPrice = (price: string) => {
+      const eventTime = Date.now()
+      for (const stream of streams) {
+        const [symbolText, type] = stream.split('@')
+        const symbol = symbolText.toUpperCase()
+        if (type === 'markPrice') {
+          socket.send(JSON.stringify({ stream, data: { e: 'markPriceUpdate', E: eventTime, s: symbol, p: '60004' } }))
+          continue
+        }
+        const timeframe = type.replace('kline_', '')
+        const openTime = alignOpenTime(eventTime, timeframe, 'floor')
+        socket.send(JSON.stringify({ stream, data: {
+          e: 'kline', E: eventTime, s: symbol, k: {
+            t: openTime, T: nextOpenTime(openTime, timeframe) - 1,
+            s: symbol, i: timeframe, o: '60000', h: String(Math.max(60020, Number(price))),
+            l: '59980', c: price, v: '12', q: '720060', n: 18, x: false,
           },
-        }),
-      )
-      socket.send(
-        JSON.stringify({
-          stream: 'ethusdt@kline_1h',
-          data: {
-            e: 'kline',
-            E: eventTime,
-            s: symbol,
-            k: kline,
-          },
-        }),
-      )
-    }, 100)
+        } }))
+      }
+    }
+    liveSockets.push({ sendPrice, streams })
+    socket.onMessage((message) => {
+      const { method, params, id } = JSON.parse(String(message)) as { method: string; params: string[]; id: string }
+      for (const stream of params) {
+        if (method === 'SUBSCRIBE') streams.add(stream)
+        else if (method === 'UNSUBSCRIBE') streams.delete(stream)
+      }
+      socket.send(JSON.stringify({ result: null, id }))
+      if (method === 'SUBSCRIBE') setTimeout(() => sendPrice('60005'), 100)
+    })
+    setTimeout(() => sendPrice('60005'), 100)
   })
   await page.route('https://fapi.binance.com/**', async (route) => {
     // Exercise the real guard limits while advancing time between mock replies.
@@ -143,6 +130,7 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
     }
     await route.abort('failed')
   })
+  return { liveSockets }
 }
 
 interface MockGitHubFile {
@@ -251,6 +239,50 @@ async function expectCanvasContent(page: import('@playwright/test').Page) {
     )
     .toBe(true)
 }
+
+test('keeps the latest trade price updating through rapid live period changes', async ({ page }) => {
+  await page.setViewportSize({ width: 1146, height: 900 })
+  const { liveSockets } = await mockBinance(page, true)
+  await page.addInitScript(() => {
+    const recorded = window as typeof window & { livePriceLabels: string[] }
+    recorded.livePriceLabels = []
+    const original = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      recorded.livePriceLabels.push(text.replace(/,/g, ''))
+      if (recorded.livePriceLabels.length > 10_000) recorded.livePriceLabels.splice(0, 5_000)
+      original.call(this, text, x, y, maxWidth)
+    }
+  })
+  await page.goto('./')
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  await page.getByRole('button', { name: '实时行情' }).click()
+  const status = page.getByTestId('live-status')
+  const lastPrice = status.getByText('最新价格', { exact: true }).locator('..').locator('dd')
+  await expect(lastPrice).toHaveText('60005')
+  liveSockets[0].sendPrice('60006.25')
+  await expect(lastPrice).toHaveText('60006.25')
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { livePriceLabels: string[] }).livePriceLabels.includes('60006.25'),
+  )).toBe(true)
+
+  const period = page.getByLabel('图表周期')
+  await period.selectOption('1m')
+  await period.selectOption('5m')
+  await period.selectOption('1h')
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  await page.clock.runFor(600)
+  await expect.poll(() => [...liveSockets[0].streams].sort()).toEqual(['btcusdt@kline_1h', 'btcusdt@markPrice@1s'])
+  liveSockets[0].sendPrice('60007.75')
+  await expect(lastPrice).toHaveText('60007.75')
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { livePriceLabels: string[] }).livePriceLabels.includes('60007.75'),
+  )).toBe(true)
+  expect(liveSockets).toHaveLength(1)
+  const reservations = await page.evaluate(() => JSON.parse(localStorage.getItem('marketData.binanceRequestGuard.v1')!).events as Array<{ kind: string }>)
+  expect(reservations.filter((event) => event.kind === 'socket')).toHaveLength(1)
+  await expect(status).toContainText('已连接')
+  await expect(page.locator('.status-footer')).not.toContainText('切换过于频繁')
+})
 
 test('exercises Pro chart interactions and the production path', async ({ page }) => {
   test.setTimeout(90_000)

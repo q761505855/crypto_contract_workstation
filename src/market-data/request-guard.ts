@@ -8,6 +8,13 @@ const HOUR = 60 * MINUTE
 const MINIMUM_COOLDOWN = 30 * MINUTE
 const WEIGHT_STOP_THRESHOLD = 100
 
+export class SocketCooldownError extends Error {
+  constructor(readonly retryAfterMs: number) {
+    super(`实时连接正在限速，约 ${Math.ceil(retryAfterMs / 1_000)} 秒后连接。`)
+    this.name = 'SocketCooldownError'
+  }
+}
+
 type RequestKind = 'rest' | 'socket'
 interface GuardState {
   version: 1
@@ -102,7 +109,7 @@ export class BinanceRequestGuard {
     const wait = previous === undefined ? 0 : previous.at + spacing - now
     if (wait > 0) {
       // Socket reconnection must not build up an outbound connection queue.
-      if (kind === 'socket') throw new Error('实时连接切换过于频繁，已停止自动连接，请稍后手动切换模式重试。')
+      if (kind === 'socket') throw new SocketCooldownError(wait)
       await this.dependencies.sleep(wait)
       signal?.throwIfAborted()
       state = this.read()

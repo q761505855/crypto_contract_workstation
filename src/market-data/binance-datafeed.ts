@@ -24,6 +24,7 @@ const MAX_CHART_CANDLES = 499
 
 interface LiveStreamPort {
   subscribe(input: LiveStreamSubscriptionInput): () => void
+  setKeepAlive?(enabled: boolean): void
 }
 
 interface LiveSubscription {
@@ -66,6 +67,9 @@ export class BinanceDatafeed implements Datafeed {
   setLiveEnabled(enabled: boolean): void {
     if (this.liveEnabled === enabled) return
     this.liveEnabled = enabled
+    // Period changes unsubscribe before loading history. Keep the transport
+    // alive across that gap, and close it when leaving live mode.
+    this.liveStream.setKeepAlive?.(enabled)
     for (const subscription of this.liveSubscriptions.values()) {
       if (enabled) {
         this.startLiveSubscription(subscription)

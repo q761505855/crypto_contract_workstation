@@ -156,7 +156,9 @@ describe('BinanceRequestGuard', () => {
   it('limits connection attempts across clients and refuses sockets while REST is paused', async () => {
     const env = environment()
     await env.guard().authorizeSocket()
-    await expect(env.guard().authorizeSocket()).rejects.toThrow('切换过于频繁')
+    await expect(env.guard().authorizeSocket()).rejects.toMatchObject({
+      name: 'SocketCooldownError', retryAfterMs: 10_000,
+    })
     for (let index = 0; index < 3; index += 1) {
       env.advance(10_000)
       await env.guard().authorizeSocket()
