@@ -1,15 +1,24 @@
 diff --git a/node_modules/klinecharts/dist/index.d.ts b/node_modules/klinecharts/dist/index.d.ts
-index db8d576..69aea3a 100644
+index db8d576..310d352 100644
 --- a/node_modules/klinecharts/dist/index.d.ts
 +++ b/node_modules/klinecharts/dist/index.d.ts
 @@ -844,0 +845,2 @@ export interface Chart {
 +	setPriceRangeAuto: (auto: boolean) => void;
 +	getPriceRangeAuto: () => boolean;
 diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
-index 86b1dce..8c1f6bb 100644
+index 86b1dce..52501b7 100644
 --- a/node_modules/klinecharts/dist/index.esm.js
 +++ b/node_modules/klinecharts/dist/index.esm.js
-@@ -10303,7 +10303,8 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10184,6 +10184,8 @@ var YAxisWidget = /** @class */ (function (_super) {
+         _this._overlayYAxisView = new OverlayYAxisView(_this);
+         _this._crosshairHorizontalLabelView = new CrosshairHorizontalLabelView(_this);
+         _this.getContainer().style.cursor = 'ns-resize';
++        // Axis gestures belong to the chart; vertical swipes elsewhere can scroll the page.
++        _this.getContainer().style.touchAction = 'none';
+         _this.addChild(_this._overlayYAxisView);
+         return _this;
+     }
+@@ -10303,7 +10305,8 @@ var YAxisImp = /** @class */ (function (_super) {
          var specifyMin = Number.MAX_SAFE_INTEGER;
          var specifyMax = Number.MIN_SAFE_INTEGER;
          var indicatorPrecision = Number.MAX_SAFE_INTEGER;
@@ -19,7 +28,65 @@ index 86b1dce..8c1f6bb 100644
          indicators.forEach(function (indicator) {
              var _a, _b, _c;
              if (!shouldOhlc) {
-@@ -12438,13 +12439,30 @@ var Event = /** @class */ (function () {
+@@ -12085,12 +12088,18 @@ var SyntheticEvent = /** @class */ (function () {
+         {
+             var boundTouchMoveWithDownHandler_1 = this._touchMoveHandler.bind(this);
+             var boundTouchEndHandler_1 = this._touchEndHandler.bind(this);
++            var boundTouchCancelHandler_1 = function (event) {
++                this._cancelTap = true;
++                this._touchEndHandler(event);
++            }.bind(this);
+             this._unsubscribeRootTouchEvents = function () {
+                 rootElement.removeEventListener('touchmove', boundTouchMoveWithDownHandler_1);
+                 rootElement.removeEventListener('touchend', boundTouchEndHandler_1);
++                rootElement.removeEventListener('touchcancel', boundTouchCancelHandler_1);
+             };
+             rootElement.addEventListener('touchmove', boundTouchMoveWithDownHandler_1, { passive: false });
+             rootElement.addEventListener('touchend', boundTouchEndHandler_1, { passive: false });
++            rootElement.addEventListener('touchcancel', boundTouchCancelHandler_1, { passive: false });
+             this._clearLongTapTimeout();
+             this._longTapTimeoutId = setTimeout(this._longTapHandler.bind(this, downEvent), 500 /* Delay.LongTap */);
+         }
+@@ -12375,6 +12384,7 @@ var Event = /** @class */ (function () {
+         // 用来记录捏合缩放的尺寸
+         this._pinchScale = 1;
+         this._mouseDownWidget = null;
++        this._touchAxisWidget = null;
+         this._prevYAxisRange = null;
+         this._xAxisStartScaleCoordinate = null;
+         this._xAxisStartScaleDistance = 0;
+@@ -12416,12 +12426,30 @@ var Event = /** @class */ (function () {
+         container.addEventListener('keydown', this._boundKeyBoardDownEvent);
+     }
+     Event.prototype.pinchStartEvent = function () {
++        this._touchAxisWidget = null;
+         this._touchZoomed = true;
+         this._pinchScale = 1;
+         return true;
+     };
+     Event.prototype.pinchEvent = function (e, scale) {
+         var _a = this._findWidgetByEvent(e), pane = _a.pane, widget = _a.widget;
++        if (pane !== null && (widget === null || widget === void 0 ? void 0 : widget.getName()) === WidgetNameConstants.Y_AXIS) {
++            var yAxis = pane.getAxisComponent();
++            var current = yAxis.getRange();
++            var factor = this._pinchScale / scale;
++            this._pinchScale = scale;
++            if (!yAxis.getScrollZoomEnabled() || !(factor > 0) || !Number.isFinite(factor)) return false;
++            var newRange = current.range * factor;
++            var middle = (current.from + current.to) / 2;
++            var from = middle - newRange / 2;
++            var to = middle + newRange / 2;
++            var realFrom = yAxis.convertToRealValue(from);
++            var realTo = yAxis.convertToRealValue(to);
++            if (!(to > from) || !Number.isFinite(realFrom) || !Number.isFinite(realTo)) return false;
++            yAxis.setRange({ from: from, to: to, range: newRange, realFrom: realFrom, realTo: realTo, realRange: realTo - realFrom });
++            this._chart.adjustPaneViewport(false, true, true, true);
++            return true;
++        }
+         if ((pane === null || pane === void 0 ? void 0 : pane.getId()) !== PaneIdConstants.X_AXIS && (widget === null || widget === void 0 ? void 0 : widget.getName()) === WidgetNameConstants.MAIN) {
+             var event_1 = this._makeWidgetEvent(e, widget);
+             var zoomScale = (scale - this._pinchScale) * 5;
+@@ -12438,13 +12466,30 @@ var Event = /** @class */ (function () {
          return true;
      };
      Event.prototype.mouseWheelVertEvent = function (e, scale) {
@@ -51,7 +118,68 @@ index 86b1dce..8c1f6bb 100644
          return false;
      };
      Event.prototype.mouseDownEvent = function (e) {
-@@ -13427,6 +13445,15 @@ var ChartImp = /** @class */ (function () {
+@@ -12707,6 +12752,12 @@ var Event = /** @class */ (function () {
+     };
+     Event.prototype.touchStartEvent = function (e) {
+         var _a = this._findWidgetByEvent(e), pane = _a.pane, widget = _a.widget;
++        this._touchAxisWidget = null;
++        if (widget !== null && widget.getName() === WidgetNameConstants.Y_AXIS) {
++            this.mouseDownEvent(e);
++            this._touchAxisWidget = widget;
++            return true;
++        }
+         if (widget !== null) {
+             var event_8 = this._makeWidgetEvent(e, widget);
+             var name_7 = widget.getName();
+@@ -12758,6 +12809,26 @@ var Event = /** @class */ (function () {
+         return false;
+     };
+     Event.prototype.touchMoveEvent = function (e) {
++        if (this._touchAxisWidget !== null && this._prevYAxisRange !== null) {
++            e.preventDefault();
++            var axisWidget = this._touchAxisWidget;
++            var yAxis = axisWidget.getPane().getAxisComponent();
++            if (!yAxis.getScrollZoomEnabled()) return false;
++            var current = this._prevYAxisRange;
++            // Relative drag distance is stable even when the page is scrolled or rotated.
++            var height = Math.max(1, axisWidget.getBounding().height);
++            var factor = Math.exp(Math.max(-4, Math.min(4, (e.pageY - this._yAxisStartScaleDistance) / height * 2)));
++            var newRange = current.range * factor;
++            var middle = (current.from + current.to) / 2;
++            var from = middle - newRange / 2;
++            var to = middle + newRange / 2;
++            var realFrom = yAxis.convertToRealValue(from);
++            var realTo = yAxis.convertToRealValue(to);
++            if (!(to > from) || !Number.isFinite(realFrom) || !Number.isFinite(realTo)) return false;
++            yAxis.setRange({ from: from, to: to, range: newRange, realFrom: realFrom, realTo: realTo, realRange: realTo - realFrom });
++            this._chart.adjustPaneViewport(false, true, true, true);
++            return true;
++        }
+         var _a, _b, _c;
+         var _d = this._findWidgetByEvent(e), pane = _d.pane, widget = _d.widget;
+         if (widget !== null) {
+@@ -12779,7 +12850,8 @@ var Event = /** @class */ (function () {
+                     }
+                     else {
+                         if (this._startScrollCoordinate !== null &&
+-                            Math.abs(this._startScrollCoordinate.x - event_9.x) > this._startScrollCoordinate.y - event_9.y) {
++                            Math.abs(this._startScrollCoordinate.x - event_9.x) > Math.abs(this._startScrollCoordinate.y - event_9.y)) {
++                            event_9.preventDefault();
+                             var distance = event_9.x - this._startScrollCoordinate.x;
+                             chartStore.getTimeScaleStore().scroll(distance);
+                         }
+@@ -12800,6 +12872,10 @@ var Event = /** @class */ (function () {
+         return false;
+     };
+     Event.prototype.touchEndEvent = function (e) {
++        if (this._touchAxisWidget !== null) {
++            this._touchAxisWidget = null;
++            return this.mouseUpEvent(e);
++        }
+         var _this = this;
+         var widget = this._findWidgetByEvent(e).widget;
+         if (widget !== null) {
+@@ -13427,6 +13503,15 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getPriceVolumePrecision = function () {
          return this._chartStore.getPrecision();
      };

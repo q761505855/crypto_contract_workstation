@@ -2,6 +2,11 @@ import { expect, test } from '@playwright/test'
 import { alignOpenTime, nextOpenTime } from '../src/market-data/intervals'
 import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
 
+async function selectChartPeriod(page: import('@playwright/test').Page, value: string) {
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: `选择周期 ${value}`, exact: true }).click()
+}
+
 const intervalMilliseconds: Record<string, number> = {
   '1m': 60_000,
   '3m': 3 * 60_000,
@@ -244,6 +249,296 @@ async function expectCanvasContent(page: import('@playwright/test').Page) {
     .toBe(true)
 }
 
+test.describe('mobile workstation', () => {
+  test.use({ isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
+
+  for (const width of [320, 390, 768]) {
+    test(`fits ${width}px screens and keeps chart tools and dialogs reachable`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockBinance(page, true)
+      await page.goto('./')
+      await expectCanvasContent(page)
+      const assertNoOverflow = async () => {
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+      }
+      const assertFits = async (locator: import('@playwright/test').Locator) => {
+        const box = await locator.boundingBox()
+        expect(box).not.toBeNull()
+        expect(box!.x).toBeGreaterThanOrEqual(0)
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+      }
+      await assertNoOverflow()
+      const host = page.getByTestId('chart-host')
+      expect((await host.boundingBox())!.width).toBe(width)
+      const controls = page.getByTestId('replay-controls')
+      const panel = page.getByTestId('simulation-panel')
+      expect((await controls.boundingBox())!.y).toBeGreaterThanOrEqual(
+        (await host.boundingBox())!.y + (await host.boundingBox())!.height,
+      )
+      expect((await panel.boundingBox())!.y).toBeGreaterThan((await controls.boundingBox())!.y)
+      await page.getByText('交易参数', { exact: true }).click()
+      await assertFits(page.getByLabel('维持保证金率', { exact: true }))
+      await assertNoOverflow()
+
+      await selectChartPeriod(page, '1h')
+      await expect(page.getByLabel('图表周期')).toContainText('1h')
+      await page.locator('.klinecharts-pro-period-bar .symbol').tap()
+      const picker = page.getByTestId('symbol-picker')
+      await assertFits(picker)
+      await picker.getByRole('tab', { name: '全部' }).tap()
+      await picker.getByRole('button', { name: '选择 ETHUSDT' }).tap()
+      await expect(page.locator('.klinecharts-pro-period-bar .symbol')).toHaveText('ETHUSDT')
+
+      for (const tool of ['指标', '设置']) {
+        const button = page.getByText(tool, { exact: true }).locator('..')
+        await assertFits(button)
+        await button.tap()
+        const dialog = page.locator('.klinecharts-pro-modal .inner')
+        await expect(dialog).toBeVisible()
+        await assertFits(dialog)
+        expect(await dialog.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+        await page.locator('.klinecharts-pro-modal .close-icon').tap()
+      }
+
+      await page.getByTestId('open-data-manager').tap()
+      const drawer = page.getByTestId('data-manager')
+      await assertFits(drawer)
+      expect(await drawer.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+      await drawer.getByRole('button', { name: '关闭' }).tap()
+      await assertNoOverflow()
+      await page.screenshot({ path: `test-results/mobile-${width}.png`, fullPage: true })
+    })
+  }
+
+  test('creates and advances a replay, trades, and preserves input across rotation', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockBinance(page, true)
+    await page.goto('./')
+    await expectCanvasContent(page)
+    const originalHost = await page.getByTestId('chart-host').elementHandle()
+    const controls = page.getByTestId('replay-controls')
+    await controls.getByLabel('图表跳转时间').fill('2026-07-22T00:00')
+    await controls.getByRole('button', { name: '跳转', exact: true }).tap()
+    await expect(controls.getByText(/起点：/)).toContainText('2026/7/22')
+    await controls.getByLabel('回放结束时间').fill('2026-07-22T05:00')
+    await controls.getByRole('button', { name: '创建回放' }).tap()
+    const panel = page.getByTestId('simulation-panel')
+    await panel.getByLabel('保证金金额', { exact: true }).fill('123')
+    await panel.getByRole('button', { name: '开多', exact: true }).tap()
+    await expect(panel.getByTestId('position-summary')).toContainText('多仓')
+    await controls.getByRole('button', { name: '下一根', exact: true }).tap()
+    await expect(controls.locator('.replay-position')).toContainText('2/')
+    for (const viewport of [{ width: 844, height: 390 }, { width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport)
+      await page.clock.runFor(50)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width)
+      await expect(panel.getByLabel('保证金金额', { exact: true })).toHaveValue('123')
+      await expect(panel.getByTestId('position-summary')).toContainText('多仓')
+    }
+    expect(await originalHost!.evaluate((node) => node === document.querySelector('[data-testid="chart-host"]'))).toBe(true)
+    await page.getByRole('button', { name: '隐藏侧栏' }).tap()
+    await expect(panel).toBeHidden()
+    await page.getByRole('button', { name: '显示侧栏' }).tap()
+    await expect(panel.getByLabel('保证金金额', { exact: true })).toHaveValue('123')
+    await page.getByRole('button', { name: '实时行情' }).tap()
+    await expect(page.getByTestId('live-status')).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+  })
+
+  test('pins shortcuts in the dropdown and preserves them after reload', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockBinance(page, true)
+    await page.goto('./')
+    const trigger = page.getByRole('button', { name: '图表周期', exact: true })
+    await trigger.tap()
+    const menu = page.getByRole('dialog', { name: '选择图表周期' })
+    await menu.getByRole('button', { name: '固定周期 1d', exact: true }).tap()
+    await menu.getByRole('button', { name: '取消固定周期 5m', exact: true }).tap()
+    await expect(trigger).toContainText('15m')
+    await expect(menu).toBeVisible()
+    await trigger.tap()
+    const shortcuts = page.getByRole('group', { name: '快捷周期' })
+    await expect(shortcuts.getByRole('button')).toHaveText(['15m', '1h', '4h', '1d'])
+    await shortcuts.getByRole('button', { name: '快捷周期 1d', exact: true }).tap()
+    await expect(trigger).toContainText('1d')
+    await page.reload()
+    await expect(shortcuts.getByRole('button')).toHaveText(['15m', '1h', '4h', '1d'])
+    await page.screenshot({ path: 'test-results/mobile-shortcuts.png', fullPage: true })
+  })
+
+  test('collapses mobile actions and keeps horizontal gestures inside the shortcut strip', async ({ page, context }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockBinance(page, true)
+    await page.addInitScript(() => {
+      localStorage.setItem('chart.pinnedPeriods.v1', JSON.stringify(['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']))
+    })
+    await page.goto('./')
+    const host = page.getByTestId('chart-host')
+    const originalHost = await host.elementHandle()
+    const before = (await host.boundingBox())!.y
+    await page.getByRole('button', { name: '收起操作', exact: true }).tap()
+    await expect(page.getByTestId('open-data-manager')).toBeHidden()
+    await expect(page.getByRole('button', { name: '历史模拟', exact: true })).toBeHidden()
+    expect((await host.boundingBox())!.y).toBeLessThan(before)
+    const trigger = page.getByRole('button', { name: '展开操作', exact: true })
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    await trigger.tap()
+    await expect(page.getByTestId('open-data-manager')).toBeVisible()
+    await page.getByRole('button', { name: '收起操作', exact: true }).tap()
+    await expect(page.getByTestId('open-data-manager')).toBeHidden()
+    const strip = page.getByRole('group', { name: '快捷周期' })
+    expect(await strip.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+    const bounds = (await strip.boundingBox())!
+    const client = await context.newCDPSession(page)
+    await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: bounds.x + bounds.width - 10, y: bounds.y + bounds.height / 2, id: 0 }] })
+    for (let step = 1; step <= 8; step++) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: bounds.x + bounds.width - 10 - step * 20, y: bounds.y + bounds.height / 2, id: 0 }] })
+    }
+    await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await expect.poll(() => strip.evaluate((element) => element.scrollLeft)).toBeGreaterThan(40)
+    expect(await page.evaluate(() => ({ x: scrollX, width: document.documentElement.scrollWidth }))).toEqual({ x: 0, width: 320 })
+    await expect(page.getByRole('button', { name: '图表周期', exact: true })).toContainText('15m')
+    await page.screenshot({ path: 'test-results/mobile-collapsed.png', fullPage: true })
+    expect(await originalHost!.evaluate((node) => node === document.querySelector('[data-testid="chart-host"]'))).toBe(true)
+  })
+
+  test('handles real axis swipes, pinch, cancellation and page scrolling', async ({ page, context }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockBinance(page)
+    const { axis, pricePerPixel, readTimeTicks } = await trackPriceAxis(page)
+    await page.goto('./')
+    await expect.poll(pricePerPixel).toBeGreaterThan(0)
+    const client = await context.newCDPSession(page)
+    const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd' | 'touchCancel', points: { x: number; y: number; id: number }[]) =>
+      client.send('Input.dispatchTouchEvent', { type, touchPoints: points })
+    const bounds = (await axis.boundingBox())!
+    const x = bounds.x + bounds.width / 2
+    const y = bounds.y + bounds.height / 2
+    const initial = await pricePerPixel()
+    const times = await readTimeTicks()
+    const initialScroll = await page.evaluate(() => scrollY)
+    await touch('touchStart', [{ x, y, id: 0 }])
+    // Drift into the plot: the gesture must stay attached to its starting axis.
+    for (let step = 1; step <= 8; step++) {
+      await touch('touchMove', [{ x: x - step * 6, y: y + step * 6, id: 0 }])
+    }
+    await touch('touchEnd', [])
+    await expect.poll(pricePerPixel).toBeGreaterThan(initial * 1.1)
+    await expect(page.getByRole('button', { name: '手动', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    expect(await page.evaluate(() => scrollY)).toBe(initialScroll)
+    expect(await readTimeTicks()).toEqual(times)
+
+    const beforePinch = await pricePerPixel()
+    await touch('touchStart', [{ x, y: y - 20, id: 0 }, { x, y: y + 20, id: 1 }])
+    for (let step = 1; step <= 5; step++) {
+      await touch('touchMove', [{ x, y: y - 20 - step * 3, id: 0 }, { x, y: y + 20 + step * 3, id: 1 }])
+    }
+    await touch('touchEnd', [])
+    await expect.poll(pricePerPixel).toBeLessThan(beforePinch * 0.8)
+    expect(await readTimeTicks()).toEqual(times)
+
+    await touch('touchStart', [{ x, y, id: 0 }])
+    await touch('touchCancel', [])
+    const beforeNextDrag = await pricePerPixel()
+    await touch('touchStart', [{ x, y, id: 0 }])
+    await touch('touchMove', [{ x, y: y - 40, id: 0 }])
+    await touch('touchEnd', [])
+    await expect.poll(pricePerPixel).toBeLessThan(beforeNextDrag * 0.9)
+    await page.touchscreen.tap(x, y)
+    await page.touchscreen.tap(x, y)
+    await expect(page.getByRole('button', { name: '自动', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect.poll(pricePerPixel).toBeCloseTo(initial, 4)
+    await page.getByRole('button', { name: '自动', exact: true }).tap()
+    await expect.poll(pricePerPixel).toBeCloseTo(initial, 4)
+
+    await touch('touchStart', [{ x: 120, y, id: 0 }, { x: 180, y, id: 1 }])
+    for (let step = 1; step <= 5; step++) {
+      await touch('touchMove', [{ x: 120 - step * 6, y, id: 0 }, { x: 180 + step * 6, y, id: 1 }])
+    }
+    await touch('touchEnd', [])
+    await expect.poll(readTimeTicks).not.toEqual(times)
+    expect(await page.evaluate(() => scrollY)).toBe(initialScroll)
+
+    const beforeSwipe = await readTimeTicks()
+    await touch('touchStart', [{ x: 120, y, id: 0 }])
+    for (let step = 1; step <= 8; step++) {
+      await touch('touchMove', [{ x: 120 + step * 10, y, id: 0 }])
+    }
+    await touch('touchEnd', [])
+    await expect.poll(readTimeTicks).not.toEqual(beforeSwipe)
+    expect(await page.evaluate(() => scrollY)).toBe(initialScroll)
+    expect(await page.evaluate(() => scrollX)).toBe(0)
+
+    // Vertical swipes in the plot still scroll the surrounding mobile page.
+    await touch('touchStart', [{ x: 150, y, id: 0 }])
+    for (let step = 1; step <= 8; step++) {
+      await touch('touchMove', [{ x: 150, y: y - step * 10, id: 0 }])
+    }
+    await touch('touchEnd', [])
+    await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(initialScroll + 20)
+  })
+})
+
+test('round-trips pinned periods through JSON archives and cloud configuration', async ({ page }) => {
+  await mockBinance(page, true)
+  const github = await mockGitHub(page)
+  await page.goto('./')
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  const menu = page.getByRole('dialog', { name: '选择图表周期' })
+  await menu.getByRole('button', { name: '固定周期 1d', exact: true }).click()
+  await menu.getByRole('button', { name: '取消固定周期 5m', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await page.getByTestId('open-data-manager').click()
+  const panel = page.getByTestId('backup-sync-panel')
+  const downloadEvent = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const download = await downloadEvent
+  const stream = await download.createReadStream()
+  let json = ''
+  for await (const chunk of stream) json += chunk.toString()
+  const archive = JSON.parse(json)
+  expect(archive.data.preferences.pinnedPeriods).toEqual(['15m', '1h', '4h', '1d'])
+
+  archive.data.preferences.pinnedPeriods = []
+  page.once('dialog', (dialog) => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles({ name: 'preferences.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)) })
+  await expect(panel.getByTestId('backup-status')).toContainText('导入完成')
+  await page.reload()
+  const shortcuts = page.getByRole('group', { name: '快捷周期' })
+  await expect(shortcuts.getByRole('button')).toHaveCount(0)
+
+  await page.getByTestId('open-data-manager').click()
+  await panel.getByTestId('github-owner').fill('alice')
+  await panel.getByTestId('github-repository').fill('trading-backup')
+  await panel.getByTestId('github-token').fill('github_pat_e2e_secret')
+  await panel.getByRole('checkbox', { name: '会话与交易', exact: true }).uncheck()
+  await panel.getByRole('checkbox', { name: '历史行情', exact: true }).uncheck()
+  await panel.getByTestId('github-upload').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('上传完成')
+  expect([...github.files.keys()].sort()).toEqual(['config/favorites.json', 'config/preferences.json', 'manifest.json'])
+  expect(JSON.parse(github.files.get('config/preferences.json')!.bytes.toString()).pinnedPeriods).toEqual([])
+
+  await page.getByTestId('close-data-manager').click()
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await menu.getByRole('button', { name: '固定周期 1d', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(shortcuts.getByRole('button')).toHaveText(['1d'])
+  await page.getByTestId('open-data-manager').click()
+  // Closing the drawer discards in-memory credentials; re-enter them for this visit.
+  await panel.getByTestId('github-owner').fill('alice')
+  await panel.getByTestId('github-repository').fill('trading-backup')
+  await panel.getByTestId('github-token').fill('github_pat_e2e_secret')
+  await panel.getByRole('checkbox', { name: '会话与交易', exact: true }).uncheck()
+  await panel.getByRole('checkbox', { name: '历史行情', exact: true }).uncheck()
+  await panel.getByTestId('github-compare').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('差异 1 个')
+  page.once('dialog', (dialog) => dialog.accept())
+  await panel.getByTestId('github-pull').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('云端恢复完成')
+  await page.reload()
+  await expect(shortcuts.getByRole('button')).toHaveCount(0)
+})
+
 test('keeps the latest trade price updating through rapid live period changes', async ({ page }) => {
   await page.setViewportSize({ width: 1146, height: 900 })
   const { liveSockets } = await mockBinance(page, true)
@@ -270,9 +565,9 @@ test('keeps the latest trade price updating through rapid live period changes', 
   )).toBe(true)
 
   const period = page.getByLabel('图表周期')
-  await period.selectOption('1m')
-  await period.selectOption('5m')
-  await period.selectOption('1h')
+  await selectChartPeriod(page, '1m')
+  await selectChartPeriod(page, '5m')
+  await selectChartPeriod(page, '1h')
   await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
   await page.clock.runFor(600)
   await expect.poll(() => [...liveSockets[0].streams].sort()).toEqual(['btcusdt@kline_1h', 'btcusdt@markPrice@1s'])
@@ -331,21 +626,11 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await page.setViewportSize({ width: 1146, height: 900 })
   const compactPeriod = page.getByLabel('图表周期')
   await expect(compactPeriod).toBeVisible()
-  await expect(
-    page
-      .locator('.klinecharts-pro-period-bar .period')
-      .filter({ hasText: /^15m$/ }),
-  ).toBeVisible()
-  await expect(
-    page
-      .locator('.klinecharts-pro-period-bar .period')
-      .filter({ hasText: /^12h$/ }),
-  ).toBeHidden()
-  await expect(
-    page
-      .locator('.klinecharts-pro-period-bar .period')
-      .filter({ hasText: /^1w$/ }),
-  ).toBeHidden()
+  await compactPeriod.click()
+  await expect(page.getByRole('dialog', { name: '选择图表周期' }).locator('.period-option')).toHaveCount(15)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('group', { name: '快捷周期' }).getByRole('button')).toHaveCount(4)
+  await expect(page.locator('.klinecharts-pro-period-bar .period:visible')).toHaveCount(0)
   const compactChartBox = await chartHost.boundingBox()
   const settingsBox = await page
     .getByText('设置', { exact: true })
@@ -358,26 +643,8 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   )
 
   await page.setViewportSize({ width: 1024, height: 900 })
-  await expect(
-    page
-      .locator('.klinecharts-pro-period-bar .period')
-      .filter({ hasText: /^1m$/ }),
-  ).toBeVisible()
-  await expect(
-    page
-      .locator('.klinecharts-pro-period-bar .period')
-      .filter({ hasText: /^5m$/ }),
-  ).toBeVisible()
-  await expect(
-    page
-      .locator('.klinecharts-pro-period-bar .period')
-      .filter({ hasText: /^3m$/ }),
-  ).toBeHidden()
-  await expect(
-    page
-      .locator('.klinecharts-pro-period-bar .period')
-      .filter({ hasText: /^30m$/ }),
-  ).toBeHidden()
+  await expect(compactPeriod).toBeVisible()
+  await expect(page.locator('.klinecharts-pro-period-bar .period:visible')).toHaveCount(0)
   await page.setViewportSize({ width: 1146, height: 900 })
 
   await page.evaluate(() => {
@@ -428,8 +695,8 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     'ETHUSDT',
   )
 
-  await compactPeriod.selectOption('1h')
-  await expect(compactPeriod).toHaveValue('1h')
+  await selectChartPeriod(page, '1h')
+  await expect(compactPeriod).toContainText('1h')
   await expect(
     page.locator('.klinecharts-pro-period-bar .period.selected'),
   ).toHaveText('1h')
@@ -603,14 +870,14 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await simulationPanel.getByRole('button', { name: '设置止损' }).click()
   await expect(simulationPanel).toContainText('70000 / 50000')
 
-  await compactPeriod.selectOption('1d')
-  await compactPeriod.selectOption('3m')
-  await expect(compactPeriod).toHaveValue('3m')
+  await selectChartPeriod(page, '1d')
+  await selectChartPeriod(page, '3m')
+  await expect(compactPeriod).toContainText('3m')
 
   // Period changes keep the same replay clock, account and open position.
   for (const timeframe of ['1w', '1M', '1d', '5m', '15m', '1h']) {
-    await compactPeriod.selectOption(timeframe)
-    await expect(compactPeriod).toHaveValue(timeframe)
+    await selectChartPeriod(page, timeframe)
+    await expect(compactPeriod).toContainText(timeframe)
     await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText(timeframe)
     await expect(page.locator('.status-footer')).toContainText(`ETHUSDT · ${timeframe}`)
     await expect(page.locator('.status-footer')).not.toContainText('不能切换')
@@ -624,8 +891,8 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     await expectCanvasContent(page)
   }
 
-  await compactPeriod.selectOption('5m')
-  await expect(compactPeriod).toHaveValue('5m')
+  await selectChartPeriod(page, '5m')
+  await expect(compactPeriod).toContainText('5m')
   await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
   page.on('request', recordReplayRequest)
   for (let index = 2; index <= 4; index += 1) {
@@ -636,8 +903,8 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     simulationPanel.getByText('多仓', { exact: true }),
   ).toBeVisible()
 
-  await compactPeriod.selectOption('1h')
-  await expect(compactPeriod).toHaveValue('1h')
+  await selectChartPeriod(page, '1h')
+  await expect(compactPeriod).toContainText('1h')
   await replayControls.getByLabel('回放速度').selectOption('10')
   await replayControls.getByRole('button', { name: '播放', exact: true }).click()
   await page.clock.runFor(1_000)
@@ -1226,11 +1493,11 @@ test('stops remote requests after HTTP 418 and keeps cached chart data usable', 
     })
   })
   const selector = page.getByLabel('图表周期')
-  await selector.selectOption('1m')
+  await selectChartPeriod(page, '1m')
   await expect(page.locator('.status-footer')).toContainText('HTTP 418')
   await expect(page.locator('.status-footer')).toContainText('已暂停新增远程请求')
   for (const timeframe of ['1w', '1M', '15m']) {
-    await selector.selectOption(timeframe)
+    await selectChartPeriod(page, timeframe)
     await expect(page.locator('.status-footer')).toContainText(`BTCUSDT · ${timeframe}`)
   }
   await expectCanvasContent(page)

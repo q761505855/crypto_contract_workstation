@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import {
   createChartOptions,
@@ -17,6 +18,7 @@ import {
   type SimulationOverlayState,
 } from './pro-chart-adapter'
 import { SymbolPicker } from './SymbolPicker'
+import { PeriodSelector } from './PeriodSelector'
 
 export interface ChartWorkspaceProps {
   createAdapter?: () => ChartAdapterPort
@@ -52,6 +54,7 @@ export function ChartWorkspace({
   onRightmostCandleTimeChange,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
   const [indicatorInfoVisible, setIndicatorInfoVisible] = useState(true)
@@ -94,6 +97,7 @@ export function ChartWorkspace({
       )
     }
     const host = hostRef.current
+    setPeriodToolbar(host.querySelector('.klinecharts-pro-period-bar'))
     const resizeObserver = typeof ResizeObserver === 'undefined'
       ? null
       : new ResizeObserver(() => adapter?.resize?.())
@@ -299,20 +303,9 @@ export function ChartWorkspace({
           type="button"
         >手动</button>
       </div>
-      <label className="compact-period-selector">
-        <span>周期</span>
-        <select
-          aria-label="图表周期"
-          onChange={(event) => selectCompactPeriod(event.target.value)}
-          value={period.text}
-        >
-          {SUPPORTED_PERIODS.map((candidate) => (
-            <option key={candidate.text} value={candidate.text}>
-              {candidate.text}
-            </option>
-          ))}
-        </select>
-      </label>
+      {periodToolbar === null
+        ? <PeriodSelector value={period.text} onChange={selectCompactPeriod} />
+        : createPortal(<PeriodSelector value={period.text} onChange={selectCompactPeriod} />, periodToolbar)}
       {symbolPickerOpen ? (
         <SymbolPicker
           currentSymbol={symbolRef.current}

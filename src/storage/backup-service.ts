@@ -1,4 +1,5 @@
 import { SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
+import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
 import type { IDBPTransaction } from 'idb'
 import {
   CHART_INDICATORS_PREFERENCE,
@@ -49,6 +50,7 @@ export interface BackupPreferences {
   favoriteSymbols: string[]
   selectedSymbol?: SymbolInfo
   chartIndicators?: ChartIndicatorPreferences
+  pinnedPeriods?: string[]
 }
 
 export interface BackupData {
@@ -182,6 +184,7 @@ function validatePreferences(value: unknown): BackupPreferences {
   return {
     binanceRestBaseUrl,
     favoriteSymbols,
+    ...(item.pinnedPeriods === undefined ? {} : { pinnedPeriods: validatePinnedPeriods(item.pinnedPeriods) }),
     ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
     ...(item.chartIndicators === undefined
       ? {}
@@ -748,6 +751,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
     binanceRestBaseUrl:
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
     favoriteSymbols,
+    pinnedPeriods: readPinnedPeriods(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
     ...(chartIndicators === null ? {} : { chartIndicators }),
   }
@@ -891,6 +895,9 @@ export class WorkstationBackupService {
       }
       if (envelope.data.preferences.selectedSymbol !== undefined) {
         this.storage.setItem(SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(envelope.data.preferences.selectedSymbol))
+      }
+      if (envelope.data.preferences.pinnedPeriods !== undefined) {
+        this.storage.setItem(PINNED_PERIODS_KEY, JSON.stringify(envelope.data.preferences.pinnedPeriods))
       }
     }
     return {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
 import {
   CHART_INDICATORS_PREFERENCE,
   type ChartIndicatorPreferences,
@@ -89,6 +90,7 @@ function session(): ReplaySession {
 }
 
 async function seed(databaseName: string, preferences: MemoryPreferences) {
+  preferences.setItem(PINNED_PERIODS_KEY, JSON.stringify(['1m', '1d']))
   preferences.setItem(SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(DEFAULT_SYMBOL))
   preferences.setItem('marketData.binanceBaseUrl', 'https://example.test')
   preferences.setItem(
@@ -181,6 +183,47 @@ describe('WorkstationBackupService', () => {
       ),
     ).toEqual(indicatorPreferences())
     expect(JSON.parse(targetPreferences.getItem(SELECTED_SYMBOL_STORAGE_KEY) ?? 'null')).toEqual(DEFAULT_SYMBOL)
+    expect(JSON.parse(targetPreferences.getItem(PINNED_PERIODS_KEY) ?? 'null')).toEqual(['1m', '1d'])
+  })
+
+  it('exports default and explicitly empty shortcuts in configuration-only archives', async () => {
+    const preferences = new MemoryPreferences()
+    const service = new WorkstationBackupService(`periods-${crypto.randomUUID()}`, preferences)
+    expect((await service.exportPreferences()).data.preferences?.pinnedPeriods).toEqual(DEFAULT_PINNED_PERIODS)
+    preferences.setItem(PINNED_PERIODS_KEY, '[]')
+    const archive = await service.exportPreferences()
+    expect(archive.data.preferences?.pinnedPeriods).toEqual([])
+    const targetPreferences = new MemoryPreferences()
+    targetPreferences.setItem(PINNED_PERIODS_KEY, '["1h"]')
+    await new WorkstationBackupService(`periods-target-${crypto.randomUUID()}`, targetPreferences).import(archive)
+    expect(targetPreferences.getItem(PINNED_PERIODS_KEY)).toBe('[]')
+  })
+
+  it('keeps local shortcuts when importing older archives without pinnedPeriods', async () => {
+    const preferences = new MemoryPreferences()
+    preferences.setItem(PINNED_PERIODS_KEY, '["1h"]')
+    const service = new WorkstationBackupService(`legacy-periods-${crypto.randomUUID()}`, preferences)
+    const archive = await service.exportPreferences()
+    delete archive.data.preferences!.pinnedPeriods
+    await service.import(archive)
+    expect(preferences.getItem(PINNED_PERIODS_KEY)).toBe('["1h"]')
+  })
+
+  it.each([null, '1h', [15], ['unsupported'], ['1h', '1h']].map((value) => ({ value })))('rejects invalid pinned periods $value before importing any data', async ({ value: invalid }) => {
+    const preferences = new MemoryPreferences()
+    preferences.setItem(PINNED_PERIODS_KEY, '["1h"]')
+    preferences.setItem('marketData.binanceBaseUrl', 'https://example.test')
+    const databaseName = `invalid-periods-${crypto.randomUUID()}`
+    const service = new WorkstationBackupService(databaseName, preferences)
+    const archive = await service.exportAll()
+    archive.data.symbols = [symbol()]
+    archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    const payload: unknown = { ...archive, data: { ...archive.data, preferences: { ...archive.data.preferences, pinnedPeriods: invalid } } }
+    await expect(service.import(payload)).rejects.toThrow(/pinnedPeriods/)
+    expect(preferences.getItem(PINNED_PERIODS_KEY)).toBe('["1h"]')
+    expect(preferences.getItem('marketData.binanceBaseUrl')).toBe('https://example.test')
+    const symbols = await new IndexedDbMarketDataStore(databaseName).getSymbols()
+    expect(symbols).toEqual([])
   })
 
   it('exports one market series and one complete session independently', async () => {

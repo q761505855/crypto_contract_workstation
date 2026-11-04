@@ -142,12 +142,11 @@ describe('ChartWorkspace', () => {
       />,
     )
     const compactSelector = container.querySelector(
-      'select[aria-label="图表周期"]',
+      'button[aria-label="图表周期"]',
     )
     expect(compactSelector).not.toBeNull()
-    fireEvent.change(compactSelector!, {
-      target: { value: '1h' },
-    })
+    fireEvent.click(compactSelector!)
+    fireEvent.click(screen.getByRole('button', { name: '选择周期 1h' }))
 
     expect(setPeriod).toHaveBeenCalledWith(
       expect.objectContaining({ text: '1h' }),

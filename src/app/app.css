@@ -41,15 +41,28 @@ html,
 body,
 #root {
   width: 100%;
-  min-width: 1024px;
+  min-width: 0;
   height: 100%;
   margin: 0;
+}
+
+html,
+body {
+  overflow-x: clip;
+  overscroll-behavior-x: none;
 }
 
 button,
 input,
 select {
   font: inherit;
+}
+
+button,
+input,
+select,
+summary {
+  touch-action: manipulation;
 }
 
 button {
@@ -66,9 +79,10 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-rows: 56px minmax(0, 1fr) auto;
+  grid-template-rows: 56px minmax(480px, 1fr) auto auto;
   width: 100%;
   height: 100%;
+  min-height: 100dvh;
   background: #0b0f14;
 }
 
@@ -94,6 +108,10 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.header-actions-toggle {
+  display: none;
 }
 
 .header-actions > button,
@@ -143,26 +161,118 @@ button:disabled {
 
 .chart-host
   .klinecharts-pro-period-bar
-  > .item.tools:nth-last-child(4),
+  > .item.tools:nth-last-child(4 of .tools),
 .chart-host
   .klinecharts-pro-period-bar
-  > .item.tools:nth-last-child(2),
+  > .item.tools:nth-last-child(2 of .tools),
 .chart-host
   .klinecharts-pro-period-bar
-  > .item.tools:last-child {
+  > .item.tools:nth-last-child(1 of .tools) {
   display: none;
 }
 
-.compact-period-selector {
-  position: absolute;
-  z-index: 40;
-  top: 4px;
-  right: 8px;
+.chart-host .klinecharts-pro-period-bar {
+  position: relative;
+  gap: 0;
+}
+
+.chart-host .klinecharts-pro-period-bar > .period {
   display: none;
+}
+
+.period-controls {
+  position: relative;
+  display: flex;
+  flex: 1;
   align-items: center;
+  min-width: 0;
+  height: 38px;
   gap: 6px;
+  padding: 3px 6px;
+}
+
+.pinned-periods {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+}
+
+.pinned-periods button {
+  flex: 0 0 auto;
+  min-width: 38px;
+  padding: 5px 7px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+}
+
+.pinned-periods button[aria-pressed="true"],
+.period-option > button[aria-pressed="true"] {
+  color: #55b8ff;
+  background: rgb(22 119 255 / 15%);
+}
+
+.period-dropdown-trigger {
+  display: flex;
+  flex: 0 0 72px;
+  align-items: center;
+  justify-content: space-between;
+  height: 30px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.period-dropdown {
+  position: absolute;
+  z-index: 150;
+  top: 100%;
+  right: 6px;
+  width: 224px;
+  max-width: calc(100vw - 24px);
+  overflow: hidden;
+  border: 1px solid #303b49;
+  border-radius: 6px;
+  background: #10161f;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+}
+
+.period-dropdown > p {
+  margin: 0;
+  padding: 10px;
   color: #9eaab8;
   font-size: 12px;
+}
+
+.period-options {
+  max-height: min(320px, 40svh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.period-option {
+  display: flex;
+  border-top: 1px solid #242c37;
+}
+
+.period-option > button {
+  flex: 1;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.period-option > .period-pin {
+  flex: 0 0 44px;
+  text-align: center;
+  font-size: 18px;
 }
 
 .price-range-mode {
@@ -212,16 +322,6 @@ button:disabled {
 .price-range-mode button[aria-pressed="true"] {
   color: #55b8ff;
   background: rgb(22 119 255 / 20%);
-}
-
-.compact-period-selector select {
-  width: 72px;
-  height: 30px;
-  padding: 3px 7px;
-  color: #d8dee9;
-  border: 1px solid #303b49;
-  border-radius: 4px;
-  background: #10161f;
 }
 
 .symbol-picker-backdrop {
@@ -397,47 +497,6 @@ button:disabled {
   margin: 0;
   padding: 28px 18px;
   text-align: center;
-}
-
-@container (max-width: 900px) {
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(9),
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(10),
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(11),
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(13),
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(14),
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(15) {
-    display: none;
-  }
-
-  .compact-period-selector {
-    display: flex;
-  }
-}
-
-@container (max-width: 760px) {
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(2),
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(5),
-  .chart-host
-    .klinecharts-pro-period-bar
-    > .period:nth-of-type(7) {
-    display: none;
-  }
 }
 
 .simulation-chart-tooltip {
@@ -883,4 +942,285 @@ button:disabled {
 .data-error {
   color: #ffb4b4;
   background: #371c22;
+}
+
+/* Keep the chart's own controls usable when its container is phone-sized. */
+@container (max-width: 600px) {
+  .chart-host .klinecharts-pro-period-bar {
+    height: 82px;
+    flex-wrap: wrap;
+    align-content: start;
+  }
+
+  .chart-host .klinecharts-pro-period-bar > :not(.period-controls) {
+    height: 38px;
+  }
+
+  .chart-host .klinecharts-pro-content {
+    height: calc(100% - 82px);
+  }
+
+  .period-controls {
+    flex-basis: 100%;
+    height: 44px;
+    border-top: 1px solid #242c37;
+  }
+
+  .pinned-periods button,
+  .period-dropdown-trigger {
+    min-height: 36px;
+  }
+
+  .period-option > button {
+    min-height: 44px;
+  }
+
+  .indicator-info-toggle {
+    top: 106px;
+  }
+
+  .chart-host .klinecharts-pro-period-bar .symbol {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 8px;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+
+  .chart-host .klinecharts-pro-period-bar .tools {
+    flex: 0 0 34px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .chart-host .klinecharts-pro-period-bar .tools svg {
+    margin: 0;
+  }
+
+  .chart-host .klinecharts-pro-modal .inner {
+    max-width: calc(100% - 16px);
+    max-height: calc(100% - 16px);
+    overflow: auto;
+  }
+
+  .chart-host .klinecharts-pro-modal .inner .title-container,
+  .chart-host .klinecharts-pro-modal .inner .content-container {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .chart-host .klinecharts-pro-setting-modal-content {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .chart-host .klinecharts-pro-indicator-setting-modal-content {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .chart-host .klinecharts-pro-parameter-control {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chart-host .klinecharts-pro-indicator-modal-list {
+    height: auto;
+    max-height: 340px;
+    margin-right: 0;
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 1023px) {
+  .app-shell {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto auto;
+    grid-template-areas: "header" "chart" "controls" "panel" "footer";
+  }
+
+  .app-header {
+    grid-area: header;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px;
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+
+  .header-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .header-actions-toggle {
+    display: block;
+    min-height: 36px;
+    margin-left: auto;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .header-actions.is-collapsed {
+    display: none;
+  }
+
+  .workspace-grid {
+    display: contents;
+  }
+
+  .chart-workspace {
+    grid-area: chart;
+    height: clamp(400px, 62svh, 640px);
+    min-height: 0;
+    border-right: 0;
+  }
+
+  .chart-host {
+    min-height: 0;
+  }
+
+  .replay-controls {
+    grid-area: controls;
+    min-width: 0;
+    padding: 12px;
+  }
+
+  .workspace-side-panel {
+    grid-area: panel;
+    min-width: 0;
+    border-top: 1px solid #242c37;
+  }
+
+  .workspace-side-panel > .side-panel {
+    height: auto;
+    overflow: visible;
+  }
+
+  .status-footer {
+    grid-area: footer;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    overflow-wrap: anywhere;
+  }
+
+  .side-panel dd {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-header h1 {
+    font-size: 16px;
+  }
+
+  .header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .mode-switch {
+    grid-column: 1 / -1;
+  }
+
+  .mode-switch button {
+    flex: 1;
+  }
+
+  .header-actions > button,
+  .mode-switch button,
+  .replay-controls button,
+  .side-panel button,
+  .data-drawer button,
+  .symbol-picker-dialog button {
+    min-height: 44px;
+  }
+
+  .replay-controls > *,
+  .replay-controls label,
+  .replay-controls input,
+  .replay-controls select {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .time-jump-control,
+  .replay-setup > label,
+  .replay-position,
+  .replay-start-time,
+  .replay-advanced {
+    flex: 1 1 100%;
+  }
+
+  .time-jump-control {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .time-jump-control label,
+  .replay-setup > label {
+    display: grid;
+    grid-template-columns: 80px minmax(0, 1fr);
+  }
+
+  .time-jump-control label {
+    flex: 1;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .time-jump-control {
+    align-items: flex-end;
+  }
+
+  .time-jump-control > button {
+    flex: 0 0 auto;
+  }
+
+  .replay-controls input,
+  .replay-controls select,
+  .panel-field input,
+  .panel-field select,
+  .data-drawer input,
+  .data-drawer select,
+  .symbol-picker-dialog > input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .replay-advanced summary {
+    padding: 12px 0;
+  }
+
+  .replay-advanced > div {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .replay-advanced label {
+    display: grid;
+    grid-template-columns: 90px minmax(0, 1fr);
+  }
+
+  .replay-position,
+  .replay-error,
+  .trade-list > div {
+    overflow-wrap: anywhere;
+  }
+
+  .data-drawer {
+    width: 100%;
+    height: 100dvh;
+    padding: 16px;
+    padding-top: max(16px, env(safe-area-inset-top));
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  .symbol-picker-list {
+    min-height: 0;
+  }
 }

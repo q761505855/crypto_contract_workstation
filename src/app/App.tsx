@@ -87,6 +87,7 @@ function simulationPriceText(price: number, precision: number): string {
 export default function App() {
   const [mode, setMode] = useState<WorkstationMode>('history')
   const [sidePanelHidden, setSidePanelHidden] = useState(false)
+  const [headerActionsHidden, setHeaderActionsHidden] = useState(false)
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
   const [marketRuntime] = useState(createMarketDataRuntime)
   const [marketSelection, setMarketSelection] = useState<MarketSelection>(() => ({
@@ -311,7 +312,14 @@ export default function App() {
     <main className="app-shell">
       <header className="app-header">
         <h1>加密货币合约回放工作站</h1>
-        <div className="header-actions">
+        <button
+          aria-controls="header-actions"
+          aria-expanded={!headerActionsHidden}
+          className="header-actions-toggle"
+          onClick={() => setHeaderActionsHidden((hidden) => !hidden)}
+          type="button"
+        >{headerActionsHidden ? '展开操作' : '收起操作'}</button>
+        <div className={`header-actions${headerActionsHidden ? ' is-collapsed' : ''}`} id="header-actions">
           <button
             aria-controls="workspace-side-panel"
             aria-expanded={!sidePanelHidden}

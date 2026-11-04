@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import { PINNED_PERIODS_KEY } from '../chart/period-preferences'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
 import {
   BACKUP_FILE_TYPE,
   BACKUP_SCHEMA_VERSION,
   type BackupEnvelope,
+  type BackupPreferences,
   WorkstationBackupService,
 } from '../storage/backup-service'
 import {
@@ -53,29 +55,25 @@ function candle(openTime: number, close = '100'): MarketCandle {
 }
 
 function backup(): BackupEnvelope {
+  // Required ensures newly introduced configuration fields need archive coverage.
+  const preferences: Required<BackupPreferences> = {
+    binanceRestBaseUrl: 'https://fapi.binance.com',
+    favoriteSymbols: ['BTCUSDT'],
+    pinnedPeriods: ['1m', '1d'],
+    selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },
+    chartIndicators: {
+      schemaVersion: 1,
+      main: [{ name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null }],
+      sub: [],
+    },
+  }
   return {
     fileType: BACKUP_FILE_TYPE,
     schemaVersion: BACKUP_SCHEMA_VERSION,
     kind: 'all',
     exportedAt: 1,
     data: {
-      preferences: {
-        binanceRestBaseUrl: 'https://fapi.binance.com',
-        favoriteSymbols: ['BTCUSDT'],
-        selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },
-        chartIndicators: {
-          schemaVersion: 1,
-          main: [
-            {
-              name: 'MA',
-              calcParams: [7, 25, 99],
-              visible: true,
-              styles: null,
-            },
-          ],
-          sub: [],
-        },
-      },
+      preferences,
       symbols: [symbol()],
       tradeCandles: [
         candle(Date.UTC(2024, 0, 1)),
@@ -164,6 +162,54 @@ function client(value: MemoryGitHubClient): GitHubContentsClient {
 }
 
 describe('GitHubSyncService', () => {
+  it('restores pinned periods through real backup storage and detects config-only changes', async () => {
+    const storage = () => {
+      const values = new Map<string, string>()
+      return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
+    }
+    const sourceStorage = storage()
+    const targetStorage = storage()
+    sourceStorage.setItem(PINNED_PERIODS_KEY, '["1m","1d"]')
+    targetStorage.setItem(PINNED_PERIODS_KEY, '["4h"]')
+    const source = new GitHubSyncService(new WorkstationBackupService(`cloud-source-${crypto.randomUUID()}`, sourceStorage))
+    const targetBackups = new WorkstationBackupService(`cloud-target-${crypto.randomUUID()}`, targetStorage)
+    const target = new GitHubSyncService(targetBackups)
+    const remote = new MemoryGitHubClient()
+    const selection = { config: true, sessions: false, marketData: false }
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(targetStorage.getItem(PINNED_PERIODS_KEY)).toBe('["1m","1d"]')
+    sourceStorage.setItem(PINNED_PERIODS_KEY, '[]')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(targetStorage.getItem(PINNED_PERIODS_KEY)).toBe('[]')
+
+    // Old cloud configurations omit the new field and must retain this browser's value.
+    const rewriteRemotePreferences = async (value: Record<string, unknown>) => {
+      const file = remote.files.get('config/preferences.json')!
+      file.bytes = encoder.encode(JSON.stringify(value))
+      const manifestFile = remote.files.get('manifest.json')!
+      const manifest = JSON.parse(decoder.decode(manifestFile.bytes))
+      const entry = manifest.files.find((item: { path: string }) => item.path === 'config/preferences.json')
+      entry.checksum = await sha256(file.bytes)
+      entry.size = file.bytes.byteLength
+      manifestFile.bytes = encoder.encode(JSON.stringify(manifest))
+    }
+    const preferences = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
+    delete preferences.pinnedPeriods
+    await rewriteRemotePreferences(preferences)
+    targetStorage.setItem(PINNED_PERIODS_KEY, '["1h"]')
+    await target.pull(client(remote))
+    expect(targetStorage.getItem(PINNED_PERIODS_KEY)).toBe('["1h"]')
+
+    // A correct checksum is insufficient: validate configuration before applying any of it.
+    const before = await targetBackups.exportAll()
+    await rewriteRemotePreferences({ ...preferences, binanceRestBaseUrl: 'https://changed.test', pinnedPeriods: ['bogus'] })
+    await expect(target.pull(client(remote))).rejects.toThrow(/pinnedPeriods/)
+    expect((await targetBackups.exportAll()).data).toEqual(before.data)
+  })
+
   it('prepares config files and gzip-compressed monthly market chunks', async () => {
     const files = await service(new MemoryBackupService()).prepare()
 
@@ -191,6 +237,7 @@ describe('GitHubSyncService', () => {
     expect(JSON.parse(decoder.decode(preferences.bytes))).toMatchObject({
       chartIndicators: backup().data.preferences?.chartIndicators,
       selectedSymbol: backup().data.preferences?.selectedSymbol,
+      pinnedPeriods: backup().data.preferences?.pinnedPeriods,
     })
   })
 

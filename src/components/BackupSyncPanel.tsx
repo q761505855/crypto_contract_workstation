@@ -161,7 +161,7 @@ export function BackupSyncPanel({
     setStatus(
       `导入完成：${report.tradeCandles + report.markCandles} 根 K 线，${
         report.sessions
-      } 个会话，${report.simulations} 个模拟账户。刷新页面可恢复导入的活动会话。`,
+      } 个会话，${report.simulations} 个模拟账户。刷新页面以应用恢复的配置和活动会话。`,
     )
   }
 
@@ -232,7 +232,7 @@ export function BackupSyncPanel({
     setStatus(
       `云端恢复完成：${result.files} 个文件，${bytes(
         result.bytes,
-      )}。刷新页面可恢复导入的活动会话。`,
+      )}。刷新页面以应用恢复的配置和活动会话。`,
     )
     addLog('云端恢复完成')
   }
