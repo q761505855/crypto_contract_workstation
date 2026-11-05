@@ -161,6 +161,7 @@ export class GitHubContentsClient {
         )}`,
         {
           method: 'GET',
+          cache: 'no-store',
           headers: this.headers(),
           signal: options.signal,
         },
@@ -193,7 +194,7 @@ export class GitHubContentsClient {
     if (payload.encoding === 'none' || (typeof payload.size === 'number' && payload.size > 1_048_576)) {
       const raw = await this.fetcher.call(globalThis,
         `${GITHUB_API_BASE}${this.repoPath()}/contents/${encodedPath}?ref=${encodeURIComponent(options.ref ?? this.target.branch)}`,
-        { method: 'GET', headers: { ...this.headers(), Accept: 'application/vnd.github.raw+json' }, signal: options.signal })
+        { method: 'GET', cache: 'no-store', headers: { ...this.headers(), Accept: 'application/vnd.github.raw+json' }, signal: options.signal })
       if (!raw.ok) throw responseError(raw.status, 'file')
       bytes = new Uint8Array(await raw.arrayBuffer())
     } else {
@@ -310,6 +311,9 @@ export class GitHubContentsClient {
     try {
       response = await this.fetcher.call(globalThis, `${GITHUB_API_BASE}${path}`, {
         ...init,
+        // GitHub serves refs with max-age=60. Reusing our previous head makes
+        // the next atomic upload branch from stale history and fail with 422.
+        cache: 'no-store',
         headers: {
           ...this.headers(),
           ...init.headers,

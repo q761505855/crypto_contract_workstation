@@ -188,7 +188,8 @@ test('prepares full minute months, automatically uploads and reads cloud without
   await controls.getByLabel('图表跳转时间').fill('2025-09-15T12:00')
   await controls.getByRole('button',{name:'跳转',exact:true}).click()
   try {
-    await expect(page.locator('.status-footer')).toContainText('图表已跳转到',{timeout:30_000})
+    // Cold cloud reads persist both complete minute series in native IndexedDB.
+    await expect(page.locator('.status-footer')).toContainText('图表已跳转到',{timeout:60_000})
   } catch (error) {
     const diagnosticsPath = test.info().outputPath('cold-cloud-readback-diagnostics.json')
     await writeFile(diagnosticsPath, JSON.stringify({

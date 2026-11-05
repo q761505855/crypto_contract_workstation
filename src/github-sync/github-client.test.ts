@@ -12,6 +12,41 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('GitHubContentsClient', () => {
+  it('reads the current branch head after another upload despite a fresh browser HTTP cache', async () => {
+    let head = 'first'
+    let cachedHead: string | undefined
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).endsWith('/git/ref/heads/main')) {
+        cachedHead ??= head
+        return jsonResponse({object:{sha:init?.cache === 'no-store' ? head : cachedHead}})
+      }
+      const commit = String(input).split('/').at(-1)
+      return jsonResponse({tree:{sha:`tree-${commit}`}})
+    })
+    const client = new GitHubContentsClient({owner:'alice',repository:'backup',branch:'main'},'token',fetcher)
+    expect((await client.getSnapshot()).commitSha).toBe('first')
+    head = 'second'
+    expect(await client.getSnapshot()).toEqual({commitSha:'second',treeSha:'tree-second'})
+  })
+
+  it.each([false,true])('reads changed branch file metadata and bytes without stale HTTP cache (raw=%s)', async (raw) => {
+    let content = 'before'
+    const cached = new Map<string,string>()
+    const fetcher = vi.fn<typeof fetch>(async (input,init) => {
+      const isRaw = (init?.headers as Record<string,string>).Accept.includes('raw+json')
+      const key = `${input}:${isRaw}`
+      if (!cached.has(key)) cached.set(key,content)
+      const value = init?.cache === 'no-store' ? content : cached.get(key)!
+      return isRaw ? new Response(value) : jsonResponse({type:'file',path:'preferences.json',sha:value,encoding:raw?'none':'base64',content:btoa(value)})
+    })
+    const client = new GitHubContentsClient({owner:'alice',repository:'backup',branch:'main'},'token',fetcher)
+    expect(new TextDecoder().decode((await client.getFile('preferences.json'))!.bytes)).toBe('before')
+    content = 'after'
+    const file = await client.getFile('preferences.json')
+    expect(file?.sha).toBe('after')
+    expect(new TextDecoder().decode(file!.bytes)).toBe('after')
+  })
+
   it('allows public scoped reads and rejects traversal and unauthenticated writes', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ type: 'file', path: 'projects/app/manifest.json', sha: 'a', encoding: 'base64', content: btoa('{}') }))
     const client = new GitHubContentsClient({ owner: 'alice', repository: 'backup', branch: 'main', root: 'projects/app' }, '', fetcher)
