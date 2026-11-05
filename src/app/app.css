@@ -1071,13 +1071,26 @@ button:disabled {
 
   .chart-workspace {
     grid-area: chart;
-    height: clamp(400px, 62svh, 640px);
+    /* Give the price pane its own space; each indicator adds to document height. */
+    height: calc(max(420px, 65svh) + var(--chart-subpanes-height, 404px) + 106px);
     min-height: 0;
     border-right: 0;
   }
 
   .chart-host {
     min-height: 0;
+  }
+
+  .chart-host .klinecharts-pro-modal,
+  .symbol-picker-backdrop {
+    align-items: flex-start;
+    padding-top: 12px;
+  }
+
+  .chart-host .klinecharts-pro-modal .inner,
+  .symbol-picker-dialog {
+    max-height: min(620px, 65svh);
+    overflow-y: auto;
   }
 
   .replay-controls {

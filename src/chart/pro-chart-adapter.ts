@@ -29,6 +29,7 @@ import { registerPivotsIndicator } from './pivots-indicator'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
+const ON_PANE_DRAG = 'onPaneDrag' as ActionType
 
 export interface SimulationTradeOverlay {
   id: string
@@ -59,6 +60,7 @@ export interface ChartAdapterPort {
   setSymbol(symbol: SymbolInfo): void
   reloadData(): Promise<void>
   resize?(): void
+  layoutSubPanes?(minimumHeight: number): number
   setPriceRangeAuto?(auto: boolean): void
   getPriceRangeAuto?(): boolean
   setIndicatorInfoVisible?(visible: boolean): void
@@ -104,6 +106,8 @@ export class ProChartAdapter implements ChartAdapterPort {
   private datafeed: Datafeed | null = null
   private reloadSequence = 0
   private tooltipElement: HTMLDivElement | null = null
+  private readonly responsivePaneHeights = new Map<string, number>()
+  private readonly responsiveDisplayHeights = new Map<string, number>()
 
   constructor(private readonly factory: ChartProFactory = createProChart) {}
 
@@ -114,6 +118,18 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.chart = this.factory(options)
     this.coreChart = this.chart.getChart()
     this.datafeed = options.datafeed
+    this.coreChart.subscribeAction?.(ON_PANE_DRAG, () => {
+      // Only an explicit separator drag changes the archived height. Responsive
+      // enlargement must not overwrite a user's desktop layout in their backup.
+      for (const paneId of this.responsivePaneHeights.keys()) {
+        const height = this.coreChart?.getSize(paneId)?.height
+        const displayed = this.responsiveDisplayHeights.get(paneId)
+        if (height !== undefined && height !== displayed) {
+          this.responsivePaneHeights.set(paneId, height)
+          this.responsiveDisplayHeights.set(paneId, height)
+        }
+      }
+    })
   }
 
   setTheme(theme: string): void {
@@ -122,6 +138,38 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   resize(): void {
     this.coreChart?.resize()
+  }
+
+  layoutSubPanes(minimumHeight: number): number {
+    if (minimumHeight === 0 && this.responsivePaneHeights.size === 0) return 0
+    const chart = this.requireCoreChart()
+    const panes = chart.getIndicatorByPaneId()
+    if (!(panes instanceof Map)) return 0
+    let totalHeight = 0
+    for (const paneId of this.responsivePaneHeights.keys()) {
+      if (!panes.has(paneId)) {
+        this.responsivePaneHeights.delete(paneId)
+        this.responsiveDisplayHeights.delete(paneId)
+      }
+    }
+    for (const [paneId, indicators] of panes) {
+      if (paneId === 'candle_pane' || !(indicators instanceof Map) || indicators.size === 0) continue
+      const currentHeight = chart.getSize(paneId)?.height ?? 100
+      if (minimumHeight > 0 && !this.responsivePaneHeights.has(paneId)) {
+        this.responsivePaneHeights.set(paneId, currentHeight)
+      }
+      const savedHeight = this.responsivePaneHeights.get(paneId) ?? currentHeight
+      const height = Math.max(savedHeight, minimumHeight)
+      if (minimumHeight === 0) {
+        this.responsivePaneHeights.delete(paneId)
+        this.responsiveDisplayHeights.delete(paneId)
+      } else {
+        this.responsiveDisplayHeights.set(paneId, height)
+      }
+      if (Math.abs(currentHeight - height) > 1) chart.setPaneOptions({ id: paneId, height })
+      totalHeight += height + 2
+    }
+    return totalHeight
   }
 
   setPriceRangeAuto(auto: boolean): void {
@@ -254,7 +302,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       sub.push({
         ...(chart.getSize(paneId)?.height === undefined
           ? {}
-          : { height: chart.getSize(paneId)!.height }),
+          : { height: this.responsivePaneHeights.get(paneId) ?? chart.getSize(paneId)!.height }),
         indicators: [...indicators.values()].map((indicator) =>
           this.indicatorSetting(indicator),
         ),

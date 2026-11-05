@@ -7,6 +7,10 @@ async function selectChartPeriod(page: import('@playwright/test').Page, value: s
   await page.getByRole('button', { name: `选择周期 ${value}`, exact: true }).click()
 }
 
+async function waitForChartRender(page: import('@playwright/test').Page) {
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+}
+
 const intervalMilliseconds: Record<string, number> = {
   '1m': 60_000,
   '3m': 3 * 60_000,
@@ -252,6 +256,56 @@ async function expectCanvasContent(page: import('@playwright/test').Page) {
 test.describe('mobile workstation', () => {
   test.use({ isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
 
+  test('gives the price pane and every indicator vertical space while preserving archived heights', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockBinance(page, true)
+    await page.addInitScript(() => {
+      if (localStorage.getItem('chart.indicators.v1') !== null) return
+      localStorage.setItem('chart.indicators.v1', JSON.stringify({
+        schemaVersion: 1,
+        main: [{ name: 'MA', calcParams: [5, 10, 30, 60], visible: true, styles: null }],
+        sub: [
+          { height: 80, indicators: [{ name: 'VOL', calcParams: [5, 10, 20], visible: true, styles: null }] },
+          { height: 280, indicators: [{ name: 'MACD', calcParams: [12, 26, 9], visible: true, styles: null }] },
+        ],
+      }))
+    })
+    await page.goto('./')
+    const host = page.getByTestId('chart-host')
+    const originalHost = await host.elementHandle()
+    const panes = page.locator('[k-line-chart-id] > div > div').filter({ has: page.locator('canvas') })
+    const heights = () => panes.evaluateAll((elements) => elements.map((element) => Math.round(element.getBoundingClientRect().height)))
+    const savedHeights = () => page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!).sub.map((pane: { height: number }) => pane.height))
+    await expect.poll(heights).toEqual([expect.any(Number), 200, 280, expect.any(Number)])
+    expect((await heights())[0]).toBeGreaterThanOrEqual(420)
+    expect((await host.boundingBox())!.height).toBeGreaterThan(844)
+    await page.clock.runFor(500)
+    expect(await savedHeights()).toEqual([80, 280])
+    await page.screenshot({ path: 'test-results/mobile-tall-chart.png', fullPage: true })
+    const beforeAdd = (await host.boundingBox())!.height
+    await page.getByText('指标', { exact: true }).locator('..').tap()
+    await page.locator('.klinecharts-pro-indicator-modal-list li.row').filter({ hasText: /^RSI/ }).tap()
+    await page.locator('.klinecharts-pro-modal .close-icon').tap()
+    await page.clock.runFor(500)
+    await expect(panes).toHaveCount(5)
+    expect((await host.boundingBox())!.height).toBeGreaterThan(beforeAdd + 190)
+    expect((await heights())[0]).toBeGreaterThanOrEqual(420)
+    expect((await heights()).slice(1, -1).every((height) => height >= 200)).toBe(true)
+
+    await page.setViewportSize({ width: 1280, height: 1000 })
+    await page.clock.runFor(500)
+    expect((await heights()).slice(1, -1)).toEqual([80, 280, 100])
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.clock.runFor(500)
+    await expect.poll(heights).toEqual([expect.any(Number), 200, 280, 200, expect.any(Number)])
+    expect(await savedHeights()).toEqual([80, 280, 100])
+    expect(await originalHost!.evaluate((node) => node === document.querySelector('[data-testid="chart-host"]'))).toBe(true)
+    await page.reload()
+    await expect.poll(heights).toEqual([expect.any(Number), 200, 280, 200, expect.any(Number)])
+    await page.getByTestId('replay-controls').getByLabel('图表跳转时间').fill('2026-07-22T00:00')
+    expect(await page.evaluate(() => scrollX)).toBe(0)
+  })
+
   for (const width of [320, 390, 768]) {
     test(`fits ${width}px screens and keeps chart tools and dialogs reachable`, async ({ page }) => {
       await page.setViewportSize({ width, height: 844 })
@@ -408,6 +462,9 @@ test.describe('mobile workstation', () => {
     const { axis, pricePerPixel, readTimeTicks } = await trackPriceAxis(page)
     await page.goto('./')
     await expect.poll(pricePerPixel).toBeGreaterThan(0)
+    await page.getByRole('button', { name: '自动', exact: true }).tap()
+    await page.evaluate(() => scrollTo(0, 0))
+    await waitForChartRender(page)
     const client = await context.newCDPSession(page)
     const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd' | 'touchCancel', points: { x: number; y: number; id: number }[]) =>
       client.send('Input.dispatchTouchEvent', { type, touchPoints: points })
@@ -450,6 +507,8 @@ test.describe('mobile workstation', () => {
     await expect.poll(pricePerPixel).toBeCloseTo(initial, 4)
     await page.getByRole('button', { name: '自动', exact: true }).tap()
     await expect.poll(pricePerPixel).toBeCloseTo(initial, 4)
+    // The taller chart places its bottom controls below the first screen.
+    await page.evaluate((top) => scrollTo(0, top), initialScroll)
 
     await touch('touchStart', [{ x: 120, y, id: 0 }, { x: 180, y, id: 1 }])
     for (let step = 1; step <= 5; step++) {
@@ -1179,6 +1238,10 @@ test('zooms the price range with the wheel over the price axis while preserving 
   const manual = mode.getByRole('button', { name: '手动', exact: true })
   await expect(auto).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(pricePerPixel).toBeGreaterThan(0)
+  // Normalize the automatic range after initial data and pane setup, before
+  // comparing wheel zoom and reset against the same interactive fit operation.
+  await auto.click()
+  await waitForChartRender(page)
   const initial = await pricePerPixel()
   await expect.poll(async () => (await readTimeTicks()).length).toBeGreaterThan(1)
   const initialTimeTicks = await readTimeTicks()

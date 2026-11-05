@@ -54,6 +54,7 @@ export function ChartWorkspace({
   onRightmostCandleTimeChange,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const synchronizeLayoutRef = useRef<(() => void) | null>(null)
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
@@ -98,9 +99,24 @@ export function ChartWorkspace({
     }
     const host = hostRef.current
     setPeriodToolbar(host.querySelector('.klinecharts-pro-period-bar'))
+    const synchronizeLayout = (resized = false) => {
+      const narrow = window.matchMedia?.('(max-width: 1023px)').matches ?? false
+      const subPaneHeight = adapter?.layoutSubPanes?.(narrow ? 200 : 0)
+      if (narrow && subPaneHeight !== undefined) {
+        const style = host.parentElement?.style
+        const next = `${subPaneHeight}px`
+        if (style?.getPropertyValue('--chart-subpanes-height') !== next) {
+          style?.setProperty('--chart-subpanes-height', next)
+          resized = true
+        }
+      }
+      if (resized) adapter?.resize?.()
+    }
+    synchronizeLayoutRef.current = synchronizeLayout
+    synchronizeLayout()
     const resizeObserver = typeof ResizeObserver === 'undefined'
       ? null
-      : new ResizeObserver(() => adapter?.resize?.())
+      : new ResizeObserver(() => synchronizeLayout(true))
     resizeObserver?.observe(host)
     const openSymbolPicker = (event: MouseEvent) => {
       const target = event.target
@@ -116,6 +132,7 @@ export function ChartWorkspace({
     host.addEventListener('click', openSymbolPicker, true)
     return () => {
       resizeObserver?.disconnect()
+      synchronizeLayoutRef.current = null
       host.removeEventListener('click', openSymbolPicker, true)
     }
   }, [])
@@ -225,6 +242,7 @@ export function ChartWorkspace({
     if (adapter?.getIndicatorPreferences === undefined) return
     let previous = JSON.stringify(adapter.getIndicatorPreferences())
     const synchronize = () => {
+      synchronizeLayoutRef.current?.()
       const preferences = adapter.getIndicatorPreferences?.()
       if (preferences === undefined) return
       const serialized = JSON.stringify(preferences)

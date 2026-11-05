@@ -41,6 +41,45 @@ function fakeChart(coreChart?: Chart): ChartPro {
 }
 
 describe('ProChartAdapter', () => {
+  it('expands narrow-screen subpanes without overwriting saved heights and tracks explicit user resizing', () => {
+    const indicator = { name: 'VOL', calcParams: [], visible: true, styles: null }
+    const panes = new Map([
+      ['candle_pane', new Map()],
+      ['volume', new Map([['VOL', indicator]])],
+      ['oscillator', new Map([['MACD', { ...indicator, name: 'MACD' }]])],
+    ])
+    const heights = new Map([['volume', 100], ['oscillator', 280]])
+    let onDrag: (() => void) | undefined
+    const core = {
+      getIndicatorByPaneId: () => panes,
+      getSize: (id: string) => ({ height: heights.get(id) ?? 500 }),
+      setPaneOptions: ({ id, height }: { id: string; height: number }) => { heights.set(id, height) },
+      subscribeAction: (type: string, callback: () => void) => { if (type === 'onPaneDrag') onDrag = callback },
+    } as unknown as Chart
+    const adapter = new ProChartAdapter(() => fakeChart(core))
+    adapter.mount({
+      container: document.createElement('div'),
+      symbol: { ticker: 'BTCUSDT' },
+      period: { multiplier: 15, timespan: 'minute', text: '15m' },
+      datafeed: { searchSymbols: async () => [], getHistoryKLineData: async () => [], subscribe: () => {}, unsubscribe: () => {} },
+    })
+    expect(adapter.layoutSubPanes(200)).toBe(484)
+    expect(heights.get('volume')).toBe(200)
+    expect(adapter.getIndicatorPreferences().sub.map(({ height }) => height)).toEqual([100, 280])
+    heights.set('oscillator', 320)
+    onDrag?.()
+    expect(adapter.getIndicatorPreferences().sub.map(({ height }) => height)).toEqual([100, 320])
+    adapter.layoutSubPanes(0)
+    expect(heights.get('volume')).toBe(100)
+    expect(heights.get('oscillator')).toBe(320)
+    adapter.layoutSubPanes(200)
+    panes.delete('volume')
+    expect(adapter.layoutSubPanes(200)).toBe(322)
+    panes.set('new-pane', new Map([['RSI', { ...indicator, name: 'RSI' }]]))
+    heights.set('new-pane', 100)
+    expect(adapter.layoutSubPanes(200)).toBe(524)
+  })
+
   it('mounts once and delegates public updates', () => {
     const chart = fakeChart()
     const factory = vi.fn((_options: ChartProOptions) => chart)
