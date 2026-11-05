@@ -136,9 +136,7 @@ export function BackupSyncPanel({
       envelope,
     )
     setStatus(
-      `已导出 ${envelope.data.tradeCandles?.length ?? 0} 根普通 K 线和 ${
-        envelope.data.markCandles?.length ?? 0
-      } 根标记价格 K 线。`,
+      `已导出 ${envelope.data.tradeCandles?.length ?? 0} 根普通 K 线。`,
     )
   }
 
@@ -164,7 +162,7 @@ export function BackupSyncPanel({
     await refreshSessions()
     await onChanged()
     setStatus(
-      `导入完成：${report.tradeCandles + report.markCandles} 根 K 线，${
+      `导入完成：${report.tradeCandles} 根 K 线，${
         report.sessions
       } 个会话，${report.simulations} 个模拟账户。刷新页面以应用恢复的配置和活动会话。`,
     )

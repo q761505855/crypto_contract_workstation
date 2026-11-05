@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 import { SUPPORTED_PERIODS } from '../chart/chart-config'
 import type {
-  CandleKind,
   DownloadProgress,
   MarketSelection,
   MarketSymbol,
@@ -32,11 +31,6 @@ interface DataManagerProps {
   onClose: () => void
 }
 
-interface SummaryPair {
-  trade: SeriesSummary
-  mark: SeriesSummary
-}
-
 function inputDateTime(timestamp: number): string {
   const date = new Date(timestamp)
   const localTimestamp = timestamp - date.getTimezoneOffset() * 60_000
@@ -59,8 +53,7 @@ function displayTime(timestamp: number | null): string {
 }
 
 function progressText(progress: DownloadProgress): string {
-  const name = progress.kind === 'trade' ? '普通 K 线' : '标记价格 K 线'
-  return `${name}：第 ${progress.page} 页，本次已接收 ${progress.stored} 根`
+  return `普通 K 线：第 ${progress.page} 页，本次已接收 ${progress.stored} 根`
 }
 
 function CacheSummary({
@@ -110,10 +103,7 @@ export function DataManager({
   const [toText, setToText] = useState(() => inputDateTime(initialRange.to))
   const [baseUrl, setBaseUrl] = useState(runtime.service.getBaseUrl())
   const [favorites, setFavorites] = useState<string[]>(readFavoriteSymbols)
-  const [summary, setSummary] = useState<SummaryPair>({
-    trade: EMPTY_SERIES_SUMMARY,
-    mark: EMPTY_SERIES_SUMMARY,
-  })
+  const [summary, setSummary] = useState<SeriesSummary>(EMPTY_SERIES_SUMMARY)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
@@ -148,19 +138,7 @@ export function DataManager({
     if (selectedSymbol.trim().length === 0) {
       return
     }
-    const [trade, mark] = await Promise.all([
-      runtime.service.inspectSeries(
-        'trade',
-        selectedSymbol,
-        '1m',
-      ),
-      runtime.service.inspectSeries(
-        'mark',
-        selectedSymbol,
-        '1m',
-      ),
-    ])
-    setSummary({ trade, mark })
+    setSummary(await runtime.service.inspectSeries('trade', selectedSymbol, '1m'))
     setPendingUploads(runtime.service.getPendingUploadCount())
   }
 
@@ -214,7 +192,7 @@ export function DataManager({
     void refreshSummary(symbol.symbol)
   }
 
-  async function download(kinds: readonly CandleKind[]): Promise<void> {
+  async function download(): Promise<void> {
     const symbol = selectedSymbol()
     const from = parseInputDateTime(fromText)
     const to = parseInputDateTime(toText)
@@ -235,7 +213,6 @@ export function DataManager({
     runtime.service.resetReplayRequests()
     try {
       const actual = await runtime.service.prepareHistory(symbol.symbol, from, to, {
-        kinds,
         signal: controller.signal,
         onProgress: (progress) => setStatus(progressText(progress)),
         onStatus: setStatus,
@@ -327,7 +304,7 @@ export function DataManager({
     }
     if (
       !window.confirm(
-        `确认删除 ${symbol.symbol} 1m 的普通和标记价格 K 线缓存？`,
+        `确认删除 ${symbol.symbol} 1m 的普通 K 线缓存？`,
       )
     ) {
       return
@@ -335,10 +312,7 @@ export function DataManager({
     setBusy(true)
     setError('')
     try {
-      await Promise.all([
-        runtime.service.deleteSeries('trade', symbol.symbol, '1m'),
-        runtime.service.deleteSeries('mark', symbol.symbol, '1m'),
-      ])
+      await runtime.service.deleteSeries('trade', symbol.symbol, '1m')
       await refreshSummary(symbol.symbol)
       setStatus('当前交易对的 1m 本地缓存已删除。')
     } catch (reason) {
@@ -469,7 +443,7 @@ export function DataManager({
 
         <section>
           <h3>历史数据区间</h3>
-          <p className="muted-text">固定下载 1m 普通与标记价格数据，图表周期由分钟数据聚合。默认范围为上一个完整 UTC 月。</p>
+          <p className="muted-text">固定下载 1m 普通价格数据，图表周期由分钟数据聚合。默认范围为上一个完整 UTC 月。</p>
           <label>
             开始时间
             <input
@@ -492,24 +466,10 @@ export function DataManager({
           <div className="button-row download-actions">
             <button
               disabled={busy || selectedSymbol() === undefined}
-              onClick={() => void download(['trade'])}
+              onClick={() => void download()}
               type="button"
             >
-              下载普通 K 线
-            </button>
-            <button
-              disabled={busy || selectedSymbol() === undefined}
-              onClick={() => void download(['mark'])}
-              type="button"
-            >
-              下载标记价格
-            </button>
-            <button
-              disabled={busy || selectedSymbol() === undefined}
-              onClick={() => void download(['trade', 'mark'])}
-              type="button"
-            >
-              下载两类数据
+              下载历史数据
             </button>
             {busy && abortRef.current !== null && (
               <button
@@ -525,8 +485,7 @@ export function DataManager({
 
         <section>
           <h3>本地缓存（1m 分钟源数据）</h3>
-          <CacheSummary summary={summary.trade} title="普通 K 线" />
-          <CacheSummary summary={summary.mark} title="标记价格 K 线" />
+          <CacheSummary summary={summary} title="普通 K 线" />
           <div className="button-row">
             <button
               disabled={busy}

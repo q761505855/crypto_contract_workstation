@@ -11,6 +11,7 @@ import {
 import {
   GitHubConflictError,
   type GitHubFile,
+  type GitHubSnapshot,
   GitHubContentsClient,
 } from './github-client'
 import {
@@ -111,13 +112,48 @@ class MemoryGitHubClient {
   readonly files = new Map<string, StoredFile>()
   readonly putOrder: string[] = []
   conflictOnceFor: string | null = null
+  failAtomicPhase: 'blob' | 'ref' | null = null
+  raceOnce: (() => Promise<void>) | null = null
+  readonly atomicBatches: string[][] = []
+  private head = 0
+  private readonly snapshots = new Map<string, Map<string, StoredFile>>()
   private sequence = 0
 
-  async getFile(path: string): Promise<GitHubFile | null> {
-    const file = this.files.get(path)
+  async getSnapshot(): Promise<GitHubSnapshot> {
+    const commitSha = `commit-${this.head}`
+    this.snapshots.set(commitSha, structuredClone(this.files))
+    return { commitSha, treeSha: `tree-${this.head}` }
+  }
+
+  async getFile(path: string, options: { ref?: string } = {}): Promise<GitHubFile | null> {
+    const file = (options.ref ? this.snapshots.get(options.ref)! : this.files).get(path)
     return file === undefined
       ? null
       : { path, sha: file.sha, bytes: new Uint8Array(file.bytes) }
+  }
+
+  async commitFiles(files: readonly { path: string; bytes: Uint8Array }[], _message: string, snapshot: GitHubSnapshot): Promise<void> {
+    this.atomicBatches.push(files.map(file => file.path))
+    if (this.failAtomicPhase === 'blob') throw new Error('Injected blob upload failure')
+    if (this.conflictOnceFor) {
+      const path = this.conflictOnceFor
+      this.conflictOnceFor = null
+      this.files.set(path, { sha: `raced-${++this.sequence}`, bytes: encoder.encode('remote-race') })
+      this.head++
+      throw new GitHubConflictError(path)
+    }
+    if (this.raceOnce) {
+      const race = this.raceOnce
+      this.raceOnce = null
+      await race()
+      this.head++
+    }
+    if (this.failAtomicPhase === 'ref' || snapshot.commitSha !== `commit-${this.head}`) throw new GitHubConflictError('manifest.json')
+    for (const file of files) {
+      this.putOrder.push(file.path)
+      this.files.set(file.path, { sha: `sha-${++this.sequence}`, bytes: new Uint8Array(file.bytes) })
+    }
+    this.head++
   }
 
   async putFile(
@@ -162,7 +198,155 @@ function client(value: MemoryGitHubClient): GitHubContentsClient {
   return value as unknown as GitHubContentsClient
 }
 
+async function seedLegacyMonth(remote: MemoryGitHubClient): Promise<void> {
+  await service(new MemoryBackupService()).upload(client(remote), 'stop')
+  const path = 'data/market-history/BTCUSDT/1m/2024/01.json.gz'
+  const oldPath = path.replace('data/market-history', 'market-data')
+  const chunk = JSON.parse(decoder.decode(await gunzip(remote.files.get(path)!.bytes)))
+  chunk.markCandles = backup().data.markCandles
+  const bytes = await gzip(encoder.encode(JSON.stringify(chunk)))
+  remote.files.delete(path)
+  remote.files.set(oldPath, { sha: 'legacy-chunk', bytes })
+  const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+  const entry = value.files.find((item: { path: string }) => item.path === path)
+  entry.path = oldPath
+  entry.size = bytes.length
+  entry.checksum = await sha256(bytes)
+  remote.files.get('manifest.json')!.bytes = encoder.encode(JSON.stringify(value))
+}
+
 describe('GitHubSyncService', () => {
+  it.each(['blob', 'ref'] as const)('leaves legacy migration and manifest readable after an atomic %s failure', async (phase) => {
+    const remote = new MemoryGitHubClient()
+    await seedLegacyMonth(remote)
+    const before = new Map([...remote.files].map(([path, file]) => [path, { sha: file.sha, bytes: new Uint8Array(file.bytes) }]))
+    remote.failAtomicPhase = phase
+    await expect(service(new MemoryBackupService()).upload(client(remote), 'stop')).rejects.toThrow()
+    expect([...remote.files.keys()]).toEqual([...before.keys()])
+    for (const [path, file] of before) {
+      expect(remote.files.get(path)?.sha).toBe(file.sha)
+      expect(Array.from(remote.files.get(path)!.bytes)).toEqual(Array.from(file.bytes))
+    }
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.tradeCandles).toEqual(backup().data.tradeCandles)
+    remote.failAtomicPhase = null
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    await service(target).pull(client(remote))
+    expect(target.imports[1].data.tradeCandles).toEqual(backup().data.tradeCandles)
+  })
+
+  it.each(['keep-local', 'keep-remote', 'save-copy'] as const)('atomically resolves a race with %s while retaining newly added remote months', async (resolution) => {
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    remote.files.set('storage.json', { sha: 'registry', bytes: encoder.encode('other-project-registry') })
+    remote.files.set('projects/other/data.json', { sha: 'other', bytes: encoder.encode('other-project-data') })
+    const local = backup()
+    local.data.preferences!.favoriteSymbols = ['ETHUSDT']
+    const remoteBackup = backup()
+    remoteBackup.data.tradeCandles = [candle(Date.UTC(2024, 1, 1))]
+    const [extraMonth] = await service(new MemoryBackupService(remoteBackup)).prepare({ config: false, sessions: false, marketData: true })
+    remote.raceOnce = async () => {
+      const bytes = encoder.encode(JSON.stringify({ schemaVersion: 1, favoriteSymbols: ['SOLUSDT'] }))
+      remote.files.set('config/favorites.json', { sha: 'concurrent-favorites', bytes })
+      remote.files.set(extraMonth.path, { sha: 'concurrent-month', bytes: extraMonth.bytes })
+      const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+      const entry = value.files.find((item: { path: string }) => item.path === 'config/favorites.json')
+      entry.size = bytes.length
+      entry.checksum = await sha256(bytes)
+      value.files.push({ ...extraMonth, bytes: undefined, updatedAt: 2 })
+      remote.files.set('manifest.json', { sha: 'concurrent-manifest', bytes: encoder.encode(JSON.stringify(value)) })
+    }
+    const result = await service(new MemoryBackupService(local)).upload(client(remote), resolution)
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.preferences?.favoriteSymbols).toEqual(resolution === 'keep-local' ? ['ETHUSDT'] : ['SOLUSDT'])
+    expect(target.imports[0].data.tradeCandles).toHaveLength(3)
+    expect(result.skippedConflicts).toBe(resolution === 'keep-remote' ? 1 : 0)
+    expect(result.copiedConflicts).toBe(resolution === 'save-copy' ? 1 : 0)
+    const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+    if (resolution === 'save-copy') {
+      const copy = [...remote.files.keys()].find(path => path.startsWith('config/favorites.local-'))!
+      expect(JSON.parse(decoder.decode(remote.files.get(copy)!.bytes)).favoriteSymbols).toEqual(['ETHUSDT'])
+      expect(value.files.some((entry: { path: string }) => entry.path === copy)).toBe(false)
+    }
+    expect(decoder.decode(remote.files.get('storage.json')!.bytes)).toBe('other-project-registry')
+    expect(decoder.decode(remote.files.get('projects/other/data.json')!.bytes)).toBe('other-project-data')
+  })
+
+  it('stops after a second ref conflict without partially migrating legacy files', async () => {
+    const remote = new MemoryGitHubClient()
+    await seedLegacyMonth(remote)
+    const before = [...remote.files].map(([path, file]) => ({ path, sha: file.sha, bytes: Array.from(file.bytes) }))
+    remote.failAtomicPhase = 'ref'
+    const batches = remote.atomicBatches.length
+    await expect(service(new MemoryBackupService()).upload(client(remote), 'keep-local')).rejects.toBeInstanceOf(GitHubConflictError)
+    expect(remote.atomicBatches.length - batches).toBe(2)
+    expect([...remote.files].map(([path, file]) => ({ path, sha: file.sha, bytes: Array.from(file.bytes) }))).toEqual(before)
+    await service(new MemoryBackupService()).pull(client(remote))
+  })
+
+  it('does not overwrite an existing timestamped conflict copy', async () => {
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const path = 'config/favorites.local-123.json'
+    remote.files.set(path, { sha: 'existing-copy', bytes: encoder.encode('keep-this-copy') })
+    remote.conflictOnceFor = 'config/favorites.json'
+    await expect(service(new MemoryBackupService(), () => 123).upload(client(remote), 'save-copy')).rejects.toBeInstanceOf(GitHubConflictError)
+    expect(decoder.decode(remote.files.get(path)!.bytes)).toBe('keep-this-copy')
+  })
+
+  it('keeps fresh remote-only candle corrections while overlaying only actual local rows on retry', async () => {
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const path = 'data/market-history/BTCUSDT/1m/2024/01.json.gz'
+    const local = backup()
+    local.data.tradeCandles = [candle(Date.UTC(2024, 0, 1), '105')]
+    remote.raceOnce = async () => {
+      const chunk = JSON.parse(decoder.decode(await gunzip(remote.files.get(path)!.bytes)))
+      chunk.tradeCandles = [candle(Date.UTC(2024, 0, 1), '103'), candle(Date.UTC(2024, 0, 1, 0, 1), '102'), candle(Date.UTC(2024, 0, 1, 0, 2), '104')]
+      const bytes = await gzip(encoder.encode(JSON.stringify(chunk)))
+      remote.files.set(path, { sha: 'corrected-remote-month', bytes })
+      const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+      const entry = value.files.find((entry: { path: string }) => entry.path === path)
+      entry.size = bytes.length
+      entry.checksum = await sha256(bytes)
+      remote.files.set('manifest.json', { sha: 'corrected-remote-manifest', bytes: encoder.encode(JSON.stringify(value)) })
+    }
+    await service(new MemoryBackupService(local)).upload(client(remote), 'keep-local')
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.tradeCandles?.map(candle => candle.close)).toEqual(['105', '102', '104'])
+  })
+
+  it.each([false, true])('keeps canonical values ahead of legacy values while overlaying local rows (retry=%s)', async (retry) => {
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const path = 'data/market-history/BTCUSDT/1m/2024/01.json.gz'
+    const oldPath = path.replace('data/market-history', 'market-data')
+    const previous = remote.files.get(path)!
+    remote.files.set(oldPath, previous)
+    const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+    const entry = value.files.find((entry: { path: string }) => entry.path === path)
+    value.files.push({ ...entry, path: oldPath })
+    const chunk = JSON.parse(decoder.decode(await gunzip(previous.bytes)))
+    chunk.tradeCandles[1].close = '102'
+    const bytes = await gzip(encoder.encode(JSON.stringify(chunk)))
+    remote.files.set(path, { sha: 'canonical-correction', bytes })
+    entry.size = bytes.length
+    entry.checksum = await sha256(bytes)
+    remote.files.set('manifest.json', { sha: 'coexisting-manifest', bytes: encoder.encode(JSON.stringify(value)) })
+    if (retry) remote.raceOnce = async () => {
+      value.updatedAt++
+      remote.files.set('manifest.json', { sha: 'raced-manifest', bytes: encoder.encode(JSON.stringify(value)) })
+    }
+    const local = backup()
+    local.data.tradeCandles = [candle(Date.UTC(2024, 0, 1), '105')]
+    await service(new MemoryBackupService(local)).upload(client(remote), retry ? 'keep-local' : 'stop')
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.tradeCandles?.map(candle => candle.close)).toEqual(['105', '102'])
+  })
   it('compares and restores configuration without exporting or rewriting cached market history', async () => {
     const source = new MemoryBackupService()
     const target = new MemoryBackupService()
@@ -247,7 +431,7 @@ describe('GitHubSyncService', () => {
       symbolInfo: { pricePrecision: 2, quantityPrecision: 3 },
     })
     expect(chunk.tradeCandles).toHaveLength(2)
-    expect(chunk.markCandles).toHaveLength(1)
+    expect(chunk).not.toHaveProperty('markCandles')
     const preferences = files.find(
       (file) => file.path === 'config/preferences.json',
     )!
@@ -258,7 +442,7 @@ describe('GitHubSyncService', () => {
     })
   })
 
-  it('uploads files serially, writes the manifest last, and compares selections', async () => {
+  it('uploads business files with the manifest in one atomic commit and compares selections', async () => {
     const remote = new MemoryGitHubClient()
     const sync = service(new MemoryBackupService())
 
@@ -266,6 +450,8 @@ describe('GitHubSyncService', () => {
       sync.upload(client(remote), 'stop', ALL_SYNC_SELECTION),
     ).resolves.toMatchObject({ files: 3, copiedConflicts: 0 })
     expect(remote.putOrder.at(-1)).toBe('manifest.json')
+    expect(remote.atomicBatches).toHaveLength(1)
+    expect(remote.atomicBatches[0]).toEqual(expect.arrayContaining(['config/preferences.json', 'manifest.json', 'data/market-history/BTCUSDT/1m/2024/01.json.gz']))
     const manifest = JSON.parse(
       decoder.decode(remote.files.get('manifest.json')!.bytes),
     )
@@ -302,7 +488,7 @@ describe('GitHubSyncService', () => {
     expect(target.imports[0].data.tradeCandles).toHaveLength(3)
   })
 
-  it('keeps more complete remote dates and the other price kind during manual partial uploads', async () => {
+  it('keeps more complete remote dates and omits mark prices during manual partial uploads', async () => {
     const remote = new MemoryGitHubClient()
     const full = backup()
     full.data.tradeCandles!.push(candle(Date.UTC(2024, 0, 1, 0, 2)))
@@ -312,7 +498,9 @@ describe('GitHubSyncService', () => {
     const target = new MemoryBackupService()
     await service(target).pull(client(remote))
     expect(target.imports[0].data.tradeCandles).toEqual(full.data.tradeCandles)
-    expect(target.imports[0].data.markCandles).toEqual(full.data.markCandles)
+    expect(target.imports[0].data).not.toHaveProperty('markCandles')
+    const stored = JSON.parse(decoder.decode(await gunzip(remote.files.get('data/market-history/BTCUSDT/1m/2024/01.json.gz')!.bytes)))
+    expect(stored).not.toHaveProperty('markCandles')
   })
 
   it('can restore legacy unscoped market paths alongside the new path format', async () => {
@@ -330,18 +518,50 @@ describe('GitHubSyncService', () => {
     expect(target.imports[0].data.tradeCandles).toEqual(backup().data.tradeCandles)
   })
 
+  it('validates old mark data on pull but rewrites touched legacy cloud files without it on upload', async () => {
+    const remote = new MemoryGitHubClient()
+    const sync = service(new MemoryBackupService())
+    await sync.upload(client(remote), 'stop')
+    const name = 'data/market-history/BTCUSDT/1m/2024/01.json.gz'
+    const old = name.replace('data/market-history', 'market-data')
+    const chunk = JSON.parse(decoder.decode(await gunzip(remote.files.get(name)!.bytes)))
+    chunk.markCandles = backup().data.markCandles
+    const bytes = await gzip(encoder.encode(JSON.stringify(chunk)))
+    remote.files.delete(name)
+    remote.files.set(old, { sha: 'legacy-chunk', bytes })
+    const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+    const entry = value.files.find((item: { path: string }) => item.path === name)
+    entry.path = old; entry.size = bytes.length; entry.checksum = await sha256(bytes)
+    remote.files.get('manifest.json')!.bytes = encoder.encode(JSON.stringify(value))
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data).not.toHaveProperty('markCandles')
+    chunk.markCandles[0].high = '1'
+    const invalid = await gzip(encoder.encode(JSON.stringify(chunk)))
+    remote.files.set(old, { sha: 'bad-legacy-chunk', bytes: invalid })
+    entry.size = invalid.length; entry.checksum = await sha256(invalid)
+    remote.files.get('manifest.json')!.bytes = encoder.encode(JSON.stringify(value))
+    const rejected = new MemoryBackupService()
+    await expect(service(rejected).pull(client(remote))).rejects.toThrow()
+    expect(rejected.imports).toHaveLength(0)
+    remote.files.set(old, { sha: 'legacy-chunk', bytes })
+    entry.size = bytes.length; entry.checksum = await sha256(bytes)
+    remote.files.get('manifest.json')!.bytes = encoder.encode(JSON.stringify(value))
+    await sync.upload(client(remote), 'stop')
+    expect(JSON.parse(decoder.decode(await gunzip(remote.files.get(old)!.bytes)))).not.toHaveProperty('markCandles')
+    expect(JSON.parse(decoder.decode(await gunzip(remote.files.get(name)!.bytes)))).not.toHaveProperty('markCandles')
+  })
+
   it('stops rather than silently replacing a concurrently changed manifest', async () => {
     const remote = new MemoryGitHubClient()
     await service(new MemoryBackupService()).upload(client(remote), 'stop')
-    const originalPut = remote.putFile.bind(remote)
-    remote.putFile = async (...args) => {
-      if (args[0] === 'config/preferences.json') {
-        const file = remote.files.get('manifest.json')!
-        remote.files.set('manifest.json', { ...file, sha: 'concurrent-manifest' })
-      }
-      return originalPut(...args)
+    remote.raceOnce = async () => {
+      const file = remote.files.get('manifest.json')!
+      const value = JSON.parse(decoder.decode(file.bytes))
+      value.updatedAt++
+      remote.files.set('manifest.json', { bytes: encoder.encode(JSON.stringify(value)), sha: 'concurrent-manifest' })
     }
-    await expect(service(new MemoryBackupService()).upload(client(remote), 'keep-local')).rejects.toBeInstanceOf(GitHubConflictError)
+    await expect(service(new MemoryBackupService()).upload(client(remote), 'stop')).rejects.toBeInstanceOf(GitHubConflictError)
     expect(remote.files.get('manifest.json')!.sha).toBe('concurrent-manifest')
   })
 
@@ -363,7 +583,7 @@ describe('GitHubSyncService', () => {
     const target = new MemoryBackupService()
     await service(target).pull(client(remote))
     expect(target.imports[0].data.tradeCandles).toEqual(backup().data.tradeCandles)
-    expect(target.imports[0].data.markCandles).toEqual(backup().data.markCandles)
+    expect(target.imports[0].data).not.toHaveProperty('markCandles')
     expect(target.imports[0].data.symbols?.[0].symbol).toBe('BTCUSDT')
   })
 

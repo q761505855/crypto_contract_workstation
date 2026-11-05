@@ -238,7 +238,6 @@ describe('BinanceDatafeed', () => {
       latencyMs: 2,
       candleClosed: false,
       lastPrice: '101',
-      markPrice: '100',
       reconnectAttempt: 0,
       warning: '',
     })

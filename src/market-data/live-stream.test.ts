@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MarketCandle } from './models'
-import { BinanceLiveStream, parseLiveKline, parseLiveMarkPrice } from './live-stream'
+import { BinanceLiveStream, parseLiveKline } from './live-stream'
 import { SocketCooldownError } from './request-guard'
 
 function payload(
@@ -47,7 +47,7 @@ function markPayload(price = '104', symbol = 'BTCUSDT') {
 }
 
 describe('parseLiveKline', () => {
-  it('normalizes trade klines and the documented mark-price messages', () => {
+  it('normalizes ordinary trade klines with their actual volume and trade count', () => {
     expect(parseLiveKline(payload('kline', { closed: true }))).toMatchObject({
       kind: 'trade',
       eventTime: 60_500,
@@ -62,9 +62,6 @@ describe('parseLiveKline', () => {
         isClosed: true,
       },
     })
-    expect(parseLiveMarkPrice(markPayload())).toEqual({ symbol: 'BTCUSDT', eventTime: 60_500, price: '104' })
-    expect(() => parseLiveMarkPrice(markPayload('NaN'))).toThrow('不是有效数字')
-    expect(() => parseLiveMarkPrice(markPayload('-1'))).toThrow('标记价格无效')
   })
 
   it('rejects unsupported or malformed messages', () => {
@@ -122,7 +119,8 @@ describe('BinanceLiveStream', () => {
       expect(intermediate).not.toHaveBeenCalled()
       expect(latest).toHaveBeenCalledTimes(2)
       expect(latest).toHaveBeenLastCalledWith(expect.objectContaining({ close: 106 }))
-      expect(status).toHaveBeenLastCalledWith(expect.objectContaining({ lastPrice: '106', markPrice: '104', warning: '' }))
+      expect(status).toHaveBeenLastCalledWith(expect.objectContaining({ lastPrice: '106', warning: '' }))
+      expect(status.mock.calls.at(-1)![0]).not.toHaveProperty('markPrice')
       stream.setKeepAlive(false)
       stop()
       expect(socket.close).toHaveBeenCalledOnce()
@@ -180,7 +178,7 @@ describe('BinanceLiveStream', () => {
       saveRealtimeCandle: vi.fn(async () => undefined),
     }
     const socketFactory = vi.fn((url: string) => {
-      expect(url).toBe('wss://fstream.binance.com/market/stream?streams=btcusdt@kline_1m/btcusdt@markPrice@1s')
+      expect(url).toBe('wss://fstream.binance.com/market/stream?streams=btcusdt@kline_1m')
       const socket = new FakeSocket()
       sockets.push(socket)
       return socket
@@ -202,7 +200,7 @@ describe('BinanceLiveStream', () => {
       timeframe: '1m',
       onKline: (data) => klines.push(data),
       onStatus: (status) => statuses.push(
-        `${status.connection}:${status.markPrice ?? ''}`,
+        `${status.connection}:${status.lastPrice ?? ''}`,
       ),
     })
     await vi.waitFor(() => expect(socketFactory).toHaveBeenCalledOnce())
@@ -227,7 +225,8 @@ describe('BinanceLiveStream', () => {
     )
 
     expect(statuses).toContain('connected:')
-    expect(statuses).toContain('connected:104')
+    expect(statuses).toContain('connected:105')
+    expect(statuses).not.toContain('connected:104')
     expect(klines).toContainEqual(
       expect.objectContaining({ timestamp: 60_000, close: 105 }),
     )
@@ -328,5 +327,35 @@ describe('BinanceLiveStream', () => {
     await vi.waitFor(() => expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ connection: 'disconnected', warning: '已暂停新增远程请求' })))
     expect(socketFactory).not.toHaveBeenCalled()
     expect(schedule).not.toHaveBeenCalled()
+  })
+
+  it('silently ignores retired mark streams and malformed mark events without changing trade status', async () => {
+    const socket = new FakeSocket()
+    const onStatus = vi.fn()
+    const onKline = vi.fn()
+    const saveRealtimeCandle = vi.fn(async () => undefined)
+    const stream = new BinanceLiveStream({ saveRealtimeCandle }, () => socket, () => 61_000, undefined, undefined, undefined, async () => undefined)
+    const stop = stream.subscribe({ symbol: 'BTCUSDT', timeframe: '1m', onKline, onStatus })
+    await vi.waitFor(() => expect(socket.onmessage).not.toBeNull())
+    socket.onopen?.()
+    socket.onmessage?.({ data: JSON.stringify(payload('kline')) })
+    const statuses = onStatus.mock.calls.length
+    const legacyKline = payload('kline', { closed: true })
+    legacyKline.stream = 'btcusdt@markPriceKline_1m'
+    for (const message of [markPayload('NaN'), { e: 'markPrice_kline', k: null }, legacyKline]) {
+      socket.onmessage?.({ data: JSON.stringify(message) })
+    }
+    expect(onStatus).toHaveBeenCalledTimes(statuses)
+    expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ lastPrice: '105', warning: '' }))
+    expect(onKline).toHaveBeenCalledOnce()
+    expect(saveRealtimeCandle).not.toHaveBeenCalled()
+    socket.onerror?.()
+    const warningStatus = onStatus.mock.calls.at(-1)![0]
+    const warnedCount = onStatus.mock.calls.length
+    socket.onmessage?.({ data: JSON.stringify(markPayload()) })
+    expect(onStatus).toHaveBeenCalledTimes(warnedCount)
+    expect(onStatus).toHaveBeenLastCalledWith(warningStatus)
+    expect(warningStatus.warning).toContain('连接发生错误')
+    stop()
   })
 })

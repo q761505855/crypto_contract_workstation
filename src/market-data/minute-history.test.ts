@@ -34,7 +34,7 @@ function setup(month: MarketCandle[] | null = candles(), clock = () => now) {
   const archives = { loadMonth: vi.fn(async (_kind: CandleKind, _symbol: string, _year: number, _month: number, _options?: unknown) => month), loadDay: vi.fn(async () => null) }
   const rest = { downloadRange: vi.fn(async (..._args: unknown[]): Promise<MarketCandle[]> => []) }
   const cloud = {
-    loadMonth: vi.fn(async (): Promise<{tradeCandles:MarketCandle[];markCandles:MarketCandle[]}|null> => null),
+    loadMonth: vi.fn(async (): Promise<{tradeCandles:MarketCandle[];markCandles?:MarketCandle[]}|null> => null),
     saveMonth: vi.fn(async (..._args: unknown[]) => {}), canWrite: () => true,
   }
   const service = new MarketDataService(rest as unknown as BinanceRestClient, store, { archives, cloud, now: clock })
@@ -47,7 +47,7 @@ describe('canonical minute history', () => {
     cloud.loadMonth.mockResolvedValue({tradeCandles:candles(),markCandles:candles()})
     const load = vi.spyOn(service,'loadCandles')
     const to = start + 20 * 86_400_000
-    const result = await service.loadReplayCandles('mark','BTCUSDT','15m',start,to,{prefetchTo:to})
+    const result = await service.loadReplayCandles('trade','BTCUSDT','15m',start,to,{prefetchTo:to})
     expect(result).toHaveLength(20*96+1)
     expect(load).toHaveBeenCalledOnce()
     expect(cloud.loadMonth).toHaveBeenCalledOnce()
@@ -140,14 +140,14 @@ describe('canonical minute history', () => {
     expect(archives.loadMonth.mock.calls.length).toBeGreaterThan(0)
     expect(archives.loadMonth.mock.calls.every(call=>Date.UTC(call[2],call[3]-1)>=Date.UTC(2025,7,1))).toBe(true)
   })
-  it('does not rewrite unchanged trade minutes when fetching the other cloud price kind', async () => {
+  it('only writes missing ordinary minutes when cloud data overlaps the local cache', async () => {
     const {service,store,cloud} = setup()
+    await store.putCandles('trade', candles(start + minute, end))
     cloud.loadMonth.mockResolvedValue({tradeCandles:candles(),markCandles:[]})
     const put = vi.spyOn(store,'putCandles')
     await service.loadCandles('trade','BTCUSDT','1m',start,start)
-    service.resetReplayRequests()
-    await service.loadCandles('mark','BTCUSDT','1m',start,start)
     expect(put.mock.calls.filter(([kind,rows]) => kind==='trade' && rows.length>0)).toHaveLength(1)
+    expect(put.mock.calls[0][1]).toEqual(candles(start, start))
   })
   it('builds a replay partial bar from revealed minutes despite a full future month in cache', async () => {
     const month = candles()
@@ -166,9 +166,8 @@ describe('canonical minute history', () => {
     await service.retryPendingUploads()
     cloud.loadMonth.mockResolvedValue({tradeCandles:candles(),markCandles:candles()})
     await store.deleteSeries('trade','BTCUSDT','1m')
-    await store.deleteSeries('mark','BTCUSDT','1m')
     await service.loadCandles('trade','BTCUSDT','1m',start,start)
-    expect(archives.loadMonth).toHaveBeenCalledTimes(2)
+    expect(archives.loadMonth).toHaveBeenCalledOnce()
   })
   it('retries a month after an aborted cloud read instead of retaining the rejected promise', async () => {
     const { service, cloud } = setup()
@@ -211,24 +210,48 @@ describe('canonical minute history', () => {
     expect((await service.inspectSeries('trade', 'BTCUSDT', '1m')).count).toBe(43_200)
   })
 
-  it('prepares both price types for the entire expanded month and uploads the cache', async () => {
-    const { service, cloud, archives } = setup()
+  it('prepares and uploads only ordinary minutes for the entire expanded month', async () => {
+    const { service, store, cloud, archives } = setup()
+    await store.putCandles('mark', candles())
+    const get = vi.spyOn(store, 'getCandles')
+    const put = vi.spyOn(store, 'putCandles')
     const range = await service.prepareHistory('BTCUSDT', start + 12 * 86_400_000, start + 13 * 86_400_000)
     expect(range).toEqual({ from: start, to: end })
-    expect(archives.loadMonth.mock.calls.map((call) => call[0])).toEqual(['trade', 'mark'])
+    expect(archives.loadMonth.mock.calls.map((call) => call[0])).toEqual(['trade'])
     await service.retryPendingUploads()
     expect(cloud.saveMonth).toHaveBeenCalled()
     const uploaded = cloud.saveMonth.mock.calls.at(-1)!
     expect(uploaded[3]).toHaveLength(43_200)
-    expect(uploaded[4]).toHaveLength(43_200)
+    expect(uploaded).toHaveLength(5)
+    expect(uploaded[4]).toBeUndefined()
+    expect(get.mock.calls.every(([kind]) => kind === 'trade')).toBe(true)
+    expect(put.mock.calls.every(([kind]) => kind === 'trade')).toBe(true)
   })
 
-  it('uses cloud minutes before Binance, including the other price type', async () => {
-    const { service, cloud, archives, rest } = setup()
+  it('uses ordinary cloud minutes before Binance and ignores retired prices', async () => {
+    const { service, store, cloud, archives, rest } = setup()
     cloud.loadMonth.mockResolvedValue({ tradeCandles: candles(), markCandles: candles() } as never)
     await service.loadCandles('trade', 'BTCUSDT', '1h', start, start)
-    await service.loadCandles('mark', 'BTCUSDT', '1m', start, start)
+    await service.loadCandles('trade', 'BTCUSDT', '1m', start, start)
     expect(cloud.loadMonth).toHaveBeenCalledOnce()
+    expect(archives.loadMonth).not.toHaveBeenCalled()
+    expect(rest.downloadRange).not.toHaveBeenCalled()
+    expect(await store.getCandles('mark', 'BTCUSDT', '1m', start, end)).toHaveLength(0)
+  })
+
+  it('rejects retired price requests before reading caches or requesting history', async () => {
+    const { service, store, cloud, archives, rest } = setup()
+    await store.putCandles('mark', candles(start, start))
+    const get = vi.spyOn(store, 'getCandles')
+    const put = vi.spyOn(store, 'putCandles')
+    await expect(service.loadCandles('mark', 'BTCUSDT', '1m', start, start)).rejects.toThrow(/普通价格/)
+    await expect(service.loadCachedCandles('mark', 'BTCUSDT', '1m', start, start)).rejects.toThrow(/普通价格/)
+    await expect(service.loadReplayCandles('mark', 'BTCUSDT', '1m', start, start)).rejects.toThrow(/普通价格/)
+    await expect(service.refreshCandles('mark', 'BTCUSDT', '1m', start, start)).rejects.toThrow(/普通价格/)
+    await expect(service.saveRealtimeCandle('mark', candles(start, start)[0])).rejects.toThrow(/普通价格/)
+    expect(get).not.toHaveBeenCalled()
+    expect(put).not.toHaveBeenCalled()
+    expect(cloud.loadMonth).not.toHaveBeenCalled()
     expect(archives.loadMonth).not.toHaveBeenCalled()
     expect(rest.downloadRange).not.toHaveBeenCalled()
   })

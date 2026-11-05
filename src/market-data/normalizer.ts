@@ -85,6 +85,7 @@ export function normalizeKline(
   kind: 'trade' | 'mark',
   now: number,
 ): MarketCandle {
+  if (kind !== 'trade') throw new Error('标记价格行情已停用，仅支持普通 K 线')
   if (!Array.isArray(row) || row.length < 7) {
     throw new Error('币安 K 线响应格式无效')
   }
@@ -95,13 +96,9 @@ export function normalizeKline(
   const low = decimalString(row[3], 'low')
   const close = decimalString(row[4], 'close')
   const closeTime = requiredFiniteNumber(row[6], 'closeTime')
-  const volume = kind === 'trade' ? decimalString(row[5], 'volume') : '0'
-  const quoteVolume =
-    kind === 'trade' ? decimalString(row[7] ?? '0', 'quoteVolume') : '0'
-  const tradeCount =
-    kind === 'trade'
-      ? requiredFiniteNumber(row[8] ?? 0, 'tradeCount')
-      : 0
+  const volume = decimalString(row[5], 'volume')
+  const quoteVolume = decimalString(row[7] ?? '0', 'quoteVolume')
+  const tradeCount = requiredFiniteNumber(row[8] ?? 0, 'tradeCount')
 
   const numericOpen = Number(open)
   const numericHigh = Number(high)
@@ -140,6 +137,7 @@ export function normalizeKlines(
   kind: 'trade' | 'mark',
   now: number,
 ): MarketCandle[] {
+  if (kind !== 'trade') throw new Error('标记价格行情已停用，仅支持普通 K 线')
   if (!Array.isArray(payload)) {
     throw new Error('币安 K 线响应不是数组')
   }

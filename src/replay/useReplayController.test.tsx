@@ -4,6 +4,7 @@ import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import type { MarketCandle } from '../market-data/models'
 import { useSimulationController } from '../simulation/useSimulationController'
+import { SimulationEngine } from '../simulation/simulation-engine'
 import { ReplayEngine } from './replay-engine'
 import { useReplayController } from './useReplayController'
 
@@ -15,8 +16,9 @@ const candles: MarketCandle[] = Array.from({ length: 6 }, (_, index) => ({
   volume: '10', quoteVolume: '1000', tradeCount: 1, isClosed: true, source: 'binance',
 }))
 
-function setup(options: { noMarks?: boolean; restore?: boolean } = {}) {
-  const saved = options.restore ? ReplayEngine.create(input, candles).snapshot() : undefined
+function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: MarketCandle[] } = {}) {
+  const source = options.sourceCandles ?? candles
+  const saved = options.restore ? ReplayEngine.create(input, source).snapshot() : undefined
   const marks = options.noMarks ? [] : candles
   const runtime = {
     replaySessions: {
@@ -27,9 +29,9 @@ function setup(options: { noMarks?: boolean; restore?: boolean } = {}) {
     simulationStates: { load: vi.fn(async () => undefined), save: vi.fn(async () => undefined) },
     replayDatafeed: { setSessionCandles: vi.fn() },
     service: {
-      loadCandles: vi.fn(async (kind: string) => kind === 'mark' ? marks : candles),
-      loadCachedCandles: vi.fn(async (kind: string) => kind === 'mark' ? marks : candles),
-      loadReplayCandles: vi.fn(async (kind: string) => kind === 'mark' ? marks : candles),
+      loadCandles: vi.fn(async (kind: string) => kind === 'mark' ? marks : source),
+      loadCachedCandles: vi.fn(async (kind: string) => kind === 'mark' ? marks : source),
+      loadReplayCandles: vi.fn(async (kind: string) => kind === 'mark' ? marks : source),
       resetReplayRequests: vi.fn(),
     },
   } as unknown as MarketDataRuntime
@@ -38,7 +40,7 @@ function setup(options: { noMarks?: boolean; restore?: boolean } = {}) {
     const simulation = useSimulationController(runtime, replay)
     return { replay, simulation }
   })
-  return { ...hook, runtime }
+  return { ...hook, runtime, saved }
 }
 
 describe('offline replay and simulation controllers', () => {
@@ -79,13 +81,13 @@ describe('offline replay and simulation controllers', () => {
     expect(result.current.replay.session).toBeNull()
     expect(result.current.replay.error).toMatch(/缺口|不完整/)
   })
-  it('prepares each candle kind in a batch and makes no remote calls while trading or stepping', async () => {
+  it('prepares only ordinary candles and makes no remote calls while trading or stepping', async () => {
     const { result, runtime } = setup()
     await waitFor(() => expect(result.current.replay.busy).toBe(false))
     await act(async () => { await result.current.replay.createSession(input) })
     await waitFor(() => expect(result.current.simulation.busy).toBe(false))
     expect(runtime.service.loadCandles).toHaveBeenCalledOnce()
-    expect(runtime.service.loadReplayCandles).toHaveBeenCalledWith('mark', 'BTCUSDT', '1m', 0, 5 * minute, { prefetchTo: 5 * minute, onStatus:expect.any(Function) })
+    expect(runtime.service.loadReplayCandles).not.toHaveBeenCalled()
     vi.mocked(runtime.service.loadCandles).mockClear()
     vi.mocked(runtime.service.loadCachedCandles).mockClear()
     vi.mocked(runtime.service.loadReplayCandles).mockClear()
@@ -106,7 +108,7 @@ describe('offline replay and simulation controllers', () => {
     expect(runtime.service.loadReplayCandles).not.toHaveBeenCalled()
   })
 
-  it('warns when batch preparation lacks marks instead of requesting each new candle', async () => {
+  it('continues trading and risk valuation without requesting a second price series', async () => {
     const { result, runtime } = setup({ noMarks: true })
     await waitFor(() => expect(result.current.replay.busy).toBe(false))
     await act(async () => { await result.current.replay.createSession(input) })
@@ -115,9 +117,32 @@ describe('offline replay and simulation controllers', () => {
     await act(async () => { await result.current.simulation.open('long', { margin: '100' }) })
     await act(async () => { await result.current.replay.next() })
     await act(async () => { await result.current.replay.next() })
-    expect(result.current.simulation.state?.warning).toContain('缺少当前 K 线的标记价格')
+    expect(result.current.simulation.state?.warning).toBeNull()
+    expect(runtime.service.loadReplayCandles).not.toHaveBeenCalled()
     expect(result.current.replay.session?.currentTime).toBe(2 * minute)
     expect(runtime.service.loadCandles).not.toHaveBeenCalled()
+  })
+
+  it('restores legacy positions at the current ordinary close without duplicate exits, trades or ledger', async () => {
+    const source = candles.map(row => row.openTime === minute ? { ...row, high: '130', low: '1', close: '120' } : row)
+    const { result, runtime, saved } = setup({ restore: true, sourceCandles: source })
+    saved!.currentIndex = 1
+    saved!.currentTime = minute
+    saved!.tradingConfig = { ...saved!.tradingConfig, feeRate: '0', slippageRate: '0' }
+    const original = SimulationEngine.create(saved!)
+    original.open('long', { quantity: '1' }, candles[0])
+    const state = original.snapshot()
+    Object.assign(state.position!, { markPrice: '40' })
+    delete (state.position as unknown as Record<string, unknown>).lastPrice
+    state.warning = '缺少当前 K 线的标记价格，已停止强平判断。'
+    vi.mocked(runtime.simulationStates.load).mockResolvedValue(state)
+    await waitFor(() => expect(result.current.simulation.state?.position?.lastPrice).toBe('120'))
+    expect(result.current.simulation.state?.position).not.toHaveProperty('markPrice')
+    expect(result.current.simulation.state?.account.equity).toBe('10020')
+    expect(result.current.simulation.state?.warning).toBeNull()
+    expect(result.current.simulation.state?.trades).toEqual(state.trades)
+    expect(result.current.simulation.state?.ledger).toEqual(state.ledger)
+    expect(vi.mocked(runtime.service.loadReplayCandles).mock.calls.every(([kind]) => kind === 'trade')).toBe(true)
   })
 
   it('restores an existing session through shared batch preparation', async () => {

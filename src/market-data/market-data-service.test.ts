@@ -119,12 +119,12 @@ describe('MarketDataService', () => {
     const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
     const onWarning = vi.fn()
     for (let index = 0; index < 5; index += 1) {
-      await expect(service.loadReplayCandles('mark', 'BTCUSDT', '1m', index * 60_000, index * 60_000, { onWarning })).resolves.toEqual([])
+      await expect(service.loadReplayCandles('trade', 'BTCUSDT', '1m', index * 60_000, index * 60_000, { onWarning })).resolves.toEqual([])
     }
     expect(downloadRange).toHaveBeenCalledOnce()
     expect(onWarning).toHaveBeenCalledWith(expect.stringContaining('不会逐根重试'))
     service.resetReplayRequests()
-    await service.loadReplayCandles('mark', 'BTCUSDT', '1m', 0, 0)
+    await service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 0)
     expect(downloadRange).toHaveBeenCalledTimes(2)
   })
 
@@ -151,7 +151,7 @@ describe('MarketDataService', () => {
     const downloadRange = vi.fn()
     const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
     await expect(service.loadCachedCandles('trade', 'btcusdt', '1m', 0, 120_000)).resolves.toEqual([candle(0)])
-    await expect(service.loadCachedCandles('mark', 'BTCUSDT', '1m', 0, 120_000)).resolves.toEqual([])
+    await expect(service.loadCachedCandles('trade', 'BTCUSDT', '1m', 120_000, 180_000)).resolves.toEqual([])
     expect(downloadRange).not.toHaveBeenCalled()
   })
   it('shares downloaded candles between concurrent overlapping requests', async () => {

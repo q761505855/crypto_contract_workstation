@@ -219,18 +219,6 @@ export function useReplayController(
           )
         }
         const effectiveEnd = candles.at(-1)!.openTime
-        // Prepare mark prices once for the session. Never fill them one bar at
-        // a time during playback. Missing marks remain an explicit simulation
-        // warning when remote preparation is unavailable or rate-limited.
-        try {
-          await runtime.service.loadReplayCandles(
-            'mark', input.symbol.ticker, input.period.text,
-            candles[0].openTime, effectiveEnd,
-            { prefetchTo: effectiveEnd, onStatus: setPreparationStatus },
-          )
-        } catch {
-          // Existing cached mark prices can still be used offline.
-        }
         const engine = ReplayEngine.create(
           { ...input, endTime: effectiveEnd },
           candles,

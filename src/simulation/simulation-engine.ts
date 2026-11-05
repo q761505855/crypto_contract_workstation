@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js'
 import type { MarketCandle } from '../market-data/models'
 import type { ReplaySession, ReplayTradingConfig } from '../replay/models'
+import { normalizeSimulationStatePrices } from './models'
 import type {
   CandleProcessResult,
   LedgerEntryType,
@@ -100,7 +101,7 @@ export class SimulationEngine {
     symbolPrecision: { price: number; quantity: number },
     private readonly now: () => number,
   ) {
-    this.state = structuredClone(state)
+    this.state = normalizeSimulationStatePrices(state)
     this.pricePrecision = symbolPrecision.price
     this.quantityPrecision = symbolPrecision.quantity
   }
@@ -273,7 +274,6 @@ export class SimulationEngine {
         quantity: text(quantity),
         entryPrice: text(this.roundPrice(fillPrice)),
         lastPrice: text(this.roundPrice(reference)),
-        markPrice: text(this.roundPrice(reference)),
         notional: text(quantity.mul(reference)),
         leverage: this.state.config.leverage,
         isolatedMargin: text(margin),
@@ -377,7 +377,7 @@ export class SimulationEngine {
     } else {
       const price = this.roundPrice(positive(priceValue, '止盈价格'))
       const currentPrice = decimal(
-        position.lastPrice ?? position.markPrice,
+        position.lastPrice,
         '当前成交价格',
       )
       if (
@@ -403,7 +403,7 @@ export class SimulationEngine {
     } else {
       const price = this.roundPrice(positive(priceValue, '止损价格'))
       const currentPrice = decimal(
-        position.lastPrice ?? position.markPrice,
+        position.lastPrice,
         '当前成交价格',
       )
       if (
@@ -421,10 +421,12 @@ export class SimulationEngine {
     this.touch()
   }
 
-  processCandle(
-    tradeCandle: MarketCandle,
-    markCandle: MarketCandle | null,
-  ): CandleProcessResult {
+  /** Refresh restored valuation without replaying an already processed candle's exits. */
+  revalue(candle: MarketCandle): void {
+    this.recalculate(positive(candle.close, '当前成交价格'), candle.openTime)
+  }
+
+  processCandle(tradeCandle: MarketCandle): CandleProcessResult {
     const position = this.state.position
     if (position === null) {
       this.state.warning = null
@@ -432,21 +434,14 @@ export class SimulationEngine {
       return { exitAction: null, warning: null }
     }
 
-    let warning: string | null = null
-    if (
-      tradeCandle.openTime > position.riskActiveAfterTime &&
-      markCandle === null
-    ) {
-      warning = '缺少当前 K 线的标记价格，已停止强平判断。'
-    }
+    const warning = null
 
     if (
-      markCandle !== null &&
       tradeCandle.openTime > position.riskActiveAfterTime &&
-      this.liquidationTouched(position, markCandle)
+      this.liquidationTouched(position, tradeCandle)
     ) {
       const trigger = decimal(position.liquidationPrice, '预估强平价')
-      const open = decimal(markCandle.open, '标记价格开盘价')
+      const open = decimal(tradeCandle.open, 'K 线开盘价')
       const exitPrice =
         position.side === 'long'
           ? Decimal.min(trigger, open)
@@ -508,11 +503,9 @@ export class SimulationEngine {
       return { exitAction: 'take_profit', warning }
     }
 
-    const mark = markCandle?.close ?? tradeCandle.close
     this.recalculate(
-      positive(mark, '标记价格'),
-      tradeCandle.openTime,
       positive(tradeCandle.close, '当前成交价格'),
+      tradeCandle.openTime,
     )
     this.state.warning = warning
     return { exitAction: null, warning }
@@ -782,9 +775,8 @@ export class SimulationEngine {
   }
 
   private recalculate(
-    markPrice: Decimal,
+    lastPrice: Decimal,
     timestamp: number,
-    lastPrice: Decimal = markPrice,
   ): void {
     const position = this.state.position
     let unrealized = ZERO
@@ -794,12 +786,11 @@ export class SimulationEngine {
       const entry = decimal(position.entryPrice, '开仓均价')
       unrealized =
         position.side === 'long'
-          ? markPrice.minus(entry).mul(quantity)
-          : entry.minus(markPrice).mul(quantity)
+          ? lastPrice.minus(entry).mul(quantity)
+          : entry.minus(lastPrice).mul(quantity)
       usedMargin = decimal(position.isolatedMargin, '逐仓保证金')
       position.lastPrice = text(this.roundPrice(lastPrice))
-      position.markPrice = text(this.roundPrice(markPrice))
-      position.notional = text(quantity.mul(markPrice))
+      position.notional = text(quantity.mul(lastPrice))
       position.unrealizedPnl = text(unrealized)
       position.updatedAt = timestamp
     }
@@ -900,8 +891,8 @@ export class SimulationEngine {
   ): boolean {
     const price = decimal(position.liquidationPrice, '预估强平价')
     return position.side === 'long'
-      ? decimal(candle.low, '标记价格最低价').lessThanOrEqualTo(price)
-      : decimal(candle.high, '标记价格最高价').greaterThanOrEqualTo(
+      ? decimal(candle.low, 'K 线最低价').lessThanOrEqualTo(price)
+      : decimal(candle.high, 'K 线最高价').greaterThanOrEqualTo(
           price,
         )
   }

@@ -126,7 +126,7 @@ describe('BinanceRestClient', () => {
       sleep,
     )
 
-    await expect(client.downloadRange('mark', 'BTCUSDT', '5m', 0, 1)).rejects.toThrow('HTTP 429')
+    await expect(client.downloadRange('trade', 'BTCUSDT', '5m', 0, 1)).rejects.toThrow('HTTP 429')
     expect(sleep).not.toHaveBeenCalled()
     expect(fetcher).toHaveBeenCalledOnce()
   })
@@ -142,7 +142,7 @@ describe('BinanceRestClient', () => {
     const client = createClient('https://example.test', fetcher, () => now, sleep)
     const results = await Promise.allSettled([
       client.downloadRange('trade', 'ETHUSDT', '15m', 0, 1),
-      client.downloadRange('mark', 'BTCUSDT', '1w', 0, 1),
+      client.downloadRange('trade', 'BTCUSDT', '1w', 0, 1),
       client.getExchangeSymbols(),
     ])
     expect(results.every((result) => result.status === 'rejected')).toBe(true)
@@ -210,7 +210,7 @@ describe('BinanceRestClient', () => {
     const sleep = vi.fn(async (milliseconds: number) => { now += milliseconds })
     const client = createClient('https://example.test', fetcher, () => now, sleep)
     const first = client.downloadRange('trade', 'BTCUSDT', '1m', 0, 1)
-    const second = client.downloadRange('mark', 'BTCUSDT', '1m', 0, 1)
+    const second = client.downloadRange('trade', 'BTCUSDT', '1m', 0, 1)
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
     resolve(Response.json([]))
     await Promise.all([first, second])
@@ -247,5 +247,15 @@ describe('BinanceRestClient', () => {
     expect(onPage).toHaveBeenCalledOnce()
     expect(onPage.mock.calls[0][0]).toHaveLength(499)
     expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects retired mark-price requests before consuming any network or protection budget', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json([row(0)]))
+    const client = createClient('https://example.test', fetcher, () => 1_000_000)
+    await expect(client.downloadRange('mark', 'BTCUSDT', '1m', 0, 1)).rejects.toThrow(/标记价格.*停用/)
+    expect(fetcher).not.toHaveBeenCalled()
+    await expect(client.downloadRange('trade', 'BTCUSDT', '1m', 0, 1)).resolves.toEqual([expect.objectContaining({ close: '105', volume: '10' })])
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(String(fetcher.mock.calls[0]![0])).toContain('/fapi/v1/klines?')
   })
 })

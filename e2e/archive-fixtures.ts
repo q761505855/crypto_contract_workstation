@@ -62,7 +62,7 @@ export async function installArchiveFixtures(
   await page.route('https://data.binance.vision/**', async (route) => {
     const url = new URL(route.request().url())
     requests.push(url.href)
-    const match = /^\/data\/futures\/um\/(monthly|daily)\/(klines|markPriceKlines)\/([A-Z0-9]+)\/1m\/([A-Z0-9]+)-1m-(\d{4})-(\d{2})(?:-(\d{2}))?\.zip(\.CHECKSUM)?$/.exec(url.pathname)
+    const match = /^\/data\/futures\/um\/(monthly|daily)\/(klines)\/([A-Z0-9]+)\/1m\/([A-Z0-9]+)-1m-(\d{4})-(\d{2})(?:-(\d{2}))?\.zip(\.CHECKSUM)?$/.exec(url.pathname)
     const notFound = () => route.fulfill({ status: 404, headers: { 'Access-Control-Allow-Origin': '*' }, body: 'Not Found' })
     if (!match || match[3] !== match[4] || (match[1] === 'daily') !== (match[7] !== undefined)) {
       await notFound()

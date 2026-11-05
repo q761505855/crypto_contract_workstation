@@ -122,9 +122,9 @@ export class BinanceArchiveClient {
   private async load(kind: CandleKind, symbol: string, year: number, month: number, day: number | undefined, options: ArchiveLoadOptions): Promise<MarketCandle[] | null> {
     const { signal } = options
     checkAbort(signal)
+    if (kind !== 'trade') throw new Error('标记价格归档已停用，仅支持普通 K 线')
     symbol = symbol.toUpperCase()
     if (!/^[A-Z0-9]{2,40}$/.test(symbol)) throw new Error('币安归档交易对名称无效')
-    if (kind !== 'trade' && kind !== 'mark') throw new Error('币安归档价格种类无效')
     if (!Number.isInteger(year) || year < 1970 || year > 9999 || !Number.isInteger(month) || month < 1 || month > 12 ||
       (day !== undefined && (!Number.isInteger(day) || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()))) {
       throw new Error('币安归档日期无效')
@@ -133,8 +133,8 @@ export class BinanceArchiveClient {
     const basename = `${symbol}-1m-${date}`
     const zipName = `${basename}.zip`
     const csvName = `${basename}.csv`
-    const url = `${ROOT}/${day === undefined ? 'monthly' : 'daily'}/${kind === 'trade' ? 'klines' : 'markPriceKlines'}/${symbol}/1m/${zipName}`
-    const label = `币安${kind === 'trade' ? '成交' : '标记价格'}归档 ${symbol} ${date}`
+    const url = `${ROOT}/${day === undefined ? 'monthly' : 'daily'}/klines/${symbol}/1m/${zipName}`
+    const label = `币安成交归档 ${symbol} ${date}`
     try {
       const response = await this.fetcher.call(globalThis, url, { signal })
       checkAbort(signal)

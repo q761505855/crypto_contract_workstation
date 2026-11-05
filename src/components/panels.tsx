@@ -111,8 +111,8 @@ function PositionSummary({ state }: { state: SimulationState }) {
           <dd>{position.entryPrice}</dd>
         </div>
         <div>
-          <dt>标记价格</dt>
-          <dd>{position.markPrice}</dd>
+          <dt>当前价格</dt>
+          <dd>{position.lastPrice}</dd>
         </div>
         <div>
           <dt>浮动盈亏</dt>
@@ -591,10 +591,6 @@ export function LiveStatus({ status }: { status: LiveMarketStatus }) {
         <div>
           <dt>最新价格</dt>
           <dd>{status.lastPrice ?? '—'}</dd>
-        </div>
-        <div>
-          <dt>标记价格</dt>
-          <dd>{status.markPrice ?? '—'}</dd>
         </div>
         {status.reconnectAttempt > 0 && (
           <div>

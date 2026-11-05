@@ -1,6 +1,6 @@
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
 import type { ReplaySession } from '../replay/models'
-import type { SimulationState } from '../simulation/models'
+import { normalizeSimulationStatePrices, type SimulationState } from '../simulation/models'
 import {
   BACKUP_FILE_TYPE,
   BACKUP_SCHEMA_VERSION,
@@ -12,6 +12,7 @@ import {
 import {
   GitHubConflictError,
   GitHubContentsClient,
+  type GitHubFile,
 } from './github-client'
 
 const MANIFEST_TYPE = 'crypto-contract-workstation-manifest'
@@ -87,7 +88,8 @@ interface MarketChunk {
   month: number
   symbolInfo: MarketSymbol
   tradeCandles: MarketCandle[]
-  markCandles: MarketCandle[]
+  /** Legacy input only, omitted from new chunks. */
+  markCandles?: MarketCandle[]
 }
 
 function jsonBytes(value: unknown): Uint8Array {
@@ -233,20 +235,26 @@ function parseMarketChunkPath(path: string): {
   }
 }
 
-async function readMarketChunk(bytes: Uint8Array, path: string): Promise<MarketChunk> {
+async function readMarketChunk(bytes: Uint8Array, path: string): Promise<{ chunk: MarketChunk; hadMarkCandles: boolean }> {
   const parts = parseMarketChunkPath(path)
   const chunk = parseJson(await gunzip(bytes), path) as Partial<MarketChunk>
-  if (!parts || chunk.fileType !== 'crypto-contract-workstation-market-chunk' || chunk.schemaVersion !== 1 || chunk.symbol !== parts.symbol || chunk.timeframe !== parts.timeframe || chunk.year !== parts.year || chunk.month !== parts.month || parts.month < 1 || parts.month > 12 || !Array.isArray(chunk.tradeCandles) || !Array.isArray(chunk.markCandles) || (chunk.symbolInfo !== undefined && chunk.symbolInfo.symbol !== parts.symbol)) throw new Error(`${path} 行情分片格式无效`)
+  if (!parts || chunk.fileType !== 'crypto-contract-workstation-market-chunk' || chunk.schemaVersion !== 1 || chunk.symbol !== parts.symbol || chunk.timeframe !== parts.timeframe || chunk.year !== parts.year || chunk.month !== parts.month || parts.month < 1 || parts.month > 12 || !Array.isArray(chunk.tradeCandles) || (chunk.symbolInfo !== undefined && chunk.symbolInfo.symbol !== parts.symbol)) throw new Error(`${path} 行情分片格式无效`)
   const data = validateBackupEnvelope({ fileType: BACKUP_FILE_TYPE, schemaVersion: BACKUP_SCHEMA_VERSION, kind: 'market-data', exportedAt: 0, data: { symbols: chunk.symbolInfo ? [chunk.symbolInfo] : [], tradeCandles: chunk.tradeCandles, markCandles: chunk.markCandles } }).data
-  if ([...data.tradeCandles!, ...data.markCandles!].some(candle => {
+  if ([...data.tradeCandles!, ...(chunk.markCandles ?? [])].some(candle => {
     const date = new Date(candle.openTime)
     return candle.symbol !== parts.symbol || candle.timeframe !== parts.timeframe || date.getUTCFullYear() !== parts.year || date.getUTCMonth() + 1 !== parts.month
   })) throw new Error(`${path} 行情分片格式无效`)
-  return { ...chunk, tradeCandles: data.tradeCandles, markCandles: data.markCandles } as MarketChunk
+  const result = { ...chunk, tradeCandles: data.tradeCandles } as MarketChunk
+  delete result.markCandles
+  return { chunk: result, hadMarkCandles: Object.hasOwn(chunk, 'markCandles') }
 }
 
 function mergeChunkCandles(remote: MarketCandle[], local: MarketCandle[]): MarketCandle[] {
   return [...new Map([...remote, ...local].map(candle => [candle.openTime, candle])).values()].sort((a, b) => a.openTime - b.openTime)
+}
+
+function mergeMarketChunks(remote: MarketChunk | null, local: MarketChunk): MarketChunk {
+  return { ...local, tradeCandles: mergeChunkCandles(remote?.tradeCandles ?? [], local.tradeCandles) }
 }
 
 export class GitHubSyncService {
@@ -303,7 +311,7 @@ export class GitHubSyncService {
       for (const simulation of data.simulations ?? []) {
         files.push({
           path: `trades/${simulation.sessionId}.json`,
-          bytes: jsonBytes(simulation),
+          bytes: jsonBytes(normalizeSimulationStatePrices(simulation)),
           category: 'trade',
         })
       }
@@ -312,7 +320,7 @@ export class GitHubSyncService {
     const symbols = new Map(
       (data.symbols ?? []).map((symbol) => [symbol.symbol, symbol]),
     )
-    const append = (kind: 'trade' | 'mark', candle: MarketCandle) => {
+    const append = (candle: MarketCandle) => {
       const key = monthKey(candle)
       let chunk = chunks.get(key)
       if (chunk === undefined) {
@@ -337,16 +345,13 @@ export class GitHubSyncService {
               quantityPrecision: 8,
             },
           tradeCandles: [],
-          markCandles: [],
         }
         chunks.set(key, chunk)
       }
-      if (kind === 'trade') chunk.tradeCandles.push(candle)
-      else chunk.markCandles.push(candle)
+      chunk.tradeCandles.push(candle)
     }
     if (selection.marketData) {
-      data.tradeCandles?.forEach((candle) => append('trade', candle))
-      data.markCandles?.forEach((candle) => append('mark', candle))
+      data.tradeCandles?.forEach(append)
       for (const chunk of [...chunks.values()].sort((left, right) =>
         chunkPath(left).localeCompare(chunkPath(right)),
       )) {
@@ -418,118 +423,109 @@ export class GitHubSyncService {
     onProgress?: SyncProgress,
   ): Promise<SyncResult> {
     const localFiles = await this.prepare(selection)
-    const existingManifestFile = await client.getFile('manifest.json')
-    const existingManifest =
-      existingManifestFile === null
-        ? null
-        : manifest(parseJson(existingManifestFile.bytes, 'manifest.json'))
-    const replacedPaths = new Set(localFiles.map(file => file.path))
-    const effectiveEntries: SyncManifestEntry[] =
-      existingManifest?.files.filter(
-        (entry) => !replacedPaths.has(entry.path),
-      ) ?? []
-    let copiedConflicts = 0
-    let skippedConflicts = 0
-    for (const [index, prepared] of localFiles.entries()) {
-      let file = prepared
-      onProgress?.(`上传 ${index + 1}/${localFiles.length}：${file.path}`)
-      const current = await client.getFile(file.path)
-      if (file.category === 'market-data') {
-        let localChunk = await readMarketChunk(file.bytes, file.path)
-        const oldPath = file.path.replace('data/market-history/', 'market-data/')
-        for (const remotePath of [oldPath, file.path]) {
-          const entry = existingManifest?.files.find(item => item.path === remotePath)
-          if (!entry) continue
-          const remoteFile = remotePath === file.path ? current : await client.getFile(remotePath)
-          if (!remoteFile || remoteFile.bytes.length !== entry.size || await sha256(remoteFile.bytes) !== entry.checksum) throw new Error(`远端文件校验失败：${remotePath}`)
-          const remoteChunk = await readMarketChunk(remoteFile.bytes, remotePath)
-          localChunk = { ...localChunk, tradeCandles: mergeChunkCandles(remoteChunk.tradeCandles, localChunk.tradeCandles), markCandles: mergeChunkCandles(remoteChunk.markCandles, localChunk.markCandles) }
+    const baseline = new Map<string, string | null>()
+    const desired = new Map<string, SyncFile>()
+    const makeFile = async (path: string, bytes: Uint8Array, category: SyncFile['category']): Promise<SyncFile> => ({
+      path, bytes, category, size: bytes.length, checksum: await sha256(bytes),
+    })
+    // A selected conflict policy permits one rebuild against a fresh head.
+    // The second ref race stops; neither attempt ever forces a branch update.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const snapshot = await client.getSnapshot()
+      const cache = new Map<string, GitHubFile | null>()
+      const read = async (path: string): Promise<GitHubFile | null> => {
+        if (!cache.has(path)) {
+          const value = await client.getFile(path, { ref: snapshot.commitSha })
+          cache.set(path, value)
+          if (attempt === 0) baseline.set(path, value?.sha ?? null)
         }
-        const bytes = await gzip(jsonBytes(localChunk))
-        file = { ...file, bytes, size: bytes.length, checksum: await sha256(bytes) }
-        localFiles[index] = file
+        return cache.get(path)!
       }
-      try {
-        await client.putFile(
-          file.path,
-          file.bytes,
-          `Sync ${file.path}`,
-          current?.sha,
-        )
-        effectiveEntries.push(this.entry(file))
-      } catch (error) {
-        if (!(error instanceof GitHubConflictError) || resolution === 'stop') {
-          throw error
+      const changed = (path: string, file: GitHubFile | null) => attempt > 0 && (baseline.get(path) ?? null) !== (file?.sha ?? null)
+      const manifestFile = await read('manifest.json')
+      const remote = manifestFile ? manifest(parseJson(manifestFile.bytes, 'manifest.json')) : null
+      const entries = new Map((remote?.files ?? []).map(entry => [entry.path, entry]))
+      const pending = new Map<string, SyncFile>()
+      let copiedConflicts = 0
+      let skippedConflicts = 0
+      let byteCount = 0
+      const stage = (file: SyncFile) => {
+        pending.set(file.path, file)
+        entries.set(file.path, this.entry(file))
+      }
+      for (const [index, prepared] of localFiles.entries()) {
+        // Rebuild from actual local rows on every attempt. A previous merged
+        // candidate includes remote-only rows that a newer head may correct.
+        let file = prepared
+        onProgress?.(`准备上传 ${index + 1}/${localFiles.length}：${file.path}`)
+        const current = await read(file.path)
+        let conflicted = changed(file.path, current)
+        let remoteMonth: MarketChunk | null = null
+        if (file.category === 'market-data') {
+          let localChunk = (await readMarketChunk(file.bytes, file.path)).chunk
+          const oldPath = file.path.replace('data/market-history/', 'market-data/')
+          for (const remotePath of [oldPath, file.path]) {
+            const entry = entries.get(remotePath)
+            if (!entry) continue
+            const remoteFile = await read(remotePath)
+            if (!remoteFile || remoteFile.bytes.length !== entry.size || await sha256(remoteFile.bytes) !== entry.checksum) throw new Error(`远端文件校验失败：${remotePath}`)
+            conflicted ||= changed(remotePath, remoteFile)
+            const value = await readMarketChunk(remoteFile.bytes, remotePath)
+            remoteMonth = mergeMarketChunks(remoteMonth, value.chunk)
+            if (remotePath !== file.path && value.hadMarkCandles) {
+              stage(await makeFile(remotePath, await gzip(jsonBytes(value.chunk)), 'market-data'))
+            }
+          }
+          // Resolve cloud aliases first (canonical wins), then overlay only
+          // actual local candles once. Legacy-only rows must not masquerade as
+          // local rows and override their canonical replacement.
+          localChunk = mergeMarketChunks(remoteMonth, localChunk)
+          file = await makeFile(file.path, await gzip(jsonBytes(localChunk)), file.category)
         }
-        const latest = await client.getFile(file.path)
-        if (resolution === 'keep-local') {
-          await client.putFile(
-            file.path,
-            file.bytes,
-            `Resolve conflict with local ${file.path}`,
-            latest?.sha,
-          )
-          effectiveEntries.push(this.entry(file))
-        } else if (resolution === 'keep-remote') {
-          if (latest === null) throw error
-          effectiveEntries.push({
-            path: file.path,
-            checksum: await sha256(latest.bytes),
-            size: latest.bytes.byteLength,
-            category: file.category,
-            updatedAt: this.now(),
-          })
-          skippedConflicts += 1
-        } else {
-          if (latest === null) {
-            await client.putFile(
-              file.path,
-              file.bytes,
-              `Resolve deleted remote file with local ${file.path}`,
-            )
-            effectiveEntries.push(this.entry(file))
-          } else {
-            effectiveEntries.push({
-              path: file.path,
-              checksum: await sha256(latest.bytes),
-              size: latest.bytes.byteLength,
-              category: file.category,
-              updatedAt: this.now(),
-            })
-            const path = copyPath(file.path, this.now())
-            await client.putFile(
-              path,
-              file.bytes,
-              `Save local conflict copy ${path}`,
-            )
-            copiedConflicts += 1
+        if (attempt === 0) desired.set(file.path, file)
+        if (conflicted && resolution !== 'keep-local' && resolution !== 'stop') {
+          if (current === null && remoteMonth === null && resolution === 'keep-remote') throw new GitHubConflictError(file.path)
+          if (current !== null || remoteMonth !== null) {
+            const winner = remoteMonth
+              ? await makeFile(file.path, await gzip(jsonBytes(remoteMonth)), file.category)
+              : await makeFile(file.path, current!.bytes, file.category)
+            if (remoteMonth) stage(winner)
+            else entries.set(winner.path, this.entry(winner))
+            if (resolution === 'keep-remote') skippedConflicts++
+            else {
+              // Copies deliberately retain the established .local-* naming and
+              // remain outside the active business manifest.
+              const original = desired.get(file.path) ?? file
+              const path = copyPath(file.path, this.now())
+              if (await read(path) !== null) throw new GitHubConflictError(path, '同名冲突副本已存在，已停止覆盖')
+              pending.set(path, { ...original, path })
+              copiedConflicts++
+            }
+            byteCount += winner.size
+            continue
           }
         }
+        stage(file)
+        byteCount += file.size
+      }
+      const nextManifest: SyncManifest = {
+        fileType: MANIFEST_TYPE,
+        schemaVersion: MANIFEST_VERSION,
+        updatedAt: this.now(),
+        files: [...entries.values()].sort((left, right) => left.path.localeCompare(right.path)),
+      }
+      try {
+        onProgress?.('正在原子提交业务文件与清单…')
+        await client.commitFiles([
+          ...pending.values(),
+          { path: 'manifest.json', bytes: jsonBytes(nextManifest) },
+        ], 'Sync workstation data and manifest', snapshot)
+        return { files: localFiles.length, bytes: byteCount, copiedConflicts, skippedConflicts }
+      } catch (error) {
+        if (!(error instanceof GitHubConflictError) || resolution === 'stop' || attempt > 0) throw error
       }
     }
-    const nextManifest: SyncManifest = {
-      fileType: MANIFEST_TYPE,
-      schemaVersion: MANIFEST_VERSION,
-      updatedAt: this.now(),
-      files: effectiveEntries.sort((left, right) =>
-        left.path.localeCompare(right.path),
-      ),
-    }
-    const manifestBytes = jsonBytes(nextManifest)
-    // A manifest race may introduce unrelated files. Never reuse its fresh SHA
-    // with entries assembled from the old snapshot, even for keep-local.
-    await client.putFile(
-      'manifest.json',
-      manifestBytes,
-      'Update workstation sync manifest',
-      existingManifestFile?.sha,
-    )
-    return {
-      files: localFiles.length,
-      bytes: localFiles.reduce((sum, file) => sum + file.size, 0),
-      copiedConflicts,
-      skippedConflicts,
-    }
+    throw new GitHubConflictError('manifest.json')
   }
 
   async pull(
@@ -565,9 +561,6 @@ export class GitHubSyncService {
     const tradeCandles: MarketCandle[] = hasMarketData
       ? []
       : [...(current.data.tradeCandles ?? [])]
-    const markCandles: MarketCandle[] = hasMarketData
-      ? []
-      : [...(current.data.markCandles ?? [])]
     const symbols = new Map<string, MarketSymbol>(
       hasMarketData
         ? []
@@ -637,37 +630,8 @@ export class GitHubSyncService {
           parseJson(file.bytes, entry.path) as SimulationState,
         )
       } else if (parseMarketChunkPath(entry.path) !== null) {
-        const pathParts = parseMarketChunkPath(entry.path)!
-        const chunk = parseJson(
-          await gunzip(file.bytes),
-          entry.path,
-        ) as Partial<MarketChunk>
-        if (
-          chunk.fileType !== 'crypto-contract-workstation-market-chunk' ||
-          chunk.schemaVersion !== 1 ||
-          chunk.symbol !== pathParts.symbol ||
-          chunk.timeframe !== pathParts.timeframe ||
-          chunk.year !== pathParts.year ||
-          chunk.month !== pathParts.month ||
-          pathParts.month < 1 ||
-          pathParts.month > 12 ||
-          !Array.isArray(chunk.tradeCandles) ||
-          !Array.isArray(chunk.markCandles) ||
-          (chunk.symbolInfo !== undefined && chunk.symbolInfo.symbol !== pathParts.symbol) ||
-          [...chunk.tradeCandles, ...chunk.markCandles].some((candle) => {
-            const date = new Date(candle.openTime)
-            return (
-              candle.symbol !== pathParts.symbol ||
-              candle.timeframe !== pathParts.timeframe ||
-              date.getUTCFullYear() !== pathParts.year ||
-              date.getUTCMonth() + 1 !== pathParts.month
-            )
-          })
-        ) {
-          throw new Error(`${entry.path} 行情分片格式无效`)
-        }
+        const { chunk } = await readMarketChunk(file.bytes, entry.path)
         tradeCandles.push(...chunk.tradeCandles)
-        markCandles.push(...chunk.markCandles)
         if (chunk.symbolInfo !== undefined) symbols.set(chunk.symbolInfo.symbol, chunk.symbolInfo)
       } else {
         throw new Error(`远端清单包含不支持的路径：${entry.path}`)
@@ -684,7 +648,6 @@ export class GitHubSyncService {
         preferences: preferences as BackupPreferences,
         symbols: [],
         tradeCandles: uniqueCandles(tradeCandles),
-        markCandles: uniqueCandles(markCandles),
         sessions,
         simulations,
       },
@@ -693,7 +656,7 @@ export class GitHubSyncService {
     for (const session of sessions) {
       symbolMap.set(session.symbol.ticker, session.symbol)
     }
-    for (const candle of [...tradeCandles, ...markCandles]) {
+    for (const candle of tradeCandles) {
       if (!symbolMap.has(candle.symbol)) {
         symbolMap.set(candle.symbol, {
           ticker: candle.symbol,
@@ -723,7 +686,7 @@ export class GitHubSyncService {
           quantityPrecision: symbol.volumePrecision ?? 8,
         })),
     ]
-    await this.backups.import(backup, onProgress)
+    await this.backups.import(validateBackupEnvelope(backup), onProgress)
     return {
       files: remote.files.length,
       bytes,

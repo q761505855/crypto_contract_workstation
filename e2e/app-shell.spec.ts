@@ -47,6 +47,7 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
     const url = new URL(socket.url())
     expect(url.pathname).toBe('/market/stream')
     const streams = new Set((url.searchParams.get('streams') ?? '').split('/'))
+    expect([...streams].every(stream => stream.includes('@kline_'))).toBe(true)
     let latestPrice = '60005'
     const sendPrice = (price: string) => {
       latestPrice = price
@@ -54,10 +55,6 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
       for (const stream of streams) {
         const [symbolText, type] = stream.split('@')
         const symbol = symbolText.toUpperCase()
-        if (type === 'markPrice') {
-          socket.send(JSON.stringify({ stream, data: { e: 'markPriceUpdate', E: eventTime, s: symbol, p: '60004' } }))
-          continue
-        }
         const timeframe = type.replace('kline_', '')
         const openTime = alignOpenTime(eventTime, timeframe, 'floor')
         socket.send(JSON.stringify({ stream, data: {
@@ -73,6 +70,7 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
     socket.onMessage((message) => {
       const { method, params, id } = JSON.parse(String(message)) as { method: string; params: string[]; id: string }
       for (const stream of params) {
+        expect(stream).toContain('@kline_')
         if (method === 'SUBSCRIBE') streams.add(stream)
         else if (method === 'UNSUBSCRIBE') streams.delete(stream)
       }
@@ -115,10 +113,8 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
       })
       return
     }
-    if (
-      url.pathname === '/fapi/v1/klines' ||
-      url.pathname === '/fapi/v1/markPriceKlines'
-    ) {
+    expect(url.pathname).not.toContain('markPrice')
+    if (url.pathname === '/fapi/v1/klines') {
       const timeframe = url.searchParams.get('interval') ?? '15m'
       const interval = intervalMilliseconds[timeframe] ?? 15 * 60_000
       const start = Number(url.searchParams.get('startTime'))
@@ -165,10 +161,62 @@ interface MockGitHubFile {
 
 async function mockGitHub(page: import('@playwright/test').Page) {
   const files = new Map<string, MockGitHubFile>()
+  const trees = new Map<string, Map<string, MockGitHubFile>>([['tree-0', new Map()]])
+  const commits = new Map<string, { tree: string; parent?: string }>([['commit-0', { tree: 'tree-0' }]])
+  const blobs = new Map<string, Buffer>()
+  let head = 'commit-0'
   let sequence = 0
   await page.route('https://api.github.com/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
+    const suffix = url.pathname.slice('/repos/alice/trading-backup'.length)
+    if (url.pathname.startsWith('/repos/alice/trading-backup/') && suffix.startsWith('/git/')) {
+      if (request.method() === 'GET' && suffix === '/git/ref/heads/main') {
+        await route.fulfill({ json: { object: { sha: head } } })
+        return
+      }
+      if (request.method() === 'GET' && suffix.startsWith('/git/commits/')) {
+        const commit = commits.get(suffix.split('/').at(-1)!)
+        await route.fulfill({ status: commit ? 200 : 404, json: commit ? { tree: { sha: commit.tree } } : {} })
+        return
+      }
+      if (request.method() === 'POST' && suffix === '/git/blobs') {
+        const bytes = Buffer.from(request.postDataJSON().content, 'base64')
+        const sha = `blob-${++sequence}`
+        blobs.set(sha, bytes)
+        await route.fulfill({ json: { sha } })
+        return
+      }
+      if (request.method() === 'POST' && suffix === '/git/trees') {
+        const body = request.postDataJSON()
+        const next = new Map(trees.get(body.base_tree))
+        for (const entry of body.tree) next.set(entry.path, { bytes: blobs.get(entry.sha)!, sha: entry.sha })
+        const sha = `tree-${++sequence}`
+        trees.set(sha, next)
+        await route.fulfill({ json: { sha } })
+        return
+      }
+      if (request.method() === 'POST' && suffix === '/git/commits') {
+        const body = request.postDataJSON()
+        const sha = `commit-${++sequence}`
+        commits.set(sha, { tree: body.tree, parent: body.parents[0] })
+        await route.fulfill({ json: { sha } })
+        return
+      }
+      if (request.method() === 'PATCH' && suffix === '/git/refs/heads/main') {
+        const body = request.postDataJSON()
+        const commit = commits.get(body.sha)
+        if (body.force !== false || commit?.parent !== head) {
+          await route.fulfill({ status: 422, json: { message: 'Conflict' } })
+          return
+        }
+        head = body.sha
+        files.clear()
+        for (const [path, file] of trees.get(commit.tree)!) files.set(path, file)
+        await route.fulfill({ json: { object: { sha: head } } })
+        return
+      }
+    }
     if (
       request.method() === 'GET' &&
       url.pathname === '/repos/alice/trading-backup'
@@ -196,7 +244,9 @@ async function mockGitHub(page: import('@playwright/test').Page) {
       .map((segment) => decodeURIComponent(segment))
       .join('/')
     if (request.method() === 'GET') {
-      const file = files.get(path)
+      const ref = url.searchParams.get('ref')
+      const snapshot = ref && ref !== 'main' ? trees.get(commits.get(ref)?.tree ?? '') : files
+      const file = snapshot?.get(path)
       if (file === undefined) {
         await route.fulfill({
           status: 404,
@@ -204,11 +254,16 @@ async function mockGitHub(page: import('@playwright/test').Page) {
         })
         return
       }
+      if (request.headers().accept?.includes('raw+json')) {
+        await route.fulfill({ body: file.bytes })
+        return
+      }
       await route.fulfill({
         json: {
           type: 'file',
           path,
           sha: file.sha,
+          size: file.bytes.length,
           encoding: 'base64',
           content: file.bytes.toString('base64'),
         },
@@ -236,6 +291,11 @@ async function mockGitHub(page: import('@playwright/test').Page) {
         bytes: Buffer.from(body.content, 'base64'),
         sha,
       })
+      const tree = `tree-${++sequence}`
+      trees.set(tree, new Map(files))
+      const nextHead = `commit-${++sequence}`
+      commits.set(nextHead, { tree, parent: head })
+      head = nextHead
       await route.fulfill({ json: { content: { sha } } })
       return
     }
@@ -379,7 +439,7 @@ test.describe('mobile workstation', () => {
   }
 
   test('creates and advances a replay, trades, and preserves input across rotation', async ({ page }) => {
-    // Cold chart history, a historical jump, and mark preparation each persist minutes.
+    // Cold chart history and the historical jump persist canonical ordinary minutes.
     test.setTimeout(60_000)
     await page.setViewportSize({ width: 390, height: 844 })
     await mockBinance(page, true)
@@ -647,7 +707,7 @@ test('keeps the latest trade price updating through rapid live period changes', 
   await selectChartPeriod(page, '1h')
   await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
   await page.clock.runFor(600)
-  await expect.poll(() => [...liveSockets[0].streams].sort()).toEqual(['btcusdt@kline_1h', 'btcusdt@markPrice@1s'])
+  await expect.poll(() => [...liveSockets[0].streams].sort()).toEqual(['btcusdt@kline_1h'])
   liveSockets[0].sendPrice('60007.75')
   await expect(lastPrice).toHaveText('60007.75')
   await expect.poll(() => page.evaluate(() =>
@@ -858,17 +918,13 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await dataManager.getByRole('button', { name: '删除当前缓存', exact: true }).click()
   await expect(dataManager.getByText('当前交易对的 1m 本地缓存已删除。')).toBeVisible()
   await dataManager
-    .getByRole('button', { name: '下载两类数据' })
+    .getByRole('button', { name: '下载历史数据' })
     .click()
   await expect(dataManager.getByText(/下载完成/)).toBeVisible({ timeout: 60_000 })
   await expect(
     dataManager.locator('.cache-summary').filter({ hasText: '普通 K 线' }),
   ).toContainText('44,640 根')
-  await expect(
-    dataManager
-      .locator('.cache-summary')
-      .filter({ hasText: '标记价格 K 线' }),
-  ).toContainText('44,640 根')
+  await expect(dataManager.getByText(/标记价格/)).toHaveCount(0)
   await dataManager.getByTestId('close-data-manager').click()
 
   const replayControls = page.getByTestId('replay-controls')
@@ -1023,7 +1079,8 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await expect(page.getByTestId('live-status')).toContainText('只读模式')
   await expect(page.getByTestId('live-status')).toContainText('已连接')
   await expect(page.getByTestId('live-status')).toContainText('进行中')
-  await expect(page.getByTestId('live-status')).toContainText('60004')
+  await expect(page.getByTestId('live-status')).toContainText('60005')
+  await expect(page.getByTestId('live-status')).not.toContainText('标记价格')
   await expect(page.getByTestId('simulation-panel')).toHaveCount(0)
   await expect(page.getByTestId('replay-controls')).toHaveCount(0)
   expect(

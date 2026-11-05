@@ -1,5 +1,6 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 
+/** `mark` identifies legacy IndexedDB records only; active market services accept `trade`. */
 export type CandleKind = 'trade' | 'mark'
 
 export interface MarketSymbol {

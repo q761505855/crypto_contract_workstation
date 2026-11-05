@@ -87,18 +87,9 @@ describe('Binance response normalization', () => {
     })
   })
 
-  it('normalizes mark-price candles without fake volume or trades', () => {
-    const candle = normalizeKline(
-      VALID_ROW,
-      'BTCUSDT',
-      '1m',
-      'mark',
-      VALID_ROW[6] - 1,
-    )
-    expect(candle.volume).toBe('0')
-    expect(candle.quoteVolume).toBe('0')
-    expect(candle.tradeCount).toBe(0)
-    expect(candle.isClosed).toBe(false)
+  it('rejects retired mark-price normalization even for an empty response', () => {
+    expect(() => normalizeKline(VALID_ROW, 'BTCUSDT', '1m', 'mark', VALID_ROW[6] - 1)).toThrow(/标记价格.*停用/)
+    expect(() => normalizeKlines([], 'BTCUSDT', '1m', 'mark', Date.now())).toThrow(/标记价格.*停用/)
   })
 
   it('rejects malformed OHLC and deduplicates matching open times', () => {

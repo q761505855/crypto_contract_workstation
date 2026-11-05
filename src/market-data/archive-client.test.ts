@@ -35,11 +35,11 @@ describe('BinanceArchiveClient', () => {
     ])
   })
 
-  it('uses daily mark archives without a header, isolates kinds and ignores unrelated members', async () => {
+  it('uses daily trade archives without a header and ignores unrelated members', async () => {
     const { client, fetcher } = fixture(row().join(','), `${basename}-01.csv`, undefined, { '../untrusted.csv': strToU8('invalid') })
-    const candles = await client.loadDay('mark', 'BTCUSDT', 2025, 9, 1)
-    expect(candles).toEqual([expect.objectContaining({ volume: '0', quoteVolume: '0', tradeCount: 0, isClosed: true })])
-    expect(fetcher.mock.calls[0]?.[0]).toBe('https://data.binance.vision/data/futures/um/daily/markPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2025-09-01.zip')
+    const candles = await client.loadDay('trade', 'BTCUSDT', 2025, 9, 1)
+    expect(candles).toEqual([expect.objectContaining({ volume: '10', quoteVolume: '1000', tradeCount: 12, isClosed: true })])
+    expect(fetcher.mock.calls[0]?.[0]).toBe('https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2025-09-01.zip')
   })
 
   it('returns null only when the ZIP is absent and does not fetch a checksum', async () => {
@@ -70,11 +70,11 @@ describe('BinanceArchiveClient', () => {
     await expect(client.loadMonth('trade', 'BTCUSDT', 2025, 9)).rejects.toThrow(/缺少预期 CSV/)
   })
 
-  it('rejects malformed mark fields even though canonical mark volumes are zero', async () => {
-    const fields = row()
-    fields[5] = '-1'
-    const { client } = fixture(fields.join(','))
-    await expect(client.loadMonth('mark', 'BTCUSDT', 2025, 9)).rejects.toThrow(/CSV/)
+  it('rejects retired monthly and daily mark-price requests before making any request', async () => {
+    const { client, fetcher } = fixture(row().join(','))
+    await expect(client.loadMonth('mark', 'BTCUSDT', 2025, 9)).rejects.toThrow(/标记价格.*停用/)
+    await expect(client.loadDay('mark', 'BTCUSDT', 2025, 9, 1)).rejects.toThrow(/标记价格.*停用/)
+    expect(fetcher).not.toHaveBeenCalled()
   })
 
   it('does not hide corrupt ZIPs or network failures as unavailable archives', async () => {
@@ -94,7 +94,7 @@ describe('BinanceArchiveClient', () => {
     ['missing quote volume', 7, ''], ['negative volume', 5, '-1'],
     ['noninteger trades', 8, '1.5'], ['negative trades', 8, '-1'],
     ['unsafe trades', 8, '9007199254740992'], ['nonfinite number', 4, 'Infinity'],
-    ['invalid OHLC', 2, '99'], ['negative mark volume', 5, '-1'],
+    ['invalid OHLC', 2, '99'],
     ['invalid unused numeric field', 10, 'NaN'],
   ])('rejects malformed CSV: %s', async (_, index, value) => {
     const fields = row()

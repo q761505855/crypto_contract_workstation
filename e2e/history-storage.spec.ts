@@ -167,15 +167,19 @@ test('prepares full minute months, automatically uploads and reads cloud without
   await drawer.getByLabel('开始时间').fill('2025-09-12T12:00')
   await drawer.getByLabel('结束时间').fill('2025-09-13T12:00')
   await expect(drawer.getByTestId('history-range-preview')).toContainText('UTC')
-  await drawer.getByRole('button',{name:'下载两类数据'}).click()
+  await expect(drawer.getByText(/标记价格/)).toHaveCount(0)
+  await drawer.getByRole('button',{name:'下载历史数据'}).click()
   await expect(drawer.getByText(/下载完成/)).toBeVisible({timeout:60_000})
   const path = `${project}/data/market-history/BTCUSDT/1m/2025/09.json.gz`
   await expect.poll(() => {
     const value = cloud.current().get(path)
-    return value ? JSON.parse(gunzipSync(value.bytes).toString()).markCandles.length : 0
+    return value ? JSON.parse(gunzipSync(value.bytes).toString()).tradeCandles.length : 0
   },{timeout:30_000}).toBe(43_200)
   const chunk = JSON.parse(gunzipSync(cloud.current().get(path)!.bytes).toString())
   expect(chunk.tradeCandles).toHaveLength(43_200)
+  expect(chunk).not.toHaveProperty('markCandles')
+  expect(archives.requests.some(url => /markPrice/i.test(url))).toBe(false)
+  expect(restRequests.some(url => /markPrice/i.test(url))).toBe(false)
   expect(cloud.current().get(cloud.foreignPath)!.bytes.equals(cloud.foreignBytes)).toBe(true)
   expect(cloud.current().has('storage.json')).toBe(true)
   expect(restRequests.every(url => Number(new URL(url).searchParams.get('startTime')) >= Date.UTC(2025,9,31))).toBe(true)
@@ -206,7 +210,7 @@ test('prepares full minute months, automatically uploads and reads cloud without
     throw error
   }
   expect(archives.requests.filter(url => url.includes('-2025-09.')).length).toBe(archiveCount)
-  // Creating the session reuses both minute series restored from the Git month.
+  // Creating the session reuses ordinary minutes restored from the Git month.
   await expect(controls.getByText(/起点：/)).toContainText('2025/9/15 12:00')
   const beforeCreateArchives = archives.requests.length
   const beforeCreateRest = restRequests.length

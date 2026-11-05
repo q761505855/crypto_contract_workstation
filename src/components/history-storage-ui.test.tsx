@@ -16,9 +16,9 @@ function fixture() {
   let pending = 2
   const service = {
     getBaseUrl: () => 'https://example.test', getSymbols: vi.fn(async () => [symbol]),
-    inspectSeries: vi.fn(async () => EMPTY_SERIES_SUMMARY), resetReplayRequests: vi.fn(),
+    inspectSeries: vi.fn(async (..._args: unknown[]) => EMPTY_SERIES_SUMMARY), resetReplayRequests: vi.fn(),
     usesMinuteHistory: () => true,
-    prepareHistory: vi.fn(async () => ({ from: Date.UTC(2026, 9, 1), to: Date.UTC(2026, 10, 1) - 60_000 })),
+    prepareHistory: vi.fn(async (..._args: unknown[]) => ({ from: Date.UTC(2026, 9, 1), to: Date.UTC(2026, 10, 1) - 60_000 })),
     getPendingUploadCount: () => pending,
     retryPendingUploads: vi.fn(async () => { pending = 0 }), deleteSeries: vi.fn(async () => undefined),
   }
@@ -53,21 +53,25 @@ describe('history storage UI', () => {
       return {from:Date.UTC(2026,9,1),to:Date.UTC(2026,10,1)-60_000}
     })
     render(<DataManager open runtime={runtime} selection={{symbol:toSymbolInfo(symbol),period:{text:'5m',multiplier:5,timespan:'minute'}}} onApplySelection={()=>undefined} onClose={()=>undefined}/>)
-    await waitFor(()=>expect(screen.getByRole('button',{name:'下载两类数据'})).toBeEnabled())
-    fireEvent.click(screen.getByRole('button',{name:'下载两类数据'}))
+    await waitFor(()=>expect(screen.getByRole('button',{name:'下载历史数据'})).toBeEnabled())
+    fireEvent.click(screen.getByRole('button',{name:'下载历史数据'}))
     expect(await screen.findByText(/下载完成/)).toBeVisible()
     act(()=>warn?.('已缓存，待上传：模拟网络失败'))
     expect(screen.getByText(/下载完成/)).toBeVisible()
   })
-  it('prepares both minute kinds for the previous complete UTC month regardless of chart timeframe', async () => {
+  it('offers one ordinary-price download for the previous complete UTC month regardless of chart timeframe', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 10, 5, 10))
     const { runtime, service } = fixture()
     render(<DataManager open runtime={runtime} selection={{ symbol: toSymbolInfo(symbol), period: { text: '4h', multiplier: 4, timespan: 'hour' } }} onApplySelection={() => undefined} onClose={() => undefined} />)
     await waitFor(() => expect(service.inspectSeries).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m'))
     expect(screen.getByText(/固定下载 1m/)).toBeVisible()
     expect(screen.getByTestId('history-range-preview')).toHaveTextContent('UTC')
-    fireEvent.click(screen.getByRole('button', { name: '下载两类数据' }))
-    await waitFor(() => expect(service.prepareHistory).toHaveBeenCalledWith('BTCUSDT', Date.UTC(2026, 9, 1), Date.UTC(2026, 10, 1) - 60_000, expect.objectContaining({ kinds: ['trade', 'mark'], signal: expect.any(AbortSignal) })))
+    expect(screen.queryByText(/标记价格/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /下载/ })).toHaveLength(1)
+    expect(service.inspectSeries.mock.calls.every(([kind]) => kind === 'trade')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '下载历史数据' }))
+    await waitFor(() => expect(service.prepareHistory).toHaveBeenCalledWith('BTCUSDT', Date.UTC(2026, 9, 1), Date.UTC(2026, 10, 1) - 60_000, expect.objectContaining({ signal: expect.any(AbortSignal) })))
+    expect(service.prepareHistory.mock.calls[0][3]).not.toHaveProperty('kinds')
     expect(await screen.findByText(/下载完成/)).toHaveTextContent('已缓存，待上传')
   })
 
@@ -87,7 +91,7 @@ describe('history storage UI', () => {
     await waitFor(() => expect(service.getSymbols).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: '删除当前缓存' }))
     await waitFor(() => expect(service.deleteSeries).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m'))
-    expect(service.deleteSeries).toHaveBeenCalledWith('mark', 'BTCUSDT', '1m')
+    expect(service.deleteSeries).toHaveBeenCalledOnce()
   })
 
   it('uses the runtime default cloud client while keeping its credential out of the input', async () => {

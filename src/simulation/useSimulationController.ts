@@ -17,7 +17,6 @@ import type {
   ReplayController,
 } from '../replay/useReplayController'
 import { SimulationEngine } from './simulation-engine'
-import type { MarketCandle } from '../market-data/models'
 
 export interface SimulationController {
   state: SimulationState | null
@@ -42,7 +41,6 @@ export function useSimulationController(
 ): SimulationController {
   const engineRef = useRef<SimulationEngine | null>(null)
   const sessionRef = useRef(replay.session)
-  const markCandlesRef = useRef(new Map<number, MarketCandle>())
   const saveQueueRef = useRef(Promise.resolve())
   const [state, setState] = useState<SimulationState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -80,28 +78,21 @@ export function useSimulationController(
     let cancelled = false
     if (session === null) {
       engineRef.current = null
-      markCandlesRef.current.clear()
       setState(null)
       setBusy(false)
       return
     }
     setBusy(true)
     setError('')
-    void Promise.all([
-      runtime.simulationStates.load(session.id),
-      runtime.service.loadReplayCandles(
-        'mark', session.symbol.ticker, session.period.text,
-        session.startTime, session.endTime,
-        { prefetchTo: session.endTime },
-      ),
-    ])
-      .then(([saved, marks]) => {
+    void runtime.simulationStates.load(session.id)
+      .then((saved) => {
         if (cancelled) return
-        markCandlesRef.current = new Map(marks.map((candle) => [candle.openTime, candle]))
         const engine =
           saved === undefined
             ? SimulationEngine.create(session)
             : SimulationEngine.restore(saved, session)
+        const candle = replay.getCurrentCandle()
+        if (candle !== null) engine.revalue(candle)
         engineRef.current = engine
         publish(engine)
       })
@@ -134,8 +125,7 @@ export function useSimulationController(
       }
       const engine = engineRef.current
       if (engine === null) return
-      const markCandle = markCandlesRef.current.get(event.candle.openTime) ?? null
-      engine.processCandle(event.candle, markCandle)
+      engine.processCandle(event.candle)
       publish(engine)
     },
     [publish],

@@ -9,7 +9,7 @@ import type { MarketCandle, MarketSymbol } from '../market-data/models'
 import { SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
 import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
-import { IndexedDbMarketDataStore } from './market-data-store'
+import { IndexedDbMarketDataStore, openWorkstationDatabase } from './market-data-store'
 import { IndexedDbReplaySessionStore } from './replay-session-store'
 import { IndexedDbSimulationStateStore } from './simulation-state-store'
 import {
@@ -104,7 +104,8 @@ async function seed(databaseName: string, preferences: MemoryPreferences) {
   const market = new IndexedDbMarketDataStore(databaseName)
   await market.putSymbols([symbol()])
   await market.putCandles('trade', [candle()])
-  await market.putCandles('mark', [candle('99')])
+  const database = await openWorkstationDatabase(databaseName)
+  await database.put('markCandles', candle('99'))
   const replay = new IndexedDbReplaySessionStore(databaseName)
   await replay.put(session())
   const simulation = new IndexedDbSimulationStateStore(databaseName)
@@ -167,12 +168,14 @@ describe('WorkstationBackupService', () => {
     })
     await expect(target.import(exported)).resolves.toMatchObject({
       tradeCandles: 1,
-      markCandles: 1,
+      markCandles: 0,
       sessions: 1,
       simulations: 1,
       preferences: true,
     })
     const restored = await target.exportAll()
+    expect(exported.data).not.toHaveProperty('markCandles')
+    expect((await source.exportMarketData()).data).not.toHaveProperty('markCandles')
     expect(restored.data).toEqual(exported.data)
     expect(
       targetPreferences.getItem('marketData.binanceBaseUrl'),
@@ -184,6 +187,45 @@ describe('WorkstationBackupService', () => {
     ).toEqual(indicatorPreferences())
     expect(JSON.parse(targetPreferences.getItem(SELECTED_SYMBOL_STORAGE_KEY) ?? 'null')).toEqual(DEFAULT_SYMBOL)
     expect(JSON.parse(targetPreferences.getItem(PINNED_PERIODS_KEY) ?? 'null')).toEqual(['1m', '1d'])
+  })
+
+  it('validates legacy mark candles but ignores them without deleting existing local legacy rows', async () => {
+    const databaseName = `legacy-mark-${crypto.randomUUID()}`
+    const database = await openWorkstationDatabase(databaseName)
+    await database.put('markCandles', candle('98'))
+    const service = new WorkstationBackupService(databaseName, new MemoryPreferences())
+    const archive = await service.exportMarketData()
+    archive.data.symbols = [symbol()]
+    archive.data.tradeCandles = [candle()]
+    archive.data.markCandles = [candle('99')]
+    expect(validateBackupEnvelope(archive).data).not.toHaveProperty('markCandles')
+    await service.import(archive)
+    expect(await database.getAll('markCandles')).toEqual([candle('98')])
+    expect((await service.exportAll()).data).not.toHaveProperty('markCandles')
+    archive.data.markCandles = [{ ...candle(), high: '1' }]
+    archive.data.tradeCandles = [{ ...candle(), openTime: 60_000, closeTime: 119_999 }]
+    await expect(service.import(archive)).rejects.toThrow()
+    expect(await database.getAll('tradeCandles')).toEqual([candle()])
+  })
+
+  it('normalizes legacy position markPrice into lastPrice and exports only the current field', async () => {
+    const databaseName = `legacy-price-${crypto.randomUUID()}`
+    const preferences = new MemoryPreferences()
+    await seed(databaseName, preferences)
+    const service = new WorkstationBackupService(databaseName, preferences)
+    const archive = await service.exportAll()
+    const position = archive.data.simulations![0].position! as unknown as Record<string, unknown>
+    position.markPrice = '102'
+    delete position.lastPrice
+    const validated = validateBackupEnvelope(archive)
+    expect(validated.data.simulations![0].position).toMatchObject({ lastPrice: '102' })
+    expect(validated.data.simulations![0].position).not.toHaveProperty('markPrice')
+    await service.import(archive)
+    const output = await service.exportAll()
+    expect(output.data.simulations![0].position).not.toHaveProperty('markPrice')
+    expect(output.data.simulations![0].position?.lastPrice).toBe('102')
+    position.markPrice = 'bad'
+    await expect(service.import(archive)).rejects.toThrow(/markPrice/)
   })
 
   it('exports default and explicitly empty shortcuts in configuration-only archives', async () => {

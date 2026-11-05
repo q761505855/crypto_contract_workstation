@@ -140,7 +140,7 @@ export default function App() {
         : (price: number) => {
             const target = classifyRiskPrice(
               position.side,
-              Number(position.lastPrice ?? position.markPrice),
+              Number(position.lastPrice),
               price,
             )
             if (target === 'take-profit') {

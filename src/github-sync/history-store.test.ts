@@ -44,17 +44,18 @@ describe('GitHubHistoryStore', () => {
     const remote = new Remote()
     await seed(remote, true)
     const result = await new GitHubHistoryStore(remote.client()).loadMonth('BTCUSDT', 2024, 1)
-    expect(result?.tradeCandles).toEqual([candle(0), candle(1)])
+    expect(result).toEqual({ tradeCandles: [candle(0), candle(1)] })
     expect(remote.reads).toEqual([{ path: 'manifest.json', ref: 'parent' }, { path: path.replace('data/market-history', 'market-data'), ref: 'parent' }])
   })
-  it('merges partial dates and price kinds, preserves unrelated entries, and skips unchanged content', async () => {
+  it('merges partial dates, strips legacy marks, preserves unrelated entries, and skips unchanged trade-only content', async () => {
     const remote = new Remote(); await seed(remote)
     const store = new GitHubHistoryStore(remote.client())
-    await store.saveMonth('BTCUSDT', 2024, 1, [candle(2)], [])
+    await store.saveMonth('BTCUSDT', 2024, 1, [candle(2)])
     expect((await store.loadMonth('BTCUSDT', 2024, 1))?.tradeCandles).toEqual([candle(0), candle(1), candle(2)])
-    expect((await store.loadMonth('BTCUSDT', 2024, 1))?.markCandles).toEqual([candle(0)])
+    expect(await store.loadMonth('BTCUSDT', 2024, 1)).not.toHaveProperty('markCandles')
+    expect(JSON.parse(new TextDecoder().decode(await gunzip(remote.files.get(path)!)))) .not.toHaveProperty('markCandles')
     expect((await manifest(remote)).files.map(entry => entry.path)).toContain('config/favorites.json')
-    await store.saveMonth('BTCUSDT', 2024, 1, [candle(2)], [])
+    await store.saveMonth('BTCUSDT', 2024, 1, [candle(2)])
     expect(remote.commits).toBe(1)
   })
   it('rejects checksum corruption, invalid candles, and cancellation without writes', async () => {
@@ -62,7 +63,7 @@ describe('GitHubHistoryStore', () => {
     const store = new GitHubHistoryStore(remote.client())
     remote.files.set(path, new Uint8Array([1, 2]))
     await expect(store.loadMonth('BTCUSDT', 2024, 1)).rejects.toThrow(/校验/)
-    await expect(store.saveMonth('BTCUSDT', 2024, 1, [{ ...candle(0), high: '1' }], [])).rejects.toThrow()
+    await expect(store.saveMonth('BTCUSDT', 2024, 1, [{ ...candle(0), high: '1' }])).rejects.toThrow()
     const abort = new AbortController(); abort.abort()
     await expect(store.loadMonth('BTCUSDT', 2024, 1, { signal: abort.signal })).rejects.toThrow()
     expect(remote.commits).toBe(0)
@@ -79,7 +80,27 @@ describe('GitHubHistoryStore', () => {
   it('does not change either month or manifest when another commit races', async () => {
     const remote = new Remote(); await seed(remote); remote.race = true
     const before = new Map(remote.files)
-    await expect(new GitHubHistoryStore(remote.client()).saveMonth('BTCUSDT', 2024, 1, [candle(2)], [])).rejects.toBeInstanceOf(GitHubConflictError)
+    await expect(new GitHubHistoryStore(remote.client()).saveMonth('BTCUSDT', 2024, 1, [candle(2)])).rejects.toBeInstanceOf(GitHubConflictError)
     expect(remote.files).toEqual(before)
+  })
+  it('rewrites legacy mark-bearing chunks even when trade candles are unchanged', async () => {
+    const remote = new Remote(); await seed(remote, true)
+    const store = new GitHubHistoryStore(remote.client())
+    await store.saveMonth('BTCUSDT', 2024, 1, [candle(0), candle(1)])
+    expect(remote.commits).toBe(1)
+    for (const entry of (await manifest(remote)).files.filter(entry => entry.category === 'market-data')) {
+      const bytes = remote.files.get(entry.path)!
+      expect(await sha256(bytes)).toBe(entry.checksum)
+      expect(JSON.parse(new TextDecoder().decode(await gunzip(bytes)))).not.toHaveProperty('markCandles')
+    }
+  })
+  it('rejects invalid legacy mark candles even though they will be ignored', async () => {
+    const remote = new Remote(); await seed(remote)
+    const chunk = JSON.parse(new TextDecoder().decode(await gunzip(remote.files.get(path)!)))
+    chunk.markCandles[0].high = '1'
+    const bytes = await gzip(encoder.encode(JSON.stringify(chunk)))
+    const value = await manifest(remote); value.files[0].size = bytes.length; value.files[0].checksum = await sha256(bytes)
+    remote.files.set(path, bytes); remote.files.set('manifest.json', encoder.encode(JSON.stringify(value)))
+    await expect(new GitHubHistoryStore(remote.client()).loadMonth('BTCUSDT', 2024, 1)).rejects.toThrow()
   })
 })

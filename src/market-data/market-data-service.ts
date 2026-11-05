@@ -106,6 +106,7 @@ export class MarketDataService {
     to: number,
     options: LoadCandlesOptions = {},
   ): Promise<MarketCandle[]> {
+    if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     if (this.minuteHistory) return this.minuteHistory.load(kind, symbol, timeframe, from, to, options)
     const key = `${kind}:${symbol.toUpperCase()}:${timeframe}`
     return this.queueSeries(key, () => this.loadSeries(
@@ -120,6 +121,7 @@ export class MarketDataService {
     from: number,
     to: number,
   ): Promise<MarketCandle[]> {
+    if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     if (this.minuteHistory) return this.minuteHistory.cached(kind, symbol, timeframe, from, to)
     if (!Number.isFinite(from) || !Number.isFinite(to)) {
       throw new Error('本地行情读取时间必须为有效时间戳')
@@ -305,6 +307,7 @@ export class MarketDataService {
     from: number,
     to: number,
   ): Promise<MarketCandle[]> {
+    if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     const normalizedSymbol = symbol.toUpperCase()
     if (this.minuteHistory) return this.minuteHistory.load(kind, normalizedSymbol, timeframe, from, to)
     return this.queueSeries(`${kind}:${normalizedSymbol}:${timeframe}`, async () => {
@@ -331,6 +334,7 @@ export class MarketDataService {
     symbol: string,
     timeframe: string,
   ): Promise<SeriesSummary> {
+    if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     return this.store.getSeriesSummary(kind, symbol, timeframe)
   }
 
@@ -346,6 +350,7 @@ export class MarketDataService {
     kind: CandleKind,
     candle: MarketCandle,
   ): Promise<void> {
+    if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     if (!candle.isClosed) {
       return
     }

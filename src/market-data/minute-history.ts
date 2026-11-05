@@ -16,9 +16,9 @@ const PENDING_KEY = 'marketData.pendingCloudUploads.v1'
 export interface HistoryCloudStore {
   canWrite?(): boolean
   loadMonth(symbol: string, year: number, month: number, options?: { signal?: AbortSignal }): Promise<{
-    tradeCandles: MarketCandle[]; markCandles: MarketCandle[]; symbolInfo?: MarketSymbol
+    tradeCandles: MarketCandle[]; symbolInfo?: MarketSymbol
   } | null>
-  saveMonth(symbol: string, year: number, month: number, trade: readonly MarketCandle[], mark: readonly MarketCandle[], symbolInfo?: MarketSymbol): Promise<void>
+  saveMonth(symbol: string, year: number, month: number, trade: readonly MarketCandle[], symbolInfo?: MarketSymbol): Promise<void>
 }
 
 export interface HistoryServices {
@@ -28,9 +28,7 @@ export interface HistoryServices {
   pendingStorage?: Pick<Storage, 'getItem' | 'setItem'>
 }
 
-export interface PrepareHistoryOptions extends LoadCandlesOptions {
-  kinds?: readonly CandleKind[]
-}
+export type PrepareHistoryOptions = LoadCandlesOptions
 
 interface PendingMonth { symbol: string; year: number; month: number; revision: number }
 
@@ -70,32 +68,33 @@ export class MinuteHistory {
     else this.missingArchives.delete(key)
     return rows
   }
-  private async local(kind: CandleKind, symbol: string, from: number, to: number): Promise<MarketCandle[]> {
+  private async local(symbol: string, from: number, to: number): Promise<MarketCandle[]> {
     if (from > to) return []
-    return (await this.store.getCandles(kind, symbol, '1m', from, to))
+    return (await this.store.getCandles('trade', symbol, '1m', from, to))
       .filter((candle) => candle.isClosed && candle.closeTime < this.now())
       .sort((a, b) => a.openTime - b.openTime)
   }
 
-  private async saveRows(kind: CandleKind, rows: readonly MarketCandle[]): Promise<void> {
+  private async saveRows(rows: readonly MarketCandle[]): Promise<void> {
     if (rows.length === 0) return
-    const existing = new Map((await this.store.getCandles(kind, rows[0].symbol, '1m', rows[0].openTime, rows.at(-1)!.openTime))
+    const existing = new Map((await this.store.getCandles('trade', rows[0].symbol, '1m', rows[0].openTime, rows.at(-1)!.openTime))
       .map((row) => [row.openTime, row]))
     const changed = rows.filter((row) => {
       const prior = existing.get(row.openTime)
       return prior === undefined || (Object.keys(row) as Array<keyof MarketCandle>).some((field) => prior[field] !== row[field])
     })
-    if (changed.length > 0) await this.store.putCandles(kind, changed)
+    if (changed.length > 0) await this.store.putCandles('trade', changed)
   }
 
   async cached(kind: CandleKind, symbol: string, timeframe: string, from: number, to: number, includeCurrent = false): Promise<MarketCandle[]> {
+    if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     if (!Number.isFinite(from) || !Number.isFinite(to)) throw new Error('本地行情读取时间必须为有效时间戳')
     if (from > to || to < 0) return []
     symbol = symbol.toUpperCase()
     const first = Math.max(0, alignOpenTime(from, timeframe, 'ceil'))
     const last = Math.min(nextOpenTime(alignOpenTime(to, timeframe, 'floor'), timeframe) - MINUTE,
       alignOpenTime(this.now(), '1m', 'floor') - MINUTE)
-    const minutes = await this.local(kind, symbol, first, last)
+    const minutes = await this.local(symbol, first, last)
     const canonical = aggregateMinuteCandles(minutes, timeframe, includeCurrent ? alignOpenTime(this.now(), '1m', 'floor') : undefined)
     const byTime = new Map<number, MarketCandle>()
     // Older archives remain readable, but cannot substitute for minute coverage.
@@ -108,6 +107,7 @@ export class MinuteHistory {
   }
 
   async load(kind: CandleKind, symbol: string, timeframe: string, from: number, to: number, options: LoadCandlesOptions = {}): Promise<MarketCandle[]> {
+    if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     if (!Number.isFinite(from) || !Number.isFinite(to)) throw new Error('行情请求时间必须为有效时间戳')
     symbol = symbol.toUpperCase()
     if (!/^[A-Z0-9]+$/.test(symbol)) throw new Error('交易对格式无效')
@@ -119,7 +119,7 @@ export class MinuteHistory {
     const visibleUntil = alignOpenTime(this.now(), '1m', 'floor')
     const cachedTo = Math.min(nextOpenTime(alignOpenTime(to, timeframe, 'floor'), timeframe) - MINUTE, visibleUntil - MINUTE)
     if (cachedFrom <= cachedTo) {
-      const local = await this.local(kind, symbol, cachedFrom, cachedTo)
+      const local = await this.local(symbol, cachedFrom, cachedTo)
       options.signal?.throwIfAborted()
       if (findMissingRanges(local, '1m', cachedFrom, cachedTo).length === 0) {
         return aggregateMinuteCandles(local, timeframe, visibleUntil)
@@ -136,7 +136,7 @@ export class MinuteHistory {
       if (first > last) return []
       try {
         for (const month of historyMonths(first, last)) {
-          await this.fillMonth(kind, symbol, month.year, month.month, month.from, month.to, options)
+          await this.fillMonth(symbol, month.year, month.month, month.from, month.to, options)
         }
       } catch (error) {
         if (options.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error
@@ -150,11 +150,11 @@ export class MinuteHistory {
     try { return await request } finally { if (this.queues.get(symbol) === request) this.queues.delete(symbol) }
   }
 
-  private async fillMonth(kind: CandleKind, symbol: string, year: number, month: number, from: number, to: number, options: LoadCandlesOptions): Promise<void> {
+  private async fillMonth(symbol: string, year: number, month: number, from: number, to: number, options: LoadCandlesOptions): Promise<void> {
     const key = this.monthKey(symbol, year, month)
-    let gaps = findMissingRanges(await this.local(kind, symbol, from, to), '1m', from, to)
+    let gaps = findMissingRanges(await this.local(symbol, from, to), '1m', from, to)
     if (gaps.length === 0) return
-    const status = (source: string) => options.onStatus?.(`${symbol} ${year}-${String(month).padStart(2, '0')} ${kind === 'trade' ? '普通价格' : '标记价格'}：${source}`)
+    const status = (source: string) => options.onStatus?.(`${symbol} ${year}-${String(month).padStart(2, '0')} 普通价格：${source}`)
     if (this.services.cloud) {
       let read = this.cloudReads.get(key)
       if ((this.cloudReadTimes.get(key) ?? 0) + 60_000 < this.now()) {
@@ -169,8 +169,7 @@ export class MinuteHistory {
             options.signal?.throwIfAborted()
             if (remote) {
               if (remote.symbolInfo) await this.store.putSymbols([remote.symbolInfo])
-              await this.saveRows('trade', remote.tradeCandles)
-              await this.saveRows('mark', remote.markCandles)
+              await this.saveRows(remote.tradeCandles)
             }
           } catch (error) {
             this.cloudReads.delete(key)
@@ -187,19 +186,19 @@ export class MinuteHistory {
         this.cloudReadTimes.delete(key)
         throw error
       }
-      gaps = findMissingRanges(await this.local(kind, symbol, from, to), '1m', from, to)
+      gaps = findMissingRanges(await this.local(symbol, from, to), '1m', from, to)
       if (gaps.length === 0) return
     }
     const currentMonth = alignOpenTime(this.now(), '1M', 'floor')
     if (Date.UTC(year, month - 1) < currentMonth) {
       status('下载并校验月归档…')
-      const archived = await this.readArchive(`month/${kind}/${key}`, () =>
-        this.services.archives.loadMonth(kind, symbol, year, month, { signal: options.signal }))
+      const archived = await this.readArchive(`month/${key}`, () =>
+        this.services.archives.loadMonth('trade', symbol, year, month, { signal: options.signal }))
       options.signal?.throwIfAborted()
       if (archived !== null) {
-        await this.saveRows(kind, archived)
+        await this.saveRows(archived)
         this.queueUpload(symbol, year, month)
-        gaps = findMissingRanges(await this.local(kind, symbol, from, to), '1m', from, to)
+        gaps = findMissingRanges(await this.local(symbol, from, to), '1m', from, to)
         if (gaps.length === 0) return
       }
     }
@@ -214,33 +213,33 @@ export class MinuteHistory {
       let archived: MarketCandle[] | null = null
       if (dayTime < today) {
         status(`检查 ${date.toISOString().slice(0, 10)} 日归档…`)
-        archived = await this.readArchive(`day/${kind}/${key}/${date.getUTCDate()}`, () =>
-          this.services.archives.loadDay(kind, symbol, year, month, date.getUTCDate(), { signal: options.signal }))
+        archived = await this.readArchive(`day/${key}/${date.getUTCDate()}`, () =>
+          this.services.archives.loadDay('trade', symbol, year, month, date.getUTCDate(), { signal: options.signal }))
       }
       options.signal?.throwIfAborted()
       if (archived !== null) {
-        await this.saveRows(kind, archived)
+        await this.saveRows(archived)
         this.queueUpload(symbol, year, month)
       } else if (dayTime >= recentFrom) {
         const dayFrom = Math.max(from, dayTime)
         const dayTo = Math.min(to, dayTime + DAY - MINUTE)
-        const recentGaps = findMissingRanges(await this.local(kind, symbol, dayFrom, dayTo), '1m', dayFrom, dayTo)
+        const recentGaps = findMissingRanges(await this.local(symbol, dayFrom, dayTo), '1m', dayFrom, dayTo)
         for (const gap of recentGaps) {
           status('近期尚未归档，使用分钟 API 补齐…')
-          const rows = await this.client.downloadRange(kind, symbol, '1m', gap.from, gap.to, {
+          const rows = await this.client.downloadRange('trade', symbol, '1m', gap.from, gap.to, {
             ...options,
             onPage: async (page) => {
-              await this.store.putCandles(kind, page.filter((candle) => candle.isClosed && candle.closeTime < this.now()))
+              await this.store.putCandles('trade', page.filter((candle) => candle.isClosed && candle.closeTime < this.now()))
               this.queueUpload(symbol, year, month)
             },
           })
-          await this.store.putCandles(kind, rows.filter((candle) => candle.isClosed && candle.closeTime < this.now()))
+          await this.store.putCandles('trade', rows.filter((candle) => candle.isClosed && candle.closeTime < this.now()))
           this.queueUpload(symbol, year, month)
         }
       }
     }
-    const remaining = findMissingRanges(await this.local(kind, symbol, from, to), '1m', from, to)
-    if (remaining.length > 0) throw new Error(`${symbol} ${kind === 'trade' ? '普通价格' : '标记价格'} 归档仍有 ${remaining.length} 个缺失区间，首个缺口 ${new Date(remaining[0].from).toISOString()}；30 天以前的历史不会改用 API。`)
+    const remaining = findMissingRanges(await this.local(symbol, from, to), '1m', from, to)
+    if (remaining.length > 0) throw new Error(`${symbol} 普通价格归档仍有 ${remaining.length} 个缺失区间，首个缺口 ${new Date(remaining[0].from).toISOString()}；30 天以前的历史不会改用 API。`)
   }
 
   async prepare(symbol: string, from: number, to: number, options: PrepareHistoryOptions = {}): Promise<{ from: number; to: number }> {
@@ -248,12 +247,10 @@ export class MinuteHistory {
     const range = expandHistoryRange(from, to, this.now(), info?.onboardDate ?? 0)
     this.resetRequests()
     for (const month of historyMonths(range.from, range.to)) {
-      for (const kind of options.kinds ?? ['trade', 'mark']) {
-        await this.load(kind, symbol, '1m', month.from, month.to, options)
-        options.signal?.throwIfAborted()
-        const missing = findMissingRanges(await this.local(kind, symbol.toUpperCase(), month.from, month.to), '1m', month.from, month.to)
-        if (missing.length > 0) throw new Error(`${symbol} 所选完整区间仍有 ${missing.length} 个缺口，未缩短结束范围。`)
-      }
+      await this.load('trade', symbol, '1m', month.from, month.to, options)
+      options.signal?.throwIfAborted()
+      const missing = findMissingRanges(await this.local(symbol.toUpperCase(), month.from, month.to), '1m', month.from, month.to)
+      if (missing.length > 0) throw new Error(`${symbol} 所选完整区间仍有 ${missing.length} 个缺口，未缩短结束范围。`)
     }
     return range
   }
@@ -288,11 +285,11 @@ export class MinuteHistory {
       try {
         const from = Date.UTC(entry.year, entry.month - 1)
         const to = Date.UTC(entry.year, entry.month) - MINUTE
-        const [trade, mark, symbols] = await Promise.all([
-          this.local('trade', entry.symbol, from, to), this.local('mark', entry.symbol, from, to), this.store.getSymbols(),
+        const [trade, symbols] = await Promise.all([
+          this.local(entry.symbol, from, to), this.store.getSymbols(),
         ])
-        if (trade.length + mark.length === 0) { this.pending.delete(key); this.persistPending(); continue }
-        await this.services.cloud.saveMonth(entry.symbol, entry.year, entry.month, trade, mark, symbols.find((item) => item.symbol === entry.symbol))
+        if (trade.length === 0) { this.pending.delete(key); this.persistPending(); continue }
+        await this.services.cloud.saveMonth(entry.symbol, entry.year, entry.month, trade, symbols.find((item) => item.symbol === entry.symbol))
         // A negative read made before this upload must not hide the new cloud
         // month when the user subsequently clears their local cache.
         this.cloudReads.delete(key)

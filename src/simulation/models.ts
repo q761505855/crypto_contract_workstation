@@ -33,8 +33,7 @@ export interface SimulationPosition {
   side: PositionSide
   quantity: string
   entryPrice: string
-  lastPrice?: string
-  markPrice: string
+  lastPrice: string
   notional: string
   leverage: number
   isolatedMargin: string
@@ -109,6 +108,22 @@ export interface SimulationState {
   stats: SimulationStats
   warning: string | null
   updatedAt: number
+}
+
+/** Migrate old saved positions at the boundary; canonical snapshots contain ordinary prices only. */
+export function normalizeSimulationStatePrices(state: SimulationState): SimulationState {
+  const result = structuredClone(state)
+  if (result.position !== null) {
+    const position = result.position as SimulationPosition & { markPrice?: string }
+    const lastPrice = position.lastPrice ?? position.markPrice
+    if (typeof lastPrice !== 'string' || !Number.isFinite(Number(lastPrice)) || Number(lastPrice) <= 0) {
+      throw new Error('模拟持仓缺少有效成交价格')
+    }
+    position.lastPrice = lastPrice
+    delete position.markPrice
+  }
+  if (result.warning !== null && /缺少.*标记价格/.test(result.warning)) result.warning = null
+  return result
 }
 
 export interface OrderSizeInput {

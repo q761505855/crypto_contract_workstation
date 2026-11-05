@@ -1,6 +1,6 @@
 import type { KLineData } from 'klinecharts'
 import { createBrowserRequestGuard, SocketCooldownError } from './request-guard'
-import type { CandleKind, MarketCandle } from './models'
+import type { MarketCandle } from './models'
 import type { LiveMarketStatus } from './live-models'
 import { INITIAL_LIVE_STATUS } from './live-models'
 import { normalizeKline } from './normalizer'
@@ -11,7 +11,7 @@ const MAX_RECONNECT_ATTEMPTS = 3
 
 interface LiveMarketDataService {
   saveRealtimeCandle(
-    kind: CandleKind,
+    kind: 'trade',
     candle: MarketCandle,
   ): Promise<void>
 }
@@ -30,7 +30,7 @@ type Schedule = (callback: () => void, milliseconds: number) => number
 type CancelSchedule = (id: number) => void
 
 interface ParsedLiveKline {
-  kind: CandleKind
+  kind: 'trade'
   eventTime: number
   candle: MarketCandle
 }
@@ -41,7 +41,6 @@ interface BinanceLivePayload {
   E?: unknown
   s?: unknown
   k?: unknown
-  p?: unknown
 }
 
 interface BinanceLiveKline {
@@ -88,23 +87,11 @@ function unwrapPayload(payload: unknown): BinanceLivePayload {
   return raw
 }
 
-export function parseLiveMarkPrice(payload: unknown) {
-  const raw = unwrapPayload(payload)
-  if (raw.e !== 'markPriceUpdate') throw new Error('实时行情标记价格事件无效')
-  const price = requiredString(raw.p, 'markPrice')
-  if (finiteNumber(price, 'markPrice') <= 0) throw new Error('实时行情标记价格无效')
-  return {
-    symbol: requiredString(raw.s, 'symbol').toUpperCase(),
-    eventTime: finiteNumber(raw.E, 'eventTime'),
-    price,
-  }
-}
-
 export function parseLiveKline(payload: unknown): ParsedLiveKline {
   const raw = unwrapPayload(payload)
   const eventType = requiredString(raw.e, 'eventType')
   if (eventType !== 'kline') throw new Error(`不支持的实时行情事件：${eventType}`)
-  const kind: CandleKind = 'trade'
+  const kind = 'trade'
   const kline = raw.k as BinanceLiveKline | null
   if (kline === null || typeof kline !== 'object') {
     throw new Error('实时行情缺少 K 线数据')
@@ -228,7 +215,6 @@ export class BinanceLiveStream {
     for (const { input } of this.subscriptions) {
       const symbol = input.symbol.toLowerCase()
       streams.add(`${symbol}@kline_${input.timeframe}`)
-      streams.add(`${symbol}@markPrice@1s`)
     }
     return streams
   }
@@ -302,38 +288,38 @@ export class BinanceLiveStream {
     socket.onmessage = (event) => {
       if (this.socket !== socket || typeof event.data !== 'string') return
       try {
-        const raw = unwrapPayload(JSON.parse(event.data))
+        const message: unknown = JSON.parse(event.data)
+        if (message !== null && typeof message === 'object' && 'stream' in message &&
+          typeof message.stream === 'string' && /@markPrice/i.test(message.stream)) return
+        const raw = unwrapPayload(message)
+        // Older connections may still deliver retired mark-price streams during a switch.
+        if (typeof raw.e === 'string' && /^markPrice/i.test(raw.e)) return
         // Successful SUBSCRIBE/UNSUBSCRIBE acknowledgements are not market data.
         if ('result' in raw && 'id' in raw) return
         if ('code' in raw) {
           this.failSocket('币安拒绝实时订阅，等待重新连接。')
           return
         }
-        const parsed = raw.e === 'markPriceUpdate'
-          ? { type: 'mark' as const, ...parseLiveMarkPrice(raw) }
-          : { type: 'trade' as const, ...parseLiveKline(raw) }
-        const symbol = parsed.type === 'mark' ? parsed.symbol : parsed.candle.symbol
+        const parsed = parseLiveKline(raw)
+        const symbol = parsed.candle.symbol
         const receivedAt = this.now()
         if (this.openedAt !== null && receivedAt - this.openedAt >= 60_000) this.status.reconnectAttempt = 0
         for (const subscription of this.subscriptions) {
           const { input } = subscription
-          if (symbol !== input.symbol ||
-            (parsed.type === 'trade' && parsed.candle.timeframe !== input.timeframe)) continue
+          if (symbol !== input.symbol || parsed.candle.timeframe !== input.timeframe) continue
           subscription.status = {
             ...subscription.status,
             lastMessageTime: receivedAt,
             latencyMs: Math.max(0, receivedAt - parsed.eventTime),
             warning: '',
             reconnectAttempt: this.status.reconnectAttempt,
-            ...(parsed.type === 'mark' ? { markPrice: parsed.price } : {
-              lastPrice: parsed.candle.close,
-              candleClosed: parsed.candle.isClosed,
-            }),
+            lastPrice: parsed.candle.close,
+            candleClosed: parsed.candle.isClosed,
           }
-          if (parsed.type === 'trade') input.onKline(toKLineData(parsed.candle))
+          input.onKline(toKLineData(parsed.candle))
           input.onStatus({ ...subscription.status })
         }
-        if (parsed.type === 'trade' && parsed.candle.isClosed &&
+        if (parsed.candle.isClosed &&
           this.desiredStreams().has(`${parsed.candle.symbol.toLowerCase()}@kline_${parsed.candle.timeframe}`)) {
           void this.service.saveRealtimeCandle('trade', parsed.candle).catch((error: unknown) => {
             if (generation === this.generation) this.publish({ warning: `保存实时 K 线失败：${error instanceof Error ? error.message : String(error)}` })

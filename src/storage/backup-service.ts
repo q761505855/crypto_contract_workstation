@@ -28,6 +28,7 @@ import type {
   SimulationState,
   SimulationTrade,
 } from '../simulation/models'
+import { normalizeSimulationStatePrices } from '../simulation/models'
 import {
   openWorkstationDatabase,
   type WorkstationDatabase,
@@ -57,6 +58,7 @@ export interface BackupData {
   preferences?: BackupPreferences
   symbols?: MarketSymbol[]
   tradeCandles?: MarketCandle[]
+  /** @deprecated Legacy input only: validated and ignored, never exported. */
   markCandles?: MarketCandle[]
   sessions?: ReplaySession[]
   simulations?: SimulationState[]
@@ -84,7 +86,6 @@ type StorageLike = Pick<Storage, 'getItem' | 'setItem'>
 type BackupStoreName =
   | 'symbols'
   | 'tradeCandles'
-  | 'markCandles'
   | 'replaySessions'
   | 'simulationStates'
   | 'simulationTrades'
@@ -585,7 +586,6 @@ function validateSimulation(
     for (const name of [
       'quantity',
       'entryPrice',
-      'markPrice',
       'notional',
       'isolatedMargin',
       'maintenanceMarginRate',
@@ -599,6 +599,12 @@ function validateSimulation(
         `${field}.position.lastPrice`,
         false,
       )
+    }
+    if (position.markPrice !== undefined) {
+      decimalValue(position.markPrice, `${field}.position.markPrice`, false)
+    }
+    if (position.lastPrice === undefined && position.markPrice === undefined) {
+      throw new Error(`${field}.position.lastPrice 缺失`)
     }
     decimalValue(
       position.unrealizedPnl,
@@ -639,11 +645,11 @@ function validateSimulation(
     throw new Error(`${field}.warning 必须是字符串或 null`)
   }
   nonNegativeInteger(item.updatedAt, `${field}.updatedAt`)
-  return {
+  return normalizeSimulationStatePrices({
     ...(structuredClone(item) as unknown as SimulationState),
     trades,
     ledger,
-  }
+  })
 }
 
 export function validateBackupEnvelope(value: unknown): BackupEnvelope {
@@ -681,7 +687,7 @@ export function validateBackupEnvelope(value: unknown): BackupEnvelope {
     )
   }
   if (source.markCandles !== undefined) {
-    data.markCandles = validateCandles(
+    validateCandles(
       source.markCandles,
       'markCandles',
     )
@@ -710,13 +716,12 @@ export function validateBackupEnvelope(value: unknown): BackupEnvelope {
   }
   const required: Record<BackupKind, Array<keyof BackupData>> = {
     preferences: ['preferences'],
-    'market-data': ['symbols', 'tradeCandles', 'markCandles'],
+    'market-data': ['symbols', 'tradeCandles'],
     session: ['sessions'],
     all: [
       'preferences',
       'symbols',
       'tradeCandles',
-      'markCandles',
       'sessions',
       'simulations',
     ],
@@ -781,14 +786,9 @@ export class WorkstationBackupService {
     const database = await openWorkstationDatabase(this.databaseName)
     const symbols = await database.getAll('symbols')
     let tradeCandles = await database.getAll('tradeCandles')
-    let markCandles = await database.getAll('markCandles')
     if (symbol !== undefined && timeframe !== undefined) {
       const normalized = symbol.toUpperCase()
       tradeCandles = tradeCandles.filter(
-        (item) =>
-          item.symbol === normalized && item.timeframe === timeframe,
-      )
-      markCandles = markCandles.filter(
         (item) =>
           item.symbol === normalized && item.timeframe === timeframe,
       )
@@ -796,7 +796,6 @@ export class WorkstationBackupService {
     return this.envelope('market-data', {
       symbols,
       tradeCandles: this.sortCandles(tradeCandles),
-      markCandles: this.sortCandles(markCandles),
     })
   }
 
@@ -809,7 +808,7 @@ export class WorkstationBackupService {
     const simulation = await this.simulations.load(sessionId)
     return this.envelope('session', {
       sessions: [session],
-      simulations: simulation === undefined ? [] : [simulation],
+      simulations: simulation === undefined ? [] : [normalizeSimulationStatePrices(simulation)],
     })
   }
 
@@ -818,13 +817,11 @@ export class WorkstationBackupService {
     const [
       symbols,
       tradeCandles,
-      markCandles,
       sessions,
       stateRows,
     ] = await Promise.all([
       database.getAll('symbols'),
       database.getAll('tradeCandles'),
-      database.getAll('markCandles'),
       database.getAll('replaySessions'),
       database.getAll('simulationStates'),
     ])
@@ -837,11 +834,10 @@ export class WorkstationBackupService {
       preferences: defaultPreferences(this.storage),
       symbols,
       tradeCandles: this.sortCandles(tradeCandles),
-      markCandles: this.sortCandles(markCandles),
       sessions: sessions.sort((left, right) =>
         left.id.localeCompare(right.id),
       ),
-      simulations: simulations.sort((left, right) =>
+      simulations: simulations.map(normalizeSimulationStatePrices).sort((left, right) =>
         left.sessionId.localeCompare(right.sessionId),
       ),
     })
@@ -850,14 +846,13 @@ export class WorkstationBackupService {
   async import(value: unknown, onProgress?: (message: string) => void): Promise<BackupImportReport> {
     onProgress?.('正在校验备份数据…')
     const envelope = validateBackupEnvelope(value)
-    const candleCount = (envelope.data.tradeCandles?.length ?? 0) + (envelope.data.markCandles?.length ?? 0)
+    const candleCount = envelope.data.tradeCandles?.length ?? 0
     onProgress?.(`正在恢复行情：${candleCount.toLocaleString()} 根…`)
     const database = await openWorkstationDatabase(this.databaseName)
     const transaction = database.transaction(
       [
         'symbols',
         'tradeCandles',
-        'markCandles',
         'replaySessions',
         'simulationStates',
         'simulationTrades',
@@ -869,7 +864,7 @@ export class WorkstationBackupService {
     // and JS completion handlers for every minute in a multi-month restore.
     try {
       const candleKey = (row: MarketCandle) => `${row.symbol}:${row.timeframe}:${row.openTime}`
-      const readExisting = async (name: 'tradeCandles' | 'markCandles', rows: readonly MarketCandle[]) => {
+      const readExisting = async (name: 'tradeCandles', rows: readonly MarketCandle[]) => {
         const ranges = new Map<string, {symbol:string;timeframe:string;from:number;to:number}>()
         for (const row of rows) {
           const key = `${row.symbol}:${row.timeframe}`
@@ -888,10 +883,7 @@ export class WorkstationBackupService {
       }
       // Read in this same transaction, so a concurrent write cannot invalidate
       // the comparison. Imported ranges do not scan unrelated market series.
-      const [tradeExisting,markExisting] = await Promise.all([
-        readExisting('tradeCandles',envelope.data.tradeCandles ?? []),
-        readExisting('markCandles',envelope.data.markCandles ?? []),
-      ])
+      const tradeExisting = await readExisting('tradeCandles',envelope.data.tradeCandles ?? [])
       const changed = (row: MarketCandle, existing: Map<string,MarketCandle>) => {
         const prior = existing.get(candleKey(row))
         return prior === undefined || (Object.keys(row) as Array<keyof MarketCandle>).some(field => prior[field] !== row[field])
@@ -902,9 +894,6 @@ export class WorkstationBackupService {
       }
       for (const candle of envelope.data.tradeCandles ?? []) {
         if (changed(candle,tradeExisting)) native.objectStore('tradeCandles').put(candle)
-      }
-      for (const candle of envelope.data.markCandles ?? []) {
-        if (changed(candle,markExisting)) native.objectStore('markCandles').put(candle)
       }
       for (const session of envelope.data.sessions ?? []) {
         native.objectStore('replaySessions').put(session)
@@ -946,7 +935,7 @@ export class WorkstationBackupService {
       kind: envelope.kind,
       symbols: envelope.data.symbols?.length ?? 0,
       tradeCandles: envelope.data.tradeCandles?.length ?? 0,
-      markCandles: envelope.data.markCandles?.length ?? 0,
+      markCandles: 0,
       sessions: envelope.data.sessions?.length ?? 0,
       simulations: envelope.data.simulations?.length ?? 0,
       preferences: envelope.data.preferences !== undefined,

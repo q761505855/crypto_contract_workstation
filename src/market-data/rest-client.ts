@@ -72,6 +72,7 @@ export class BinanceRestClient {
     to: number,
     options: DownloadRangeOptions = {},
   ): Promise<MarketCandle[]> {
+    if (kind !== 'trade') throw new Error('标记价格行情已停用，仅支持普通 K 线')
     if (!Number.isFinite(from) || !Number.isFinite(to)) {
       throw new Error('行情请求时间必须为有效时间戳')
     }
@@ -82,9 +83,7 @@ export class BinanceRestClient {
 
     while (cursor <= to) {
       const payload = await this.getJson(
-        kind === 'trade'
-          ? '/fapi/v1/klines'
-          : '/fapi/v1/markPriceKlines',
+        '/fapi/v1/klines',
         {
           symbol: symbol.toUpperCase(),
           interval: timeframe,
