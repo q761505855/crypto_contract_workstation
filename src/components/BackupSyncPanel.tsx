@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import type { ReplaySession } from '../replay/models'
 import type { BackupEnvelope } from '../storage/backup-service'
+import { defaultStorageTarget } from '../github-sync/default-storage'
 import {
   GitHubContentsClient,
   type GitHubRepositoryInfo,
@@ -51,9 +52,10 @@ export function BackupSyncPanel({
 }: BackupSyncPanelProps) {
   const [sessions, setSessions] = useState<ReplaySession[]>([])
   const [sessionId, setSessionId] = useState('')
-  const [owner, setOwner] = useState('')
-  const [repository, setRepository] = useState('')
-  const [branch, setBranch] = useState('main')
+  const [defaultTarget] = useState(defaultStorageTarget)
+  const [owner, setOwner] = useState(defaultTarget.owner)
+  const [repository, setRepository] = useState(defaultTarget.repository)
+  const [branch, setBranch] = useState(defaultTarget.branch)
   const [token, setToken] = useState('')
   const [repositoryInfo, setRepositoryInfo] =
     useState<GitHubRepositoryInfo | null>(null)
@@ -63,7 +65,7 @@ export function BackupSyncPanel({
     ...ALL_SYNC_SELECTION,
   })
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState('已选择默认项目云端；配置可手动比较、上传和拉取。')
   const [error, setError] = useState('')
   const [logs, setLogs] = useState<string[]>([])
   const importInputRef = useRef<HTMLInputElement | null>(null)
@@ -107,8 +109,11 @@ export function BackupSyncPanel({
   }
 
   function client(): GitHubContentsClient {
+    if (isDefaultTarget && token.trim().length === 0 && runtime.defaultGitHubClient) {
+      return runtime.defaultGitHubClient
+    }
     return new GitHubContentsClient(
-      { owner, repository, branch },
+      { owner, repository, branch, ...(isSharedRepository ? { root: defaultTarget.root } : {}) },
       token,
     )
   }
@@ -238,6 +243,9 @@ export function BackupSyncPanel({
   }
 
   const actionDisabled = disabled || busy
+  const isSharedRepository = owner.trim().toLowerCase() === defaultTarget.owner.toLowerCase() && repository.trim().toLowerCase() === defaultTarget.repository.toLowerCase()
+  const isDefaultTarget = owner.trim() === defaultTarget.owner && repository.trim() === defaultTarget.repository && branch.trim() === defaultTarget.branch
+  const hasCredential = token.trim().length > 0 || (isDefaultTarget && runtime.defaultGitHubClient?.canWrite() === true)
 
   return (
     <div data-testid="backup-sync-panel">
@@ -315,11 +323,12 @@ export function BackupSyncPanel({
       </section>
 
       <section>
-        <h3>GitHub 私有仓库同步</h3>
+        <h3>GitHub 公共仓库同步</h3>
         <p className="muted-text">
-          使用只授予目标仓库 Contents 读写权限的 Fine-grained Token。
-          Token 仅保存在当前页面内存，刷新或断开后清除。
+          默认项目云端已选中，历史分钟数据下载后自动上传。应用配置仍使用下方手动比较、上传和拉取。
+          默认连接使用部署凭据；手动 Token 仅保存在当前页面内存。
         </p>
+        <p className="muted-text">{isSharedRepository ? `项目目录：${defaultTarget.root}。同一公共存储仓库的所有分支均使用此项目目录。${isDefaultTarget && hasCredential ? '默认连接可用，无需填写 Token。' : hasCredential ? '已填写手动 Token。' : '当前未配置写入凭据，可填写 Token 后同步。'}` : '手动仓库使用仓库根目录，兼容原有存档。'}</p>
         <label>
           用户或组织
           <input
@@ -411,7 +420,7 @@ export function BackupSyncPanel({
         <div className="button-row sync-actions">
           <button
             data-testid="github-test-connection"
-            disabled={actionDisabled || token.length === 0}
+            disabled={actionDisabled}
             onClick={() => void run(testConnection)}
             type="button"
           >
@@ -419,7 +428,7 @@ export function BackupSyncPanel({
           </button>
           <button
             data-testid="github-compare"
-            disabled={actionDisabled || token.length === 0}
+            disabled={actionDisabled}
             onClick={() => void run(compare)}
             type="button"
           >
@@ -427,7 +436,7 @@ export function BackupSyncPanel({
           </button>
           <button
             data-testid="github-upload"
-            disabled={actionDisabled || token.length === 0}
+            disabled={actionDisabled || !hasCredential}
             onClick={() => void run(upload)}
             type="button"
           >
@@ -435,7 +444,7 @@ export function BackupSyncPanel({
           </button>
           <button
             data-testid="github-pull"
-            disabled={actionDisabled || token.length === 0}
+            disabled={actionDisabled}
             onClick={() => void run(pull)}
             type="button"
           >
@@ -447,12 +456,12 @@ export function BackupSyncPanel({
             onClick={() => {
               setToken('')
               setRepositoryInfo(null)
-              setStatus('GitHub 已断开，内存中的 Token 已清除。')
-              addLog('已断开并清除 Token')
+              setStatus('手动 Token 已清除；默认项目连接继续使用部署凭据。')
+              addLog('已清除手动 Token')
             }}
             type="button"
           >
-            断开并清除 Token
+            清除手动 Token
           </button>
         </div>
         {repositoryInfo !== null && (

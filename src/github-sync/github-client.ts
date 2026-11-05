@@ -7,7 +7,11 @@ export interface GitHubRepositoryTarget {
   owner: string
   repository: string
   branch: string
+  root?: string
 }
+
+export interface GitHubSnapshot { commitSha: string; treeSha: string }
+export interface GitHubReadOptions { ref?: string; signal?: AbortSignal }
 
 export interface GitHubRepositoryInfo {
   fullName: string
@@ -46,7 +50,7 @@ function encodePath(path: string): string {
     segments.length === 0 ||
     segments.some(
       (segment) =>
-        segment.length === 0 || segment === '.' || segment === '..',
+        segment.length === 0 || segment === '.' || segment === '..' || /[\\%\x00-\x1f]/.test(segment),
     )
   ) {
     throw new Error('GitHub 文件路径无效')
@@ -90,25 +94,28 @@ function responseError(status: number, context: 'repository' | 'file'): Error {
 
 export class GitHubContentsClient {
   private readonly target: GitHubRepositoryTarget
+  readonly #token: string
 
   constructor(
     target: GitHubRepositoryTarget,
-    private readonly token: string,
+    token: string = '',
     private readonly fetcher: FetchLike = fetch,
   ) {
+    this.#token = token
     this.target = {
       owner: validateSegment(target.owner, 'GitHub 用户或组织'),
       repository: validateSegment(target.repository, 'GitHub 仓库名'),
       branch: validateSegment(target.branch || 'main', 'GitHub 分支'),
+      ...(target.root ? { root: target.root } : {}),
     }
-    if (token.trim().length === 0) {
-      throw new Error('请输入 GitHub Token')
-    }
+    if (this.target.root) encodePath(this.target.root)
   }
 
   getTarget(): GitHubRepositoryTarget {
     return { ...this.target }
   }
+
+  canWrite(): boolean { return this.#token.trim().length > 0 }
 
   async testConnection(): Promise<GitHubRepositoryInfo> {
     const payload = await this.request(
@@ -139,8 +146,8 @@ export class GitHubContentsClient {
     }
   }
 
-  async getFile(path: string): Promise<GitHubFile | null> {
-    const encodedPath = encodePath(path)
+  async getFile(path: string, options: GitHubReadOptions = {}): Promise<GitHubFile | null> {
+    const encodedPath = this.scopedPath(path)
     let response: Response
     try {
       response = await this.fetcher.call(
@@ -150,14 +157,16 @@ export class GitHubContentsClient {
         )}/${encodeURIComponent(
           this.target.repository,
         )}/contents/${encodedPath}?ref=${encodeURIComponent(
-          this.target.branch,
+          options.ref ?? this.target.branch,
         )}`,
         {
           method: 'GET',
           headers: this.headers(),
+          signal: options.signal,
         },
       )
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted) throw error
       throw new Error('无法连接 GitHub API，请检查网络')
     }
     if (response.status === 404) return null
@@ -170,20 +179,32 @@ export class GitHubContentsClient {
       sha?: unknown
       encoding?: unknown
       content?: unknown
+      size?: unknown
     }
     if (
       payload.type !== 'file' ||
       typeof payload.path !== 'string' ||
       typeof payload.sha !== 'string' ||
-      payload.encoding !== 'base64' ||
-      typeof payload.content !== 'string'
+      (payload.encoding !== 'none' && payload.encoding !== 'base64')
     ) {
       throw new Error(`GitHub 文件 ${path} 响应格式无效`)
     }
+    let bytes: Uint8Array
+    if (payload.encoding === 'none' || (typeof payload.size === 'number' && payload.size > 1_048_576)) {
+      const raw = await this.fetcher.call(globalThis,
+        `${GITHUB_API_BASE}${this.repoPath()}/contents/${encodedPath}?ref=${encodeURIComponent(options.ref ?? this.target.branch)}`,
+        { method: 'GET', headers: { ...this.headers(), Accept: 'application/vnd.github.raw+json' }, signal: options.signal })
+      if (!raw.ok) throw responseError(raw.status, 'file')
+      bytes = new Uint8Array(await raw.arrayBuffer())
+    } else {
+      if (typeof payload.content !== 'string') throw new Error(`GitHub 文件 ${path} 响应格式无效`)
+      bytes = base64ToBytes(payload.content)
+    }
+    options.signal?.throwIfAborted()
     return {
-      path: payload.path,
+      path,
       sha: payload.sha,
-      bytes: base64ToBytes(payload.content),
+      bytes,
     }
   }
 
@@ -193,7 +214,8 @@ export class GitHubContentsClient {
     message: string,
     expectedSha?: string,
   ): Promise<string> {
-    const encodedPath = encodePath(path)
+    const encodedPath = this.scopedPath(path)
+    this.requireToken()
     const body: Record<string, unknown> = {
       message,
       content: bytesToBase64(bytes),
@@ -235,10 +257,45 @@ export class GitHubContentsClient {
     return payload.content.sha
   }
 
-  private headers(): HeadersInit {
+  async getSnapshot(options: { signal?: AbortSignal } = {}): Promise<GitHubSnapshot> {
+    const ref = await this.request(`${this.repoPath()}/git/ref/heads/${encodeURIComponent(this.target.branch)}`, { method: 'GET', signal: options.signal }, 'file') as { object?: { sha?: unknown } }
+    if (typeof ref.object?.sha !== 'string') throw new Error('GitHub 分支响应格式无效')
+    const commit = await this.request(`${this.repoPath()}/git/commits/${encodeURIComponent(ref.object.sha)}`, { method: 'GET', signal: options.signal }, 'file') as { tree?: { sha?: unknown } }
+    if (typeof commit.tree?.sha !== 'string') throw new Error('GitHub 提交响应格式无效')
+    return { commitSha: ref.object.sha, treeSha: commit.tree.sha }
+  }
+
+  async commitFiles(files: readonly { path: string; bytes: Uint8Array }[], message: string, snapshot: GitHubSnapshot): Promise<void> {
+    this.requireToken()
+    const paths = files.map(file => { this.scopedPath(file.path); return this.target.root ? `${this.target.root}/${file.path}` : file.path })
+    const tree: { path: string; mode: string; type: string; sha: string }[] = []
+    const readSha = (value: unknown): string => {
+      const sha = (value as { sha?: unknown })?.sha
+      if (typeof sha !== 'string') throw new Error('GitHub Git 响应格式无效')
+      return sha
+    }
+    for (const [index, file] of files.entries()) {
+      const sha = readSha(await this.request(`${this.repoPath()}/git/blobs`, { method: 'POST', body: JSON.stringify({ content: bytesToBase64(file.bytes), encoding: 'base64' }) }, 'file'))
+      tree.push({ path: paths[index], mode: '100644', type: 'blob', sha })
+    }
+    const treeSha = readSha(await this.request(`${this.repoPath()}/git/trees`, { method: 'POST', body: JSON.stringify({ base_tree: snapshot.treeSha, tree }) }, 'file'))
+    const sha = readSha(await this.request(`${this.repoPath()}/git/commits`, { method: 'POST', body: JSON.stringify({ message, tree: treeSha, parents: [snapshot.commitSha] }) }, 'file'))
+    await this.request(`${this.repoPath()}/git/refs/heads/${encodeURIComponent(this.target.branch)}`, { method: 'PATCH', body: JSON.stringify({ sha, force: false }) }, 'file')
+  }
+
+  private repoPath(): string { return `/repos/${encodeURIComponent(this.target.owner)}/${encodeURIComponent(this.target.repository)}` }
+
+  private scopedPath(path: string): string {
+    encodePath(path)
+    return encodePath(this.target.root ? `${this.target.root}/${path}` : path)
+  }
+
+  private requireToken(): void { if (!this.#token.trim()) throw new Error('请输入 GitHub Token') }
+
+  private headers(): Record<string, string> {
     return {
       Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${this.token}`,
+      ...(this.#token.trim() ? { Authorization: `Bearer ${this.#token}` } : {}),
       'Content-Type': 'application/json',
       'X-GitHub-Api-Version': GITHUB_API_VERSION,
     }
@@ -258,9 +315,11 @@ export class GitHubContentsClient {
           ...init.headers,
         },
       })
-    } catch {
+    } catch (error) {
+      if (init.signal?.aborted) throw error
       throw new Error('无法连接 GitHub API，请检查网络')
     }
+    if (response.status === 409 || response.status === 422) throw new GitHubConflictError(path)
     if (!response.ok) {
       throw responseError(response.status, context)
     }

@@ -5,6 +5,7 @@ import {
   useState,
 } from 'react'
 import { findMissingRanges } from '../market-data/gaps'
+import { alignOpenTime, previousOpenTime } from '../market-data/intervals'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import type {
   CreateReplaySessionInput,
@@ -197,18 +198,22 @@ export function useReplayController(
         if (candles.length === 0) {
           throw new Error('所选区间没有已经完成的 K 线')
         }
-        const effectiveEnd = candles.at(-1)!.openTime
+        const expectedEnd = Math.min(
+          alignOpenTime(requestedEnd, input.period.text, 'floor'),
+          previousOpenTime(alignOpenTime(Date.now(), input.period.text, 'floor'), input.period.text),
+        )
         const gaps = findMissingRanges(
           candles,
           input.period.text,
           input.startTime,
-          effectiveEnd,
+          expectedEnd,
         )
         if (gaps.length > 0) {
           throw new Error(
             `所选区间仍有 ${gaps.length} 个历史数据缺口，请先补齐数据。`,
           )
         }
+        const effectiveEnd = candles.at(-1)!.openTime
         // Prepare mark prices once for the session. Never fill them one bar at
         // a time during playback. Missing marks remain an explicit simulation
         // warning when remote preparation is unavailable or rate-limited.

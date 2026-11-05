@@ -1,6 +1,8 @@
 .worktrees/
 node_modules/
 dist/
+.env.local
+.env.*.local
 test-results/
 .superpowers/sdd/task-*-brief.md
 .superpowers/sdd/task-*-report.md

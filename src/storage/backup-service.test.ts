@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
 import {
@@ -247,6 +247,53 @@ describe('WorkstationBackupService', () => {
         },
       },
     )
+  })
+
+  it('skips unchanged market rows while restoring changed and new candles', async () => {
+    const databaseName = `backup-unchanged-${crypto.randomUUID()}`
+    const market = new IndexedDbMarketDataStore(databaseName)
+    const second = {...candle(),openTime:60_000,closeTime:119_999}
+    const third = {...candle(),openTime:120_000,closeTime:179_999}
+    await market.putCandles('trade',[candle(),second])
+    const service = new WorkstationBackupService(databaseName,new MemoryPreferences())
+    const archive = await service.exportMarketData('BTCUSDT','1m')
+    archive.data.tradeCandles = [candle(),{...second,close:'105'},third]
+    const writes = vi.spyOn(IDBObjectStore.prototype,'put')
+    try {
+      await service.import(archive)
+      const candleWrites = writes.mock.calls.map(([value])=>value as MarketCandle).filter(value=>value.timeframe==='1m')
+      expect(candleWrites.map(row=>row.openTime)).toEqual([60_000,120_000])
+      expect((await market.getCandles('trade','BTCUSDT','1m',0,120_000)).map(row=>row.close)).toEqual(['100','105','100'])
+    } finally {
+      writes.mockRestore()
+    }
+  })
+
+  it('rolls back all imported stores and preferences when a native batch write fails', async () => {
+    const databaseName = `backup-write-failure-${crypto.randomUUID()}`
+    const preferences = new MemoryPreferences()
+    preferences.setItem('marketData.binanceBaseUrl', 'https://original.test')
+    const service = new WorkstationBackupService(databaseName, preferences)
+    const archive = await service.exportAll()
+    archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    archive.data.symbols = [symbol()]
+    archive.data.tradeCandles = [candle(), {...candle(),openTime:60_000,closeTime:119_999}]
+    const original = IDBObjectStore.prototype.put
+    const write = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value: unknown, key?: IDBValidKey) {
+      if (this.name === 'tradeCandles' && (value as MarketCandle).openTime === 60_000) {
+        throw new DOMException('Injected batch failure', 'DataCloneError')
+      }
+      return original.call(this, value, key)
+    })
+    try {
+      await expect(service.import(archive)).rejects.toThrow('Injected batch failure')
+    } finally {
+      write.mockRestore()
+    }
+    const market = new IndexedDbMarketDataStore(databaseName)
+    expect(await market.getSymbols()).toEqual([])
+    expect(await market.getCandles('trade','BTCUSDT','1m',0,60_000)).toEqual([])
+    expect(preferences.getItem('marketData.binanceBaseUrl')).toBe('https://original.test')
   })
 
   it('rejects malformed and duplicate data before touching IndexedDB', async () => {

@@ -1,6 +1,16 @@
 import { expect, test } from '@playwright/test'
+import { writeFile } from 'node:fs/promises'
 import { alignOpenTime, nextOpenTime } from '../src/market-data/intervals'
 import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
+import { fixtureMinutePrices, installArchiveFixtures } from './archive-fixtures'
+import { traceNativeRestoreWrites } from './storage-diagnostics'
+
+test.beforeEach(async ({ context }) => {
+  // Cover every page in the context; individual manual cloud mocks override this.
+  await context.route('https://api.github.com/**', (route) =>
+    route.fulfill({ status: 404, json: { message: 'Not Found' } }),
+  )
+})
 
 async function selectChartPeriod(page: import('@playwright/test').Page, value: string) {
   await page.getByRole('button', { name: '图表周期', exact: true }).click()
@@ -29,8 +39,9 @@ const intervalMilliseconds: Record<string, number> = {
   '1M': 30 * 86_400_000,
 }
 
-async function mockBinance(page: import('@playwright/test').Page, pacedClock = false, symbolPrices: Record<string, number> = {}) {
+async function mockBinance(page: import('@playwright/test').Page, pacedClock = false, symbolPrices: Record<string, number> = {}, options: { trend?: boolean } = {}) {
   if (pacedClock) await page.clock.install()
+  const archives = await installArchiveFixtures(page, symbolPrices, options)
   const liveSockets: Array<{ sendPrice(price: string): void; streams: Set<string> }> = []
   await page.routeWebSocket('wss://fstream.binance.com/**', (socket) => {
     const url = new URL(socket.url())
@@ -123,12 +134,13 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
         const offset = (openTime / interval) % 200
         const open = (60_000 + offset) * priceScale
         const close = open + Math.sin(offset) * 20 * priceScale
+        const prices = options.trend
+          ? fixtureMinutePrices(openTime, { price: symbolPrices[url.searchParams.get('symbol') ?? ''], trend: true })
+          : [open.toFixed(2), (Math.max(open, close) + 12 * priceScale).toFixed(2),
+              (Math.min(open, close) - 12 * priceScale).toFixed(2), close.toFixed(2)]
         rows.push([
           openTime,
-          open.toFixed(2),
-          (Math.max(open, close) + 12 * priceScale).toFixed(2),
-          (Math.min(open, close) - 12 * priceScale).toFixed(2),
-          close.toFixed(2),
+          ...prices,
           '100.5',
           nextOpenTime(openTime, timeframe) - 1,
           '6030000',
@@ -143,7 +155,7 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
     }
     await route.abort('failed')
   })
-  return { liveSockets }
+  return { liveSockets, archiveRequests: archives.requests }
 }
 
 interface MockGitHubFile {
@@ -235,6 +247,8 @@ async function mockGitHub(page: import('@playwright/test').Page) {
 async function expectCanvasContent(page: import('@playwright/test').Page) {
   const canvases = page.getByTestId('chart-host').locator('canvas')
   await expect.poll(() => canvases.count()).toBeGreaterThan(0)
+  // Grid pixels appear before archive validation and IndexedDB writes finish.
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
   await expect
     .poll(() =>
       canvases.evaluateAll((elements) =>
@@ -365,6 +379,8 @@ test.describe('mobile workstation', () => {
   }
 
   test('creates and advances a replay, trades, and preserves input across rotation', async ({ page }) => {
+    // Cold chart history, a historical jump, and mark preparation each persist minutes.
+    test.setTimeout(60_000)
     await page.setViewportSize({ width: 390, height: 844 })
     await mockBinance(page, true)
     await page.goto('./')
@@ -461,6 +477,7 @@ test.describe('mobile workstation', () => {
     await mockBinance(page)
     const { axis, pricePerPixel, readTimeTicks } = await trackPriceAxis(page)
     await page.goto('./')
+    await expectCanvasContent(page)
     await expect.poll(pricePerPixel).toBeGreaterThan(0)
     await page.getByRole('button', { name: '自动', exact: true }).tap()
     await page.evaluate(() => scrollTo(0, 0))
@@ -542,6 +559,7 @@ test('round-trips pinned periods through JSON archives and cloud configuration',
   await mockBinance(page, true)
   const github = await mockGitHub(page)
   await page.goto('./')
+  await expectCanvasContent(page)
   await page.getByRole('button', { name: '图表周期', exact: true }).click()
   const menu = page.getByRole('dialog', { name: '选择图表周期' })
   await menu.getByRole('button', { name: '固定周期 1d', exact: true }).click()
@@ -643,8 +661,8 @@ test('keeps the latest trade price updating through rapid live period changes', 
 })
 
 test('exercises Pro chart interactions and the production path', async ({ page }) => {
-  test.setTimeout(90_000)
-  await mockBinance(page, true)
+  test.setTimeout(360_000)
+  const { archiveRequests } = await mockBinance(page, true)
   const github = await mockGitHub(page)
   const notFoundResponses: string[] = []
   const runtimeErrors: string[] = []
@@ -835,18 +853,22 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await dataManager
     .getByLabel('结束时间')
     .fill('2026-07-22T01:00')
+  // Isolate this full-month download from minutes fetched by earlier chart views.
+  page.once('dialog', (dialog) => dialog.accept())
+  await dataManager.getByRole('button', { name: '删除当前缓存', exact: true }).click()
+  await expect(dataManager.getByText('当前交易对的 1m 本地缓存已删除。')).toBeVisible()
   await dataManager
     .getByRole('button', { name: '下载两类数据' })
     .click()
-  await expect(dataManager.getByText(/下载完成/)).toBeVisible()
+  await expect(dataManager.getByText(/下载完成/)).toBeVisible({ timeout: 60_000 })
   await expect(
     dataManager.locator('.cache-summary').filter({ hasText: '普通 K 线' }),
-  ).toContainText('13 根')
+  ).toContainText('44,640 根')
   await expect(
     dataManager
       .locator('.cache-summary')
       .filter({ hasText: '标记价格 K 线' }),
-  ).toContainText('13 根')
+  ).toContainText('44,640 根')
   await dataManager.getByTestId('close-data-manager').click()
 
   const replayControls = page.getByTestId('replay-controls')
@@ -860,9 +882,8 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   await expect(
     replayControls.getByRole('button', { name: '创建回放' }),
   ).toBeEnabled()
-  await expect(replayControls.getByText(/起点：/)).toContainText(
-    '2026/7/22',
-  )
+  // The chart remains ETH while the drawer downloaded BTC; this jump is cold.
+  await expect(replayControls.getByText(/起点：/)).toContainText('2026/7/22', { timeout: 60_000 })
   await expect(
     replayControls.getByLabel('回放结束时间'),
   ).toHaveValue('')
@@ -870,7 +891,7 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     .getByLabel('回放结束时间')
     .fill('2026-07-22T05:00')
   await replayControls.getByRole('button', { name: '创建回放' }).click()
-  await expect(replayControls).toContainText('1/6')
+  await expect(replayControls).toContainText('1/6', { timeout: 60_000 })
   const replayRequests: string[] = []
   const recordReplayRequest = (request: import('@playwright/test').Request) => {
     if (new URL(request.url()).hostname === 'fapi.binance.com') replayRequests.push(request.url())
@@ -946,7 +967,19 @@ test('exercises Pro chart interactions and the production path', async ({ page }
     await expect(
       simulationPanel.getByText('成交次数', { exact: true }).locator('..').locator('dd'),
     ).toHaveText('3')
-    await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+    try {
+      await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden({ timeout: 60_000 })
+    } catch (error) {
+      const diagnosticsPath = test.info().outputPath(`replay-${timeframe}-archive-requests.json`)
+      await writeFile(diagnosticsPath, JSON.stringify({
+        footer: await page.locator('.status-footer').textContent(), requests: archiveRequests,
+      }, null, 2))
+      await test.info().attach(`replay-${timeframe}-archive-requests`, {
+        path: diagnosticsPath,
+        contentType: 'application/json',
+      })
+      throw error
+    }
     await expectCanvasContent(page)
   }
 
@@ -1079,7 +1112,7 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   ).toBe(true)
   expect(
     [...github.files.keys()].some((path) =>
-      path.startsWith('market-data/'),
+      path.startsWith('data/market-history/'),
     ),
   ).toBe(true)
 
@@ -1087,6 +1120,12 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   const compareStatus = await backupPanel
     .getByTestId('backup-status')
     .textContent()
+  const cloudSnapshotPath = test.info().outputPath('github-before-full-pull.json')
+  await writeFile(cloudSnapshotPath, JSON.stringify({
+    files: [...github.files].map(([path, file]) => ({ path, sha: file.sha, contentBase64: file.bytes.toString('base64') })),
+  }))
+  await test.info().attach('github-before-full-pull', { path: cloudSnapshotPath, contentType: 'application/json' })
+  await traceNativeRestoreWrites(page)
   page.once('dialog', (dialog) => dialog.accept())
   await backupPanel.getByTestId('github-pull').click()
   await expect
@@ -1099,6 +1138,19 @@ test('exercises Pro chart interactions and the production path', async ({ page }
       ),
     ),
   ).toBe(false)
+  try {
+    await expect(backupPanel.getByTestId('backup-status')).toContainText('云端恢复完成', { timeout: 90_000 })
+    await expect(backupPanel.getByTestId('github-disconnect')).toBeEnabled()
+  } catch (error) {
+    const restoreDiagnosticsPath = test.info().outputPath('full-pull-diagnostics.json')
+    await writeFile(restoreDiagnosticsPath, JSON.stringify({
+      backupStatus: await backupPanel.getByTestId('backup-status').textContent(),
+      footer: await page.locator('.status-footer').textContent(), runtimeErrors,
+      nativeRestore: await page.evaluate(() => (window as unknown as { nativeRestoreTrace?: unknown }).nativeRestoreTrace ?? null),
+    }, null, 2))
+    await test.info().attach('full-pull-diagnostics', { path: restoreDiagnosticsPath, contentType: 'application/json' })
+    throw error
+  }
   await backupPanel.getByTestId('github-disconnect').click()
   await expect(backupPanel.getByTestId('github-token')).toHaveValue('')
   await backupManager.getByTestId('close-data-manager').click()
@@ -1150,6 +1202,7 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
 test('restores product favorites and the selected product after reload', async ({ page }) => {
   await mockBinance(page, true)
   await page.goto('./')
+  await expectCanvasContent(page)
   const symbolLabel = page.locator('.klinecharts-pro-period-bar .symbol')
   await symbolLabel.click()
   const picker = page.getByTestId('symbol-picker')
@@ -1159,6 +1212,7 @@ test('restores product favorites and the selected product after reload', async (
   await picker.getByRole('button', { name: '选择 ETHUSDT' }).click()
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('marketData.selectedSymbol') ?? 'null')?.ticker)).toBe('ETHUSDT')
   await page.reload()
+  await expectCanvasContent(page)
   await expect(symbolLabel).toHaveText('ETHUSDT')
   await symbolLabel.click()
   await expect(picker.getByRole('tab', { name: '收藏', exact: true })).toHaveAttribute('aria-selected', 'true')
@@ -1166,6 +1220,7 @@ test('restores product favorites and the selected product after reload', async (
   await expect(picker.getByRole('button', { name: '选择 ETHUSDT' })).toBeVisible()
   await picker.getByRole('button', { name: '取消收藏 BTCUSDT', exact: true }).click()
   await page.reload()
+  await expectCanvasContent(page)
   await expect(symbolLabel).toHaveText('ETHUSDT')
   await symbolLabel.click()
   await expect(picker.getByRole('button', { name: '选择 ETHUSDT' })).toBeVisible()
@@ -1174,6 +1229,7 @@ test('restores product favorites and the selected product after reload', async (
 
 test('fits candles with balanced padding and toggles indicator information without hiding plots', async ({ page }) => {
   await mockBinance(page)
+  await installArchiveFixtures(page, {}, { flat: true })
   const { axis, pricePerPixel } = await trackPriceAxis(page)
   await page.addInitScript(() => {
     localStorage.setItem('chart.indicators.v1', JSON.stringify({
@@ -1203,12 +1259,13 @@ test('fits candles with balanced padding and toggles indicator information witho
     const url = new URL(route.request().url())
     const rows = []
     const end = Number(url.searchParams.get('endTime'))
-    for (let time = alignOpenTime(Number(url.searchParams.get('startTime')), '15m', 'ceil'); time <= end && rows.length < 500; time += 900_000) {
-      rows.push([time, '60000', '60010', '59990', '60000', '100', time + 899_999, '6000000', 100, '0', '0', '0'])
+    for (let time = alignOpenTime(Number(url.searchParams.get('startTime')), '1m', 'ceil'); time <= end && rows.length < 500; time += 60_000) {
+      rows.push([time, '60000', '60010', '59990', '60000', '100', time + 59_999, '6000000', 100, '0', '0', '0'])
     }
     await route.fulfill({ json: rows })
   })
   await page.goto('./')
+  await expectCanvasContent(page)
   await expect.poll(pricePerPixel).toBeGreaterThan(0)
   const candleHeightRatio = async () => 20 / ((await pricePerPixel()) * (await axis.boundingBox())!.height)
   await expect.poll(candleHeightRatio).toBeCloseTo(1 / 1.16, 2)
@@ -1233,6 +1290,7 @@ test('zooms the price range with the wheel over the price axis while preserving 
   await mockBinance(page)
   const { axis, pricePerPixel, readTimeTicks } = await trackPriceAxis(page)
   await page.goto('./')
+  await expectCanvasContent(page)
   const mode = page.getByRole('group', { name: '价格范围模式' })
   const auto = mode.getByRole('button', { name: '自动', exact: true })
   const manual = mode.getByRole('button', { name: '手动', exact: true })
@@ -1275,6 +1333,7 @@ test('resets the manual price range when switching between differently priced in
   await mockBinance(page, true, { BTCUSDT: 74_000, ETHUSDT: 25 })
   const { axis, readTicks } = await trackPriceAxis(page)
   await page.goto('./')
+  await expectCanvasContent(page)
   const meanPrice = async () => {
     const ticks = await readTicks()
     return ticks.reduce((sum, tick) => sum + tick.value, 0) / ticks.length
@@ -1310,6 +1369,7 @@ test('resets the manual price range when switching between differently priced in
 })
 
 test('toggles the sidebar in both modes and resizes the existing chart without losing panel input', async ({ page }) => {
+  test.setTimeout(60_000)
   await mockBinance(page, true)
   await page.goto('./')
   await expectCanvasContent(page)
@@ -1358,7 +1418,7 @@ test('toggles the sidebar in both modes and resizes the existing chart without l
 })
 
 test('adds Supertrend to the main chart and restores its parameters after reload', async ({ page }) => {
-  await mockBinance(page)
+  await mockBinance(page, false, {}, { trend: true })
   await page.addInitScript(() => {
     const fills: { color: string; alpha: number }[] = []
     const titles: string[] = []
@@ -1555,6 +1615,9 @@ test('stops remote requests after HTTP 418 and keeps cached chart data usable', 
       json: { code: -1003, msg: 'IP banned' },
     })
   })
+  // Other chart periods reuse the same minutes; reveal a new closed minute
+  // so this switch exercises a real recent REST gap and the injected ban.
+  await page.clock.fastForward(60_000)
   const selector = page.getByLabel('图表周期')
   await selectChartPeriod(page, '1m')
   await expect(page.locator('.status-footer')).toContainText('HTTP 418')
@@ -1572,6 +1635,7 @@ test('stops remote requests after HTTP 418 and keeps cached chart data usable', 
   expect(banRequests).toBe(1)
 
   const otherPage = await page.context().newPage()
+  await installArchiveFixtures(otherPage)
   await otherPage.route('https://fapi.binance.com/**', async (route) => {
     banRequests += 1
     await route.fulfill({ status: 418, json: {} })
@@ -1609,6 +1673,7 @@ test('prevents parallel requests from another page while one page holds the requ
   await page.goto('./')
   await ready
   const otherPage = await page.context().newPage()
+  await installArchiveFixtures(otherPage)
   let otherRequests = 0
   await otherPage.route('https://fapi.binance.com/**', async (route) => {
     otherRequests += 1

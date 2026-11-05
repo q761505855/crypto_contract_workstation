@@ -89,7 +89,8 @@ describe('deployment configuration', () => {
     const permissions = capture(workflow, /^permissions:\n([\s\S]*?)^concurrency:/m)
     const buildJob = capture(workflow, /^  build:\n([\s\S]*?)^  deploy:/m)
     const deployJob = capture(workflow, /^  deploy:\n([\s\S]*)$/m)
-    const buildStep = captureStep(buildJob, 'Build Pages artifact')
+    const buildStep = captureStep(buildJob, 'Build Pages smoke-test artifact')
+    const productionBuildStep = captureStep(buildJob, 'Build Pages artifact with default cloud authorization')
     const verifyStep = captureStep(buildJob, 'Verify Pages artifact')
     const installBrowserStep = captureStep(
       buildJob,
@@ -109,15 +110,20 @@ describe('deployment configuration', () => {
     expect(buildJob).toMatch(/^        uses: actions\/configure-pages@v5$/m)
     expect(buildStep).toBe(
       [
-        '      - name: Build Pages artifact',
+        '      - name: Build Pages smoke-test artifact',
         '        run: npm run build',
         '        env:',
         '          VITE_BASE_PATH: /crypto_contract_workstation/',
+        '          VITE_GITHUB_TOKEN: e2e-mock-storage-token',
       ].join('\n'),
     )
     expect(buildJob.slice(buildJob.indexOf(buildStep) + buildStep.length)).toMatch(
-      /^\n      - name: Verify Pages artifact\n        run: npm run verify:pages\n      - name: Install Playwright Chromium\n        run: npx playwright install --with-deps chromium\n      - name: Pages browser smoke test\n        run: npm run test:e2e:pages\n      - name: Upload Pages artifact/m,
+      /^\n      - name: Verify Pages artifact\n        run: npm run verify:pages\n      - name: Install Playwright Chromium\n        run: npx playwright install --with-deps chromium\n      - name: Pages browser smoke test\n        run: npm run test:e2e:pages\n      - name: Build Pages artifact with default cloud authorization/m,
     )
+    expect(productionBuildStep).toContain('VITE_GITHUB_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}')
+    expect(buildJob.indexOf(productionBuildStep)).toBeGreaterThan(buildJob.indexOf(browserTestStep))
+    expect(buildJob.indexOf(productionBuildStep)).toBeLessThan(buildJob.indexOf(uploadStep))
+    expect(captureStep(buildJob, 'Verify final Pages artifact')).toContain('run: npm run verify:pages')
     expect(verifyStep).toBe(
       ['      - name: Verify Pages artifact', '        run: npm run verify:pages'].join(
         '\n',
@@ -170,6 +176,10 @@ describe('deployment configuration', () => {
     expect(packageJson.scripts['test:e2e:pages']).toBe(
       'playwright test --config=playwright.pages.config.ts',
     )
-    expectNoSecrets(workflow)
+    // Only the explicitly authorized production credential reference and the
+    // isolated smoke-test placeholder may occur; reject every other secret.
+    expectNoSecrets(workflow
+      .replace('          VITE_GITHUB_TOKEN: e2e-mock-storage-token\n', '')
+      .replaceAll('          VITE_GITHUB_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}\n', ''))
   })
 })

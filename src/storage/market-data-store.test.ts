@@ -21,6 +21,11 @@ function candle(openTime: number): MarketCandle {
 }
 
 describe('IndexedDbMarketDataStore', () => {
+  it('rolls back an entire candle batch when a later record cannot be stored', async () => {
+    const store = new IndexedDbMarketDataStore(`atomic-${crypto.randomUUID()}`)
+    await expect(store.putCandles('trade', [candle(0), {...candle(60_000), openTime:NaN}])).rejects.toThrow()
+    expect(await store.getCandles('trade','BTCUSDT','1m',0,120_000)).toEqual([])
+  })
   it('creates the versioned stores, upserts compound keys, and reports gaps', async () => {
     const store = new IndexedDbMarketDataStore(`test-${crypto.randomUUID()}`)
     await store.putCandles('trade', [

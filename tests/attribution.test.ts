@@ -3,6 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { normalizeNewlines } from './text-format'
 
 describe('third-party attribution', () => {
+  it('records the ZIP reader and ships its complete upstream MIT license', async () => {
+    const notice = await readFile('public/THIRD_PARTY_NOTICES.txt','utf8')
+    const license = await readFile('public/licenses/fflate-MIT.txt','utf8')
+    const upstream = await readFile('node_modules/fflate/LICENSE','utf8')
+    expect(notice).toContain('fflate 0.8.3')
+    expect(normalizeNewlines(license)).toBe(normalizeNewlines(upstream))
+  })
   it('records KLineChart packages, versions, licenses, and upstream notices', async () => {
     const notice = normalizeNewlines(
       await readFile('public/THIRD_PARTY_NOTICES.txt', 'utf8'),

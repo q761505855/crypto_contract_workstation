@@ -128,7 +128,7 @@ export class ReplayDatafeed implements Datafeed {
         ? this.base.getHistoryKLineData(symbol, period, from, to)
         : readIndicatorHistory(this.base, symbol, period, from, to))
       if (requiresRestart(context, this.context)) {
-        return this.getHistoryKLineData(symbol, period, from, to, notifySelection)
+        return this.getHistoryKLineData(symbol, period, from, to, false)
       }
       return candles
     }
@@ -155,7 +155,8 @@ export class ReplayDatafeed implements Datafeed {
       visibleTo,
     )
     if (requiresRestart(context, this.context)) {
-      return this.getHistoryKLineData(symbol, period, from, to, notifySelection)
+      // Retrying old work must not select its period over the user's newer one.
+      return this.getHistoryKLineData(symbol, period, from, to, false)
     }
     if (visibleTo === alignOpenTime(visibleUntil - 1, period.text, 'floor')) {
       this.historyContexts.set(this.selectionKey(symbol, period), context)
@@ -264,6 +265,11 @@ export class ReplayDatafeed implements Datafeed {
     const lastOpen = alignOpenTime(visibleUntil - 1, period.text, 'floor')
     to = Math.min(to, lastOpen)
     from = Math.max(from, shiftOpenTime(alignOpenTime(to, period.text, 'floor'), period.text, -498))
+    if (this.service.usesMinuteHistory?.()) {
+      // Library period switches can ask for hundreds of weeks. Prepare chart
+      // history in calendar chunks; explicit session preparation remains full.
+      from = Math.max(from, shiftOpenTime(alignOpenTime(to, '1M', 'floor'), '1M', -1))
+    }
     if (from > to) return []
     const cached = (await this.loadLocalCandles(context, period.text, from, to))
       .filter((candle) => nextOpenTime(candle.openTime, period.text) <= visibleUntil)

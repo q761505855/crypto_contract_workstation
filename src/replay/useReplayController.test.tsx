@@ -42,6 +42,14 @@ function setup(options: { noMarks?: boolean; restore?: boolean } = {}) {
 }
 
 describe('offline replay and simulation controllers', () => {
+  it('rejects a missing tail instead of shortening the requested replay range', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockResolvedValue(candles.slice(0, 3))
+    await act(async () => { await result.current.replay.createSession(input) })
+    expect(result.current.replay.session).toBeNull()
+    expect(result.current.replay.error).toMatch(/缺口|不完整/)
+  })
   it('prepares each candle kind in a batch and makes no remote calls while trading or stepping', async () => {
     const { result, runtime } = setup()
     await waitFor(() => expect(result.current.replay.busy).toBe(false))

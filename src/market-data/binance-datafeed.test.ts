@@ -1,11 +1,61 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { MarketDataService } from './market-data-service'
+import type { LoadCandlesOptions, MarketDataService } from './market-data-service'
 import { BinanceDatafeed } from './binance-datafeed'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import type { LiveStreamSubscriptionInput } from './live-stream'
 import { readIndicatorHistory } from './indicator-history'
 
 describe('BinanceDatafeed', () => {
+  it('keeps stale and completed history status from overwriting a newer chart operation', async () => {
+    const callbacks: LoadCandlesOptions[] = []
+    const resolve: Array<(value: []) => void> = []
+    const loadCandles = vi.fn((...args: unknown[]) => {
+      callbacks.push(args[5] as LoadCandlesOptions)
+      return new Promise<[]>((done) => { resolve.push(done) })
+    })
+    const feed = new BinanceDatafeed({loadCandles} as unknown as MarketDataService)
+    const warning = vi.fn()
+    feed.setWarningListener(warning)
+    const old = feed.getHistoryKLineData(DEFAULT_SYMBOL, SUPPORTED_PERIODS[0], 0, 60_000)
+    const latest = feed.getHistoryKLineData(DEFAULT_SYMBOL, SUPPORTED_PERIODS[0], 120_000, 180_000)
+    callbacks[0].onStatus?.('old month')
+    expect(warning).not.toHaveBeenCalled()
+    callbacks[1].onStatus?.('current month')
+    expect(warning).toHaveBeenLastCalledWith('current month')
+    resolve[1]([])
+    await latest
+    warning.mockClear()
+    callbacks[0].onWarning?.('old cloud warning')
+    callbacks[1].onWarning?.('late upload warning')
+    expect(warning).not.toHaveBeenCalled()
+    resolve[0]([])
+    await old
+  })
+
+  it('does not replace foreground status with silent indicator progress', async () => {
+    const loadCandles = vi.fn(async (...args: unknown[]) => {
+      const options = args[5] as LoadCandlesOptions
+      options.onStatus?.('background month')
+      options.onWarning?.('background warning')
+      return []
+    })
+    const feed = new BinanceDatafeed({loadCandles} as unknown as MarketDataService)
+    const warning = vi.fn()
+    feed.setWarningListener(warning)
+    await readIndicatorHistory(feed, DEFAULT_SYMBOL, SUPPORTED_PERIODS[0], 0, 60_000)
+    expect(warning).not.toHaveBeenCalled()
+  })
+
+  it('bounds silent indicator downloads while still reading older cached periods', async () => {
+    const loadCandles = vi.fn(async (..._args: unknown[]) => [])
+    const loadCachedCandles = vi.fn(async () => [])
+    const service = { loadCandles, loadCachedCandles, usesMinuteHistory: () => true } as unknown as MarketDataService
+    const feed = new BinanceDatafeed(service)
+    const to = Date.UTC(2026, 10, 5)
+    await readIndicatorHistory(feed, DEFAULT_SYMBOL, {text:'1M',multiplier:1,timespan:'month'}, Date.UTC(2011,0,1), to)
+    expect(loadCandles.mock.calls[0]?.[3]).toBeGreaterThanOrEqual(Date.UTC(2026,9,1))
+    expect(loadCachedCandles).toHaveBeenCalled()
+  })
   it('uses normal candle loading for indicator history without changing chart selection', async () => {
     const loadCandles = vi.fn(async () => [])
     const feed = new BinanceDatafeed({ loadCandles } as unknown as MarketDataService)

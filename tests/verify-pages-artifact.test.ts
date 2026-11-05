@@ -12,6 +12,7 @@ const requiredAttributionFiles = {
   'THIRD_PARTY_NOTICES.txt': 'KLineChart notices',
   'licenses/Apache-2.0.txt': 'Apache License',
   'licenses/decimal.js-MIT.txt': 'MIT License',
+  'licenses/fflate-MIT.txt': 'MIT License',
 }
 
 afterEach(async () => {
@@ -43,11 +44,19 @@ async function createArtifact(
   return rootDirectory
 }
 
-function runVerifier(rootDirectory: string) {
-  return execFile(process.execPath, [verifierPath], { cwd: rootDirectory })
+function runVerifier(rootDirectory: string, embeddedToken = '') {
+  return execFile(process.execPath, [verifierPath], { cwd: rootDirectory, env: {...process.env, VITE_GITHUB_TOKEN:embeddedToken} })
 }
 
 describe('verify:pages', () => {
+  it('allows only the explicitly configured embedded cloud token and rejects other secret values', async () => {
+    const allowed = 'ghp_test_cloud_credential_123456789'
+    const root = await createArtifact('<script src="/crypto_contract_workstation/assets/index.js"></script>', `const auth="${allowed}"`)
+    await expect(runVerifier(root,allowed)).resolves.toBeDefined()
+    await writeFile(join(root,'dist/assets/index.js'), `const auth="${allowed}"; const other="ghp_other_unexpected_credential"`)
+    await expect(runVerifier(root,allowed)).rejects.toThrow(/Secret-like/)
+    await expect(runVerifier(root)).rejects.toThrow(/Secret-like/)
+  })
   it.each([
     [
       'third-party notice',

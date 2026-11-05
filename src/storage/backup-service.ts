@@ -1,6 +1,6 @@
 import { SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
-import type { IDBPTransaction } from 'idb'
+import { unwrap, type IDBPTransaction } from 'idb'
 import {
   CHART_INDICATORS_PREFERENCE,
   loadChartIndicatorPreferences,
@@ -847,8 +847,11 @@ export class WorkstationBackupService {
     })
   }
 
-  async import(value: unknown): Promise<BackupImportReport> {
+  async import(value: unknown, onProgress?: (message: string) => void): Promise<BackupImportReport> {
+    onProgress?.('正在校验备份数据…')
     const envelope = validateBackupEnvelope(value)
+    const candleCount = (envelope.data.tradeCandles?.length ?? 0) + (envelope.data.markCandles?.length ?? 0)
+    onProgress?.(`正在恢复行情：${candleCount.toLocaleString()} 根…`)
     const database = await openWorkstationDatabase(this.databaseName)
     const transaction = database.transaction(
       [
@@ -862,23 +865,62 @@ export class WorkstationBackupService {
       ],
       'readwrite',
     )
-    for (const symbol of envelope.data.symbols ?? []) {
-      await transaction.objectStore('symbols').put(symbol)
+    // Native requests share one atomic transaction without allocating a promise
+    // and JS completion handlers for every minute in a multi-month restore.
+    try {
+      const candleKey = (row: MarketCandle) => `${row.symbol}:${row.timeframe}:${row.openTime}`
+      const readExisting = async (name: 'tradeCandles' | 'markCandles', rows: readonly MarketCandle[]) => {
+        const ranges = new Map<string, {symbol:string;timeframe:string;from:number;to:number}>()
+        for (const row of rows) {
+          const key = `${row.symbol}:${row.timeframe}`
+          const range = ranges.get(key)
+          if (range) { range.from = Math.min(range.from,row.openTime); range.to = Math.max(range.to,row.openTime) }
+          else ranges.set(key,{symbol:row.symbol,timeframe:row.timeframe,from:row.openTime,to:row.openTime})
+        }
+        const existing = new Map<string,MarketCandle>()
+        const groups = await Promise.all([...ranges.values()].map(range =>
+          transaction.objectStore(name).index('by-series-time').getAll(IDBKeyRange.bound(
+            [range.symbol,range.timeframe,range.from], [range.symbol,range.timeframe,range.to],
+          )),
+        ))
+        for (const group of groups) for (const row of group) existing.set(candleKey(row),row)
+        return existing
+      }
+      // Read in this same transaction, so a concurrent write cannot invalidate
+      // the comparison. Imported ranges do not scan unrelated market series.
+      const [tradeExisting,markExisting] = await Promise.all([
+        readExisting('tradeCandles',envelope.data.tradeCandles ?? []),
+        readExisting('markCandles',envelope.data.markCandles ?? []),
+      ])
+      const changed = (row: MarketCandle, existing: Map<string,MarketCandle>) => {
+        const prior = existing.get(candleKey(row))
+        return prior === undefined || (Object.keys(row) as Array<keyof MarketCandle>).some(field => prior[field] !== row[field])
+      }
+      const native = unwrap(transaction)
+      for (const symbol of envelope.data.symbols ?? []) {
+        native.objectStore('symbols').put(symbol)
+      }
+      for (const candle of envelope.data.tradeCandles ?? []) {
+        if (changed(candle,tradeExisting)) native.objectStore('tradeCandles').put(candle)
+      }
+      for (const candle of envelope.data.markCandles ?? []) {
+        if (changed(candle,markExisting)) native.objectStore('markCandles').put(candle)
+      }
+      for (const session of envelope.data.sessions ?? []) {
+        native.objectStore('replaySessions').put(session)
+      }
+      for (const state of envelope.data.simulations ?? []) {
+        onProgress?.('正在恢复会话与交易…')
+        await this.replaceSimulation(transaction, state)
+      }
+      await transaction.done
+    } catch (error) {
+      try { transaction.abort() } catch { /* An asynchronous failure may already have aborted. */ }
+      await transaction.done.catch(() => undefined)
+      throw error
     }
-    for (const candle of envelope.data.tradeCandles ?? []) {
-      await transaction.objectStore('tradeCandles').put(candle)
-    }
-    for (const candle of envelope.data.markCandles ?? []) {
-      await transaction.objectStore('markCandles').put(candle)
-    }
-    for (const session of envelope.data.sessions ?? []) {
-      await transaction.objectStore('replaySessions').put(session)
-    }
-    for (const state of envelope.data.simulations ?? []) {
-      await this.replaceSimulation(transaction, state)
-    }
-    await transaction.done
     if (envelope.data.preferences !== undefined) {
+      onProgress?.('正在应用恢复的配置…')
       this.storage.setItem(
         BASE_URL_PREFERENCE,
         envelope.data.preferences.binanceRestBaseUrl,

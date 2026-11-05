@@ -28,3 +28,9 @@ Repository: https://github.com/MikeMcl/decimal.js
 
 The complete MIT license text for decimal.js is available at:
 licenses/decimal.js-MIT.txt
+
+fflate 0.8.3
+License: MIT
+Repository: https://github.com/101arrowz/fflate
+The complete MIT license text is available at:
+licenses/fflate-MIT.txt

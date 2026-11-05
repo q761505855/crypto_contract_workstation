@@ -19,6 +19,7 @@ import {
   type WorkstationMode,
 } from '../components/ModeSwitch'
 import { DataManager } from '../components/DataManager'
+import { HistoryUploadStatus } from '../components/HistoryUploadStatus'
 import { ReplayControls } from '../components/ReplayControls'
 import { TimeJumpControl } from '../components/TimeJumpControl'
 import {
@@ -381,6 +382,7 @@ export default function App() {
             ? ` · 回放 ${replay.session.currentIndex + 1}/${replay.session.candleCount}`
             : ''}
           {marketWarning.length > 0 ? ` · ${marketWarning}` : ''}
+          <HistoryUploadStatus service={marketRuntime.service} onOpen={() => setDataManagerOpen(true)} />
         </span>
         <span>{mode === 'history' ? '历史训练模拟' : '实时只读'}</span>
       </footer>

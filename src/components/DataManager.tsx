@@ -16,7 +16,7 @@ import {
   readFavoriteSymbols,
   saveFavoriteSymbols,
 } from '../market-data/favorites'
-import { findMissingRanges } from '../market-data/gaps'
+import { expandHistoryRange } from '../market-data/history-ranges'
 import {
   saveBaseUrlPreference,
   type MarketDataRuntime,
@@ -97,10 +97,17 @@ export function DataManager({
   const [symbolText, setSymbolText] = useState(selection.symbol.ticker)
   const [timeframe, setTimeframe] = useState(selection.period.text)
   const [search, setSearch] = useState('')
+  const [initialRange] = useState(() => {
+    const now = new Date(Date.now())
+    return {
+      from: Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+      to: Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) - 60_000,
+    }
+  })
   const [fromText, setFromText] = useState(() =>
-    inputDateTime(Date.now() - 7 * 86_400_000),
+    inputDateTime(initialRange.from),
   )
-  const [toText, setToText] = useState(() => inputDateTime(Date.now()))
+  const [toText, setToText] = useState(() => inputDateTime(initialRange.to))
   const [baseUrl, setBaseUrl] = useState(runtime.service.getBaseUrl())
   const [favorites, setFavorites] = useState<string[]>(readFavoriteSymbols)
   const [summary, setSummary] = useState<SummaryPair>({
@@ -110,7 +117,17 @@ export function DataManager({
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const [pendingUploads, setPendingUploads] = useState(() => runtime.service.getPendingUploadCount())
   const abortRef = useRef<AbortController | null>(null)
+
+  const rangePreview = useMemo(() => {
+    try {
+      const symbol = symbols.find((item) => item.symbol === symbolText)
+      return expandHistoryRange(parseInputDateTime(fromText), parseInputDateTime(toText), Date.now(), symbol?.onboardDate ?? 0)
+    } catch {
+      return null
+    }
+  }, [fromText, toText, symbols, symbolText])
 
   const visibleSymbols = useMemo(() => {
     const normalized = search.trim().toUpperCase()
@@ -127,7 +144,6 @@ export function DataManager({
 
   async function refreshSummary(
     selectedSymbol = symbolText,
-    selectedTimeframe = timeframe,
   ): Promise<void> {
     if (selectedSymbol.trim().length === 0) {
       return
@@ -136,15 +152,16 @@ export function DataManager({
       runtime.service.inspectSeries(
         'trade',
         selectedSymbol,
-        selectedTimeframe,
+        '1m',
       ),
       runtime.service.inspectSeries(
         'mark',
         selectedSymbol,
-        selectedTimeframe,
+        '1m',
       ),
     ])
     setSummary({ trade, mark })
+    setPendingUploads(runtime.service.getPendingUploadCount())
   }
 
   useEffect(() => {
@@ -159,12 +176,18 @@ export function DataManager({
       .getSymbols()
       .then((items) => {
         setSymbols(items)
-        return refreshSummary(selection.symbol.ticker, selection.period.text)
+        return refreshSummary(selection.symbol.ticker)
       })
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : String(reason))
       })
   }, [open, runtime, selection.period.text, selection.symbol.ticker])
+
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setInterval(() => setPendingUploads(runtime.service.getPendingUploadCount()), 1000)
+    return () => window.clearInterval(timer)
+  }, [open, runtime])
 
   if (!open) {
     return null
@@ -188,16 +211,15 @@ export function DataManager({
     }
     setError('')
     onApplySelection({ symbol: toSymbolInfo(symbol), period })
-    void refreshSummary(symbol.symbol, period.text)
+    void refreshSummary(symbol.symbol)
   }
 
   async function download(kinds: readonly CandleKind[]): Promise<void> {
     const symbol = selectedSymbol()
-    const period = selectedPeriod()
     const from = parseInputDateTime(fromText)
     const to = parseInputDateTime(toText)
-    if (symbol === undefined || period === undefined) {
-      setError('请选择列表中的有效交易对和周期')
+    if (symbol === undefined) {
+      setError('请选择列表中的有效交易对')
       return
     }
     if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
@@ -212,33 +234,19 @@ export function DataManager({
     setStatus('正在检查本地缓存和数据缺口…')
     runtime.service.resetReplayRequests()
     try {
-      let remainingGapCount = 0
-      for (const kind of kinds) {
-        const candles = await runtime.service.loadCandles(
-          kind,
-          symbol.symbol,
-          period.text,
-          from,
-          to,
-          {
-            signal: controller.signal,
-            onProgress: (progress) => setStatus(progressText(progress)),
-            onWarning: (warning) => setStatus(warning),
-          },
-        )
-        remainingGapCount += findMissingRanges(
-          candles,
-          period.text,
-          from,
-          to,
-        ).length
-      }
-      await refreshSummary(symbol.symbol, period.text)
-      setStatus(
-        remainingGapCount === 0
-          ? '下载完成；已按开盘时间去重并写入本地缓存。'
-          : `下载结束，但请求区间仍有 ${remainingGapCount} 个缺失区间。`,
-      )
+      const actual = await runtime.service.prepareHistory(symbol.symbol, from, to, {
+        kinds,
+        signal: controller.signal,
+        onProgress: (progress) => setStatus(progressText(progress)),
+        onStatus: setStatus,
+        onWarning: (message) => {
+          if (abortRef.current === controller) setStatus(message)
+        },
+      })
+      await refreshSummary(symbol.symbol)
+      const pending = runtime.service.getPendingUploadCount()
+      setPendingUploads(pending)
+      setStatus(`下载完成：${displayTime(actual.from)} — ${displayTime(actual.to)}，1m 数据已写入本地缓存。${pending > 0 ? `已缓存，待上传 ${pending} 个月份。` : runtime.defaultGitHubClient?.canWrite() ? '云端上传已安排。' : '已缓存，连接仓库后可上传。'}`)
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') {
         setStatus('下载已取消，已经写入的数据会保留。')
@@ -247,6 +255,23 @@ export function DataManager({
       }
     } finally {
       abortRef.current = null
+      setPendingUploads(runtime.service.getPendingUploadCount())
+      setBusy(false)
+    }
+  }
+
+  async function retryUploads(): Promise<void> {
+    setBusy(true)
+    setError('')
+    try {
+      await runtime.service.retryPendingUploads()
+      const pending = runtime.service.getPendingUploadCount()
+      setPendingUploads(pending)
+      setStatus(pending > 0 ? `已缓存，待上传 ${pending} 个月份，请检查连接后重试。` : '待上传数据已处理完成。')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setPendingUploads(runtime.service.getPendingUploadCount())
       setBusy(false)
     }
   }
@@ -296,14 +321,13 @@ export function DataManager({
 
   async function deleteCache(): Promise<void> {
     const symbol = selectedSymbol()
-    const period = selectedPeriod()
-    if (symbol === undefined || period === undefined) {
-      setError('请选择列表中的有效交易对和周期')
+    if (symbol === undefined) {
+      setError('请选择列表中的有效交易对')
       return
     }
     if (
       !window.confirm(
-        `确认删除 ${symbol.symbol} ${period.text} 的普通和标记价格 K 线缓存？`,
+        `确认删除 ${symbol.symbol} 1m 的普通和标记价格 K 线缓存？`,
       )
     ) {
       return
@@ -312,11 +336,11 @@ export function DataManager({
     setError('')
     try {
       await Promise.all([
-        runtime.service.deleteSeries('trade', symbol.symbol, period.text),
-        runtime.service.deleteSeries('mark', symbol.symbol, period.text),
+        runtime.service.deleteSeries('trade', symbol.symbol, '1m'),
+        runtime.service.deleteSeries('mark', symbol.symbol, '1m'),
       ])
-      await refreshSummary(symbol.symbol, period.text)
-      setStatus('当前交易对和周期的本地缓存已删除。')
+      await refreshSummary(symbol.symbol)
+      setStatus('当前交易对的 1m 本地缓存已删除。')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -445,6 +469,7 @@ export function DataManager({
 
         <section>
           <h3>历史数据区间</h3>
+          <p className="muted-text">固定下载 1m 普通与标记价格数据，图表周期由分钟数据聚合。默认范围为上一个完整 UTC 月。</p>
           <label>
             开始时间
             <input
@@ -461,23 +486,26 @@ export function DataManager({
               value={toText}
             />
           </label>
+          <p className="muted-text" data-testid="history-range-preview">
+            {rangePreview ? `实际缓存范围：${displayTime(rangePreview.from)} — ${displayTime(rangePreview.to)}（本地时间显示，按 UTC 自然月展开，截止已收盘分钟及上市边界）。` : '请选择有效时间范围；归档按 UTC 自然月展开。'}
+          </p>
           <div className="button-row download-actions">
             <button
-              disabled={busy}
+              disabled={busy || selectedSymbol() === undefined}
               onClick={() => void download(['trade'])}
               type="button"
             >
               下载普通 K 线
             </button>
             <button
-              disabled={busy}
+              disabled={busy || selectedSymbol() === undefined}
               onClick={() => void download(['mark'])}
               type="button"
             >
               下载标记价格
             </button>
             <button
-              disabled={busy}
+              disabled={busy || selectedSymbol() === undefined}
               onClick={() => void download(['trade', 'mark'])}
               type="button"
             >
@@ -496,7 +524,7 @@ export function DataManager({
         </section>
 
         <section>
-          <h3>本地缓存</h3>
+          <h3>本地缓存（1m 分钟源数据）</h3>
           <CacheSummary summary={summary.trade} title="普通 K 线" />
           <CacheSummary summary={summary.mark} title="标记价格 K 线" />
           <div className="button-row">
@@ -516,6 +544,8 @@ export function DataManager({
               删除当前缓存
             </button>
           </div>
+          <p className="muted-text">已缓存，待上传：{pendingUploads} 个月份</p>
+          <button disabled={busy || pendingUploads === 0} onClick={() => void retryUploads()} type="button">重试待上传</button>
         </section>
 
         <BackupSyncPanel
@@ -529,7 +559,7 @@ export function DataManager({
           }}
           runtime={runtime}
           symbol={symbolText}
-          timeframe={timeframe}
+          timeframe="1m"
         />
 
         {status.length > 0 && <p className="data-status">{status}</p>}

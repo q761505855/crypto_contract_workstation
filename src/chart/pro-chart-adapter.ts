@@ -22,6 +22,7 @@ import type {
 } from './indicator-preferences'
 import {
   alignOpenTime,
+  nextOpenTime,
   shiftOpenTime,
 } from '../market-data/intervals'
 import { registerSupertrendIndicator } from './supertrend'
@@ -249,9 +250,10 @@ export class ProChartAdapter implements ChartAdapterPort {
       alignOpenTime(timestamp, period.text, 'floor'),
       latest,
     )
-    const from = shiftOpenTime(target, period.text, -249)
+    const from = Math.max(alignOpenTime(target, '1M', 'floor'), shiftOpenTime(target, period.text, -249))
     const to = Math.min(
       shiftOpenTime(target, period.text, 249),
+      nextOpenTime(alignOpenTime(target, '1M', 'floor'), '1M') - 1,
       Date.now(),
     )
     const sequence = ++this.reloadSequence

@@ -1,5 +1,9 @@
 # 项目修改规则
 
+## 通用云端存储仓库
+
+云端存储使用 `q761505855/personal-cloud-storage`，服务多个项目。新增或修改同步逻辑前，阅读 [通用云端存储约定](docs/cloud-storage.md)。当前项目仅使用 `projects/crypto-contract-workstation/` 命名空间，配置与业务数据分别存储；不得覆盖其他项目目录、清单或顶层注册信息。
+
 ## 配置必须完整接入存档
 
 修改任何用户配置之前，先阅读 [配置持久化与存档约定](docs/configuration-archiving.md)。

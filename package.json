@@ -22,6 +22,7 @@
   "dependencies": {
     "@klinecharts/pro": "0.1.1",
     "decimal.js": "10.6.0",
+    "fflate": "0.8.3",
     "idb": "8.0.3",
     "klinecharts": "9.8.12",
     "react": "19.2.8",

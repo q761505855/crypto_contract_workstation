@@ -11,6 +11,10 @@ import { ReplayDatafeed } from '../replay/replay-datafeed'
 import { WorkstationBackupService } from '../storage/backup-service'
 import { GitHubSyncService } from '../github-sync/sync-service'
 import { BinanceRequestGuard, createBrowserRequestGuard } from './request-guard'
+import { BinanceArchiveClient } from './archive-client'
+import { createDefaultGitHubClient, defaultStorageTarget } from '../github-sync/default-storage'
+import { GitHubContentsClient } from '../github-sync/github-client'
+import { GitHubHistoryStore } from '../github-sync/history-store'
 
 const BASE_URL_PREFERENCE = 'marketData.binanceBaseUrl'
 
@@ -23,6 +27,7 @@ export interface MarketDataRuntime {
   simulationStates: IndexedDbSimulationStateStore
   backups: WorkstationBackupService
   githubSync: GitHubSyncService
+  defaultGitHubClient?: GitHubContentsClient
 }
 
 function savedBaseUrl(): string {
@@ -37,7 +42,12 @@ export function createMarketDataRuntime(): MarketDataRuntime {
   const store = new IndexedDbMarketDataStore()
   const requestGuard = createBrowserRequestGuard()
   const client = new BinanceRestClient(savedBaseUrl(), fetch, Date.now, undefined, requestGuard)
-  const service = new MarketDataService(client, store)
+  const defaultGitHubClient = createDefaultGitHubClient() ?? new GitHubContentsClient(defaultStorageTarget())
+  const service = new MarketDataService(client, store, {
+    archives: new BinanceArchiveClient(),
+    cloud: new GitHubHistoryStore(defaultGitHubClient),
+    pendingStorage: localStorage,
+  })
   const datafeed = new BinanceDatafeed(service)
   const backups = new WorkstationBackupService()
   return {
@@ -49,6 +59,7 @@ export function createMarketDataRuntime(): MarketDataRuntime {
     simulationStates: new IndexedDbSimulationStateStore(),
     backups,
     githubSync: new GitHubSyncService(backups),
+    defaultGitHubClient,
   }
 }
 

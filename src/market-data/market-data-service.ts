@@ -9,11 +9,13 @@ import type {
 } from './models'
 import { BinanceRestClient } from './rest-client'
 import type { MarketDataStore } from '../storage/market-data-store'
+import { MinuteHistory, type HistoryServices, type PrepareHistoryOptions } from './minute-history'
 
 export interface LoadCandlesOptions {
   signal?: AbortSignal
   onProgress?: (progress: DownloadProgress) => void
   onWarning?: (message: string) => void
+  onStatus?: (message: string) => void
 }
 
 export interface ReplayLoadOptions extends LoadCandlesOptions {
@@ -32,11 +34,25 @@ export class MarketDataService {
   private readonly seriesQueues = new Map<string, Promise<void>>()
   private readonly replayBatches = new Map<string, ReplayBatch[]>()
   private readonly replayFailures = new Map<string, string>()
+  private readonly minuteHistory?: MinuteHistory
 
   constructor(
     private readonly client: BinanceRestClient,
     private readonly store: MarketDataStore,
-  ) {}
+    history?: HistoryServices,
+  ) {
+    if (history) this.minuteHistory = new MinuteHistory(client, store, history)
+  }
+
+  usesMinuteHistory(): boolean { return this.minuteHistory !== undefined }
+
+  async prepareHistory(symbol: string, from: number, to: number, options: PrepareHistoryOptions = {}): Promise<{ from: number; to: number }> {
+    if (!this.minuteHistory) throw new Error('分钟历史归档服务未初始化')
+    return this.minuteHistory.prepare(symbol, from, to, options)
+  }
+
+  getPendingUploadCount(): number { return this.minuteHistory?.getPendingUploadCount() ?? 0 }
+  async retryPendingUploads(): Promise<void> { await this.minuteHistory?.retryPendingUploads() }
 
   getBaseUrl(): string {
     return this.client.getBaseUrl()
@@ -90,6 +106,7 @@ export class MarketDataService {
     to: number,
     options: LoadCandlesOptions = {},
   ): Promise<MarketCandle[]> {
+    if (this.minuteHistory) return this.minuteHistory.load(kind, symbol, timeframe, from, to, options)
     const key = `${kind}:${symbol.toUpperCase()}:${timeframe}`
     return this.queueSeries(key, () => this.loadSeries(
       kind, symbol, timeframe, from, to, options,
@@ -103,6 +120,7 @@ export class MarketDataService {
     from: number,
     to: number,
   ): Promise<MarketCandle[]> {
+    if (this.minuteHistory) return this.minuteHistory.cached(kind, symbol, timeframe, from, to)
     if (!Number.isFinite(from) || !Number.isFinite(to)) {
       throw new Error('本地行情读取时间必须为有效时间戳')
     }
@@ -115,6 +133,7 @@ export class MarketDataService {
   }
 
   resetReplayRequests(): void {
+    this.minuteHistory?.resetRequests()
     this.replayBatches.clear()
     this.replayFailures.clear()
   }
@@ -270,6 +289,7 @@ export class MarketDataService {
     to: number,
   ): Promise<MarketCandle[]> {
     const normalizedSymbol = symbol.toUpperCase()
+    if (this.minuteHistory) return this.minuteHistory.load(kind, normalizedSymbol, timeframe, from, to)
     return this.queueSeries(`${kind}:${normalizedSymbol}:${timeframe}`, async () => {
       const downloaded = await this.client.downloadRange(
         kind, normalizedSymbol, timeframe, Math.max(0, from), to,

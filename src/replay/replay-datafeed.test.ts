@@ -38,6 +38,22 @@ function fixture(candles = Array.from({ length: 60 }, (_, index) => candle(index
 }
 
 describe('ReplayDatafeed', () => {
+  it('does not restore an old chart period when an in-flight request restarts after replay exits', async () => {
+    const { feed, service, base } = fixture()
+    const selection = vi.fn()
+    feed.setSelectionListener(selection)
+    feed.setReplayContext(context)
+    let resolve!: (items: MarketCandle[]) => void
+    vi.mocked(service.loadCachedCandles).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const pending = feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 30 * minute)
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1m'), 0, minute)
+    feed.setReplayContext(null)
+    vi.mocked(base.getHistoryKLineData).mockResolvedValue([])
+    resolve([candle(0, '5m')])
+    await pending
+    expect(selection.mock.calls.map(([item]) => item.period.text)).toEqual(['5m', '1m'])
+  })
+
   it('keeps indicator reads inside the replay boundary without changing chart selection', async () => {
     const { feed } = fixture()
     const selection = vi.fn()

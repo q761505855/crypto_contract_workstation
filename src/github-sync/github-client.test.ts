@@ -12,6 +12,39 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('GitHubContentsClient', () => {
+  it('allows public scoped reads and rejects traversal and unauthenticated writes', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ type: 'file', path: 'projects/app/manifest.json', sha: 'a', encoding: 'base64', content: btoa('{}') }))
+    const client = new GitHubContentsClient({ owner: 'alice', repository: 'backup', branch: 'main', root: 'projects/app' }, '', fetcher)
+    expect((await client.getFile('manifest.json'))?.path).toBe('manifest.json')
+    expect(String(fetcher.mock.calls[0][0])).toContain('/contents/projects/app/manifest.json?')
+    expect(fetcher.mock.calls[0][1]?.headers).not.toHaveProperty('Authorization')
+    for (const path of ['../x', 'a\\b', '/x', 'a/%2e%2e/x']) await expect(client.getFile(path)).rejects.toThrow()
+    await expect(client.putFile('x', new Uint8Array(), 'write')).rejects.toThrow(/Token/)
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('uses the authenticated raw contents API for large files at the same immutable ref', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ type: 'file', path: 'large.gz', sha: 'blob', encoding: 'none', size: 2_000_000, content: '' }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])))
+    const client = new GitHubContentsClient({ owner: 'alice', repository: 'backup', branch: 'main' }, 'token', fetcher)
+    expect((await client.getFile('large.gz', { ref: 'commit' }))?.bytes).toEqual(new Uint8Array([1, 2, 3]))
+    expect(String(fetcher.mock.calls[1][0])).toContain('?ref=commit')
+    expect(fetcher.mock.calls[1][1]?.headers).toMatchObject({ Accept: 'application/vnd.github.raw+json', Authorization: 'Bearer token' })
+  })
+
+  it('commits scoped files atomically and rejects a branch race without forcing', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ sha: 'blob' }))
+      .mockResolvedValueOnce(jsonResponse({ sha: 'tree' }))
+      .mockResolvedValueOnce(jsonResponse({ sha: 'commit' }))
+      .mockResolvedValueOnce(jsonResponse({}, 422))
+    const client = new GitHubContentsClient({ owner: 'alice', repository: 'backup', branch: 'main', root: 'projects/app' }, 'token', fetcher)
+    await expect(client.commitFiles([{ path: 'manifest.json', bytes: new Uint8Array([1]) }], 'atomic', { commitSha: 'parent', treeSha: 'base' })).rejects.toBeInstanceOf(GitHubConflictError)
+    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toMatchObject({ base_tree: 'base', tree: [{ path: 'projects/app/manifest.json', mode: '100644', type: 'blob', sha: 'blob' }] })
+    expect(JSON.parse(String(fetcher.mock.calls[2][1]?.body))).toMatchObject({ parents: ['parent'] })
+    expect(JSON.parse(String(fetcher.mock.calls[3][1]?.body))).toEqual({ sha: 'commit', force: false })
+  })
   it('tests a private repository connection with the required API headers', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

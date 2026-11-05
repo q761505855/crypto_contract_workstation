@@ -1,4 +1,4 @@
-import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+import { openDB, unwrap, type DBSchema, type IDBPDatabase } from 'idb'
 import { findMissingRanges } from '../market-data/gaps'
 import {
   EMPTY_SERIES_SUMMARY,
@@ -225,10 +225,17 @@ export class IndexedDbMarketDataStore implements MarketDataStore {
     const database = await this.open()
     const name = storeName(kind)
     const transaction = database.transaction(name, 'readwrite')
-    await Promise.all([
-      ...candles.map((candle) => transaction.store.put(candle)),
-      transaction.done,
-    ])
+    // A monthly archive has ~43k records. The transaction completion promise
+    // already detects errors; avoid a separate JS promise/handler per minute.
+    try {
+      const native = unwrap(transaction.store)
+      for (const candle of candles) native.put(candle)
+    } catch (error) {
+      transaction.abort()
+      await transaction.done.catch(() => undefined)
+      throw error
+    }
+    await transaction.done
   }
 
   async getCandles(
@@ -283,20 +290,7 @@ export class IndexedDbMarketDataStore implements MarketDataStore {
   ): Promise<void> {
     const database = await this.open()
     const transaction = database.transaction(storeName(kind), 'readwrite')
-    let cursor = await transaction.store
-      .index('by-series-time')
-      .openCursor(
-        seriesRange(
-          symbol,
-          timeframe,
-          Number.MIN_SAFE_INTEGER,
-          Number.MAX_SAFE_INTEGER,
-        ),
-      )
-    while (cursor !== null) {
-      await cursor.delete()
-      cursor = await cursor.continue()
-    }
+    await transaction.store.delete(seriesRange(symbol, timeframe, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER))
     await transaction.done
   }
 

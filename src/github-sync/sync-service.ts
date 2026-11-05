@@ -7,6 +7,7 @@ import {
   type BackupEnvelope,
   type BackupPreferences,
   WorkstationBackupService,
+  validateBackupEnvelope,
 } from '../storage/backup-service'
 import {
   GitHubConflictError,
@@ -135,7 +136,7 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
     .join('')
 }
 
-function manifest(value: unknown): SyncManifest {
+export function manifest(value: unknown): SyncManifest {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('远端 manifest.json 格式无效')
   }
@@ -164,6 +165,8 @@ function manifest(value: unknown): SyncManifest {
         String(entry.category),
       ) ||
       typeof entry.updatedAt !== 'number'
+      || !Number.isFinite(entry.updatedAt)
+      || entry.path.split('/').some(segment => !segment || segment === '.' || segment === '..' || /[\\%\x00-\x1f]/.test(segment))
     ) {
       throw new Error(`远端 manifest.json 的 files[${index}] 无效`)
     }
@@ -187,7 +190,7 @@ function monthKey(candle: MarketCandle): string {
 }
 
 function chunkPath(chunk: MarketChunk): string {
-  return `market-data/${chunk.symbol}/${chunk.timeframe}/${chunk.year}/${String(
+  return `data/market-history/${chunk.symbol}/${chunk.timeframe}/${chunk.year}/${String(
     chunk.month,
   ).padStart(2, '0')}.json.gz`
 }
@@ -218,7 +221,7 @@ function parseMarketChunkPath(path: string): {
   month: number
 } | null {
   const match =
-    /^market-data\/([^/]+)\/([^/]+)\/(\d{4})\/(\d{2})\.json\.gz$/.exec(
+    /^(?:market-data|data\/market-history)\/([^/]+)\/([^/]+)\/(\d{4})\/(\d{2})\.json\.gz$/.exec(
       path,
     )
   if (match === null) return null
@@ -230,6 +233,22 @@ function parseMarketChunkPath(path: string): {
   }
 }
 
+async function readMarketChunk(bytes: Uint8Array, path: string): Promise<MarketChunk> {
+  const parts = parseMarketChunkPath(path)
+  const chunk = parseJson(await gunzip(bytes), path) as Partial<MarketChunk>
+  if (!parts || chunk.fileType !== 'crypto-contract-workstation-market-chunk' || chunk.schemaVersion !== 1 || chunk.symbol !== parts.symbol || chunk.timeframe !== parts.timeframe || chunk.year !== parts.year || chunk.month !== parts.month || parts.month < 1 || parts.month > 12 || !Array.isArray(chunk.tradeCandles) || !Array.isArray(chunk.markCandles) || (chunk.symbolInfo !== undefined && chunk.symbolInfo.symbol !== parts.symbol)) throw new Error(`${path} 行情分片格式无效`)
+  const data = validateBackupEnvelope({ fileType: BACKUP_FILE_TYPE, schemaVersion: BACKUP_SCHEMA_VERSION, kind: 'market-data', exportedAt: 0, data: { symbols: chunk.symbolInfo ? [chunk.symbolInfo] : [], tradeCandles: chunk.tradeCandles, markCandles: chunk.markCandles } }).data
+  if ([...data.tradeCandles!, ...data.markCandles!].some(candle => {
+    const date = new Date(candle.openTime)
+    return candle.symbol !== parts.symbol || candle.timeframe !== parts.timeframe || date.getUTCFullYear() !== parts.year || date.getUTCMonth() + 1 !== parts.month
+  })) throw new Error(`${path} 行情分片格式无效`)
+  return { ...chunk, tradeCandles: data.tradeCandles, markCandles: data.markCandles } as MarketChunk
+}
+
+function mergeChunkCandles(remote: MarketCandle[], local: MarketCandle[]): MarketCandle[] {
+  return [...new Map([...remote, ...local].map(candle => [candle.openTime, candle])).values()].sort((a, b) => a.openTime - b.openTime)
+}
+
 export class GitHubSyncService {
   constructor(
     private readonly backups: WorkstationBackupService,
@@ -239,7 +258,10 @@ export class GitHubSyncService {
   async prepare(
     selection: SyncSelection = ALL_SYNC_SELECTION,
   ): Promise<SyncFile[]> {
-    const backup = await this.backups.exportAll()
+    const backup = selection.config && !selection.sessions && !selection.marketData &&
+      typeof this.backups.exportPreferences === 'function'
+      ? await this.backups.exportPreferences()
+      : await this.backups.exportAll()
     const data = backup.data
     const files: Array<{
       path: string
@@ -401,22 +423,32 @@ export class GitHubSyncService {
       existingManifestFile === null
         ? null
         : manifest(parseJson(existingManifestFile.bytes, 'manifest.json'))
-    const selectedCategories = new Set<SyncFile['category']>()
-    if (selection.config) selectedCategories.add('config')
-    if (selection.sessions) {
-      selectedCategories.add('session')
-      selectedCategories.add('trade')
-    }
-    if (selection.marketData) selectedCategories.add('market-data')
+    const replacedPaths = new Set(localFiles.map(file => file.path))
     const effectiveEntries: SyncManifestEntry[] =
       existingManifest?.files.filter(
-        (entry) => !selectedCategories.has(entry.category),
+        (entry) => !replacedPaths.has(entry.path),
       ) ?? []
     let copiedConflicts = 0
     let skippedConflicts = 0
-    for (const [index, file] of localFiles.entries()) {
+    for (const [index, prepared] of localFiles.entries()) {
+      let file = prepared
       onProgress?.(`上传 ${index + 1}/${localFiles.length}：${file.path}`)
       const current = await client.getFile(file.path)
+      if (file.category === 'market-data') {
+        let localChunk = await readMarketChunk(file.bytes, file.path)
+        const oldPath = file.path.replace('data/market-history/', 'market-data/')
+        for (const remotePath of [oldPath, file.path]) {
+          const entry = existingManifest?.files.find(item => item.path === remotePath)
+          if (!entry) continue
+          const remoteFile = remotePath === file.path ? current : await client.getFile(remotePath)
+          if (!remoteFile || remoteFile.bytes.length !== entry.size || await sha256(remoteFile.bytes) !== entry.checksum) throw new Error(`远端文件校验失败：${remotePath}`)
+          const remoteChunk = await readMarketChunk(remoteFile.bytes, remotePath)
+          localChunk = { ...localChunk, tradeCandles: mergeChunkCandles(remoteChunk.tradeCandles, localChunk.tradeCandles), markCandles: mergeChunkCandles(remoteChunk.markCandles, localChunk.markCandles) }
+        }
+        const bytes = await gzip(jsonBytes(localChunk))
+        file = { ...file, bytes, size: bytes.length, checksum: await sha256(bytes) }
+        localFiles[index] = file
+      }
       try {
         await client.putFile(
           file.path,
@@ -484,29 +516,14 @@ export class GitHubSyncService {
       ),
     }
     const manifestBytes = jsonBytes(nextManifest)
-    const currentManifest = await client.getFile('manifest.json')
-    try {
-      await client.putFile(
-        'manifest.json',
-        manifestBytes,
-        'Update workstation sync manifest',
-        currentManifest?.sha,
-      )
-    } catch (error) {
-      if (
-        !(error instanceof GitHubConflictError) ||
-        resolution === 'stop'
-      ) {
-        throw error
-      }
-      const latest = await client.getFile('manifest.json')
-      await client.putFile(
-        'manifest.json',
-        manifestBytes,
-        'Resolve workstation manifest conflict',
-        latest?.sha,
-      )
-    }
+    // A manifest race may introduce unrelated files. Never reuse its fresh SHA
+    // with entries assembled from the old snapshot, even for keep-local.
+    await client.putFile(
+      'manifest.json',
+      manifestBytes,
+      'Update workstation sync manifest',
+      existingManifestFile?.sha,
+    )
     return {
       files: localFiles.length,
       bytes: localFiles.reduce((sum, file) => sum + file.size, 0),
@@ -524,7 +541,7 @@ export class GitHubSyncService {
       throw new Error('远端仓库中没有 manifest.json')
     }
     const remote = manifest(parseJson(manifestFile.bytes, 'manifest.json'))
-    const current = await this.backups.exportAll()
+    if (remote.files.length === 0) return {files:0,bytes:0,copiedConflicts:0,skippedConflicts:0}
     const hasConfig = remote.files.some((entry) => entry.category === 'config')
     const hasSessions = remote.files.some(
       (entry) => entry.category === 'session' || entry.category === 'trade',
@@ -532,6 +549,10 @@ export class GitHubSyncService {
     const hasMarketData = remote.files.some(
       (entry) => entry.category === 'market-data',
     )
+    const configOnly = hasConfig && !hasSessions && !hasMarketData
+    const current = configOnly && typeof this.backups.exportPreferences === 'function'
+      ? await this.backups.exportPreferences()
+      : await this.backups.exportAll()
     const preferences: Partial<BackupPreferences> = hasConfig
       ? {}
       : { ...current.data.preferences! }
@@ -556,7 +577,10 @@ export class GitHubSyncService {
           ]),
     )
     let bytes = 0
-    for (const [index, entry] of remote.files.entries()) {
+    // Migrated minute chunks may coexist with legacy files. Read legacy first
+    // so the project data path wins for overlapping candle identities.
+    const orderedFiles = [...remote.files].sort((left, right) => Number(right.path.startsWith('market-data/')) - Number(left.path.startsWith('market-data/')))
+    for (const [index, entry] of orderedFiles.entries()) {
       onProgress?.(`拉取 ${index + 1}/${remote.files.length}：${entry.path}`)
       const file = await client.getFile(entry.path)
       if (file === null) {
@@ -629,8 +653,7 @@ export class GitHubSyncService {
           pathParts.month > 12 ||
           !Array.isArray(chunk.tradeCandles) ||
           !Array.isArray(chunk.markCandles) ||
-          chunk.symbolInfo === undefined ||
-          chunk.symbolInfo.symbol !== pathParts.symbol ||
+          (chunk.symbolInfo !== undefined && chunk.symbolInfo.symbol !== pathParts.symbol) ||
           [...chunk.tradeCandles, ...chunk.markCandles].some((candle) => {
             const date = new Date(candle.openTime)
             return (
@@ -645,21 +668,23 @@ export class GitHubSyncService {
         }
         tradeCandles.push(...chunk.tradeCandles)
         markCandles.push(...chunk.markCandles)
-        symbols.set(chunk.symbolInfo.symbol, chunk.symbolInfo)
+        if (chunk.symbolInfo !== undefined) symbols.set(chunk.symbolInfo.symbol, chunk.symbolInfo)
       } else {
         throw new Error(`远端清单包含不支持的路径：${entry.path}`)
       }
     }
+    onProgress?.('正在合并已校验的云端数据…')
+    const uniqueCandles = (candles: MarketCandle[]) => [...new Map(candles.map(candle => [`${candle.symbol}:${candle.timeframe}:${candle.openTime}`, candle])).values()].sort(this.candleOrder)
     const backup: BackupEnvelope = {
       fileType: BACKUP_FILE_TYPE,
       schemaVersion: BACKUP_SCHEMA_VERSION,
-      kind: 'all',
+      kind: configOnly ? 'preferences' : 'all',
       exportedAt: remote.updatedAt,
       data: {
         preferences: preferences as BackupPreferences,
         symbols: [],
-        tradeCandles: tradeCandles.sort(this.candleOrder),
-        markCandles: markCandles.sort(this.candleOrder),
+        tradeCandles: uniqueCandles(tradeCandles),
+        markCandles: uniqueCandles(markCandles),
         sessions,
         simulations,
       },
@@ -698,7 +723,7 @@ export class GitHubSyncService {
           quantityPrecision: symbol.volumePrecision ?? 8,
         })),
     ]
-    await this.backups.import(backup)
+    await this.backups.import(backup, onProgress)
     return {
       files: remote.files.length,
       bytes,

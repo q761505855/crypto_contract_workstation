@@ -38,6 +38,7 @@ export class BinanceDatafeed implements Datafeed {
   private onSelectionChange?: (selection: MarketSelection) => void
   private onWarning?: (message: string) => void
   private onLiveStatus?: (status: LiveMarketStatus) => void
+  private historySequence = 0
   private liveEnabled = false
   private liveStatus: LiveMarketStatus = { ...INITIAL_LIVE_STATUS }
   private readonly liveSubscriptions = new Map<string, LiveSubscription>()
@@ -118,18 +119,31 @@ export class BinanceDatafeed implements Datafeed {
       timeframe,
       -(MAX_CHART_CANDLES - 1),
     )
-    const effectiveFrom = Math.max(0, from, cappedFrom)
+    // UI queries may span hundreds of daily/monthly bars. Load calendar chunks
+    // as the user scrolls instead of unexpectedly preparing years of minutes.
+    const recentMonth = shiftOpenTime(alignOpenTime(alignedTo, '1M', 'floor'), '1M', -1)
+    const requestedFrom = Math.max(0, from, cappedFrom)
+    const minuteHistory = this.service.usesMinuteHistory?.() ?? false
+    const effectiveFrom = Math.max(requestedFrom, minuteHistory ? recentMonth : 0)
     if (effectiveFrom > to) return []
+    const sequence = notifySelection ? ++this.historySequence : this.historySequence
+    let active = true
+    const report = (message: string) => {
+      if (notifySelection && active && sequence === this.historySequence) this.onWarning?.(message)
+    }
     try {
+      const older = minuteHistory && requestedFrom < effectiveFrom
+        ? await this.service.loadCachedCandles('trade', symbol.ticker, timeframe, requestedFrom, effectiveFrom - 1)
+        : []
       const candles = await this.service.loadCandles(
         'trade',
         symbol.ticker,
         timeframe,
         effectiveFrom,
         to,
-        { onWarning: this.onWarning },
+        { onWarning: report, onStatus: report },
       )
-      return candles.map((candle) => ({
+      return [...older, ...candles].map((candle) => ({
         timestamp: candle.openTime,
         open: Number(candle.open),
         high: Number(candle.high),
@@ -139,10 +153,12 @@ export class BinanceDatafeed implements Datafeed {
         turnover: Number(candle.quoteVolume),
       }))
     } catch (error) {
-      this.onWarning?.(
+      report(
         error instanceof Error ? error.message : String(error),
       )
       return []
+    } finally {
+      active = false
     }
   }
 

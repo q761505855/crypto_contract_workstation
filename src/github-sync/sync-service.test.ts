@@ -17,6 +17,7 @@ import {
   ALL_SYNC_SELECTION,
   GitHubSyncService,
   gunzip,
+  gzip,
   sha256,
 } from './sync-service'
 
@@ -162,6 +163,22 @@ function client(value: MemoryGitHubClient): GitHubContentsClient {
 }
 
 describe('GitHubSyncService', () => {
+  it('compares and restores configuration without exporting or rewriting cached market history', async () => {
+    const source = new MemoryBackupService()
+    const target = new MemoryBackupService()
+    const minimal = async (): Promise<BackupEnvelope> => ({...backup(),kind:'preferences',data:{preferences:backup().data.preferences}})
+    Object.assign(source,{exportPreferences:vi.fn(minimal)})
+    Object.assign(target,{exportPreferences:vi.fn(minimal)})
+    const sourceAll = vi.spyOn(source,'exportAll')
+    const targetAll = vi.spyOn(target,'exportAll')
+    const remote = new MemoryGitHubClient()
+    await service(source).upload(client(remote),'stop',{config:true,sessions:false,marketData:false})
+    await service(target).pull(client(remote))
+    expect(sourceAll).not.toHaveBeenCalled()
+    expect(targetAll).not.toHaveBeenCalled()
+    expect(target.imports[0].kind).toBe('preferences')
+    expect(target.imports[0].data.tradeCandles ?? []).toHaveLength(0)
+  })
   it('restores pinned periods through real backup storage and detects config-only changes', async () => {
     const storage = () => {
       const values = new Map<string, string>()
@@ -216,7 +233,7 @@ describe('GitHubSyncService', () => {
     expect(files.map((file) => file.path)).toEqual([
       'config/favorites.json',
       'config/preferences.json',
-      'market-data/BTCUSDT/1m/2024/01.json.gz',
+      'data/market-history/BTCUSDT/1m/2024/01.json.gz',
     ])
     const market = files.find((file) => file.category === 'market-data')!
     expect(market.size).toBe(market.bytes.byteLength)
@@ -270,6 +287,84 @@ describe('GitHubSyncService', () => {
       remoteFiles: 2,
       changedFiles: 0,
     })
+  })
+
+  it('preserves remote months and unrelated entries when uploading a local subset', async () => {
+    const remote = new MemoryGitHubClient()
+    const first = backup()
+    first.data.tradeCandles!.push(candle(Date.UTC(2024, 1, 1)))
+    await service(new MemoryBackupService(first)).upload(client(remote), 'stop')
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+    expect(value.files.map((entry: { path: string }) => entry.path)).toContain('data/market-history/BTCUSDT/1m/2024/02.json.gz')
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.tradeCandles).toHaveLength(3)
+  })
+
+  it('keeps more complete remote dates and the other price kind during manual partial uploads', async () => {
+    const remote = new MemoryGitHubClient()
+    const full = backup()
+    full.data.tradeCandles!.push(candle(Date.UTC(2024, 0, 1, 0, 2)))
+    full.data.markCandles!.push(candle(Date.UTC(2024, 0, 1, 0, 1), '99'))
+    await service(new MemoryBackupService(full)).upload(client(remote), 'stop')
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.tradeCandles).toEqual(full.data.tradeCandles)
+    expect(target.imports[0].data.markCandles).toEqual(full.data.markCandles)
+  })
+
+  it('can restore legacy unscoped market paths alongside the new path format', async () => {
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const name = 'data/market-history/BTCUSDT/1m/2024/01.json.gz'
+    const old = name.replace('data/market-history', 'market-data')
+    remote.files.set(old, remote.files.get(name)!); remote.files.delete(name)
+    const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+    value.files.find((entry: { path: string }) => entry.path === name).path = old
+    remote.files.get('manifest.json')!.bytes = encoder.encode(JSON.stringify(value))
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.preferences).toEqual(backup().data.preferences)
+    expect(target.imports[0].data.tradeCandles).toEqual(backup().data.tradeCandles)
+  })
+
+  it('stops rather than silently replacing a concurrently changed manifest', async () => {
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const originalPut = remote.putFile.bind(remote)
+    remote.putFile = async (...args) => {
+      if (args[0] === 'config/preferences.json') {
+        const file = remote.files.get('manifest.json')!
+        remote.files.set('manifest.json', { ...file, sha: 'concurrent-manifest' })
+      }
+      return originalPut(...args)
+    }
+    await expect(service(new MemoryBackupService()).upload(client(remote), 'keep-local')).rejects.toBeInstanceOf(GitHubConflictError)
+    expect(remote.files.get('manifest.json')!.sha).toBe('concurrent-manifest')
+  })
+
+  it('restores history chunks without symbol metadata and deduplicates migrated legacy minutes', async () => {
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService()).upload(client(remote), 'stop')
+    const name = 'data/market-history/BTCUSDT/1m/2024/01.json.gz'
+    const old = name.replace('data/market-history', 'market-data')
+    remote.files.set(old, remote.files.get(name)!)
+    const chunk = JSON.parse(decoder.decode(await gunzip(remote.files.get(name)!.bytes)))
+    delete chunk.symbolInfo
+    const bytes = await gzip(encoder.encode(JSON.stringify(chunk)))
+    remote.files.set(name, { sha: 'new-chunk', bytes })
+    const value = JSON.parse(decoder.decode(remote.files.get('manifest.json')!.bytes))
+    const entry = value.files.find((item: { path: string }) => item.path === name)
+    value.files.push({ ...entry, path: old })
+    entry.size = bytes.length; entry.checksum = await sha256(bytes)
+    remote.files.get('manifest.json')!.bytes = encoder.encode(JSON.stringify(value))
+    const target = new MemoryBackupService()
+    await service(target).pull(client(remote))
+    expect(target.imports[0].data.tradeCandles).toEqual(backup().data.tradeCandles)
+    expect(target.imports[0].data.markCandles).toEqual(backup().data.markCandles)
+    expect(target.imports[0].data.symbols?.[0].symbol).toBe('BTCUSDT')
   })
 
   it('preserves the remote winner and saves a timestamped local copy on conflict', async () => {

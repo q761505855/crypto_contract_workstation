@@ -771,6 +771,14 @@ button:disabled {
   font-size: 12px;
 }
 
+.status-footer .history-upload-status {
+  max-width: 100%;
+  margin: 2px 0 2px 8px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: #f0c47d;
+}
+
 .drawer-backdrop {
   position: fixed;
   z-index: 1100;
