@@ -218,6 +218,9 @@ export function ReplayControls({
             </button>
           </>
         )}
+        {replay.busy && replay.preparationStatus && (
+          <span className="replay-preparation" role="status">{replay.preparationStatus}</span>
+        )}
         {replay.error.length > 0 && (
           <span className="replay-error" role="alert">
             {replay.error}

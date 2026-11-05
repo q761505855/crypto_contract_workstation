@@ -16,7 +16,7 @@
 - Do not print credentials or store them in backups; build defaults consume ignored .env.local.
 - No new remembered user preferences; all existing BackupPreferences round-trip tests remain complete.
 - Preserve other project namespaces, all unrelated cloud manifest entries, and existing multi-period archives.
-- Month/day archives precede REST; only current UTC day and previous day without available daily archive may use REST.
+- Month/day archives precede REST; only gaps within the latest30 UTC calendar days without available archives may use REST. Current-day ZIPs are not probed before that day ends.
 - User approved implementation. Execute continuously without another design or execution confirmation.
 
 ## Review Focus
@@ -79,7 +79,7 @@ Files: DataManager.tsx, BackupSyncPanel.tsx, README.md, docs/cloud-storage.md, d
 - Baseline earlier: 213 tests passed; current changes before implementation are documentation and .gitignore only.
 - Working branch: codex/archive-cloud-storage. In-place branch preserves user's approved local env and documentation; no destructive reset or worktree migration.
 - Tasks1–5 complete and verified; code remains on the local feature branch, not pushed or deployed.
-- npm run check: 351 tests passed, typecheck and build passed (2026-11-05).
+- npm run check: 364 tests passed, typecheck and build passed (2026-11-05, including replay preparation and HTTP-cache regressions).
 - Fresh review findings fixed with RED/GREEN regressions: bounded indicator reads, shared-repository root under branch/case edits.
 - Replay chart period switches also use calendar-sized reads; a regression proves a weekly switch cannot silently request years of minute archives. Explicit download/session preparation retains its full selected range.
 - A deferred replay request restarting across a mode boundary no longer reselects its old period over a newer user selection; RED/GREEN regression covers replay exit.
@@ -95,3 +95,5 @@ Files: DataManager.tsx, BackupSyncPanel.tsx, README.md, docs/cloud-storage.md, d
 - Actual Binance→GitHub→verified readback: BTCUSDT September2025,43200 trade and43200 mark minutes; project namespace preserved.
 - Pages CLOUD_STORAGE_TOKEN secret configured. Browser artifacts use a dummy token; final build and verifier accept only the explicitly configured credential.
 - Final browser regressions passed in batches: archive/month preparation and cloud readback, default configuration round-trip, persistent failed-upload retry, HTTP418 protection, favorites and Supertrend, and the complete Pro scenario (3.2min) including explicit cloud-restore success. Pages subpath320px layout and default-config round-trip both passed.
+- Replay follow-up: canonical replay preparation uses the shared month pipeline once instead of499-bar batches; reset retains short-lived month lookups, archive404s deduplicate for60s, and current-day ZIPs are skipped. Creation captures the last closed source period and exposes preparation progress.
+- Real Edge verification: the57,505-bar session and simulation account are ready. The repaired Git2026-10 BTCUSDT file was read back from immutable commit1cffc963de9210e4a1088f3be8c19b9f65b8991c:44,640 trade +44,640 mark minutes, zero gaps. Extended browser regression creates a replay from the restored Git month without new Binance archive or REST requests.

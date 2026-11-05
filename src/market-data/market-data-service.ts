@@ -133,7 +133,6 @@ export class MarketDataService {
   }
 
   resetReplayRequests(): void {
-    this.minuteHistory?.resetRequests()
     this.replayBatches.clear()
     this.replayFailures.clear()
   }
@@ -156,6 +155,24 @@ export class MarketDataService {
     if (previousFailure !== undefined) {
       options.onWarning?.(previousFailure)
       return cached
+    }
+    if (this.minuteHistory) {
+      // Canonical minutes already prepare Git/Binance data month by month.
+      // REST page-sized replay batches would repeatedly revisit the same month.
+      try {
+        await this.loadCandles(kind,symbol,timeframe,from,Math.min(requestedTo,options.prefetchTo ?? Infinity), {
+          ...options,
+          onWarning: message => {
+            this.replayFailures.set(key,message)
+            options.onWarning?.(message)
+          },
+        })
+      } catch (reason) {
+        const message = `回放按月准备未完成：${reason instanceof Error ? reason.message : String(reason)}`
+        this.replayFailures.set(key,message)
+        options.onWarning?.(message)
+      }
+      return this.loadCachedCandles(kind,symbol,timeframe,from,to)
     }
     const batches = this.replayBatches.get(key) ?? []
     this.replayBatches.set(key, batches)

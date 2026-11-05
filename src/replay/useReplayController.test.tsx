@@ -42,6 +42,35 @@ function setup(options: { noMarks?: boolean; restore?: boolean } = {}) {
 }
 
 describe('offline replay and simulation controllers', () => {
+  it('exposes monthly preparation progress while creating a session', async () => {
+    const {result,runtime} = setup()
+    await waitFor(()=>expect(result.current.replay.busy).toBe(false))
+    let release!: (rows:MarketCandle[])=>void
+    vi.mocked(runtime.service.loadCandles).mockImplementation((_kind,_symbol,_timeframe,_from,_to,options) => {
+      options?.onStatus?.('BTCUSDT 2026-10：检查云端月归档…')
+      return new Promise(resolve=> { release=resolve })
+    })
+    let pending!:Promise<void>
+    act(()=> { pending=result.current.replay.createSession(input) })
+    try {
+      expect(result.current.replay.preparationStatus).toContain('2026-10')
+    } finally {
+      await act(async()=> { release(candles); await pending })
+    }
+    expect(result.current.replay.preparationStatus).toBe('')
+  })
+
+  it('prepares only completed source candles when no replay end is supplied', async () => {
+    const clock = vi.spyOn(Date,'now').mockReturnValue(5*minute+30_000)
+    try {
+      const {result,runtime} = setup()
+      await waitFor(()=>expect(result.current.replay.busy).toBe(false))
+      await act(async()=> { await result.current.replay.createSession({symbol:DEFAULT_SYMBOL,period:SUPPORTED_PERIODS[0],startTime:0}) })
+      expect(runtime.service.loadCandles).toHaveBeenCalledWith('trade','BTCUSDT','1m',0,4*minute,expect.any(Object))
+      expect(result.current.replay.session?.endTime).toBe(4*minute)
+    } finally { clock.mockRestore() }
+  })
+
   it('rejects a missing tail instead of shortening the requested replay range', async () => {
     const { result, runtime } = setup()
     await waitFor(() => expect(result.current.replay.busy).toBe(false))
@@ -56,7 +85,7 @@ describe('offline replay and simulation controllers', () => {
     await act(async () => { await result.current.replay.createSession(input) })
     await waitFor(() => expect(result.current.simulation.busy).toBe(false))
     expect(runtime.service.loadCandles).toHaveBeenCalledOnce()
-    expect(runtime.service.loadReplayCandles).toHaveBeenCalledWith('mark', 'BTCUSDT', '1m', 0, 5 * minute, { prefetchTo: 5 * minute })
+    expect(runtime.service.loadReplayCandles).toHaveBeenCalledWith('mark', 'BTCUSDT', '1m', 0, 5 * minute, { prefetchTo: 5 * minute, onStatus:expect.any(Function) })
     vi.mocked(runtime.service.loadCandles).mockClear()
     vi.mocked(runtime.service.loadCachedCandles).mockClear()
     vi.mocked(runtime.service.loadReplayCandles).mockClear()
@@ -96,7 +125,7 @@ describe('offline replay and simulation controllers', () => {
     await waitFor(() => expect(result.current.replay.busy).toBe(false))
     await waitFor(() => expect(result.current.simulation.state).not.toBeNull())
     expect(runtime.service.loadCandles).not.toHaveBeenCalled()
-    expect(runtime.service.loadReplayCandles).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m', 0, 5 * minute, { prefetchTo: 5 * minute })
+    expect(runtime.service.loadReplayCandles).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m', 0, 5 * minute, { prefetchTo: 5 * minute, onStatus:expect.any(Function) })
     expect(runtime.replayDatafeed.setSessionCandles).toHaveBeenCalledWith(expect.any(String), candles)
     await act(async () => { await result.current.replay.next() })
     expect(result.current.replay.session?.currentTime).toBe(minute)

@@ -32,6 +32,7 @@ export interface ReplayController {
   busy: boolean
   isPlaying: boolean
   error: string
+  preparationStatus?: string
   createSession(input: CreateReplaySessionInput): Promise<void>
   loadSession(id: string): Promise<void>
   endSession(): Promise<void>
@@ -60,6 +61,7 @@ export function useReplayController(
   const [busy, setBusy] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [error, setError] = useState('')
+  const [preparationStatus, setPreparationStatus] = useState('')
 
   const refreshSessions = useCallback(async () => {
     setSessions(await runtime.replaySessions.list())
@@ -108,7 +110,7 @@ export function useReplayController(
         saved.period.text,
         saved.startTime,
         saved.endTime,
-        { prefetchTo: saved.endTime },
+        { prefetchTo: saved.endTime, onStatus: setPreparationStatus },
       )
       const gaps = findMissingRanges(
         candles,
@@ -155,7 +157,7 @@ export function useReplayController(
           )
         }
       } finally {
-        if (!cancelled) setBusy(false)
+        if (!cancelled) { setBusy(false); setPreparationStatus('') }
       }
     })()
     return () => {
@@ -177,6 +179,7 @@ export function useReplayController(
       setBusy(true)
       setIsPlaying(false)
       setError('')
+      setPreparationStatus('正在按月准备回放数据…')
       try {
         runtime.service.resetReplayRequests()
         validateSimulationConfig(
@@ -186,22 +189,24 @@ export function useReplayController(
           engineRef.current.setActive(false)
           queueSave(engineRef.current.snapshot())
         }
-        const requestedEnd = input.endTime ?? Date.now()
+        const preparedAt = Date.now()
+        const requestedEnd = Math.min(
+          alignOpenTime(input.endTime ?? preparedAt,input.period.text,'floor'),
+          previousOpenTime(alignOpenTime(preparedAt,input.period.text,'floor'),input.period.text),
+        )
         const downloaded = await runtime.service.loadCandles(
           'trade',
           input.symbol.ticker,
           input.period.text,
           input.startTime,
           requestedEnd,
+          { onStatus: setPreparationStatus },
         )
-        const candles = downloaded.filter((candle) => candle.isClosed)
+        const candles = downloaded.filter((candle) => candle.isClosed && candle.openTime <= requestedEnd && candle.closeTime < preparedAt)
         if (candles.length === 0) {
           throw new Error('所选区间没有已经完成的 K 线')
         }
-        const expectedEnd = Math.min(
-          alignOpenTime(requestedEnd, input.period.text, 'floor'),
-          previousOpenTime(alignOpenTime(Date.now(), input.period.text, 'floor'), input.period.text),
-        )
+        const expectedEnd = requestedEnd
         const gaps = findMissingRanges(
           candles,
           input.period.text,
@@ -221,7 +226,7 @@ export function useReplayController(
           await runtime.service.loadReplayCandles(
             'mark', input.symbol.ticker, input.period.text,
             candles[0].openTime, effectiveEnd,
-            { prefetchTo: effectiveEnd },
+            { prefetchTo: effectiveEnd, onStatus: setPreparationStatus },
           )
         } catch {
           // Existing cached mark prices can still be used offline.
@@ -237,6 +242,7 @@ export function useReplayController(
         setError(reason instanceof Error ? reason.message : String(reason))
       } finally {
         setBusy(false)
+        setPreparationStatus('')
       }
     },
     [publish, queueSave, runtime],
@@ -262,6 +268,7 @@ export function useReplayController(
         setError(reason instanceof Error ? reason.message : String(reason))
       } finally {
         setBusy(false)
+        setPreparationStatus('')
       }
     },
     [hydrate, queueSave, runtime],
@@ -425,6 +432,7 @@ export function useReplayController(
     busy,
     isPlaying,
     error,
+    preparationStatus,
     createSession,
     loadSession,
     endSession,

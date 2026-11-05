@@ -10,6 +10,7 @@ import type { LoadCandlesOptions } from './market-data-service'
 
 const MINUTE = 60_000
 const DAY = 86_400_000
+const RECENT_API_DAYS = 30
 const PENDING_KEY = 'marketData.pendingCloudUploads.v1'
 
 export interface HistoryCloudStore {
@@ -38,6 +39,7 @@ export class MinuteHistory {
   private readonly queues = new Map<string, Promise<unknown>>()
   private readonly cloudReads = new Map<string, Promise<void>>()
   private readonly cloudReadTimes = new Map<string, number>()
+  private readonly missingArchives = new Map<string, number>()
   private readonly pending = new Map<string, PendingMonth>()
   private uploading: Promise<void> | null = null
   private revision = 0
@@ -61,6 +63,13 @@ export class MinuteHistory {
 
   private now(): number { return (this.services.now ?? Date.now)() }
   private monthKey(symbol: string, year: number, month: number): string { return `${symbol}/${year}/${month}` }
+  private async readArchive(key: string, read: () => Promise<MarketCandle[] | null>): Promise<MarketCandle[] | null> {
+    if ((this.missingArchives.get(key) ?? 0) > this.now()) return null
+    const rows = await read()
+    if (rows === null) this.missingArchives.set(key,this.now()+60_000)
+    else this.missingArchives.delete(key)
+    return rows
+  }
   private async local(kind: CandleKind, symbol: string, from: number, to: number): Promise<MarketCandle[]> {
     if (from > to) return []
     return (await this.store.getCandles(kind, symbol, '1m', from, to))
@@ -184,7 +193,8 @@ export class MinuteHistory {
     const currentMonth = alignOpenTime(this.now(), '1M', 'floor')
     if (Date.UTC(year, month - 1) < currentMonth) {
       status('下载并校验月归档…')
-      const archived = await this.services.archives.loadMonth(kind, symbol, year, month, { signal: options.signal })
+      const archived = await this.readArchive(`month/${kind}/${key}`, () =>
+        this.services.archives.loadMonth(kind, symbol, year, month, { signal: options.signal }))
       options.signal?.throwIfAborted()
       if (archived !== null) {
         await this.saveRows(kind, archived)
@@ -195,12 +205,18 @@ export class MinuteHistory {
     }
     const missingDays = new Set<number>()
     for (const gap of gaps) for (let day = Math.floor(gap.from / DAY) * DAY; day <= gap.to; day += DAY) missingDays.add(day)
-    const recentFrom = Math.floor(this.now() / DAY) * DAY - DAY
+    const today = Math.floor(this.now() / DAY) * DAY
+    const recentFrom = today - (RECENT_API_DAYS-1)*DAY
     for (const dayTime of missingDays) {
       options.signal?.throwIfAborted()
       const date = new Date(dayTime)
-      status(`检查 ${date.toISOString().slice(0, 10)} 日归档…`)
-      const archived = await this.services.archives.loadDay(kind, symbol, year, month, date.getUTCDate(), { signal: options.signal })
+      // Today's daily ZIP cannot be complete before the UTC day has ended.
+      let archived: MarketCandle[] | null = null
+      if (dayTime < today) {
+        status(`检查 ${date.toISOString().slice(0, 10)} 日归档…`)
+        archived = await this.readArchive(`day/${kind}/${key}/${date.getUTCDate()}`, () =>
+          this.services.archives.loadDay(kind, symbol, year, month, date.getUTCDate(), { signal: options.signal }))
+      }
       options.signal?.throwIfAborted()
       if (archived !== null) {
         await this.saveRows(kind, archived)
@@ -224,7 +240,7 @@ export class MinuteHistory {
       }
     }
     const remaining = findMissingRanges(await this.local(kind, symbol, from, to), '1m', from, to)
-    if (remaining.length > 0) throw new Error(`${symbol} ${kind === 'trade' ? '普通价格' : '标记价格'} 归档仍有 ${remaining.length} 个缺失区间，首个缺口 ${new Date(remaining[0].from).toISOString()}；旧历史不会改用 API。`)
+    if (remaining.length > 0) throw new Error(`${symbol} ${kind === 'trade' ? '普通价格' : '标记价格'} 归档仍有 ${remaining.length} 个缺失区间，首个缺口 ${new Date(remaining[0].from).toISOString()}；30 天以前的历史不会改用 API。`)
   }
 
   async prepare(symbol: string, from: number, to: number, options: PrepareHistoryOptions = {}): Promise<{ from: number; to: number }> {

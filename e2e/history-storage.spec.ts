@@ -206,6 +206,15 @@ test('prepares full minute months, automatically uploads and reads cloud without
     throw error
   }
   expect(archives.requests.filter(url => url.includes('-2025-09.')).length).toBe(archiveCount)
+  // Creating the session reuses both minute series restored from the Git month.
+  await expect(controls.getByText(/起点：/)).toContainText('2025/9/15 12:00')
+  const beforeCreateArchives = archives.requests.length
+  const beforeCreateRest = restRequests.length
+  await controls.getByLabel('回放结束时间').fill('2025-09-15T12:10')
+  await controls.getByRole('button',{name:'创建回放',exact:true}).click()
+  await expect(controls).toContainText('1/3',{timeout:30_000})
+  expect(archives.requests.length).toBe(beforeCreateArchives)
+  expect(restRequests.length).toBe(beforeCreateRest)
 })
 
 test('round-trips user configuration using the default connection without entering git information', async ({page}) => {
