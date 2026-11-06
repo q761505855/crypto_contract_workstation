@@ -8,12 +8,6 @@ import type { Chart } from 'klinecharts'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@klinecharts/pro', () => ({ KLineChartPro: vi.fn() }))
-vi.mock('klinecharts', async importOriginal => ({
-  ...await importOriginal<typeof import('klinecharts')>(),
-  // The package's CommonJS test entry omits these browser enum exports.
-  TooltipShowRule: { Always: 'always', None: 'none' },
-}))
-
 import { ProChartAdapter } from './pro-chart-adapter'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
 
@@ -183,15 +177,15 @@ describe('ProChartAdapter', () => {
     expect(adapter.layoutSubPanes(200)).toBe(524)
   })
 
-  it('hides candle and indicator text together for an unobstructed compact chart', () => {
+  it('only toggles main indicator legends while preserving candle and subpane tooltips', () => {
     const setStyles = vi.fn()
     const core = { setStyles } as unknown as Chart
     const adapter = new ProChartAdapter(() => fakeChart(core))
     adapter.mount({ container: document.createElement('div'), datafeed: { getHistoryKLineData: async () => [], searchSymbols: async () => [], subscribe() {}, unsubscribe() {} }, period: { multiplier: 15, timespan: 'minute', text: '15m' }, symbol: { ticker: 'BTCUSDT' } })
     adapter.setIndicatorInfoVisible(false)
-    expect(setStyles).toHaveBeenLastCalledWith({ candle: { tooltip: { showRule: 'none' } }, indicator: { tooltip: { showRule: 'none' } } })
+    expect(setStyles).toHaveBeenLastCalledWith({ candle: { tooltip: { showIndicator: false } } })
     adapter.setIndicatorInfoVisible(true)
-    expect(setStyles).toHaveBeenLastCalledWith({ candle: { tooltip: { showRule: 'always' } }, indicator: { tooltip: { showRule: 'always' } } })
+    expect(setStyles).toHaveBeenLastCalledWith({ candle: { tooltip: { showIndicator: true } } })
   })
 
   it('mounts once and delegates public updates', () => {

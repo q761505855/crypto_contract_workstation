@@ -386,11 +386,11 @@ export function ChartWorkspace({
     <section className="chart-workspace" aria-label="行情图表">
       <div className="chart-host" data-testid="chart-host" ref={hostRef} />
       <button
-        aria-label={indicatorInfoVisible ? '隐藏指标信息' : '显示指标信息'}
+        aria-label={indicatorInfoVisible ? '隐藏主图指标信息' : '显示主图指标信息'}
         aria-expanded={indicatorInfoVisible}
         className="indicator-info-toggle"
         onClick={toggleIndicatorInfo}
-        title={indicatorInfoVisible ? '隐藏指标信息' : '显示指标信息'}
+        title={indicatorInfoVisible ? '隐藏主图指标信息' : '显示主图指标信息'}
         type="button"
       >
         <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12">

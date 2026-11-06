@@ -1759,7 +1759,7 @@ test('fits candles with balanced padding and toggles indicator information witho
       return Reflect.apply(clearRect, this, args)
     }
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
-      if (/^Supertrend|^MACD\(/.test(text)) {
+      if (/^Supertrend|^MACD\(|^时间/.test(text)) {
         const entries = texts.get(this.canvas) ?? []
         entries.push(text)
         texts.set(this.canvas, entries)
@@ -1789,14 +1789,28 @@ test('fits candles with balanced padding and toggles indicator information witho
   const mainCanvas = page.locator('[k-line-chart-id] > div > div:first-child > div:first-child canvas').first()
   await page.getByRole('heading', { level: 1 }).hover()
   const plotsBefore = await mainCanvas.evaluate((canvas) => canvas.toDataURL())
-  await page.getByRole('button', { name: '隐藏指标信息', exact: true }).click()
-  await expect.poll(titleTexts).toEqual([])
-  await expect(page.getByRole('button', { name: '显示指标信息', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await page.getByRole('button', { name: '隐藏主图指标信息', exact: true }).click()
+  await expect.poll(titleTexts).toContain('MACD(12,26,9)')
+  await expect.poll(titleTexts).not.toContain('Supertrend')
+  await expect.poll(async () => (await titleTexts()).some(text => /^时间/.test(text))).toBe(true)
+  await expect(page.getByRole('button', { name: '显示主图指标信息', exact: true })).toHaveAttribute('aria-expanded', 'false')
   expect(await mainCanvas.evaluate((canvas) => canvas.toDataURL()) === plotsBefore).toBe(true)
+  await page.screenshot({ path: test.info().outputPath('main-indicator-hidden-desktop.png') })
   await expect.poll(candleHeightRatio).toBeCloseTo(1 / 1.16, 2)
-  await page.getByRole('button', { name: '显示指标信息', exact: true }).click()
+  await page.getByRole('button', { name: '显示主图指标信息', exact: true }).click()
   await expect.poll(titleTexts).toEqual(expect.arrayContaining(['Supertrend', 'MACD(12,26,9)']))
-  await page.screenshot({ path: 'test-results/candle-auto-range.png' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.getByRole('button', { name: '显示主图指标信息', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await expect.poll(titleTexts).toContain('MACD(12,26,9)')
+  await expect.poll(titleTexts).not.toContain('Supertrend')
+  await expect.poll(async () => (await titleTexts()).some(text => /^时间/.test(text))).toBe(true)
+  await page.getByRole('button', { name: '显示主图指标信息', exact: true }).click()
+  await expect.poll(titleTexts).toEqual(expect.arrayContaining(['Supertrend', 'MACD(12,26,9)']))
+  await page.getByRole('button', { name: '隐藏主图指标信息', exact: true }).click()
+  await expect.poll(titleTexts).not.toContain('Supertrend')
+  await expect.poll(titleTexts).toContain('MACD(12,26,9)')
+  await expect.poll(async () => (await titleTexts()).some(text => /^时间/.test(text))).toBe(true)
+  await page.screenshot({ path: test.info().outputPath('main-indicator-hidden-mobile.png') })
 })
 
 test('zooms the price range with the wheel over the price axis while preserving the time scale', async ({ page }) => {

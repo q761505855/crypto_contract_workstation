@@ -14,7 +14,6 @@ import type {
   LineType,
   OverlayCreate,
 } from 'klinecharts'
-import { TooltipShowRule } from 'klinecharts'
 import type {
   ChartIndicatorPreferences,
   ChartIndicatorSetting,
@@ -254,8 +253,7 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setIndicatorInfoVisible(visible: boolean): void {
     this.requireCoreChart().setStyles({
-      candle: { tooltip: { showRule: visible ? TooltipShowRule.Always : TooltipShowRule.None } },
-      indicator: { tooltip: { showRule: visible ? TooltipShowRule.Always : TooltipShowRule.None } },
+      candle: { tooltip: { showIndicator: visible } },
     })
   }
 
