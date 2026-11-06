@@ -85,3 +85,33 @@ describe('App locate latest navigation', () => {
     expect(harness.chart?.jumpRequest).toBeNull()
   })
 })
+
+
+describe('workspace panel collapse controls', () => {
+  it.each([
+    ['下单面板', 'order'], ['持仓面板', 'dock'], ['回放控制', 'replay'], ['底部状态', 'status'],
+  ] as const)('retains an inline expand control after collapsing %s', (label, key) => {
+    localStorage.clear()
+    render(<App />)
+    const collapse = screen.getByRole('button', { name: `收起${label}` })
+    expect(collapse).toHaveAttribute('aria-expanded', 'true')
+    expect(collapse.querySelector('svg')).not.toBeNull()
+    fireEvent.click(collapse)
+    const expand = screen.getByRole('button', { name: `展开${label}` })
+    expect(expand).toHaveAttribute('aria-expanded', 'false')
+    expect(JSON.parse(localStorage.getItem('workspace.layout.v1')!).panels[key]).toBe(false)
+    fireEvent.click(expand)
+    expect(screen.getByRole('button', { name: `收起${label}` })).toHaveAttribute('aria-expanded', 'true')
+    expect(JSON.parse(localStorage.getItem('workspace.layout.v1')!).panels[key]).toBe(true)
+  })
+
+  it('expands the account summary again without opening workspace settings', () => {
+    localStorage.clear()
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '实时行情' }))
+    fireEvent.click(screen.getByRole('button', { name: '收起账户摘要' }))
+    expect(screen.queryByRole('region', { name: '实时行情摘要' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '展开账户摘要' }))
+    expect(screen.getByRole('region', { name: '实时行情摘要' })).toBeVisible()
+  })
+})

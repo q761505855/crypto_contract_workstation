@@ -189,8 +189,10 @@ test('prepares full minute months, automatically uploads and reads cloud without
   await drawer.getByTestId('close-data-manager').click()
   await traceNativeRestoreWrites(page, '.status-footer')
   const controls = page.getByTestId('replay-controls')
-  await controls.getByLabel('图表跳转时间').fill('2025-09-15T12:00')
-  await controls.getByRole('button',{name:'跳转',exact:true}).click()
+  await controls.getByRole('button',{name:'时间定位',exact:true}).click()
+  const timeDialog = page.getByRole('dialog',{name:'图表时间定位',exact:true})
+  await timeDialog.getByLabel('图表跳转时间').fill('2025-09-15T12:00')
+  await timeDialog.getByRole('button',{name:'跳转',exact:true}).click()
   try {
     // Cold cloud reads persist both complete minute series in native IndexedDB.
     await expect(page.locator('.status-footer')).toContainText('图表已跳转到',{timeout:60_000})
@@ -214,7 +216,10 @@ test('prepares full minute months, automatically uploads and reads cloud without
   await expect(controls.getByText(/起点：/)).toContainText('2025/9/15 12:00')
   const beforeCreateArchives = archives.requests.length
   const beforeCreateRest = restRequests.length
-  await controls.getByLabel('回放结束时间').fill('2025-09-15T12:10')
+  await controls.getByRole('button',{name:'回放设置',exact:true}).click()
+  const replayDialog = page.getByRole('dialog',{name:'回放会话设置',exact:true})
+  await replayDialog.getByLabel('回放结束时间').fill('2025-09-15T12:10')
+  await replayDialog.getByRole('button',{name:'应用设置',exact:true}).click()
   await controls.getByRole('button',{name:'创建回放',exact:true}).click()
   await expect(controls).toContainText('1/3',{timeout:30_000})
   expect(archives.requests.length).toBe(beforeCreateArchives)

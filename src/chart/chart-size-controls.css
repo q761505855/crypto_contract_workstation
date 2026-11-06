@@ -1,0 +1,55 @@
+.chart-height-handle {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 12;
+  display: grid;
+  height: 16px;
+  place-items: center;
+  cursor: ns-resize;
+  touch-action: none;
+  background: #111c2bd9;
+  border-top: 1px solid #304052;
+}
+.chart-height-handle span { width: 52px; height: 3px; border-radius: 3px; background: #6f849c; }
+.chart-height-handle:hover span, .chart-height-handle:focus-visible span { background: #65c9d0; }
+.chart-height-handle:focus-visible { outline: 2px solid #65c9d0; outline-offset: -2px; }
+.chart-size-backdrop {
+  position: fixed;
+  inset: 0;
+  top: var(--workspace-viewport-top, 0px);
+  bottom: auto;
+  height: var(--workspace-viewport-height, 100dvh);
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: #030912a6;
+  padding: 24px;
+}
+.chart-size-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(480px, 100%);
+  max-height: calc(var(--workspace-viewport-height, 100dvh) - 48px);
+  color: #e3eaf2;
+  background: #142033;
+  border: 1px solid #34465d;
+  border-radius: 14px;
+  box-shadow: 0 20px 70px #0008;
+  overflow: hidden;
+}
+.chart-size-dialog header, .chart-size-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; flex-shrink: 0; }
+.chart-size-dialog header { border-bottom: 1px solid #34465d; }
+.chart-size-dialog footer { justify-content: flex-end; border-top: 1px solid #34465d; }
+.chart-size-dialog button { min-height: 40px; border: 1px solid #405672; border-radius: 8px; padding: 7px 14px; color: #edf6ff; background: #23374f; cursor: pointer; }
+.chart-size-dialog header button { min-width: 44px; font-size: 22px; }
+.chart-size-fields { overflow: auto; overscroll-behavior: contain; padding: 20px; }
+.chart-size-fields label { display: block; margin-bottom: 20px; }
+.chart-size-fields label span { display: flex; justify-content: space-between; gap: 16px; }
+.chart-size-fields output { color: #80d4d8; white-space: nowrap; }
+.chart-size-fields input[type="range"] { display: block; width: 100%; min-height: 44px; padding: 0; accent-color: #53bdc7; cursor: pointer; }
+.chart-size-fields p { color: #a5b4c6; font-size: 13px; line-height: 1.6; }
+@media (max-width: 767px) {
+  .chart-height-handle { height: 22px; }
+  .chart-size-backdrop { align-items: end; padding: 0; }
+  .chart-size-dialog { width: 100%; max-height: min(85dvh, calc(var(--workspace-viewport-height, 100dvh) - 12px)); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+}

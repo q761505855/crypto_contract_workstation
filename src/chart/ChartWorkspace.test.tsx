@@ -1,5 +1,6 @@
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -42,11 +43,117 @@ const indicatorPreferences: ChartIndicatorPreferences = {
 }
 
 afterEach(() => {
+  cleanup()
   localStorage.clear()
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 describe('ChartWorkspace', () => {
+  function sizingAdapter(): ChartAdapterPort {
+    let height = 160
+    return {
+      mount: () => {},
+      getPeriod: () => ({ multiplier: 15, timespan: 'minute', text: '15m' }),
+      getSymbol: () => ({ ticker: 'BTCUSDT' }),
+      reloadData: async () => {},
+      setPeriod: () => {}, setSymbol: () => {}, setTheme: () => {}, setTimezone: () => {}, setSimulationOverlays: () => {},
+      getIndicatorPaneSizes: () => [{ id: 'rsi', label: 'RSI', height }],
+      setIndicatorPaneHeight: (_id, next) => { height = next },
+      getIndicatorPreferences: () => ({ ...indicatorPreferences, sub: [{ ...indicatorPreferences.sub[0], height }] }),
+    }
+  }
+
+  it('uses the newly resized core viewport when restoring or compressing indicator panes', () => {
+    let notifyResize = () => {}
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { notifyResize = callback }
+      observe() {}
+      disconnect() {}
+    })
+    let hostHeight = 321
+    let coreHeight = 321
+    let displayedPaneHeight = 0
+    const adapter: ChartAdapterPort = {
+      ...sizingAdapter(),
+      resize: () => { coreHeight = hostHeight },
+      layoutSubPanes: () => {
+        displayedPaneHeight = coreHeight >= 600 ? 195 : 60
+        return displayedPaneHeight
+      },
+    }
+    render(<ChartWorkspace createAdapter={() => adapter} />)
+    expect(displayedPaneHeight).toBe(60)
+    hostHeight = 622
+    act(() => notifyResize())
+    expect(displayedPaneHeight).toBe(195)
+    hostHeight = 321
+    act(() => notifyResize())
+    expect(displayedPaneHeight).toBe(60)
+  })
+
+  it('changes chart and indicator heights through accessible sliders and preserves complete indicator preferences', () => {
+    const adapter = sizingAdapter()
+    const changeHeight = vi.fn()
+    render(<ChartWorkspace createAdapter={() => adapter} layoutSettingsOpen chartHeight={600} onChartHeightChange={changeHeight} />)
+    fireEvent.change(screen.getByRole('slider', { name: '图表区域高度' }), { target: { value: '720' } })
+    expect(changeHeight).toHaveBeenCalledWith(720)
+    fireEvent.click(screen.getByRole('button', { name: '自动适配' }))
+    expect(changeHeight).toHaveBeenLastCalledWith(null)
+    fireEvent.change(screen.getByRole('slider', { name: 'RSI 高度' }), { target: { value: '240' } })
+    expect(screen.getByText('240 px')).toBeVisible()
+    expect(JSON.parse(localStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual({ ...indicatorPreferences, sub: [{ ...indicatorPreferences.sub[0], height: 240 }] })
+  })
+
+  it('restores the opener focus when height settings close with Escape or the close button', () => {
+    const adapter = sizingAdapter()
+    const close = vi.fn()
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const { rerender } = render(<ChartWorkspace createAdapter={() => adapter} layoutSettingsOpen onCloseLayoutSettings={close} />)
+    expect(screen.getByRole('button', { name: '关闭图表尺寸设置' })).toHaveFocus()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(close).toHaveBeenCalledOnce()
+    rerender(<ChartWorkspace createAdapter={() => adapter} layoutSettingsOpen={false} onCloseLayoutSettings={close} />)
+    expect(opener).toHaveFocus()
+    opener.focus()
+    rerender(<ChartWorkspace createAdapter={() => adapter} layoutSettingsOpen onCloseLayoutSettings={close} />)
+    fireEvent.click(screen.getByRole('button', { name: '关闭图表尺寸设置' }))
+    expect(close).toHaveBeenCalledTimes(2)
+    rerender(<ChartWorkspace createAdapter={() => adapter} layoutSettingsOpen={false} />)
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
+
+  it('resizes with pointer capture and keyboard while clamping chart height', () => {
+    const changeHeight = vi.fn()
+    render(<ChartWorkspace createAdapter={sizingAdapter} chartHeight={600} onChartHeightChange={changeHeight} />)
+    const handle = screen.getByRole('separator', { name: '图表高度' })
+    const capture = vi.fn()
+    const release = vi.fn()
+    handle.setPointerCapture = capture
+    handle.releasePointerCapture = release
+    handle.hasPointerCapture = () => true
+    const pointer = (type: string, clientY: number) => {
+      const event = new Event(type, { bubbles: true })
+      Object.assign(event, { pointerId: 7, clientY, button: 0 })
+      fireEvent(handle, event)
+    }
+    pointer('pointerdown', 200)
+    pointer('pointermove', 300)
+    expect(capture).toHaveBeenCalledWith(7)
+    expect(changeHeight).toHaveBeenCalledWith(700)
+    pointer('pointerup', 300)
+    expect(release).toHaveBeenCalledWith(7)
+    fireEvent.keyDown(handle, { key: 'ArrowUp' })
+    expect(changeHeight).toHaveBeenLastCalledWith(580)
+    fireEvent.keyDown(handle, { key: 'End' })
+    expect(changeHeight).toHaveBeenLastCalledWith(1600)
+    fireEvent.keyDown(handle, { key: 'Home' })
+    expect(changeHeight).toHaveBeenLastCalledWith(280)
+  })
+
   it('mounts one adapter into a stable chart host', async () => {
     const adapter: ChartAdapterPort = {
       mount: vi.fn(),

@@ -6,6 +6,7 @@ import type {
 } from '../replay/models'
 import { DEFAULT_TRADING_CONFIG } from '../replay/models'
 import type { ReplayController } from '../replay/useReplayController'
+import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
 
 interface ReplayControlsProps {
@@ -39,6 +40,8 @@ export function ReplayControls({
   onJumpToTime,
   onLocateLatest,
 }: ReplayControlsProps) {
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [actionsOpen, setActionsOpen] = useState(false)
   const [toText, setToText] = useState('')
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [initialBalance, setInitialBalance] = useState(
@@ -73,24 +76,27 @@ export function ReplayControls({
     if (replay.session === null) setToText('')
   }, [replay.session])
 
+  function createSession(): void {
+    if (chartStartTime === null) return
+    void replay.createSession({
+      symbol: selection.symbol, period: selection.period, startTime: chartStartTime,
+      ...(toText.length === 0 ? {} : { endTime: new Date(toText).getTime() }),
+      tradingConfig: { initialBalance, leverage: Number(leverage), feeRate, slippageRate, maintenanceMarginRate, liquidationFeeRate },
+    })
+    setSettingsOpen(false)
+  }
+
   if (replay.session === null) {
-    return (
-      <section className="replay-controls replay-setup" data-testid="replay-controls">
-        <TimeJumpControl
-          disabled={replay.busy}
-          onJump={onJumpToTime}
-          onLocateLatest={onLocateLatest}
-        />
-        <span>
-          创建回放：{selection.symbol.ticker} · {selection.period.text}
-        </span>
-        <span className="replay-start-time">
-          起点：
-          {chartStartTime === null
-            ? '等待图表 K 线'
-            : displayTime(chartStartTime)}
-        </span>
-        <label>
+    return <section className="replay-controls replay-setup" data-testid="replay-controls">
+      <TimeJumpControl compact disabled={replay.busy} onJump={onJumpToTime} onLocateLatest={onLocateLatest} />
+      <span className="replay-start-time">起点：{chartStartTime === null ? '等待图表 K 线' : displayTime(chartStartTime)}</span>
+      <button type="button" onClick={() => setSettingsOpen(true)}>回放设置</button>
+      <button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
+      {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
+      {replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
+      <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
+        <p className="muted-text">{selection.symbol.ticker} · {selection.period.text} · 起点沿用当前图表视口</p>
+        <label className="panel-field">
           结束（可选）
           <input
             aria-label="回放结束时间"
@@ -99,32 +105,7 @@ export function ReplayControls({
             value={toText}
           />
         </label>
-        <button
-          disabled={replay.busy || chartStartTime === null}
-          onClick={() => {
-            if (chartStartTime === null) return
-            void replay.createSession({
-              symbol: selection.symbol,
-              period: selection.period,
-              startTime: chartStartTime,
-              ...(toText.length === 0
-                ? {}
-                : { endTime: new Date(toText).getTime() }),
-              tradingConfig: {
-                initialBalance,
-                leverage: Number(leverage),
-                feeRate,
-                slippageRate,
-                maintenanceMarginRate,
-                liquidationFeeRate,
-              },
-            })
-          }}
-          type="button"
-        >
-          {replay.busy ? '准备中…' : '创建回放'}
-        </button>
-        <label>
+        <label className="panel-field">
           初始资金
           <input
             aria-label="初始资金"
@@ -135,7 +116,7 @@ export function ReplayControls({
             value={initialBalance}
           />
         </label>
-        <label>
+        <label className="panel-field">
           杠杆
           <input
             aria-label="杠杆"
@@ -149,7 +130,7 @@ export function ReplayControls({
         <details className="replay-advanced">
           <summary>交易参数</summary>
           <div>
-            <label>
+            <label className="panel-field">
               手续费率
               <input
                 aria-label="手续费率"
@@ -160,7 +141,7 @@ export function ReplayControls({
                 value={feeRate}
               />
             </label>
-            <label>
+            <label className="panel-field">
               滑点率
               <input
                 aria-label="滑点率"
@@ -171,7 +152,7 @@ export function ReplayControls({
                 value={slippageRate}
               />
             </label>
-            <label>
+            <label className="panel-field">
               维持保证金率
               <input
                 aria-label="维持保证金率"
@@ -184,7 +165,7 @@ export function ReplayControls({
                 value={maintenanceMarginRate}
               />
             </label>
-            <label>
+            <label className="panel-field">
               强平费用率
               <input
                 aria-label="强平费用率"
@@ -214,29 +195,23 @@ export function ReplayControls({
             </select>
             <button
               disabled={replay.busy || selectedSessionId.length === 0}
-              onClick={() => void replay.loadSession(selectedSessionId)}
+              onClick={() => { void replay.loadSession(selectedSessionId); setSettingsOpen(false) }}
               type="button"
             >
               加载会话
             </button>
           </>
         )}
-        {replay.busy && replay.preparationStatus && (
-          <span className="replay-preparation" role="status">{replay.preparationStatus}</span>
-        )}
-        {replay.error.length > 0 && (
-          <span className="replay-error" role="alert">
-            {replay.error}
-          </span>
-        )}
-      </section>
-    )
+
+        <div className="button-row"><button type="button" onClick={() => setSettingsOpen(false)}>应用设置</button><button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>开始历史回放</button></div>
+      </WorkspaceDialog>
+    </section>
   }
 
   const session = replay.session
   return (
     <section className="replay-controls" data-testid="replay-controls">
-      <TimeJumpControl
+      <TimeJumpControl compact
         disabled={interactionLocked}
         onJump={onJumpToTime}
         onLocateLatest={onLocateLatest}
@@ -284,6 +259,10 @@ export function ReplayControls({
           </option>
         ))}
       </select>
+      <button type="button" className="replay-settings-actions" onClick={() => setActionsOpen(true)}>回放设置</button>
+      <WorkspaceDialog open={actionsOpen} title="回放会话操作" onClose={() => setActionsOpen(false)}>
+        <p className="muted-text">{session.symbol.ticker} · 步进 {session.period.text} · {displayTime(session.startTime)} 至 {displayTime(session.endTime)}</p>
+        <div className="workspace-session-actions">
       <button
         disabled={interactionLocked || session.status === 'completed'}
         onClick={() => void replay.jumpToEnd()}
@@ -305,9 +284,12 @@ export function ReplayControls({
       >
         重置
       </button>
-      <button onClick={() => void replay.endSession()} type="button">
+      <button onClick={() => { void replay.endSession(); setActionsOpen(false) }} type="button">
         结束会话
       </button>
+        </div>
+        <button type="button" className="dialog-done" onClick={() => setActionsOpen(false)}>完成</button>
+      </WorkspaceDialog>
       {replay.busy && replay.preparationStatus && (
         <span className="replay-preparation" role="status">{replay.preparationStatus}</span>
       )}

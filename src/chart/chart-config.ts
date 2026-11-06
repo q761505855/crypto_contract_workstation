@@ -49,7 +49,7 @@ export function createChartOptions(
   return {
     container,
     datafeed,
-    drawingBarVisible: true,
+    drawingBarVisible: !(typeof window !== 'undefined' && window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches),
     styles: {
       candle: { tooltip: { offsetLeft: 24 } },
       indicator: { tooltip: { offsetLeft: 24 } },
