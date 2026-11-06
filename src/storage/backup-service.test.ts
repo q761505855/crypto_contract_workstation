@@ -149,6 +149,40 @@ function indicatorPreferences(): ChartIndicatorPreferences {
 }
 
 describe('WorkstationBackupService', () => {
+  it('round-trips candle types in config and full archives, preserving legacy absence', async () => {
+    const sourceStorage = new MemoryPreferences()
+    sourceStorage.setItem('chart.candleType.v1', JSON.stringify('heikin_ashi'))
+    const source = new WorkstationBackupService(`ha-source-${crypto.randomUUID()}`, sourceStorage)
+    for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
+      expect(archive.data.preferences).toHaveProperty('candleType', 'heikin_ashi')
+      const targetStorage = new MemoryPreferences()
+      const target = new WorkstationBackupService(`ha-target-${crypto.randomUUID()}`, targetStorage)
+      await target.import(archive)
+      expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
+      const legacy = structuredClone(archive)
+      delete (legacy.data.preferences as unknown as Record<string, unknown>).candleType
+      await target.import(legacy)
+      expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+      Object.assign(archive.data.preferences!, { candleType: 'candle_solid' })
+      await target.import(archive)
+      expect(targetStorage.getItem('chart.candleType.v1')).toBe('"candle_solid"')
+    }
+  })
+
+  it.each([null, '', false, 0, [], {}, 'unknown'])('rejects invalid candle types before any writes (%j)', async candleType => {
+    const storage = new MemoryPreferences()
+    storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
+    const databaseName = `ha-invalid-${crypto.randomUUID()}`
+    const service = new WorkstationBackupService(databaseName, storage)
+    const archive = await service.exportAll()
+    archive.data.symbols = [symbol()]
+    archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    Object.assign(archive.data.preferences!, { candleType })
+    await expect(service.import(archive)).rejects.toThrow(/candleType/)
+    expect(storage.getItem('marketData.binanceBaseUrl')).toBe('https://original.test')
+    expect(storage.getItem('chart.candleType.v1')).toBeNull()
+    expect(await new IndexedDbMarketDataStore(databaseName).getSymbols()).toEqual([])
+  })
   it('round-trips workspace layout in config and full archives without replacing missing legacy layouts', async () => {
     const workspace = {
       schemaVersion: 1,

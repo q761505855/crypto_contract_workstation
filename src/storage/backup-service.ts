@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js'
+import { readCandleType, saveCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
 import { SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
 import {
@@ -55,6 +56,7 @@ export type BackupKind =
   | 'all'
 
 export interface BackupPreferences {
+  candleType?: ChartCandleType
   binanceRestBaseUrl: string
   favoriteSymbols: string[]
   selectedSymbol?: SymbolInfo
@@ -194,6 +196,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
   return {
     binanceRestBaseUrl,
     favoriteSymbols,
+    ...(item.candleType === undefined ? {} : { candleType: validateCandleType(item.candleType) }),
     ...(item.pinnedPeriods === undefined ? {} : { pinnedPeriods: validatePinnedPeriods(item.pinnedPeriods) }),
     ...(item.workspace === undefined ? {} : { workspace: validateWorkspacePreferences(item.workspace) }),
     ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
@@ -790,6 +793,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
     favoriteSymbols,
     pinnedPeriods: readPinnedPeriods(storage),
+    candleType: readCandleType(storage),
     workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
     ...(chartIndicators === null ? {} : { chartIndicators }),
@@ -966,6 +970,9 @@ export class WorkstationBackupService {
       }
       if (envelope.data.preferences.workspace !== undefined) {
         saveWorkspacePreferences(envelope.data.preferences.workspace, this.storage)
+      }
+      if (envelope.data.preferences.candleType !== undefined) {
+        saveCandleType(envelope.data.preferences.candleType, this.storage)
       }
     }
     return {

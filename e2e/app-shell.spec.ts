@@ -81,6 +81,99 @@ test.beforeEach(async ({ context }) => {
   )
 })
 
+test('selects Heikin Ashi from settings, retains real prices and restores the selection from a config archive', async ({ page }) => {
+  test.setTimeout(120_000)
+  await mockBinance(page, true)
+  await installViewportProbe(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const selectType = async (name: string) => {
+    await page.locator('.klinecharts-pro-period-bar').getByText('设置', { exact: true }).locator('..').click()
+    const settings = page.locator('.klinecharts-pro-setting-modal-content')
+    await settings.locator('.klinecharts-pro-select').first().click()
+    await settings.getByText(name, { exact: true }).last().click()
+    await page.locator('.klinecharts-pro-modal .close-icon').click()
+  }
+  await selectType('平均 K 线（Heikin Ashi）')
+  const note = page.getByRole('note').filter({ hasText: '平均 K 线' })
+  await expect(note).toBeVisible()
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('chart.candleType.v1'))).toBe('"heikin_ashi"')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect(note).toBeVisible()
+  await page.getByTestId('open-data-manager').click()
+  const panel = page.getByTestId('backup-sync-panel')
+  const download = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const path = await (await download).path()
+  expect(path).not.toBeNull()
+  await page.getByTestId('close-data-manager').click()
+  await selectType('全实心')
+  await expect(note).toHaveCount(0)
+  await page.getByTestId('open-data-manager').click()
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles(path!)
+  await expect(panel.getByTestId('backup-status')).toContainText('刷新')
+  // An open ordinary chart must not overwrite the imported HA preference.
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect(note).toBeVisible()
+  await page.screenshot({ path: test.info().outputPath('heikin-ashi.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(note).toBeVisible()
+  await page.locator('.klinecharts-pro-period-bar').getByText('设置', { exact: true }).locator('..').click()
+  const typeSelect = page.locator('.klinecharts-pro-setting-modal-content .klinecharts-pro-select').first()
+  await expect(typeSelect).toContainText('平均 K 线（Heikin Ashi）')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+  await page.screenshot({ path: test.info().outputPath('heikin-ashi-settings-mobile.png'), fullPage: true })
+  await page.locator('.klinecharts-pro-modal').getByText('恢复默认', { exact: true }).click()
+  await expect(note).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('chart.candleType.v1'))).toBe('"candle_solid"')
+
+  const result = await page.evaluate(async () => {
+    type Row = { timestamp: number; open: number; high: number; low: number; close: number; volume: number }
+    const adapter = (window as unknown as { __viewportTestAdapter: {
+      chart: { cancelHistoryRequests(): void }
+      coreChart: {
+        applyNewData(rows: Row[], more: boolean): void
+        updateData(row: Row): void
+        getDataList(): Row[]
+        getChartStore(): {
+          getHeikinAshiData(index: number): Row
+          addData(rows: Row[], type: string, more: boolean): Promise<void>
+        }
+      }
+    } }).__viewportTestAdapter
+    adapter.chart.cancelHistoryRequests()
+    const core = adapter.coreChart
+    const store = core.getChartStore()
+    const raw = [
+      { timestamp: 60000, open: 100, high: 110, low: 98, close: 108, volume: 5 },
+      { timestamp: 120000, open: 120, high: 130, low: 118, close: 128, volume: 8 },
+      { timestamp: 180000, open: 90, high: 95, low: 80, close: 85, volume: 3 },
+    ]
+    await store.addData(structuredClone(raw), 'init', false)
+    const initial = structuredClone(store.getHeikinAshiData(2))
+    core.updateData({ ...raw[2], close: 89 })
+    const updated = structuredClone(store.getHeikinAshiData(2))
+    core.updateData({ ...raw[2], timestamp: 240000, open: 90, high: 100, close: 96 })
+    const appended = structuredClone(store.getHeikinAshiData(3))
+    await store.addData([{ timestamp: 0, open: 50, high: 60, low: 40, close: 50, volume: 1 }], 'forward', false)
+    const prepended = structuredClone(store.getHeikinAshiData(1))
+    const realClose = core.getDataList().at(-1)!.close
+    await store.addData([{ ...raw[0], open: 10, high: 14, low: 8, close: 12 }], 'init', false)
+    const reset = structuredClone(store.getHeikinAshiData(0))
+    return { initial, updated, appended, prepended, realClose, reset, raw }
+  })
+  expect(result.initial).toMatchObject({ open: 114, high: 114, low: 80, close: 87.5 })
+  expect(result.updated).toMatchObject({ open: 114, high: 114, close: 88.5 })
+  expect(result.appended).toMatchObject({ open: 101.25, high: 101.25, close: 91.5 })
+  expect(result.prepended).toMatchObject({ open: 50, high: 110, low: 50, close: 104 })
+  expect(result.realClose).toBe(96)
+  expect(result.reset).toMatchObject({ open: 11, high: 14, low: 8, close: 11 })
+  expect(result.raw[2].close).toBe(85)
+})
+
 test('organizes the workspace, hides every extra panel and restores chart sizing on mobile', async ({ page }) => {
   test.setTimeout(120_000)
   await page.setViewportSize({ width: 1440, height: 1000 })

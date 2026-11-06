@@ -66,6 +66,7 @@ function candle(openTime: number, close = '100'): MarketCandle {
 function backup(): BackupEnvelope {
   // Required ensures newly introduced configuration fields need archive coverage.
   const preferences: Required<BackupPreferences> = {
+    candleType: 'heikin_ashi',
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     pinnedPeriods: ['1m', '1d'],
@@ -259,6 +260,13 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual(complete)
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(complete.workspace)
 
+    sourceStorage.setItem('chart.candleType.v1', '"candle_solid"')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(targetStorage.getItem('chart.candleType.v1')).toBe('"candle_solid"')
+    sourceStorage.setItem('chart.candleType.v1', '"heikin_ashi"')
+
     const changed = {
       schemaVersion: 1,
       panels: { account: false, order: false, dock: false, replay: false, status: false },
@@ -282,11 +290,18 @@ describe('GitHubSyncService', () => {
     }
     const legacy = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     delete legacy.workspace
+    delete legacy.candleType
     await rewrite(legacy)
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
+    expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
 
     const before = (await targetBackups.exportAll()).data
+    for (const candleType of [null, '', false, 0, [], {}, 'unknown']) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', candleType })
+      await expect(target.pull(client(remote))).rejects.toThrow(/candleType/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const workspace of [null, {}, { ...changed, chartHeight: 0 }, { ...changed, panels: { ...changed.panels, status: 'false' } }]) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', workspace })
       await expect(target.pull(client(remote))).rejects.toThrow(/workspace/)

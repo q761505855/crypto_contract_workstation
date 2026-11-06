@@ -50,6 +50,18 @@ afterEach(() => {
 })
 
 describe('ChartWorkspace', () => {
+  it('saves changed candle types without overwriting an imported preference from a stale chart', () => {
+    vi.useFakeTimers()
+    let type: 'candle_solid' | 'heikin_ashi' = 'candle_solid'
+    const adapter = { ...sizingAdapter(), getCandleType: () => type }
+    render(<ChartWorkspace createAdapter={() => adapter} />)
+    act(() => { type = 'heikin_ashi'; vi.advanceTimersByTime(100) })
+    expect(localStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+    expect(screen.getByRole('note')).toHaveTextContent('真实行情')
+    localStorage.setItem('chart.candleType.v1', '"candle_stroke"')
+    act(() => { vi.advanceTimersByTime(1000); window.dispatchEvent(new Event('beforeunload')) })
+    expect(localStorage.getItem('chart.candleType.v1')).toBe('"candle_stroke"')
+  })
   function sizingAdapter(): ChartAdapterPort {
     let height = 160
     return {

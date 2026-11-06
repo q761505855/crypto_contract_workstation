@@ -18,6 +18,7 @@
 | 指标选择、参数、样式、副图布局（含 KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
+| 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
 | 工作区面板展开／收起、桌面／手机图表高度、底部区高度 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |
 
@@ -72,6 +73,10 @@ Wave 配色升级：A/B/C 共享绿／红的零轴方向含义，仅有轻微色
 Pivots 配置保持 `PIVOTS` 名称，沿用 calcParams 前 30 项以兼容旧版开关与存档；旧版每线颜色保留在隐藏位置，绘图改用新增的 P/R/S 分组颜色（索引 30–32）。索引 33 是“当前周期显示上期线”布尔开关，34–36 是上期 P/R/S 颜色。旧 30 项存档经统一校验后迁移为 37 项：P/R1/S1 作为三组颜色来源，旧默认橙色分别使用当前 P 橙、R 红、S 绿，恢复时缺少的上期线开关及三种颜色保留目标浏览器已有值，无已有设置时才使用 false 与默认颜色；其余字段和各级开关原样保留，不修改输入对象。37 项的新开关、分组颜色、原有类型、周期、线宽及各级开关全部严格校验；不接受部分新增字段、null、数字代替布尔值或非法颜色。配置／完整 JSON 与 GitHub 应用配置包含完整 37 项；false 必须原样恢复，缺少 chartIndicators 时仍保留本地设置，恢复后刷新生效。不新增顶层字段或存储键。
 
 ## 验收与回归
+
+蜡烛图类型使用可选字段 `candleType`，支持 `candle_solid`、`candle_stroke`、`candle_up_stroke`、`candle_down_stroke`、`ohlc`、`area`、`heikin_ashi`，默认全实心。选择经统一入口保存；配置／全部 JSON 导出及 GitHub“应用配置”的比较、上传与拉取均包含该字段。保持顶层 Schema 1；旧本地／云端存档缺少字段时保留目标已有类型，无本地设置时使用默认值。显式普通类型会恢复普通图，`null`、空字符串、布尔值、数字、数组、对象及未知枚举均在任何数据写入前拒绝，本地损坏值则回退默认。导入／云端恢复后按提示刷新，未操作的旧图表不会反写刚恢复的类型。
+
+Heikin Ashi 仅影响蜡烛、可见高低标记和价格轴范围，不改原始行情、提示框、指标、最新价及模拟成交价格。首根 HA 开盘为首根原始开收均值，其余使用上一根 HA 开收均值；仅从当前已加载且回放可见的历史向前递推。实时末根更新重新计算该根，新根延续前值；向左补历史及切换产品、周期或回放重置后重建缓存。新增历史会改变起算点，靠近历史左边界的 HA 值可能随之变化；不读取未来行情，不将合成行情写入业务存档。
 
 每次配置修改至少验证：
 

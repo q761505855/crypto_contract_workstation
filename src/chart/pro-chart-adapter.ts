@@ -30,6 +30,7 @@ import { registerTtmSqueezeIndicator } from './ttm-squeeze'
 import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { readChartHistory } from '../market-data/indicator-history'
+import { validateCandleType, type ChartCandleType } from './candle-preferences'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -77,6 +78,7 @@ export interface ChartAdapterPort {
   setIndicatorInfoVisible?(visible: boolean): void
   setTheme(theme: string): void
   setTimezone(timezone: string): void
+  getCandleType?(): ChartCandleType
   getIndicatorPreferences?(): ChartIndicatorPreferences
   applyIndicatorPreferences?(preferences: ChartIndicatorPreferences): void
   getRightmostVisibleCandleTime?(): number | null
@@ -259,6 +261,10 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setTimezone(timezone: string): void {
     this.requireChart().setTimezone(timezone)
+  }
+
+  getCandleType(): ChartCandleType {
+    return validateCandleType(this.requireCoreChart().getStyles().candle.type)
   }
 
   setSymbol(symbol: SymbolInfo): void {

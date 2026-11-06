@@ -288,6 +288,7 @@ export class GitHubSyncService {
             selectedSymbol: preferences.selectedSymbol,
             pinnedPeriods: preferences.pinnedPeriods,
             workspace: preferences.workspace,
+            candleType: preferences.candleType,
           }),
           category: 'config',
         },
@@ -595,6 +596,7 @@ export class GitHubSyncService {
           selectedSymbol?: unknown
           pinnedPeriods?: unknown
           workspace?: unknown
+          candleType?: unknown
         }
         if (
           value.schemaVersion !== 1 ||
@@ -603,6 +605,9 @@ export class GitHubSyncService {
           throw new Error(`${entry.path} 格式无效`)
         }
         preferences.binanceRestBaseUrl = value.binanceRestBaseUrl
+        if (value.candleType !== undefined) {
+          preferences.candleType = value.candleType as BackupPreferences['candleType']
+        }
         if (value.workspace !== undefined) {
           preferences.workspace = value.workspace as BackupPreferences['workspace']
         }
