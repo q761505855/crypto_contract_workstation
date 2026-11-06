@@ -1013,7 +1013,7 @@ test.describe('mobile workstation', () => {
     await expect(panes).toHaveCount(5)
     await expect.poll(async () => (await heights())[0]).toBeGreaterThan(300)
     const before = await heights()
-    expect(before.slice(1, -1).every(height => height >= 60 && height <= 85)).toBe(true)
+    expect(before.slice(2).every(height => height >= 60 && height <= 85)).toBe(true)
     const axis = page.locator('[k-line-chart-id] > div > div').first().locator(':scope > div').nth(1)
     expect((await axis.boundingBox())!.width).toBeLessThanOrEqual(64)
     const toggle = page.getByRole('button', { name: '显示主图指标信息', exact: true })
@@ -1026,16 +1026,16 @@ test.describe('mobile workstation', () => {
     await sizes.getByLabel('图表区域高度', { exact: true }).fill('1000')
     await sizes.getByRole('button', { name: '关闭图表尺寸设置' }).click()
     await expect.poll(async () => (await heights())[0]).toBeGreaterThan(before[0] + 200)
-    expect((await heights()).slice(1, -1)).toEqual(before.slice(1, -1))
+    expect((await heights()).slice(2)).toEqual(before.slice(2))
     const handle = page.getByRole('separator', { name: '图表高度', exact: true })
     await handle.focus()
     await handle.press('ArrowDown')
     await expect(page.getByRole('region', { name: '行情图表' })).toHaveCSS('height', '1020px')
-    expect((await heights()).slice(1, -1)).toEqual(before.slice(1, -1))
+    expect((await heights()).slice(2)).toEqual(before.slice(2))
     await page.reload()
     await expectCanvasContent(page)
     await expect(page.getByRole('region', { name: '行情图表' })).toHaveCSS('height', '1020px')
-    expect((await heights()).slice(1, -1)).toEqual(before.slice(1, -1))
+    expect((await heights()).slice(2)).toEqual(before.slice(2))
     expect(await page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!).sub.map((pane: { height: number }) => pane.height))).toEqual([100, 100, 100])
   })
 
@@ -1062,7 +1062,7 @@ test.describe('mobile workstation', () => {
     await expectCanvasContent(page)
     await expect.poll(async () => (await heights())[0]).toBeGreaterThanOrEqual(180)
     expect((await host.boundingBox())!.height).toBeLessThan(844)
-    expect((await heights()).slice(1, -1).every(height => height > 0)).toBe(true)
+    expect((await heights()).slice(2).every(height => height > 0)).toBe(true)
     await page.clock.runFor(500)
     expect(await savedHeights()).toEqual([80, 280])
     await page.screenshot({ path: 'test-results/mobile-fixed-chart.png', fullPage: true })
@@ -1074,7 +1074,7 @@ test.describe('mobile workstation', () => {
     await expect(panes).toHaveCount(5)
     expect((await host.boundingBox())!.height).toBe(beforeAdd)
     expect((await heights())[0]).toBeGreaterThanOrEqual(180)
-    expect((await heights()).slice(1, -1).every(height => height > 0)).toBe(true)
+    expect((await heights()).slice(2).every(height => height > 0)).toBe(true)
     await revealHeaderActions(page)
     await page.getByRole('button', { name: '图表尺寸', exact: true }).tap()
     const sizes = page.getByRole('dialog', { name: '图表尺寸设置' })
@@ -2227,7 +2227,7 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
     }).chartAxisTestLabels.get(canvas)?.filter(({ text }) => /^-?[\d,]+\.\d+$/.test(text))
       .map(({ text, y }) => ({ value: Number(text.replaceAll(',', '')), y })) ?? [],
   )
-  const timeAxis = page.locator('[k-line-chart-id] > div > div:last-child canvas').first()
+  const timeAxis = page.locator('[data-pane-id="x_axis_pane"] canvas').first()
   const readTimeTicks = () => timeAxis.evaluate((canvas) =>
     (window as unknown as {
       chartAxisTestLabels: Map<HTMLCanvasElement, { text: string; x: number; y: number }[]>
@@ -2383,7 +2383,7 @@ test('fits candles with balanced padding and toggles indicator information witho
   await page.screenshot({ path: test.info().outputPath('main-indicator-hidden-mobile.png') })
 })
 
-test('keeps price mode buttons at the candle axis bottom above every subpane on desktop and mobile', async ({ page }) => {
+test('keeps the price toggle beside the currency at the top and the time axis below candles on desktop and mobile', async ({ page }) => {
   await mockBinance(page, true)
   await mockGitHub(page, true)
   await installViewportProbe(page)
@@ -2399,13 +2399,21 @@ test('keeps price mode buttons at the candle axis bottom above every subpane on 
     await expect.poll(async () => {
       const controls = (await mode.boundingBox())!
       const priceAxis = (await axis.boundingBox())!
-      return Math.round(priceAxis.y + priceAxis.height - controls.y - controls.height)
-    }).toBe(2)
-    const controls = (await mode.boundingBox())!
+      return Math.round(controls.y - priceAxis.y)
+    }).toBe(4)
+    const button = (await mode.getByRole('button').boundingBox())!
+    const unit = (await mode.getByLabel('计价单位').boundingBox())!
     const priceAxis = (await axis.boundingBox())!
-    expect(controls.x).toBeGreaterThanOrEqual(priceAxis.x)
-    expect(controls.x + controls.width).toBeLessThanOrEqual(priceAxis.x + priceAxis.width)
-    if (await panes.count() > 2) expect(controls.y + controls.height).toBeLessThanOrEqual((await panes.nth(1).boundingBox())!.y)
+    expect(button.x).toBeGreaterThanOrEqual(priceAxis.x)
+    expect(button.x + button.width).toBeLessThanOrEqual(priceAxis.x + priceAxis.width)
+    expect(unit.x + unit.width).toBeLessThan(button.x)
+    expect(unit.y + unit.height / 2).toBeCloseTo(button.y + button.height / 2, 0)
+    await expect(mode.getByLabel('计价单位')).toHaveText('USDT')
+    const candle = (await page.locator('[data-pane-id="candle_pane"]').boundingBox())!
+    const time = (await page.locator('[data-pane-id="x_axis_pane"]').boundingBox())!
+    expect(time.y).toBeCloseTo(candle.y + candle.height, 0)
+    expect(time.height).toBeGreaterThan(0)
+    if (await panes.count() > 2) expect((await panes.nth(2).boundingBox())!.y).toBeGreaterThanOrEqual(time.y + time.height)
   }
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
     await page.setViewportSize(viewport)
@@ -2424,10 +2432,12 @@ test('keeps price mode buttons at the candle axis bottom above every subpane on 
     await page.screenshot({ path: test.info().outputPath(`price-mode-main-axis-${viewport.width}.png`), fullPage: true })
   }
   await page.setViewportSize({ width: 390, height: 844 })
+  const originalOrder = await panes.evaluateAll(elements => elements.map(element => element.getAttribute('data-pane-id')))
   const paneId = await page.evaluate(() => (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.createIndicator('RSI', false))
   expect(paneId).toBeTruthy()
   await page.clock.runFor(300)
   await assertPosition()
+  expect(await panes.evaluateAll(elements => elements.map(element => element.getAttribute('data-pane-id')))).toEqual([...originalOrder, paneId])
   await page.evaluate(id => (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.removeIndicator(id!), paneId)
   await page.clock.runFor(300)
   await assertPosition()
@@ -2438,6 +2448,37 @@ test('keeps price mode buttons at the candle axis bottom above every subpane on 
   await page.clock.runFor(300)
   await expect(panes).toHaveCount(2)
   await assertPosition()
+})
+
+test('retains time-axis zoom and subpane crosshair coordinates after moving the time axis', async ({ page }) => {
+  await mockBinance(page, true)
+  await installViewportProbe(page)
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const spacing = () => page.evaluate(() => (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.getBarSpace())
+  const before = await spacing()
+  const time = (await page.locator('[data-pane-id="x_axis_pane"]').boundingBox())!
+  const x = time.x + time.width / 2, y = time.y + time.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x - 100, y, { steps: 6 })
+  await page.mouse.up()
+  await expect.poll(spacing).toBeGreaterThan(before)
+
+  await page.evaluate(() => {
+    const probe = window as unknown as {
+      __viewportTestAdapter: { coreChart: import('klinecharts').Chart }
+      lastAxisCrosshair?: { paneId: string; y: number }
+    }
+    probe.__viewportTestAdapter.coreChart.subscribeAction('onCrosshairChange' as import('klinecharts').ActionType, data => { probe.lastAxisCrosshair = data })
+  })
+  const subpane = page.locator('[k-line-chart-id] > div > div[data-pane-id]').filter({ has: page.locator('canvas') }).nth(2)
+  const id = await subpane.getAttribute('data-pane-id')
+  const sub = (await subpane.boundingBox())!
+  await page.mouse.move(sub.x + 100, sub.y + 50)
+  await expect.poll(() => page.evaluate(() => (window as unknown as { lastAxisCrosshair?: { paneId: string } }).lastAxisCrosshair?.paneId)).toBe(id)
+  expect(await page.evaluate(() => (window as unknown as { lastAxisCrosshair: { y: number } }).lastAxisCrosshair.y)).toBeCloseTo(50, 0)
 })
 
 test('moves the desktop candle plot in manual mode without changing its scale', { tag: '@release' }, async ({ page }) => {

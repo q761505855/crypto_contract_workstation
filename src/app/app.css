@@ -279,12 +279,11 @@ button:disabled {
   position: absolute;
   z-index: 40;
   right: 3px;
-  top: calc(var(--price-axis-bottom, 100%) - 2px);
-  transform: translateY(-100%);
+  top: calc(var(--price-axis-top, 38px) + 4px);
   display: flex;
-  border: 1px solid #303b49;
-  border-radius: 3px;
-  background: #10161f;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
 }
 
 .indicator-info-toggle {
@@ -312,15 +311,26 @@ button:disabled {
   stroke-width: 1.5;
 }
 
+.chart-host .klinecharts-pro-price-unit { display: none !important; }
+.price-axis-unit {
+  padding: 2px 4px;
+  border: 1px solid #303b49;
+  border-radius: 3px;
+  color: #9eaab8;
+  background: #10161f;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+}
 .workspace-shell .price-range-mode button {
   width: 28px;
   height: 28px;
   min-height: 28px;
   padding: 0;
-  border: 0;
-  border-radius: 2px;
+  border: 1px solid #303b49;
+  border-radius: 3px;
   color: #9eaab8;
-  background: transparent;
+  background: #10161f;
   font-size: 11px;
   cursor: pointer;
 }

@@ -1,5 +1,5 @@
 diff --git a/node_modules/klinecharts/dist/index.d.ts b/node_modules/klinecharts/dist/index.d.ts
-index db8d576..3bbf830 100644
+index db8d576..7c2866a 100644
 --- a/node_modules/klinecharts/dist/index.d.ts
 +++ b/node_modules/klinecharts/dist/index.d.ts
 @@ -211,10 +211,12 @@ export interface CandleTooltipCustomCallbackData {
@@ -18,17 +18,18 @@ index db8d576..3bbf830 100644
 @@ -233 +235,2 @@
  export interface CandleStyle {
 +	touchVerticalDrag?: boolean;
-@@ -840,6 +843,8 @@ export interface Chart {
+@@ -840,6 +843,9 @@ export interface Chart {
  	getLocale: () => string;
  	setStyles: (styles: string | DeepPartial<Styles>) => void;
  	getStyles: () => Styles;
++	setXAxisAfterCandle: () => void;
 +	setPriceRangeAuto: (auto: boolean) => void;
 +	getPriceRangeAuto: () => boolean;
  	setCustomApi: (customApi: Partial<CustomApi>) => void;
  	setPriceVolumePrecision: (pricePrecision: number, volumePrecision: number) => void;
  	getPriceVolumePrecision: () => Precision;
 diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
-index 86b1dce..18ba503 100644
+index 86b1dce..f47323c 100644
 --- a/node_modules/klinecharts/dist/index.esm.js
 +++ b/node_modules/klinecharts/dist/index.esm.js
 @@ -179,6 +179,7 @@ var CandleTooltipRectPosition;
@@ -241,7 +242,15 @@ index 86b1dce..18ba503 100644
              crosshairVerticalTextWidth += (crosshairStyles.horizontal.text.paddingLeft +
                  crosshairStyles.horizontal.text.paddingRight +
                  crosshairStyles.horizontal.text.borderSize * 2 +
-@@ -12085,12 +12175,18 @@ var SyntheticEvent = /** @class */ (function () {
+@@ -10760,6 +10850,7 @@ var Pane = /** @class */ (function () {
+             overflow: 'hidden',
+             boxSizing: 'border-box'
+         });
++        this._container.setAttribute('data-pane-id', this._id);
+         if (afterElement !== null) {
+             rootContainer.insertBefore(this._container, afterElement);
+         }
+@@ -12085,12 +12176,18 @@ var SyntheticEvent = /** @class */ (function () {
          {
              var boundTouchMoveWithDownHandler_1 = this._touchMoveHandler.bind(this);
              var boundTouchEndHandler_1 = this._touchEndHandler.bind(this);
@@ -260,7 +269,7 @@ index 86b1dce..18ba503 100644
              this._clearLongTapTimeout();
              this._longTapTimeoutId = setTimeout(this._longTapHandler.bind(this, downEvent), 500 /* Delay.LongTap */);
          }
-@@ -12375,6 +12471,9 @@ var Event = /** @class */ (function () {
+@@ -12375,6 +12472,9 @@ var Event = /** @class */ (function () {
          // 用来记录捏合缩放的尺寸
          this._pinchScale = 1;
          this._mouseDownWidget = null;
@@ -270,7 +279,7 @@ index 86b1dce..18ba503 100644
          this._prevYAxisRange = null;
          this._xAxisStartScaleCoordinate = null;
          this._xAxisStartScaleDistance = 0;
-@@ -12416,12 +12515,32 @@ var Event = /** @class */ (function () {
+@@ -12416,12 +12516,32 @@ var Event = /** @class */ (function () {
          container.addEventListener('keydown', this._boundKeyBoardDownEvent);
      }
      Event.prototype.pinchStartEvent = function () {
@@ -303,7 +312,7 @@ index 86b1dce..18ba503 100644
          if ((pane === null || pane === void 0 ? void 0 : pane.getId()) !== PaneIdConstants.X_AXIS && (widget === null || widget === void 0 ? void 0 : widget.getName()) === WidgetNameConstants.MAIN) {
              var event_1 = this._makeWidgetEvent(e, widget);
              var zoomScale = (scale - this._pinchScale) * 5;
-@@ -12438,13 +12557,30 @@ var Event = /** @class */ (function () {
+@@ -12438,13 +12558,30 @@ var Event = /** @class */ (function () {
          return true;
      };
      Event.prototype.mouseWheelVertEvent = function (e, scale) {
@@ -335,7 +344,7 @@ index 86b1dce..18ba503 100644
          return false;
      };
      Event.prototype.mouseDownEvent = function (e) {
-@@ -12707,6 +12843,14 @@ var Event = /** @class */ (function () {
+@@ -12707,6 +12844,14 @@ var Event = /** @class */ (function () {
      };
      Event.prototype.touchStartEvent = function (e) {
          var _a = this._findWidgetByEvent(e), pane = _a.pane, widget = _a.widget;
@@ -350,7 +359,7 @@ index 86b1dce..18ba503 100644
          if (widget !== null) {
              var event_8 = this._makeWidgetEvent(e, widget);
              var name_7 = widget.getName();
-@@ -12727,6 +12871,13 @@ var Event = /** @class */ (function () {
+@@ -12727,6 +12872,13 @@ var Event = /** @class */ (function () {
                      }
                      this._flingStartTime = new Date().getTime();
                      this._startScrollCoordinate = { x: event_8.x, y: event_8.y };
@@ -364,7 +373,7 @@ index 86b1dce..18ba503 100644
                      chartStore.getTimeScaleStore().startScroll();
                      this._touchZoomed = false;
                      if (this._touchCoordinate !== null) {
-@@ -12758,8 +12909,28 @@ var Event = /** @class */ (function () {
+@@ -12758,8 +12910,28 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchMoveEvent = function (e) {
@@ -394,7 +403,7 @@ index 86b1dce..18ba503 100644
          if (widget !== null) {
              var event_9 = this._makeWidgetEvent(e, widget);
              var name_8 = widget.getName();
-@@ -12778,8 +12949,31 @@ var Event = /** @class */ (function () {
+@@ -12778,8 +12950,31 @@ var Event = /** @class */ (function () {
                          tooltipStore.setCrosshair({ x: event_9.x, y: event_9.y, paneId: pane === null || pane === void 0 ? void 0 : pane.getId() });
                      }
                      else {
@@ -427,7 +436,7 @@ index 86b1dce..18ba503 100644
                              var distance = event_9.x - this._startScrollCoordinate.x;
                              chartStore.getTimeScaleStore().scroll(distance);
                          }
-@@ -12800,8 +12994,15 @@ var Event = /** @class */ (function () {
+@@ -12800,8 +12995,15 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchEndEvent = function (e) {
@@ -444,7 +453,7 @@ index 86b1dce..18ba503 100644
          if (widget !== null) {
              var event_10 = this._makeWidgetEvent(e, widget);
              var name_9 = widget.getName();
-@@ -12935,14 +13136,6 @@ var Event = /** @class */ (function () {
+@@ -12935,14 +13137,6 @@ var Event = /** @class */ (function () {
          }
          var widget = null;
          if (pane !== null) {
@@ -459,7 +468,7 @@ index 86b1dce..18ba503 100644
              if (widget === null) {
                  var yAxisWidget = pane.getYAxisWidget();
                  if (yAxisWidget !== null) {
-@@ -12953,6 +13146,14 @@ var Event = /** @class */ (function () {
+@@ -12953,6 +13147,14 @@ var Event = /** @class */ (function () {
                      }
                  }
              }
@@ -474,10 +483,42 @@ index 86b1dce..18ba503 100644
          }
          return { pane: pane, widget: widget };
      };
-@@ -13427,6 +13628,15 @@ var ChartImp = /** @class */ (function () {
+@@ -13088,6 +13290,7 @@ var ChartImp = /** @class */ (function () {
+             default: {
+                 for (var i = this._drawPanes.length - 1; i > -1; i--) {
+                     var p = this._drawPanes[i];
++                    if (this._xAxisAfterCandle && p === this._xAxisPane) continue;
+                     var prevP = this._drawPanes[i - 1];
+                     if ((p === null || p === void 0 ? void 0 : p.getOptions().position) === "bottom" /* PanePosition.Bottom */ &&
+                         (prevP === null || prevP === void 0 ? void 0 : prevP.getOptions().position) !== "bottom" /* PanePosition.Bottom */) {
+@@ -13143,6 +13346,19 @@ var ChartImp = /** @class */ (function () {
+     ChartImp.prototype._measurePaneHeight = function () {
+         var _this = this;
+         var _a;
++        // Keep pane bounds and DOM flow in the same order after indicator changes.
++        if (this._xAxisAfterCandle) {
++            var axisIndex = this._drawPanes.indexOf(this._xAxisPane);
++            if (axisIndex >= 0) this._drawPanes.splice(axisIndex, 1);
++            var candleIndex = this._drawPanes.indexOf(this._candlePane);
++            this._drawPanes.splice(candleIndex + 1, 0, this._xAxisPane);
++            var nextPane = this._drawPanes[candleIndex + 2];
++            var nextSeparator = nextPane && this._separatorPanes.get(nextPane);
++            var before = nextSeparator ? nextSeparator.getContainer() : nextPane ? nextPane.getContainer() : null;
++            if (this._xAxisPane.getContainer().nextSibling !== before) {
++                this._chartContainer.insertBefore(this._xAxisPane.getContainer(), before);
++            }
++        }
+         var totalHeight = Math.floor(this._container.clientHeight);
+         var separatorSize = this._chartStore.getStyles().separator.size;
+         var xAxisHeight = this._xAxisPane.getAxisComponent().getAutoSize();
+@@ -13427,6 +13643,19 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getPriceVolumePrecision = function () {
          return this._chartStore.getPrecision();
      };
++    ChartImp.prototype.setXAxisAfterCandle = function () {
++        this._xAxisAfterCandle = true;
++        this.adjustPaneViewport(true, true, true, true);
++    };
 +    // Expose the candle axis mode used by axis dragging and double-click reset.
 +    ChartImp.prototype.setPriceRangeAuto = function (auto) {
 +        if (this._candlePane === null) return;

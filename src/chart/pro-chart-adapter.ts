@@ -122,6 +122,7 @@ const createProChart: ChartProFactory = (options) => {
     }
   })
   chart = new KLineChartPro(options)
+  chart.getChart().setXAxisAfterCandle()
   chart.getChart().setPaneOptions({
     id: 'candle_pane',
     gap: { top: 0.08, bottom: 0.08 },

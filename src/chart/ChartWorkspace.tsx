@@ -119,8 +119,8 @@ export function ChartWorkspace({
     const priceAxis = adapter?.getPriceAxisContainer?.() ?? null
     const synchronizePriceControl = () => {
       if (priceAxis === null) return
-      const bottom = priceAxis.getBoundingClientRect().bottom - host.getBoundingClientRect().top
-      host.parentElement?.style.setProperty('--price-axis-bottom', `${bottom}px`)
+      const top = priceAxis.getBoundingClientRect().top - host.getBoundingClientRect().top
+      host.parentElement?.style.setProperty('--price-axis-top', `${top}px`)
     }
     const synchronizeLayout = (resized = false) => {
       // Core dimensions are refreshed synchronously by resize; pane sizing
@@ -438,6 +438,7 @@ export function ChartWorkspace({
       onDoubleClick={event => event.stopPropagation()}
       onWheel={event => event.stopPropagation()}
     >
+      <span className="price-axis-unit" aria-label="计价单位">{symbol.priceCurrency?.toUpperCase() ?? 'USDT'}</span>
       <button
         aria-label="自动价格范围"
         aria-pressed={priceRangeAuto}
