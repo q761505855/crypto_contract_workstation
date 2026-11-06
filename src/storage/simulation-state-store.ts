@@ -1,4 +1,4 @@
-import type { SimulationState } from '../simulation/models'
+import { normalizeSimulationStatePrices, type SimulationState } from '../simulation/models'
 import { openWorkstationDatabase } from './market-data-store'
 
 export interface SimulationStateStore {
@@ -94,10 +94,10 @@ export class IndexedDbSimulationStateStore
           (right._sequence ?? right.timestamp),
       )
       .map(({ _sequence: _ignored, ...entry }) => entry)
-    return {
+    return normalizeSimulationStatePrices({
       ...state,
       trades: orderedTrades,
       ledger: orderedLedger,
-    }
+    })
   }
 }

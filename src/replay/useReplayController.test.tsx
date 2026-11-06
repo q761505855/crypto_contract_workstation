@@ -56,6 +56,27 @@ function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: 
 }
 
 describe('offline replay and simulation controllers', () => {
+  it('routes risk edits and reductions to the requested side without changing its hedge', async () => {
+    const { result } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    await act(async () => { await result.current.replay.createSession(input) })
+    await waitFor(() => expect(result.current.simulation.busy).toBe(false))
+    await act(async () => { await result.current.simulation.open('long', { quantity: '4' }) })
+    await act(async () => { await result.current.simulation.open('short', { quantity: '2' }) })
+    act(() => {
+      result.current.simulation.setTakeProfit('long', '120')
+      result.current.simulation.setStopLoss('short', '105')
+    })
+    await act(async () => { await result.current.simulation.reducePercent('long', 25) })
+    expect(result.current.simulation.state?.positions).toMatchObject([
+      { side: 'long', quantity: '3', takeProfitPrice: '120', stopLossPrice: null },
+      { side: 'short', quantity: '2', takeProfitPrice: null, stopLossPrice: '105' },
+    ])
+    await act(async () => { await result.current.simulation.closeAll('short') })
+    expect(result.current.simulation.state?.positions).toMatchObject([{ side: 'long', quantity: '3', takeProfitPrice: '120' }])
+    expect(result.current.simulation.error).toBe('')
+  })
+
   it.each([undefined, Date.UTC(2026, 7, 1)])('prepares January and February only while preserving the session end %s', async (endTime) => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 10, 6))
     try {
@@ -209,13 +230,13 @@ describe('offline replay and simulation controllers', () => {
 
     await act(async () => { await result.current.simulation.preview('long', { margin: '100' }) })
     await act(async () => { await result.current.simulation.open('long', { margin: '100' }) })
-    expect(result.current.simulation.state?.position?.side).toBe('long')
+    expect(result.current.simulation.state?.positions[0]?.side).toBe('long')
     for (let index = 0; index < 3; index += 1) {
       await act(async () => { await result.current.replay.next() })
     }
     expect(result.current.replay.session?.currentTime).toBe(3 * minute)
     expect(result.current.simulation.state?.warning).toBeNull()
-    await act(async () => { await result.current.simulation.closeAll() })
+    await act(async () => { await result.current.simulation.closeAll('long') })
     await act(async () => { await result.current.replay.jumpToEnd() })
     expect(result.current.replay.session?.status).toBe('completed')
     expect(runtime.service.loadCandles).not.toHaveBeenCalled()
@@ -246,13 +267,14 @@ describe('offline replay and simulation controllers', () => {
     saved!.tradingConfig = { ...saved!.tradingConfig, feeRate: '0', slippageRate: '0' }
     const original = SimulationEngine.create(saved!)
     original.open('long', { quantity: '1' }, candles[0])
-    const state = original.snapshot()
+    const { positions, ...fields } = original.snapshot()
+    const state = { ...fields, schemaVersion: 1 as const, position: positions[0] }
     Object.assign(state.position!, { markPrice: '40' })
     delete (state.position as unknown as Record<string, unknown>).lastPrice
     state.warning = '缺少当前 K 线的标记价格，已停止强平判断。'
-    vi.mocked(runtime.simulationStates.load).mockResolvedValue(state)
-    await waitFor(() => expect(result.current.simulation.state?.position?.lastPrice).toBe('120'))
-    expect(result.current.simulation.state?.position).not.toHaveProperty('markPrice')
+    vi.mocked(runtime.simulationStates.load).mockResolvedValue(state as unknown as Awaited<ReturnType<typeof runtime.simulationStates.load>>)
+    await waitFor(() => expect(result.current.simulation.state?.positions[0]?.lastPrice).toBe('120'))
+    expect(result.current.simulation.state?.positions[0]).not.toHaveProperty('markPrice')
     expect(result.current.simulation.state?.account.equity).toBe('10020')
     expect(result.current.simulation.state?.warning).toBeNull()
     expect(result.current.simulation.state?.trades).toEqual(state.trades)

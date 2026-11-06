@@ -1,5 +1,12 @@
+import Decimal from 'decimal.js'
 import { SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
+import {
+  loadWorkspacePreferences,
+  saveWorkspacePreferences,
+  validateWorkspacePreferences,
+  type WorkspacePreferences,
+} from '../workspace/preferences'
 import { unwrap, type IDBPTransaction } from 'idb'
 import {
   CHART_INDICATORS_PREFERENCE,
@@ -26,6 +33,7 @@ import { validateSimulationConfig } from '../simulation/simulation-engine'
 import type {
   SimulationLedgerEntry,
   SimulationState,
+  StoredSimulationState,
   SimulationTrade,
 } from '../simulation/models'
 import { normalizeSimulationStatePrices } from '../simulation/models'
@@ -52,6 +60,7 @@ export interface BackupPreferences {
   selectedSymbol?: SymbolInfo
   chartIndicators?: ChartIndicatorPreferences
   pinnedPeriods?: string[]
+  workspace?: WorkspacePreferences
 }
 
 export interface BackupData {
@@ -186,6 +195,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     binanceRestBaseUrl,
     favoriteSymbols,
     ...(item.pinnedPeriods === undefined ? {} : { pinnedPeriods: validatePinnedPeriods(item.pinnedPeriods) }),
+    ...(item.workspace === undefined ? {} : { workspace: validateWorkspacePreferences(item.workspace) }),
     ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
     ...(item.chartIndicators === undefined
       ? {}
@@ -508,7 +518,7 @@ function validateSimulation(
 ): SimulationState {
   const field = `simulations[${index}]`
   const item = record(value, field)
-  if (item.schemaVersion !== 1) {
+  if (item.schemaVersion !== 1 && item.schemaVersion !== 2) {
     throw new Error(`${field}.schemaVersion 不受支持`)
   }
   const sessionId = stringValue(item.sessionId, `${field}.sessionId`)
@@ -579,10 +589,20 @@ function validateSimulation(
   ]) {
     nonNegativeInteger(stats[name], `${field}.stats.${name}`)
   }
-  if (item.position !== null) {
-    const position = record(item.position, `${field}.position`)
+  const rawPositions = item.schemaVersion === 1
+    ? item.position === null ? [] : [item.position]
+    : arrayValue(item.positions, `${field}.positions`)
+  if ((item.schemaVersion === 1 && item.positions !== undefined) ||
+      (item.schemaVersion === 2 && item.position !== undefined)) {
+    throw new Error(`${field}.positions 包含混合版本字段`)
+  }
+  if (rawPositions.length > 2) throw new Error(`${field}.positions 最多包含两个仓位`)
+  const sides = new Set<string>()
+  for (const [positionIndex, rawPosition] of rawPositions.entries()) {
+    const positionField = item.schemaVersion === 1 ? `${field}.position` : `${field}.positions[${positionIndex}]`
+    const position = record(rawPosition, positionField)
     if (position.symbol !== item.symbol) {
-      throw new Error(`${field}.position.symbol 不匹配`)
+      throw new Error(`${positionField}.symbol 不匹配`)
     }
     for (const name of [
       'quantity',
@@ -592,54 +612,66 @@ function validateSimulation(
       'maintenanceMarginRate',
       'liquidationPrice',
     ]) {
-      decimalValue(position[name], `${field}.position.${name}`, false)
+      decimalValue(position[name], `${positionField}.${name}`, false)
     }
     if (position.lastPrice !== undefined) {
       decimalValue(
         position.lastPrice,
-        `${field}.position.lastPrice`,
+        `${positionField}.lastPrice`,
         false,
       )
     }
     if (position.markPrice !== undefined) {
-      decimalValue(position.markPrice, `${field}.position.markPrice`, false)
+      decimalValue(position.markPrice, `${positionField}.markPrice`, false)
     }
     if (position.lastPrice === undefined && position.markPrice === undefined) {
-      throw new Error(`${field}.position.lastPrice 缺失`)
+      throw new Error(`${positionField}.lastPrice 缺失`)
     }
     decimalValue(
       position.unrealizedPnl,
-      `${field}.position.unrealizedPnl`,
+      `${positionField}.unrealizedPnl`,
     )
     for (const name of ['takeProfitPrice', 'stopLossPrice']) {
       if (position[name] !== null) {
-        decimalValue(position[name], `${field}.position.${name}`, false)
+        decimalValue(position[name], `${positionField}.${name}`, false)
       }
     }
     const leverage = nonNegativeInteger(
       position.leverage,
-      `${field}.position.leverage`,
+      `${positionField}.leverage`,
     )
     if (leverage === 0) {
-      throw new Error(`${field}.position.leverage 必须大于 0`)
+      throw new Error(`${positionField}.leverage 必须大于 0`)
     }
     for (const name of [
       'openedAt',
       'updatedAt',
       'riskActiveAfterTime',
     ]) {
-      nonNegativeInteger(position[name], `${field}.position.${name}`)
+      nonNegativeInteger(position[name], `${positionField}.${name}`)
     }
     for (const name of [
       'takeProfitActiveAfterTime',
       'stopLossActiveAfterTime',
     ]) {
       if (position[name] !== null) {
-        nonNegativeInteger(position[name], `${field}.position.${name}`)
+        nonNegativeInteger(position[name], `${positionField}.${name}`)
       }
     }
     if (!['long', 'short'].includes(String(position.side))) {
-      throw new Error(`${field}.position.side 无效`)
+      throw new Error(`${positionField}.side 无效`)
+    }
+    if (sides.has(String(position.side))) throw new Error(`${field}.positions 方向重复`)
+    sides.add(String(position.side))
+    for (const name of ['quantity', 'entryPrice']) {
+      if (new Decimal(position[name] as string).lessThanOrEqualTo(0)) throw new Error(`${positionField}.${name} 必须大于 0`)
+    }
+    if (new Decimal((position.lastPrice ?? position.markPrice) as string).lessThanOrEqualTo(0)) {
+      throw new Error(`${positionField}.lastPrice 必须大于 0`)
+    }
+    for (const [price, activation] of [['takeProfitPrice', 'takeProfitActiveAfterTime'], ['stopLossPrice', 'stopLossActiveAfterTime']]) {
+      if ((position[price] === null) !== (position[activation] === null)) throw new Error(`${positionField}.${price} 与生效时间不匹配`)
+      if (position[price] !== null && new Decimal(position[price] as string).lessThanOrEqualTo(0)) throw new Error(`${positionField}.${price} 必须大于 0`)
     }
   }
   if (item.warning !== null && typeof item.warning !== 'string') {
@@ -647,7 +679,7 @@ function validateSimulation(
   }
   nonNegativeInteger(item.updatedAt, `${field}.updatedAt`)
   return normalizeSimulationStatePrices({
-    ...(structuredClone(item) as unknown as SimulationState),
+    ...(structuredClone(item) as unknown as StoredSimulationState),
     trades,
     ledger,
   })
@@ -758,6 +790,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
     favoriteSymbols,
     pinnedPeriods: readPinnedPeriods(storage),
+    workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
     ...(chartIndicators === null ? {} : { chartIndicators }),
   }
@@ -930,6 +963,9 @@ export class WorkstationBackupService {
       }
       if (envelope.data.preferences.pinnedPeriods !== undefined) {
         this.storage.setItem(PINNED_PERIODS_KEY, JSON.stringify(envelope.data.preferences.pinnedPeriods))
+      }
+      if (envelope.data.preferences.workspace !== undefined) {
+        saveWorkspacePreferences(envelope.data.preferences.workspace, this.storage)
       }
     }
     return {

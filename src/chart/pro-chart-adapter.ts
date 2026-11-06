@@ -45,16 +45,21 @@ export interface SimulationTradeOverlay {
   color: string
 }
 
-export interface SimulationOverlayState {
-  currentTime: number | null
-  entryPrice: number | null
+export interface SimulationPositionOverlay {
+  side: 'long' | 'short'
+  entryPrice: number
   takeProfitPrice: number | null
   stopLossPrice: number | null
-  liquidationPrice: number | null
-  trades: SimulationTradeOverlay[]
+  liquidationPrice: number
   onEntryPriceDrag?: (price: number) => void
   onTakeProfitPriceDrag?: (price: number) => void
   onStopLossPriceDrag?: (price: number) => void
+}
+
+export interface SimulationOverlayState {
+  currentTime: number | null
+  positions: SimulationPositionOverlay[]
+  trades: SimulationTradeOverlay[]
 }
 
 export interface ChartAdapterPort {
@@ -66,6 +71,8 @@ export interface ChartAdapterPort {
   reloadData(): Promise<void>
   resize?(): void
   layoutSubPanes?(minimumHeight: number): number
+  getIndicatorPaneSizes?(): { id: string; label: string; height: number }[]
+  setIndicatorPaneHeight?(paneId: string, height: number): void
   setPriceRangeAuto?(auto: boolean): void
   getPriceRangeAuto?(): boolean
   setIndicatorInfoVisible?(visible: boolean): void
@@ -129,6 +136,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private tooltipElement: HTMLDivElement | null = null
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
+  private subPaneMinimumHeight = 0
 
   constructor(private readonly factory: ChartProFactory = createProChart) {}
 
@@ -151,14 +159,18 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.coreChart.subscribeAction?.(ON_PANE_DRAG, () => {
       // Only an explicit separator drag changes the archived height. Responsive
       // enlargement must not overwrite a user's desktop layout in their backup.
+      let changed = false
       for (const paneId of this.responsivePaneHeights.keys()) {
         const height = this.coreChart?.getSize(paneId)?.height
         const displayed = this.responsiveDisplayHeights.get(paneId)
-        if (height !== undefined && height !== displayed) {
-          this.responsivePaneHeights.set(paneId, height)
-          this.responsiveDisplayHeights.set(paneId, height)
+        if (height !== undefined && Number.isFinite(height) && height !== displayed) {
+          // The core permits zero-height drags while responsive minHeight is
+          // zero. Archive only the same integer range supported by sliders.
+          this.responsivePaneHeights.set(paneId, Math.max(60, Math.min(600, Math.round(height))))
+          changed = true
         }
       }
+      if (changed) this.layoutSubPanes(this.subPaneMinimumHeight)
     })
   }
 
@@ -171,7 +183,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   }
 
   layoutSubPanes(minimumHeight: number): number {
-    if (minimumHeight === 0 && this.responsivePaneHeights.size === 0) return 0
+    this.subPaneMinimumHeight = minimumHeight
     const chart = this.requireCoreChart()
     const panes = chart.getIndicatorByPaneId()
     if (!(panes instanceof Map)) return 0
@@ -182,24 +194,54 @@ export class ProChartAdapter implements ChartAdapterPort {
         this.responsiveDisplayHeights.delete(paneId)
       }
     }
+    const subPanes: { id: string; current: number; desired: number }[] = []
     for (const [paneId, indicators] of panes) {
       if (paneId === 'candle_pane' || !(indicators instanceof Map) || indicators.size === 0) continue
       const currentHeight = chart.getSize(paneId)?.height ?? 100
-      if (minimumHeight > 0 && !this.responsivePaneHeights.has(paneId)) {
-        this.responsivePaneHeights.set(paneId, currentHeight)
-      }
-      const savedHeight = this.responsivePaneHeights.get(paneId) ?? currentHeight
-      const height = Math.max(savedHeight, minimumHeight)
-      if (minimumHeight === 0) {
-        this.responsivePaneHeights.delete(paneId)
-        this.responsiveDisplayHeights.delete(paneId)
-      } else {
-        this.responsiveDisplayHeights.set(paneId, height)
-      }
-      if (Math.abs(currentHeight - height) > 1) chart.setPaneOptions({ id: paneId, height })
+      // Keep desired sizes even on desktop: the core chart clips later panes
+      // when their combined height exceeds the fixed chart viewport.
+      const savedHeight = this.responsivePaneHeights.get(paneId) ?? (currentHeight || 100)
+      this.responsivePaneHeights.set(paneId, savedHeight)
+      subPanes.push({ id: paneId, current: currentHeight, desired: Math.max(savedHeight, minimumHeight) })
+    }
+    const viewportHeight = chart.getSize()?.height ?? 0
+    const axisHeight = chart.getSize('x_axis_pane')?.height ?? 30
+    const desiredTotal = subPanes.reduce((sum, pane) => sum + pane.desired, 0)
+    const available = viewportHeight > 0 ? Math.max(0, viewportHeight - axisHeight - 180 - subPanes.length * 2) : desiredTotal
+    const scale = desiredTotal > available ? available / desiredTotal : 1
+    for (const pane of subPanes) {
+      // A zero minHeight lets constrained displays preserve the candle pane;
+      // sliders and archives still hold the user's full desired height.
+      const height = Math.max(1, Math.floor(pane.desired * scale))
+      if (pane.current !== height) chart.setPaneOptions({ id: pane.id, height, minHeight: 0 })
+      this.responsiveDisplayHeights.set(pane.id, height)
       totalHeight += height + 2
     }
     return totalHeight
+  }
+
+  getIndicatorPaneSizes(): { id: string; label: string; height: number }[] {
+    const chart = this.requireCoreChart()
+    const panes = chart.getIndicatorByPaneId()
+    if (!(panes instanceof Map)) return []
+    return [...panes].flatMap(([id, indicators]) => {
+      if (id === 'candle_pane' || !(indicators instanceof Map) || indicators.size === 0) return []
+      return [{
+        id,
+        label: [...indicators.values()].map((indicator: Indicator) => indicator.name).join(' / '),
+        height: this.responsivePaneHeights.get(id) ?? chart.getSize(id)?.height ?? 100,
+      }]
+    })
+  }
+
+  setIndicatorPaneHeight(paneId: string, height: number): void {
+    if (!Number.isInteger(height) || height < 60 || height > 600) {
+      throw new Error('Indicator pane height must be an integer between 60 and 600.')
+    }
+    if (!this.getIndicatorPaneSizes().some(({ id }) => id === paneId)) return
+    this.responsivePaneHeights.set(paneId, height)
+    this.responsiveDisplayHeights.set(paneId, height)
+    this.requireCoreChart().setPaneOptions({ id: paneId, height })
   }
 
   setPriceRangeAuto(auto: boolean): void {
@@ -212,6 +254,7 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setIndicatorInfoVisible(visible: boolean): void {
     this.requireCoreChart().setStyles({
+      candle: { tooltip: { showRule: visible ? TooltipShowRule.Always : TooltipShowRule.None } },
       indicator: { tooltip: { showRule: visible ? TooltipShowRule.Always : TooltipShowRule.None } },
     })
   }
@@ -503,6 +546,7 @@ export class ProChartAdapter implements ChartAdapterPort {
           }
           apply(setting, paneId)
           if (!heightApplied && pane.height !== undefined) {
+            this.responsivePaneHeights.set(paneId, pane.height)
             chart.setPaneOptions({ id: paneId, height: pane.height })
             heightApplied = true
           }
@@ -521,6 +565,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       id: string,
       value: number | null,
       color: string,
+      label: string,
       onDrag?: (price: number) => void,
     ) => {
       if (value === null || state.currentTime === null) return
@@ -528,6 +573,11 @@ export class ProChartAdapter implements ChartAdapterPort {
         id: `simulation-${id}`,
         groupId: 'simulation',
         name: 'priceLine',
+        onMouseEnter: (event) => {
+          this.showTradeTooltip(`${label} · ${value}`, event.pageX ?? 0, event.pageY ?? 0)
+          return true
+        },
+        onMouseLeave: () => { this.hideTradeTooltip(); return true },
         lock: onDrag === undefined,
         points: [{ timestamp: state.currentTime, value }],
         onPressedMoveEnd:
@@ -551,25 +601,14 @@ export class ProChartAdapter implements ChartAdapterPort {
         },
       })
     }
-    line(
-      'entry',
-      state.entryPrice,
-      '#55b8ff',
-      state.onEntryPriceDrag,
-    )
-    line(
-      'take-profit',
-      state.takeProfitPrice,
-      '#4fd49f',
-      state.onTakeProfitPriceDrag,
-    )
-    line(
-      'stop-loss',
-      state.stopLossPrice,
-      '#ff7f79',
-      state.onStopLossPriceDrag,
-    )
-    line('liquidation', state.liquidationPrice, '#f5a65b')
+    this.hideTradeTooltip()
+    for (const position of state.positions) {
+      const label = position.side === 'long' ? '多仓' : '空仓'
+      line(`${position.side}-entry`, position.entryPrice, position.side === 'long' ? '#55b8ff' : '#c49bff', `${label}开仓均价`, position.onEntryPriceDrag)
+      line(`${position.side}-take-profit`, position.takeProfitPrice, '#4fd49f', `${label}止盈`, position.onTakeProfitPriceDrag)
+      line(`${position.side}-stop-loss`, position.stopLossPrice, '#ff7f79', `${label}止损`, position.onStopLossPriceDrag)
+      line(`${position.side}-liquidation`, position.liquidationPrice, '#f5a65b', `${label}预估强平价`)
+    }
 
     if (state.currentTime !== null) {
       overlays.push({

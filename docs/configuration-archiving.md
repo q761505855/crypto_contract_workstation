@@ -19,12 +19,15 @@
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
+| 工作区面板展开／收起、桌面／手机图表高度、底部区高度 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |
 
 上述入口均位于 `src/`。新增配置必须更新本表，不得在组件中另建脱离存档的持久化键。配置读写和校验应放在可独立调用的模块中，备份服务不能依赖 React 组件。
 
 会话的交易参数、进度、持仓和交易记录由现有 IndexedDB 会话及模拟状态存储负责，走会话／全部数据存档和云端“会话与交易”类别，不能为了保存配置而破坏会话隔离。
 
-Token 等凭据不得进入用户配置存档。手动 Token 只保留在页面内存；默认连接凭据通过本机 `.env.local` 或 Pages 构建 Secret 注入前端产物，不新增 `BackupPreferences` 字段。行情缓存、待上传设备队列、请求额度、冷却状态和跨页面锁也不是可迁移用户偏好，不应混入配置文件。当前临时展开／收起、弹窗打开等状态不代表已经承诺保存；以后若将其改为可记住的用户设置，必须同时接通存档。
+历史模拟双向持仓使用模拟状态 Schema 2 的 `positions` 列表，同方向最多一个仓位；止盈止损价格及各自的生效时间保存在对应仓位中。它们属于会话业务数据，不新增 `BackupPreferences` 或 localStorage 配置键。JSON 会话／全部数据与 GitHub“会话与交易”均包含完整双仓；旧 Schema 1 的 `position` 迁移为对应方向的一项，`position: null` 迁移为空列表，Schema 2 的显式 `positions: []` 保持空仓。缺失或非法列表、重复方向和不匹配的止盈止损生效时间均在导入写入前拒绝。刷新恢复会话直接生效；手动导入／云端恢复后需按提示刷新，避免活动界面的旧状态继续操作。详见 [模拟双向持仓](simulation-positions.md)。
+
+Token 等凭据不得进入用户配置存档。手动 Token 只保留在页面内存；默认连接凭据通过本机 `.env.local` 或 Pages 构建 Secret 注入前端产物，不新增 `BackupPreferences` 字段。行情缓存、待上传设备队列、请求额度、冷却状态和跨页面锁也不是可迁移用户偏好，不应混入配置文件。工作区五个附加面板的显示开关现已属于持久化配置；手机抽屉当前打开状态、临时展开／收起和弹窗打开等状态仍不属于存档，之后若改为可记住的用户设置，必须同时接通存档。
 
 ## 修改入口
 
@@ -53,6 +56,10 @@ Token 等凭据不得进入用户配置存档。手动 Token 只保留在页面�
 - 字段重命名、类型变化或语义变化需要明确迁移方案；不能简单删除旧解析器或无条件提升版本导致旧存档失效。
 
 当前恢复配置后需要刷新页面，使指标、当前产品、固定周期等组件从已恢复的存储重新加载。界面会提示刷新，不自动重载以免中断用户操作。若后续改成即时生效，需要同步所有相关组件，避免后台持有的旧状态反向写回。
+
+工作区配置使用独立的 `workspace` 对象，内部 `schemaVersion: 1`，不提升 JSON 或云端配置的顶层版本。`panels` 必须完整包含 `account`、`order`、`dock`、`replay`、`status` 五个布尔值，默认全部显示；`chartHeight` 和 `mobileChartHeight` 分别保存桌面与手机图表高度，`null` 表示自动适配，手动高度只接受 280–1600 的整数；`dockHeight` 保存底部区域高度，默认 220，只接受 160–480 的整数。各屏幕的自动显示计算不应反写另一屏幕的尺寸。工作区设置经统一入口保存后刷新可恢复；使用“应用配置”或“全部数据”导出可携带到其他浏览器，GitHub 勾选“应用配置”时会参与比较、上传与拉取。手动恢复后同样按提示刷新，使布局与其他配置一起从存储加载，避免活动页面旧状态覆盖恢复值。
+
+旧 JSON／云端存档缺少整个 `workspace` 时保留目标浏览器已有布局；目标没有本地布局时由读取入口使用上述默认值。提供 `workspace` 时必须包含全部对象字段，不接受部分补丁、`null` 对象、缺失面板、错误布尔类型或越界／小数高度；所有字段在任何业务数据或配置写入前完整校验。面板的显式 `false`、两个高度的显式 `null` 均原样恢复。面板 `false` 收起正文，界面原位保留展开条或下单窄轨；`true` 展开正文。该交互沿用现有字段和 schema，无需迁移旧存档；手机当前打开哪个抽屉仍为临时状态，同一底栏入口可反复展开／收起。本地损坏布局会整体回退默认值，保存及导入则严格拒绝无效值。Token、设备请求保护和行情缓存不进入该对象。
 
 KC 与 TTM Squeeze 不增加顶层配置字段或版本。`KC.calcParams` 依次为 EMA 周期、ATR 倍数、ATR 周期（默认 `[20, 1.5, 20]`），`TTM_SQUEEZE.calcParams` 依次为共同周期、BB 标准差倍数、KC ATR 倍数（默认 `[20, 2, 1.5]`）。两者必须恰有三个有限正数，周期还须为整数；错误类型、缺少参数、0 或负倍数在本地保存及任何存档恢复写入前拒绝，不影响其他旧指标的参数兼容性。指标可见性 `false`、合法样式数值 `0` 和主／副图空列表仍原样保留。KC 的三轨颜色保存于 `styles.lines`；TTM 四色柱与两种状态点颜色保存于 `styles.bars`、`styles.circles`，选择、参数、颜色与副图高度一并参与 JSON 和 GitHub 配置往返。旧存档无这两个指标时不自动加入；缺少整个 `chartIndicators` 时保留目标浏览器原值，无本地配置时继续使用现有默认指标。
 

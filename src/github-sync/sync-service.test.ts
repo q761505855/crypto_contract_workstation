@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { PINNED_PERIODS_KEY } from '../chart/period-preferences'
 import { CHART_INDICATORS_PREFERENCE } from '../chart/indicator-preferences'
 import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
+import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { ReplayEngine } from '../replay/replay-engine'
+import { SimulationEngine } from '../simulation/simulation-engine'
+import { IndexedDbReplaySessionStore } from '../storage/replay-session-store'
+import { IndexedDbSimulationStateStore } from '../storage/simulation-state-store'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
 import {
   BACKUP_FILE_TYPE,
@@ -64,6 +69,11 @@ function backup(): BackupEnvelope {
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     pinnedPeriods: ['1m', '1d'],
+    workspace: {
+      schemaVersion: 1,
+      panels: { account: false, order: true, dock: false, replay: false, status: true },
+      chartHeight: 820, mobileChartHeight: null, dockHeight: 260,
+    },
     selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },
     chartIndicators: {
       schemaVersion: 1,
@@ -227,6 +237,120 @@ async function seedLegacyMonth(remote: MemoryGitHubClient): Promise<void> {
 }
 
 describe('GitHubSyncService', () => {
+  it('round-trips the complete configuration through real storage and retains workspace false, null and legacy absence', async () => {
+    const storage = () => {
+      const values = new Map<string, string>()
+      return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
+    }
+    const sourceStorage = storage()
+    const targetStorage = storage()
+    const sourceBackups = new WorkstationBackupService(`workspace-cloud-source-${crypto.randomUUID()}`, sourceStorage)
+    const targetBackups = new WorkstationBackupService(`workspace-cloud-target-${crypto.randomUUID()}`, targetStorage)
+    const complete = backup().data.preferences!
+    const configArchive: BackupEnvelope = { ...backup(), kind: 'preferences', data: { preferences: complete } }
+    await sourceBackups.import(configArchive)
+    expect((await sourceBackups.exportPreferences()).data.preferences).toEqual(complete)
+    const source = new GitHubSyncService(sourceBackups)
+    const target = new GitHubSyncService(targetBackups)
+    const remote = new MemoryGitHubClient()
+    const selection = { config: true, sessions: false, marketData: false }
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual(complete)
+    expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(complete.workspace)
+
+    const changed = {
+      schemaVersion: 1,
+      panels: { account: false, order: false, dock: false, replay: false, status: false },
+      chartHeight: null, mobileChartHeight: 1600, dockHeight: 160,
+    }
+    sourceStorage.setItem('workspace.layout.v1', JSON.stringify(changed))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual({ ...complete, workspace: changed })
+
+    const rewrite = async (value: unknown) => {
+      const file = remote.files.get('config/preferences.json')!
+      file.bytes = encoder.encode(JSON.stringify(value))
+      const manifestFile = remote.files.get('manifest.json')!
+      const manifest = JSON.parse(decoder.decode(manifestFile.bytes))
+      const entry = manifest.files.find((item: { path: string }) => item.path === 'config/preferences.json')
+      entry.size = file.bytes.byteLength
+      entry.checksum = await sha256(file.bytes)
+      manifestFile.bytes = encoder.encode(JSON.stringify(manifest))
+    }
+    const legacy = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
+    delete legacy.workspace
+    await rewrite(legacy)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
+
+    const before = (await targetBackups.exportAll()).data
+    for (const workspace of [null, {}, { ...changed, chartHeight: 0 }, { ...changed, panels: { ...changed.panels, status: 'false' } }]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', workspace })
+      await expect(target.pull(client(remote))).rejects.toThrow(/workspace/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+  })
+
+  it('restores both risk-bound positions through real storage and rejects corrupt cloud positions atomically', async () => {
+    const sourceName = `hedge-cloud-source-${crypto.randomUUID()}`
+    const targetName = `hedge-cloud-target-${crypto.randomUUID()}`
+    const storage = { getItem: () => null, setItem: () => undefined }
+    const sourceBackups = new WorkstationBackupService(sourceName, storage)
+    const targetBackups = new WorkstationBackupService(targetName, storage)
+    const source = new GitHubSyncService(sourceBackups)
+    const target = new GitHubSyncService(targetBackups)
+    const row = candle(Date.UTC(2024, 0, 1))
+    const session = ReplayEngine.create({ symbol: DEFAULT_SYMBOL, period: SUPPORTED_PERIODS[0], startTime: row.openTime, endTime: row.openTime }, [row]).snapshot()
+    await new IndexedDbReplaySessionStore(sourceName).put(session)
+    const states = new IndexedDbSimulationStateStore(sourceName)
+    const engine = SimulationEngine.create(session)
+    engine.open('long', { quantity: '1' }, row)
+    engine.open('short', { quantity: '2' }, row)
+    engine.setTakeProfit('long', '120', row.openTime)
+    engine.setStopLoss('long', '95', row.openTime)
+    engine.setTakeProfit('short', '80', row.openTime)
+    engine.setStopLoss('short', '105', row.openTime)
+    await states.save(engine.snapshot())
+    const remote = new MemoryGitHubClient()
+    const selection = { config: false, sessions: true, marketData: false }
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportAll()).data.simulations).toEqual([engine.snapshot()])
+    const path = `trades/${session.id}.json`
+    const rewrite = async (value: unknown) => {
+      const file = remote.files.get(path)!
+      file.bytes = encoder.encode(JSON.stringify(value))
+      const manifestFile = remote.files.get('manifest.json')!
+      const manifest = JSON.parse(decoder.decode(manifestFile.bytes))
+      const entry = manifest.files.find((entry: { path: string }) => entry.path === path)
+      entry.checksum = await sha256(file.bytes)
+      entry.size = file.bytes.byteLength
+      manifestFile.bytes = encoder.encode(JSON.stringify(manifest))
+    }
+    const corrupt = engine.snapshot()
+    corrupt.positions[1].stopLossPrice = 'invalid'
+    await rewrite(corrupt)
+    const before = (await targetBackups.exportAll()).data
+    await expect(target.pull(client(remote))).rejects.toThrow(/positions/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
+
+    // Old cloud snapshots still restore their single position with its risk orders.
+    const { positions, ...fields } = engine.snapshot()
+    await rewrite({ ...fields, schemaVersion: 1, position: positions[0] })
+    await target.pull(client(remote))
+    expect((await targetBackups.exportAll()).data.simulations![0].positions).toEqual([positions[0]])
+
+    engine.closeAll('long', row)
+    engine.closeAll('short', row)
+    await states.save(engine.snapshot())
+    await source.upload(client(remote), 'keep-local', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportAll()).data.simulations![0].positions).toEqual([])
+  })
+
   it.each(['blob', 'ref'] as const)('leaves legacy migration and manifest readable after an atomic %s failure', async (phase) => {
     const remote = new MemoryGitHubClient()
     await seedLegacyMonth(remote)

@@ -10,7 +10,7 @@ import {
 import type { ReplaySession } from '../replay/models'
 import type {
   SimulationLedgerEntry,
-  SimulationState,
+  StoredSimulationState,
   SimulationTrade,
 } from '../simulation/models'
 
@@ -56,7 +56,7 @@ export interface WorkstationDatabase extends DBSchema {
   }
   simulationStates: {
     key: string
-    value: SimulationState
+    value: StoredSimulationState
   }
   simulationTrades: {
     key: string

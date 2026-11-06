@@ -8,8 +8,14 @@ import type { Chart } from 'klinecharts'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@klinecharts/pro', () => ({ KLineChartPro: vi.fn() }))
+vi.mock('klinecharts', async importOriginal => ({
+  ...await importOriginal<typeof import('klinecharts')>(),
+  // The package's CommonJS test entry omits these browser enum exports.
+  TooltipShowRule: { Always: 'always', None: 'none' },
+}))
 
 import { ProChartAdapter } from './pro-chart-adapter'
+import { validateChartIndicatorPreferences } from './indicator-preferences'
 
 function fakeChart(coreChart?: Chart): ChartPro {
   return {
@@ -41,6 +47,103 @@ function fakeChart(coreChart?: Chart): ChartPro {
 }
 
 describe('ProChartAdapter', () => {
+  it('keeps native separator extremes valid without archiving compressed display heights', () => {
+    let viewportHeight = 1000
+    let height = 160
+    let onDrag: (() => void) | undefined
+    const core = {
+      getIndicatorByPaneId: () => new Map([['candle_pane', new Map()], ['rsi', new Map([['RSI', { name: 'RSI', calcParams: [6, 12, 24], visible: true, styles: null }]])]]),
+      getSize: (id?: string) => ({ height: id === undefined ? viewportHeight : id === 'x_axis_pane' ? 24 : height }),
+      setPaneOptions: (options: { height: number }) => { height = options.height },
+      subscribeAction: (type: string, callback: () => void) => { if (type === 'onPaneDrag') onDrag = callback },
+    } as unknown as Chart
+    const adapter = new ProChartAdapter(() => fakeChart(core))
+    adapter.mount({ container: document.createElement('div'), symbol: { ticker: 'BTCUSDT' }, period: { multiplier: 15, timespan: 'minute', text: '15m' }, datafeed: { searchSymbols: async () => [], getHistoryKLineData: async () => [], subscribe() {}, unsubscribe() {} } })
+    adapter.layoutSubPanes(0)
+    height = 0
+    onDrag?.()
+    expect(adapter.getIndicatorPaneSizes()[0].height).toBe(60)
+    expect(height).toBe(60)
+    expect(() => validateChartIndicatorPreferences(adapter.getIndicatorPreferences())).not.toThrow()
+    height = 900
+    onDrag?.()
+    expect(adapter.getIndicatorPaneSizes()[0].height).toBe(600)
+    expect(height).toBe(600)
+    height = 120.6
+    onDrag?.()
+    expect(adapter.getIndicatorPaneSizes()[0].height).toBe(121)
+    expect(height).toBe(121)
+    viewportHeight = 250
+    adapter.layoutSubPanes(80)
+    expect(height).toBeLessThan(60)
+    onDrag?.()
+    expect(adapter.getIndicatorPaneSizes()[0].height).toBe(121)
+    expect(adapter.getIndicatorPreferences().sub[0].height).toBe(121)
+    height = 0
+    onDrag?.()
+    expect(adapter.getIndicatorPreferences().sub[0].height).toBe(60)
+    expect(height).toBeGreaterThan(0)
+    expect(height).toBeLessThan(60)
+    viewportHeight = 1000
+    adapter.layoutSubPanes(0)
+    expect(height).toBe(60)
+  })
+
+  it('archives explicit slider pane sizing across responsive transitions without losing indicator settings', () => {
+    let height = 100
+    const indicator = { name: 'RSI', calcParams: [6, 12, 24], visible: false, styles: { lines: [{ color: '#123456' }] } }
+    const core = {
+      getIndicatorByPaneId: () => new Map([['candle_pane', new Map()], ['rsi', new Map([['RSI', indicator]])]]),
+      getSize: (id?: string) => ({ height: id === undefined ? 1000 : height }),
+      setPaneOptions: (options: { height: number }) => { height = options.height },
+    } as unknown as Chart
+    const adapter = new ProChartAdapter(() => fakeChart(core))
+    adapter.mount({ container: document.createElement('div'), symbol: { ticker: 'BTCUSDT' }, period: { multiplier: 15, timespan: 'minute', text: '15m' }, datafeed: { searchSymbols: async () => [], getHistoryKLineData: async () => [], subscribe: () => {}, unsubscribe: () => {} } })
+    adapter.layoutSubPanes(200)
+    adapter.setIndicatorPaneHeight('rsi', 260)
+    adapter.layoutSubPanes(200)
+    expect(height).toBe(260)
+    expect(adapter.getIndicatorPaneSizes()).toEqual([{ id: 'rsi', label: 'RSI', height: 260 }])
+    expect(adapter.getIndicatorPreferences().sub).toEqual([{ height: 260, indicators: [indicator] }])
+    adapter.layoutSubPanes(0)
+    expect(height).toBe(260)
+    adapter.setIndicatorPaneHeight('rsi', 60)
+    adapter.layoutSubPanes(80)
+    expect(height).toBe(80)
+    expect(adapter.getIndicatorPreferences().sub[0].height).toBe(60)
+    adapter.layoutSubPanes(0)
+    expect(height).toBe(60)
+    for (const invalid of [0, 59, 601, 100.5, NaN]) expect(() => adapter.setIndicatorPaneHeight('rsi', invalid)).toThrow()
+  })
+
+  it('reserves room for the candle pane while retaining desired sizes through compact layouts and explicit changes', () => {
+    let viewportHeight = 400
+    const heights = new Map([['vol', 180], ['macd', 200], ['rsi', 320]])
+    const panes = new Map([['candle_pane', new Map()], ...['vol', 'macd', 'rsi'].map((id) => [id, new Map([[id.toUpperCase(), { name: id.toUpperCase(), calcParams: [], visible: true, styles: null }]])] as const)])
+    const core = {
+      getIndicatorByPaneId: () => panes,
+      getSize: (id?: string) => ({ height: id === undefined ? viewportHeight : id === 'x_axis_pane' ? 24 : heights.get(id) ?? 180 }),
+      setPaneOptions: ({ id, height }: { id: string; height: number }) => { heights.set(id, height) },
+    } as unknown as Chart
+    const adapter = new ProChartAdapter(() => fakeChart(core))
+    adapter.mount({ container: document.createElement('div'), symbol: { ticker: 'BTCUSDT' }, period: { multiplier: 15, timespan: 'minute', text: '15m' }, datafeed: { searchSymbols: async () => [], getHistoryKLineData: async () => [], subscribe: () => {}, unsubscribe: () => {} } })
+    expect(adapter.layoutSubPanes(80)).toBeLessThanOrEqual(196)
+    expect([...heights.values()].every((height) => height > 0 && height < 180)).toBe(true)
+    expect(adapter.getIndicatorPreferences().sub.map(({ height }) => height)).toEqual([180, 200, 320])
+    adapter.setIndicatorPaneHeight('macd', 600)
+    adapter.layoutSubPanes(80)
+    expect(adapter.getIndicatorPreferences().sub.map(({ height }) => height)).toEqual([180, 600, 320])
+    expect(adapter.layoutSubPanes(0)).toBeLessThanOrEqual(196)
+    viewportHeight = 1600
+    adapter.layoutSubPanes(0)
+    expect([...heights.values()]).toEqual([180, 600, 320])
+    viewportHeight = 400
+    adapter.layoutSubPanes(80)
+    viewportHeight = 1600
+    adapter.layoutSubPanes(0)
+    expect(adapter.getIndicatorPaneSizes().map(({ height }) => height)).toEqual([180, 600, 320])
+  })
+
   it('expands narrow-screen subpanes without overwriting saved heights and tracks explicit user resizing', () => {
     const indicator = { name: 'VOL', calcParams: [], visible: true, styles: null }
     const panes = new Map([
@@ -52,7 +155,7 @@ describe('ProChartAdapter', () => {
     let onDrag: (() => void) | undefined
     const core = {
       getIndicatorByPaneId: () => panes,
-      getSize: (id: string) => ({ height: heights.get(id) ?? 500 }),
+      getSize: (id?: string) => ({ height: id === undefined ? 1000 : id === 'x_axis_pane' ? 24 : heights.get(id) ?? 500 }),
       setPaneOptions: ({ id, height }: { id: string; height: number }) => { heights.set(id, height) },
       subscribeAction: (type: string, callback: () => void) => { if (type === 'onPaneDrag') onDrag = callback },
     } as unknown as Chart
@@ -78,6 +181,17 @@ describe('ProChartAdapter', () => {
     panes.set('new-pane', new Map([['RSI', { ...indicator, name: 'RSI' }]]))
     heights.set('new-pane', 100)
     expect(adapter.layoutSubPanes(200)).toBe(524)
+  })
+
+  it('hides candle and indicator text together for an unobstructed compact chart', () => {
+    const setStyles = vi.fn()
+    const core = { setStyles } as unknown as Chart
+    const adapter = new ProChartAdapter(() => fakeChart(core))
+    adapter.mount({ container: document.createElement('div'), datafeed: { getHistoryKLineData: async () => [], searchSymbols: async () => [], subscribe() {}, unsubscribe() {} }, period: { multiplier: 15, timespan: 'minute', text: '15m' }, symbol: { ticker: 'BTCUSDT' } })
+    adapter.setIndicatorInfoVisible(false)
+    expect(setStyles).toHaveBeenLastCalledWith({ candle: { tooltip: { showRule: 'none' } }, indicator: { tooltip: { showRule: 'none' } } })
+    adapter.setIndicatorInfoVisible(true)
+    expect(setStyles).toHaveBeenLastCalledWith({ candle: { tooltip: { showRule: 'always' } }, indicator: { tooltip: { showRule: 'always' } } })
   })
 
   it('mounts once and delegates public updates', () => {
@@ -346,10 +460,7 @@ describe('ProChartAdapter', () => {
 
     adapter.setSimulationOverlays({
       currentTime: 60_000,
-      entryPrice: 100,
-      takeProfitPrice: 110,
-      stopLossPrice: 90,
-      liquidationPrice: 80,
+      positions: [{ side: 'long', entryPrice: 100, takeProfitPrice: 110, stopLossPrice: 90, liquidationPrice: 80 }],
       trades: [
         {
           id: 'trade-1',
@@ -368,7 +479,7 @@ describe('ProChartAdapter', () => {
     expect(coreChart.createOverlay).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
-          id: 'simulation-entry',
+          id: 'simulation-long-entry',
           name: 'priceLine',
         }),
         expect.objectContaining({
@@ -420,37 +531,35 @@ describe('ProChartAdapter', () => {
       period: { multiplier: 1, timespan: 'minute', text: '1m' },
       symbol: { ticker: 'BTCUSDT' },
     })
+    const onShortStopLossDrag = vi.fn()
     const onEntryPriceDrag = vi.fn()
     const onTakeProfitPriceDrag = vi.fn()
     const onStopLossPriceDrag = vi.fn()
 
     adapter.setSimulationOverlays({
       currentTime: 60_000,
-      entryPrice: 100,
-      takeProfitPrice: 110,
-      stopLossPrice: 90,
-      liquidationPrice: 80,
+      positions: [
+        { side: 'long', entryPrice: 100, takeProfitPrice: 110, stopLossPrice: 90, liquidationPrice: 80, onEntryPriceDrag, onTakeProfitPriceDrag, onStopLossPriceDrag },
+        { side: 'short', entryPrice: 100, takeProfitPrice: 85, stopLossPrice: 115, liquidationPrice: 125, onStopLossPriceDrag: onShortStopLossDrag },
+      ],
       trades: [],
-      onEntryPriceDrag,
-      onTakeProfitPriceDrag,
-      onStopLossPriceDrag,
     })
 
     const overlays = vi.mocked(coreChart.createOverlay).mock.calls[0][0]
     if (!Array.isArray(overlays)) throw new Error('Expected overlay array')
     const entry = overlays.find(
       (overlay) =>
-        typeof overlay !== 'string' && overlay.id === 'simulation-entry',
+        typeof overlay !== 'string' && overlay.id === 'simulation-long-entry',
     )
     const takeProfit = overlays.find(
       (overlay) =>
         typeof overlay !== 'string' &&
-        overlay.id === 'simulation-take-profit',
+        overlay.id === 'simulation-long-take-profit',
     )
     const stopLoss = overlays.find(
       (overlay) =>
         typeof overlay !== 'string' &&
-        overlay.id === 'simulation-stop-loss',
+        overlay.id === 'simulation-long-stop-loss',
     )
     if (
       entry === undefined ||
@@ -479,5 +588,12 @@ describe('ProChartAdapter', () => {
     expect(onEntryPriceDrag).toHaveBeenCalledWith(105)
     expect(onTakeProfitPriceDrag).toHaveBeenCalledWith(115)
     expect(onStopLossPriceDrag).toHaveBeenCalledWith(85)
+    const shortStop = overlays.find(overlay => typeof overlay !== 'string' && overlay.id === 'simulation-short-stop-loss')
+    if (typeof shortStop !== 'object' || shortStop === null) throw new Error('Expected short stop overlay')
+    shortStop.onPressedMoveEnd?.({ overlay: { points: [{ value: 116 }] } } as never)
+    expect(onShortStopLossDrag).toHaveBeenCalledWith(116)
+    expect(onStopLossPriceDrag).toHaveBeenCalledTimes(1)
+    expect(overlays).toHaveLength(9)
+    expect(new Set(overlays.map(overlay => typeof overlay === 'string' ? overlay : overlay.id)).size).toBe(9)
   })
 })

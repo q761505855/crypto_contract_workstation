@@ -149,6 +149,88 @@ function indicatorPreferences(): ChartIndicatorPreferences {
 }
 
 describe('WorkstationBackupService', () => {
+  it('round-trips workspace layout in config and full archives without replacing missing legacy layouts', async () => {
+    const workspace = {
+      schemaVersion: 1,
+      panels: { account: false, order: false, dock: true, replay: false, status: false },
+      chartHeight: 760, mobileChartHeight: null, dockHeight: 280,
+    }
+    const sourceStorage = new MemoryPreferences()
+    sourceStorage.setItem('workspace.layout.v1', JSON.stringify(workspace))
+    const source = new WorkstationBackupService(`workspace-source-${crypto.randomUUID()}`, sourceStorage)
+    for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
+      expect(archive.data.preferences).toHaveProperty('workspace', workspace)
+      const targetStorage = new MemoryPreferences()
+      const target = new WorkstationBackupService(`workspace-target-${crypto.randomUUID()}`, targetStorage)
+      await target.import(archive)
+      expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
+      expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(workspace)
+      const legacy = structuredClone(archive)
+      delete (legacy.data.preferences as unknown as Record<string, unknown>).workspace
+      await target.import(legacy)
+      expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(workspace)
+    }
+  })
+
+  it.each([null, {}, { schemaVersion: 1, panels: { account: false }, chartHeight: null, mobileChartHeight: null, dockHeight: 220 }])('rejects an invalid workspace before any data or preferences are written (%j)', async workspace => {
+    const storage = new MemoryPreferences()
+    storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
+    const databaseName = `workspace-invalid-${crypto.randomUUID()}`
+    const service = new WorkstationBackupService(databaseName, storage)
+    const archive = await service.exportAll()
+    archive.data.symbols = [symbol()]
+    archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    Object.assign(archive.data.preferences!, { workspace })
+    await expect(service.import(archive)).rejects.toThrow(/workspace/)
+    expect(storage.getItem('marketData.binanceBaseUrl')).toBe('https://original.test')
+    expect(storage.getItem('workspace.layout.v1')).toBeNull()
+    expect(await new IndexedDbMarketDataStore(databaseName).getSymbols()).toEqual([])
+  })
+
+  it('round-trips both positions and their independent risk orders in session and full archives', async () => {
+    const sourceName = `hedged-source-${crypto.randomUUID()}`
+    await seed(sourceName, new MemoryPreferences())
+    const engine = SimulationEngine.create(session())
+    engine.open('long', { quantity: '1' }, candle())
+    engine.open('short', { quantity: '2' }, candle())
+    engine.setTakeProfit('long', '120', 0)
+    engine.setStopLoss('long', '95', 0)
+    engine.setTakeProfit('short', '80', 0)
+    engine.setStopLoss('short', '105', 0)
+    await new IndexedDbSimulationStateStore(sourceName).save(engine.snapshot())
+    const source = new WorkstationBackupService(sourceName, new MemoryPreferences())
+    for (const archive of [await source.exportAll(), await source.exportSession(session().id)]) {
+      const target = new WorkstationBackupService(`hedged-target-${crypto.randomUUID()}`, new MemoryPreferences())
+      await target.import(archive)
+      expect((await target.exportAll()).data.simulations).toEqual(archive.data.simulations)
+      expect(archive.data.simulations![0].positions).toMatchObject([
+        { side: 'long', takeProfitPrice: '120', stopLossPrice: '95' },
+        { side: 'short', takeProfitPrice: '80', stopLossPrice: '105' },
+      ])
+    }
+  })
+
+  it.each(['missing', 'null', 'duplicate', 'bad-side', 'zero-quantity', 'bad-risk', 'missing-activation'])('rejects invalid hedged positions (%s) before writing any data', async invalid => {
+    const sourceName = `invalid-hedged-source-${crypto.randomUUID()}`
+    await seed(sourceName, new MemoryPreferences())
+    const archive = await new WorkstationBackupService(sourceName, new MemoryPreferences()).exportAll()
+    const state = archive.data.simulations![0] as unknown as Record<string, unknown>
+    const positions = state.positions as Record<string, unknown>[]
+    if (invalid === 'missing') delete state.positions
+    if (invalid === 'null') state.positions = null
+    if (invalid === 'duplicate') positions.push(structuredClone(positions[0]))
+    if (invalid === 'bad-side') positions[0].side = 'both'
+    if (invalid === 'zero-quantity') positions[0].quantity = '0'
+    if (invalid === 'bad-risk') positions.push({ ...positions[0], side: 'short', stopLossPrice: 'invalid' })
+    if (invalid === 'missing-activation') positions[0].stopLossPrice = '95'
+    const storage = new MemoryPreferences()
+    const target = new WorkstationBackupService(`invalid-hedged-target-${crypto.randomUUID()}`, storage)
+    await expect(target.import(archive)).rejects.toThrow(/positions/)
+    expect((await target.exportAll()).data.simulations).toEqual([])
+    expect((await target.exportAll()).data.symbols).toEqual([])
+    expect(storage.getItem('marketData.binanceBaseUrl')).toBeNull()
+  })
+
   it('round-trips indicator configuration-only archives and preserves legacy missing versus explicit empty', async () => {
     const sourceStorage = new MemoryPreferences()
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(indicatorPreferences()))
@@ -260,16 +342,20 @@ describe('WorkstationBackupService', () => {
     await seed(databaseName, preferences)
     const service = new WorkstationBackupService(databaseName, preferences)
     const archive = await service.exportAll()
-    const position = archive.data.simulations![0].position! as unknown as Record<string, unknown>
+    const state = archive.data.simulations![0] as unknown as Record<string, unknown>
+    const position = archive.data.simulations![0].positions[0] as unknown as Record<string, unknown>
+    state.schemaVersion = 1
+    state.position = position
+    delete state.positions
     position.markPrice = '102'
     delete position.lastPrice
     const validated = validateBackupEnvelope(archive)
-    expect(validated.data.simulations![0].position).toMatchObject({ lastPrice: '102' })
-    expect(validated.data.simulations![0].position).not.toHaveProperty('markPrice')
+    expect(validated.data.simulations![0].positions[0]).toMatchObject({ lastPrice: '102' })
+    expect(validated.data.simulations![0].positions[0]).not.toHaveProperty('markPrice')
     await service.import(archive)
     const output = await service.exportAll()
-    expect(output.data.simulations![0].position).not.toHaveProperty('markPrice')
-    expect(output.data.simulations![0].position?.lastPrice).toBe('102')
+    expect(output.data.simulations![0].positions[0]).not.toHaveProperty('markPrice')
+    expect(output.data.simulations![0].positions[0]?.lastPrice).toBe('102')
     position.markPrice = 'bad'
     await expect(service.import(archive)).rejects.toThrow(/markPrice/)
   })

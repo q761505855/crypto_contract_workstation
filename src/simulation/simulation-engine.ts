@@ -11,6 +11,7 @@ import type {
   SimulationLedgerEntry,
   SimulationPosition,
   SimulationState,
+  StoredSimulationState,
   SimulationStats,
   SimulationTrade,
   TradeAction,
@@ -43,7 +44,7 @@ function nonNegative(value: Decimal.Value, field: string): Decimal {
 
 function positive(value: Decimal.Value, field: string): Decimal {
   const result = decimal(value, field)
-  if (!result.isPositive()) {
+  if (result.lessThanOrEqualTo(0)) {
     throw new Error(`${field} 必须大于 0`)
   }
   return result
@@ -97,7 +98,7 @@ export class SimulationEngine {
   private readonly quantityPrecision: number
 
   private constructor(
-    state: SimulationState,
+    state: StoredSimulationState,
     symbolPrecision: { price: number; quantity: number },
     private readonly now: () => number,
   ) {
@@ -117,7 +118,7 @@ export class SimulationEngine {
     )
     const timestamp = now()
     const state: SimulationState = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sessionId: session.id,
       symbol: session.symbol.ticker.toUpperCase(),
       config: { ...session.tradingConfig },
@@ -132,7 +133,7 @@ export class SimulationEngine {
         totalFees: '0',
         totalLiquidationFees: '0',
       },
-      position: null,
+      positions: [],
       trades: [],
       ledger: [
         {
@@ -160,7 +161,7 @@ export class SimulationEngine {
   }
 
   static restore(
-    state: SimulationState,
+    state: StoredSimulationState,
     session: ReplaySession,
     now: () => number = Date.now,
   ): SimulationEngine {
@@ -187,10 +188,7 @@ export class SimulationEngine {
     size: OrderSizeInput,
     referencePrice: string,
   ): OrderPreview {
-    const existing = this.state.position
-    if (existing !== null && existing.side !== side) {
-      throw new Error('持有反向仓位时必须先全部平仓')
-    }
+    const existing = this.findPosition(side)
     const fillPrice = this.marketFillPrice(
       positive(referencePrice, '当前价格'),
       side === 'long' ? 'buy' : 'sell',
@@ -244,12 +242,6 @@ export class SimulationEngine {
     size: OrderSizeInput,
     candle: MarketCandle,
   ): SimulationTrade {
-    if (
-      this.state.position !== null &&
-      this.state.position.side !== side
-    ) {
-      throw new Error('持有反向仓位时必须先全部平仓')
-    }
     const reference = positive(candle.close, '当前 K 线收盘价')
     const tradeSide: TradeSide = side === 'long' ? 'buy' : 'sell'
     const fillPrice = this.marketFillPrice(reference, tradeSide)
@@ -264,7 +256,7 @@ export class SimulationEngine {
       throw new Error('可用余额不足以支付保证金和手续费')
     }
 
-    const existing = this.state.position
+    const existing = this.findPosition(side)
     const action: TradeAction = existing === null ? 'open' : 'add'
     let position: SimulationPosition
     if (existing === null) {
@@ -319,7 +311,8 @@ export class SimulationEngine {
       ),
     )
 
-    this.state.position = position
+    if (existing === null) this.state.positions.push(position)
+    else this.state.positions[this.state.positions.indexOf(existing)] = position
     this.applyWalletChange(fee.negated(), 'trading_fee', candle.openTime)
     const trade = this.recordTrade({
       timestamp: candle.openTime,
@@ -340,21 +333,24 @@ export class SimulationEngine {
   }
 
   reduce(
+    side: PositionSide,
     quantityValue: string,
     candle: MarketCandle,
     action: 'reduce' | 'close' = 'reduce',
   ): SimulationTrade {
-    const position = this.requirePosition()
+    const position = this.requirePosition(side)
     const currentQuantity = decimal(position.quantity, '持仓数量')
     const quantity = this.roundQuantity(
       positive(quantityValue, '减仓数量'),
     )
+    if (quantity.lessThanOrEqualTo(0)) throw new Error('按当前精度计算后的减仓数量为 0')
     if (quantity.greaterThan(currentQuantity)) {
       throw new Error('减仓数量不能大于当前持仓数量')
     }
     const isFullClose = quantity.equals(currentQuantity)
     const resolvedAction: TradeAction = isFullClose ? 'close' : action
     return this.closeQuantity(
+      position,
       quantity,
       positive(candle.close, '当前 K 线收盘价'),
       candle.openTime,
@@ -364,18 +360,18 @@ export class SimulationEngine {
     )
   }
 
-  closeAll(candle: MarketCandle): SimulationTrade {
-    const position = this.requirePosition()
-    return this.reduce(position.quantity, candle, 'close')
+  closeAll(side: PositionSide, candle: MarketCandle): SimulationTrade {
+    const position = this.requirePosition(side)
+    return this.reduce(side, position.quantity, candle, 'close')
   }
 
-  setTakeProfit(priceValue: string | null, currentTime: number): void {
-    const position = this.requirePosition()
+  setTakeProfit(side: PositionSide, priceValue: string | null, currentTime: number): void {
+    const position = this.requirePosition(side)
     if (priceValue === null) {
       position.takeProfitPrice = null
       position.takeProfitActiveAfterTime = null
     } else {
-      const price = this.roundPrice(positive(priceValue, '止盈价格'))
+      const price = positive(this.roundPrice(positive(priceValue, '止盈价格')), '止盈价格')
       const currentPrice = decimal(
         position.lastPrice,
         '当前成交价格',
@@ -395,13 +391,13 @@ export class SimulationEngine {
     this.touch()
   }
 
-  setStopLoss(priceValue: string | null, currentTime: number): void {
-    const position = this.requirePosition()
+  setStopLoss(side: PositionSide, priceValue: string | null, currentTime: number): void {
+    const position = this.requirePosition(side)
     if (priceValue === null) {
       position.stopLossPrice = null
       position.stopLossActiveAfterTime = null
     } else {
-      const price = this.roundPrice(positive(priceValue, '止损价格'))
+      const price = positive(this.roundPrice(positive(priceValue, '止损价格')), '止损价格')
       const currentPrice = decimal(
         position.lastPrice,
         '当前成交价格',
@@ -427,15 +423,20 @@ export class SimulationEngine {
   }
 
   processCandle(tradeCandle: MarketCandle): CandleProcessResult {
-    const position = this.state.position
-    if (position === null) {
-      this.state.warning = null
-      this.touch()
-      return { exitAction: null, warning: null }
+    let exitAction: TradeAction | null = null
+    // Each side is evaluated independently, even if the other side exits on this candle.
+    for (const position of [...this.state.positions]) {
+      const action = this.processPositionCandle(position, tradeCandle)
+      if (action === 'liquidation' || (action === 'stop_loss' && exitAction !== 'liquidation') || exitAction === null) {
+        exitAction = action ?? exitAction
+      }
     }
+    this.recalculate(positive(tradeCandle.close, '当前成交价格'), tradeCandle.openTime)
+    this.state.warning = null
+    return { exitAction, warning: null }
+  }
 
-    const warning = null
-
+  private processPositionCandle(position: SimulationPosition, tradeCandle: MarketCandle): TradeAction | null {
     if (
       tradeCandle.openTime > position.riskActiveAfterTime &&
       this.liquidationTouched(position, tradeCandle)
@@ -447,14 +448,14 @@ export class SimulationEngine {
           ? Decimal.min(trigger, open)
           : Decimal.max(trigger, open)
       this.closeTriggered(
+        position,
         exitPrice,
         trigger,
         tradeCandle.openTime,
         'liquidation',
         'liquidation',
       )
-      this.state.warning = null
-      return { exitAction: 'liquidation', warning: null }
+      return 'liquidation'
     }
 
     if (
@@ -470,14 +471,14 @@ export class SimulationEngine {
           ? Decimal.min(trigger, open)
           : Decimal.max(trigger, open)
       this.closeTriggered(
+        position,
         exitPrice,
         trigger,
         tradeCandle.openTime,
         'stop_loss',
         'stop_loss',
       )
-      this.state.warning = warning
-      return { exitAction: 'stop_loss', warning }
+      return 'stop_loss'
     }
 
     if (
@@ -490,25 +491,20 @@ export class SimulationEngine {
       const open = decimal(tradeCandle.open, 'K 线开盘价')
       const exitPrice =
         position.side === 'long'
-          ? Decimal.min(trigger, open)
-          : Decimal.max(trigger, open)
+          ? Decimal.max(trigger, open)
+          : Decimal.min(trigger, open)
       this.closeTriggered(
+        position,
         exitPrice,
         trigger,
         tradeCandle.openTime,
         'take_profit',
         'take_profit',
       )
-      this.state.warning = warning
-      return { exitAction: 'take_profit', warning }
+      return 'take_profit'
     }
 
-    this.recalculate(
-      positive(tradeCandle.close, '当前成交价格'),
-      tradeCandle.openTime,
-    )
-    this.state.warning = warning
-    return { exitAction: null, warning }
+    return null
   }
 
   private resolveOrderSize(
@@ -526,7 +522,7 @@ export class SimulationEngine {
       const quantity = this.roundQuantity(
         requestedMargin.mul(this.state.config.leverage).div(fillPrice),
       )
-      if (!quantity.isPositive()) {
+      if (quantity.lessThanOrEqualTo(0)) {
         throw new Error('按当前精度计算后的仓位数量为 0')
       }
       return {
@@ -537,7 +533,7 @@ export class SimulationEngine {
     const quantity = this.roundQuantity(
       positive(size.quantity!, '仓位数量'),
     )
-    if (!quantity.isPositive()) {
+    if (quantity.lessThanOrEqualTo(0)) {
       throw new Error('按当前精度计算后的仓位数量为 0')
     }
     return {
@@ -547,6 +543,7 @@ export class SimulationEngine {
   }
 
   private closeQuantity(
+    position: SimulationPosition,
     quantity: Decimal,
     reference: Decimal,
     timestamp: number,
@@ -554,7 +551,6 @@ export class SimulationEngine {
     reason: TradeReason,
     applySlippage: boolean,
   ): SimulationTrade {
-    const position = this.requirePosition()
     const tradeSide: TradeSide =
       position.side === 'long' ? 'sell' : 'buy'
     const fillPrice = applySlippage
@@ -594,7 +590,7 @@ export class SimulationEngine {
 
     const remaining = oldQuantity.minus(quantity)
     if (remaining.isZero()) {
-      this.state.position = null
+      this.state.positions = this.state.positions.filter(value => value !== position)
       this.updateExitStats(realized, action)
     } else {
       position.quantity = text(remaining)
@@ -626,13 +622,13 @@ export class SimulationEngine {
   }
 
   private closeTriggered(
+    position: SimulationPosition,
     exitPrice: Decimal,
     triggerPrice: Decimal,
     timestamp: number,
     action: 'take_profit' | 'stop_loss' | 'liquidation',
     reason: TradeReason,
   ): void {
-    const position = this.requirePosition()
     const quantity = decimal(position.quantity, '持仓数量')
     const entry = decimal(position.entryPrice, '开仓均价')
     const realized =
@@ -683,7 +679,7 @@ export class SimulationEngine {
         realized,
       ),
     )
-    this.state.position = null
+    this.state.positions = this.state.positions.filter(value => value !== position)
     this.updateExitStats(realized, action)
     this.recalculate(exitPrice, timestamp)
   }
@@ -778,20 +774,20 @@ export class SimulationEngine {
     lastPrice: Decimal,
     timestamp: number,
   ): void {
-    const position = this.state.position
     let unrealized = ZERO
     let usedMargin = ZERO
-    if (position !== null) {
+    for (const position of this.state.positions) {
       const quantity = decimal(position.quantity, '持仓数量')
       const entry = decimal(position.entryPrice, '开仓均价')
-      unrealized =
+      const positionPnl =
         position.side === 'long'
           ? lastPrice.minus(entry).mul(quantity)
           : entry.minus(lastPrice).mul(quantity)
-      usedMargin = decimal(position.isolatedMargin, '逐仓保证金')
+      unrealized = unrealized.plus(positionPnl)
+      usedMargin = usedMargin.plus(decimal(position.isolatedMargin, '逐仓保证金'))
       position.lastPrice = text(this.roundPrice(lastPrice))
       position.notional = text(quantity.mul(lastPrice))
-      position.unrealizedPnl = text(unrealized)
+      position.unrealizedPnl = text(positionPnl)
       position.updatedAt = timestamp
     }
     const wallet = decimal(this.state.account.walletBalance, '钱包余额')
@@ -931,11 +927,14 @@ export class SimulationEngine {
     )
   }
 
-  private requirePosition(): SimulationPosition {
-    if (this.state.position === null) {
-      throw new Error('当前没有持仓')
-    }
-    return this.state.position
+  private findPosition(side: PositionSide): SimulationPosition | null {
+    return this.state.positions.find(position => position.side === side) ?? null
+  }
+
+  private requirePosition(side: PositionSide): SimulationPosition {
+    const position = this.findPosition(side)
+    if (position === null) throw new Error('当前没有该方向持仓')
+    return position
   }
 
   private touch(): void {

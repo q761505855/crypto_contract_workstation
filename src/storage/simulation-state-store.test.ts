@@ -4,6 +4,7 @@ import type { MarketCandle } from '../market-data/models'
 import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
 import { IndexedDbSimulationStateStore } from './simulation-state-store'
+import { openWorkstationDatabase } from './market-data-store'
 
 function replaySession(): ReplaySession {
   return {
@@ -52,6 +53,22 @@ function candle(): MarketCandle {
 }
 
 describe('IndexedDbSimulationStateStore', () => {
+  it('restores old single-position rows and keeps explicit empty hedged rows empty', async () => {
+    const name = `legacy-position-${crypto.randomUUID()}`
+    const store = new IndexedDbSimulationStateStore(name)
+    const engine = SimulationEngine.create(replaySession())
+    engine.open('short', { quantity: '1' }, candle())
+    engine.setStopLoss('short', '110', 0)
+    const { positions, ...fields } = engine.snapshot()
+    const database = await openWorkstationDatabase(name)
+    await database.put('simulationStates', { ...fields, schemaVersion: 1, position: positions[0] })
+    const restored = await store.load(fields.sessionId)
+    expect(restored).toMatchObject({ schemaVersion: 2, positions: [{ side: 'short', stopLossPrice: '110' }] })
+    expect(restored).not.toHaveProperty('position')
+    await store.save({ ...engine.snapshot(), positions: [] })
+    expect((await store.load(fields.sessionId))?.positions).toEqual([])
+  })
+
   it('persists account state, position, trades, and ledger separately', async () => {
     const store = new IndexedDbSimulationStateStore(
       `simulation-test-${crypto.randomUUID()}`,

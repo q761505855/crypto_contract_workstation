@@ -97,12 +97,12 @@ export interface SimulationStats {
 }
 
 export interface SimulationState {
-  schemaVersion: 1
+  schemaVersion: 2
   sessionId: string
   symbol: string
   config: ReplayTradingConfig
   account: SimulationAccount
-  position: SimulationPosition | null
+  positions: SimulationPosition[]
   trades: SimulationTrade[]
   ledger: SimulationLedgerEntry[]
   stats: SimulationStats
@@ -110,11 +110,28 @@ export interface SimulationState {
   updatedAt: number
 }
 
-/** Migrate old saved positions at the boundary; canonical snapshots contain ordinary prices only. */
-export function normalizeSimulationStatePrices(state: SimulationState): SimulationState {
-  const result = structuredClone(state)
-  if (result.position !== null) {
-    const position = result.position as SimulationPosition & { markPrice?: string }
+/** Version 1 is accepted only at storage/import boundaries. */
+export interface LegacySimulationState extends Omit<SimulationState, 'schemaVersion' | 'positions'> {
+  schemaVersion: 1
+  position: SimulationPosition | null
+}
+
+export type StoredSimulationState = SimulationState | LegacySimulationState
+
+/** Upgrade single positions and legacy prices without mutating the saved input. */
+export function normalizeSimulationStatePrices(state: StoredSimulationState): SimulationState {
+  if (state.schemaVersion !== 1 && state.schemaVersion !== 2) throw new Error('模拟状态版本不受支持')
+  const saved = structuredClone(state)
+  const positions = saved.schemaVersion === 1
+    ? saved.position === null ? [] : [saved.position]
+    : saved.positions
+  if (!Array.isArray(positions) || positions.length > 2 ||
+      new Set(positions.map(position => position.side)).size !== positions.length) {
+    throw new Error('模拟持仓必须是不同方向的最多两个仓位')
+  }
+  for (const value of positions) {
+    if (!['long', 'short'].includes(value.side)) throw new Error('模拟持仓方向无效')
+    const position = value as SimulationPosition & { markPrice?: string }
     const lastPrice = position.lastPrice ?? position.markPrice
     if (typeof lastPrice !== 'string' || !Number.isFinite(Number(lastPrice)) || Number(lastPrice) <= 0) {
       throw new Error('模拟持仓缺少有效成交价格')
@@ -122,6 +139,8 @@ export function normalizeSimulationStatePrices(state: SimulationState): Simulati
     position.lastPrice = lastPrice
     delete position.markPrice
   }
+  const { position: _legacy, ...fields } = saved as StoredSimulationState & { position?: SimulationPosition | null }
+  const result: SimulationState = { ...fields, schemaVersion: 2, positions }
   if (result.warning !== null && /缺少.*标记价格/.test(result.warning)) result.warning = null
   return result
 }

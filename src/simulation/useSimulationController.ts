@@ -27,11 +27,11 @@ export interface SimulationController {
     size: OrderSizeInput,
   ): Promise<OrderPreview | null>
   open(side: PositionSide, size: OrderSizeInput): Promise<void>
-  reduce(quantity: string): Promise<void>
-  reducePercent(percent: 25 | 50 | 75): Promise<void>
-  closeAll(): Promise<void>
-  setTakeProfit(price: string | null): void
-  setStopLoss(price: string | null): void
+  reduce(side: PositionSide, quantity: string): Promise<void>
+  reducePercent(side: PositionSide, percent: 25 | 50 | 75): Promise<void>
+  closeAll(side: PositionSide): Promise<void>
+  setTakeProfit(side: PositionSide, price: string | null): void
+  setStopLoss(side: PositionSide, price: string | null): void
   clearError(): void
 }
 
@@ -194,13 +194,13 @@ export function useSimulationController(
   )
 
   const reduce = useCallback(
-    async (quantity: string) => {
+    async (side: PositionSide, quantity: string) => {
       const engine = engineRef.current
       if (engine === null) return
       setBusy(true)
       try {
         const candle = await currentCandle()
-        engine.reduce(quantity, candle)
+        engine.reduce(side, quantity, candle)
         setError('')
         publish(engine)
       } catch (reason) {
@@ -213,8 +213,8 @@ export function useSimulationController(
   )
 
   const reducePercent = useCallback(
-    async (percent: 25 | 50 | 75) => {
-      const position = engineRef.current?.snapshot().position
+    async (side: PositionSide, percent: 25 | 50 | 75) => {
+      const position = engineRef.current?.snapshot().positions.find(position => position.side === side)
       if (position === null || position === undefined) {
         setError('当前没有持仓')
         return
@@ -223,18 +223,18 @@ export function useSimulationController(
         .mul(percent)
         .div(100)
         .toString()
-      await reduce(quantity)
+      await reduce(side, quantity)
     },
     [reduce],
   )
 
-  const closeAll = useCallback(async () => {
+  const closeAll = useCallback(async (side: PositionSide) => {
     const engine = engineRef.current
     if (engine === null) return
     setBusy(true)
     try {
       const candle = await currentCandle()
-      engine.closeAll(candle)
+      engine.closeAll(side, candle)
       setError('')
       publish(engine)
     } catch (reason) {
@@ -245,12 +245,12 @@ export function useSimulationController(
   }, [currentCandle, publish])
 
   const setTakeProfit = useCallback(
-    (price: string | null) => {
+    (side: PositionSide, price: string | null) => {
       const engine = engineRef.current
       const session = sessionRef.current
       if (engine === null || session === null) return
       try {
-        engine.setTakeProfit(price, session.currentTime)
+        engine.setTakeProfit(side, price, session.currentTime)
         setError('')
         publish(engine)
       } catch (reason) {
@@ -261,12 +261,12 @@ export function useSimulationController(
   )
 
   const setStopLoss = useCallback(
-    (price: string | null) => {
+    (side: PositionSide, price: string | null) => {
       const engine = engineRef.current
       const session = sessionRef.current
       if (engine === null || session === null) return
       try {
-        engine.setStopLoss(price, session.currentTime)
+        engine.setStopLoss(side, price, session.currentTime)
         setError('')
         publish(engine)
       } catch (reason) {
