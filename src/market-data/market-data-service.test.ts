@@ -76,6 +76,16 @@ class MemoryStore implements MarketDataStore {
 }
 
 describe('MarketDataService', () => {
+  it('retries an aborted fallback replay batch on the next navigation without resetting all requests', async () => {
+    const store = new MemoryStore()
+    const controller = new AbortController()
+    const downloadRange = vi.fn(async () => [candle(0)])
+    downloadRange.mockImplementationOnce(async () => { controller.abort(); throw new DOMException('retired navigation', 'AbortError') })
+    const service = new MarketDataService({ downloadRange } as unknown as BinanceRestClient, store)
+    await expect(service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 0, { signal: controller.signal, prefetchTo: 0 })).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(service.loadReplayCandles('trade', 'BTCUSDT', '1m', 0, 0, { prefetchTo: 0 })).resolves.toEqual([candle(0)])
+    expect(downloadRange).toHaveBeenCalledTimes(2)
+  })
   it('fills a page ahead and reuses it for later replay steps', async () => {
     const store = new MemoryStore()
     const downloadRange = vi.fn(async (_kind, _symbol, _timeframe, from: number, to: number) =>

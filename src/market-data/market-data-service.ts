@@ -147,7 +147,9 @@ export class MarketDataService {
     to: number,
     options: ReplayLoadOptions = {},
   ): Promise<MarketCandle[]> {
+    options.signal?.throwIfAborted()
     const cached = await this.loadCachedCandles(kind, symbol, timeframe, from, to)
+    options.signal?.throwIfAborted()
     const latestClosed = previousOpenTime(alignOpenTime(Date.now(), timeframe, 'floor'), timeframe)
     const requestedTo = Math.min(to, latestClosed)
     const gaps = findMissingRanges(cached, timeframe, Math.max(0, from), requestedTo)
@@ -170,6 +172,7 @@ export class MarketDataService {
           },
         })
       } catch (reason) {
+        if (options.signal?.aborted || (reason instanceof DOMException && reason.name === 'AbortError')) throw reason
         const message = `回放按月准备未完成：${reason instanceof Error ? reason.message : String(reason)}`
         this.replayFailures.set(key,message)
         options.onWarning?.(message)
@@ -184,7 +187,11 @@ export class MarketDataService {
         options.signal?.throwIfAborted()
         const existing = batches.find((batch) => cursor >= batch.from && cursor <= batch.to)
         if (existing !== undefined) {
-          await existing.ready
+          try { await existing.ready } catch (reason) {
+            options.signal?.throwIfAborted()
+            if (reason instanceof DOMException && reason.name === 'AbortError') continue
+            throw reason
+          }
           if (this.replayFailures.has(key)) break fill
           cursor = nextOpenTime(existing.to, timeframe)
           continue
@@ -210,6 +217,11 @@ export class MarketDataService {
               },
             })
           } catch (reason) {
+            if (options.signal?.aborted || (reason instanceof DOMException && reason.name === 'AbortError')) {
+              const index = batches.indexOf(batch)
+              if (index >= 0) batches.splice(index, 1)
+              throw reason
+            }
             const message = `批量补缺已停止，不会逐根重试：${reason instanceof Error ? reason.message : String(reason)}`
             this.replayFailures.set(key, message)
             options.onWarning?.(message)
@@ -273,6 +285,7 @@ export class MarketDataService {
         await this.store.putCandles(kind, downloaded)
       }
     } catch (error) {
+      if (options.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error
       cached = await this.store.getCandles(
         kind,
         normalizedSymbol,

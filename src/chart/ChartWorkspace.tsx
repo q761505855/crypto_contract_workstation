@@ -208,13 +208,18 @@ export function ChartWorkspace({
       return
     }
     let active = true
+    const adapter = adapterRef.current!
+    const symbolAtJump = adapter.getSymbol().ticker
+    const periodAtJump = adapter.getPeriod().text
+    const isCurrent = () => active && adapter.getSymbol().ticker === symbolAtJump && adapter.getPeriod().text === periodAtJump
     void jump
       .call(adapterRef.current, jumpRequest.timestamp)
       .then((timestamp) => {
-        if (active) onJumpComplete?.(timestamp)
+        if (isCurrent()) onJumpComplete?.(timestamp)
       })
-      .catch(() => {
-        if (active) onJumpComplete?.(null)
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === 'AbortError') return
+        if (isCurrent()) onJumpComplete?.(null)
       })
     return () => {
       active = false

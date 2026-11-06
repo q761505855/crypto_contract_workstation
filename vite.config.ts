@@ -6,5 +6,8 @@ export default defineConfig(({ mode }) => {
   return {
     base: env.VITE_BASE_PATH || '/',
     plugins: [react()],
+    // Serve the patched chart directly so dependency prebundling cannot retain
+    // an older history-request implementation after patch-package updates.
+    optimizeDeps: { exclude: ['@klinecharts/pro'] },
   }
 })

@@ -158,7 +158,7 @@ export function openWorkstationDatabase(
 export interface MarketDataStore {
   putSymbols(symbols: readonly MarketSymbol[]): Promise<void>
   getSymbols(): Promise<MarketSymbol[]>
-  putCandles(kind: CandleKind, candles: readonly MarketCandle[]): Promise<void>
+  putCandles(kind: CandleKind, candles: readonly MarketCandle[], signal?: AbortSignal): Promise<void>
   getCandles(
     kind: CandleKind,
     symbol: string,
@@ -194,6 +194,10 @@ function seriesRange(
   )
 }
 
+function throwIfWriteCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('行情缓存写入已取消', 'AbortError')
+}
+
 export class IndexedDbMarketDataStore implements MarketDataStore {
   constructor(private readonly databaseName = DATABASE_NAME) {}
 
@@ -218,24 +222,61 @@ export class IndexedDbMarketDataStore implements MarketDataStore {
   async putCandles(
     kind: CandleKind,
     candles: readonly MarketCandle[],
+    signal?: AbortSignal,
   ): Promise<void> {
+    throwIfWriteCancelled(signal)
     if (candles.length === 0) {
       return
     }
     const database = await this.open()
+    throwIfWriteCancelled(signal)
     const name = storeName(kind)
     const transaction = database.transaction(name, 'readwrite')
-    // A monthly archive has ~43k records. The transaction completion promise
-    // already detects errors; avoid a separate JS promise/handler per minute.
-    try {
-      const native = unwrap(transaction.store)
-      for (const candle of candles) native.put(candle)
-    } catch (error) {
-      transaction.abort()
-      await transaction.done.catch(() => undefined)
-      throw error
+    const done = transaction.done
+    // Attach a rejection handler before an abort can occur, including when a
+    // native put throws before control reaches the transaction completion await.
+    void done.catch(() => undefined)
+    const abort = () => {
+      try { transaction.abort() } catch { /* Already completed or aborted. */ }
     }
-    await transaction.done
+    signal?.addEventListener('abort', abort, { once: true })
+    let enqueueFailed = false
+    let enqueueError: unknown
+    // Keep at most one burst pending so cancellation does not have to clear a
+    // month-sized queue. Enqueue synchronously inside the final success event
+    // to keep the same atomic transaction active between bursts.
+    try {
+      throwIfWriteCancelled(signal)
+      const native = unwrap(transaction.store)
+      let offset = 0
+      const enqueueBurst = () => {
+        try {
+          throwIfWriteCancelled(signal)
+          const end = Math.min(offset + 1000, candles.length)
+          let last: IDBRequest<IDBValidKey> | undefined
+          while (offset < end) last = native.put(candles[offset++])
+          if (offset < candles.length) {
+            last!.addEventListener('success', enqueueBurst, { once: true })
+          }
+        } catch (error) {
+          // This may run from a later request event, outside this async call's
+          // stack. Preserve the original put error and let done settle first.
+          enqueueFailed = true
+          enqueueError = error
+          abort()
+        }
+      }
+      enqueueBurst()
+      await done
+    } catch (error) {
+      abort()
+      await done.catch(() => undefined)
+      throwIfWriteCancelled(signal)
+      if (enqueueFailed) throw enqueueError
+      throw error
+    } finally {
+      signal?.removeEventListener('abort', abort)
+    }
   }
 
   async getCandles(

@@ -75,15 +75,20 @@ export class MinuteHistory {
       .sort((a, b) => a.openTime - b.openTime)
   }
 
-  private async saveRows(rows: readonly MarketCandle[]): Promise<void> {
+  private async saveRows(rows: readonly MarketCandle[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
     if (rows.length === 0) return
     const existing = new Map((await this.store.getCandles('trade', rows[0].symbol, '1m', rows[0].openTime, rows.at(-1)!.openTime))
       .map((row) => [row.openTime, row]))
+    signal?.throwIfAborted()
     const changed = rows.filter((row) => {
       const prior = existing.get(row.openTime)
       return prior === undefined || (Object.keys(row) as Array<keyof MarketCandle>).some((field) => prior[field] !== row[field])
     })
-    if (changed.length > 0) await this.store.putCandles('trade', changed)
+    if (changed.length > 0) {
+      if (signal) await this.store.putCandles('trade', changed, signal)
+      else await this.store.putCandles('trade', changed)
+    }
   }
 
   async cached(kind: CandleKind, symbol: string, timeframe: string, from: number, to: number, includeCurrent = false): Promise<MarketCandle[]> {
@@ -169,7 +174,7 @@ export class MinuteHistory {
             options.signal?.throwIfAborted()
             if (remote) {
               if (remote.symbolInfo) await this.store.putSymbols([remote.symbolInfo])
-              await this.saveRows(remote.tradeCandles)
+              await this.saveRows(remote.tradeCandles, options.signal)
             }
           } catch (error) {
             this.cloudReads.delete(key)
@@ -196,7 +201,7 @@ export class MinuteHistory {
         this.services.archives.loadMonth('trade', symbol, year, month, { signal: options.signal }))
       options.signal?.throwIfAborted()
       if (archived !== null) {
-        await this.saveRows(archived)
+        await this.saveRows(archived, options.signal)
         this.queueUpload(symbol, year, month)
         gaps = findMissingRanges(await this.local(symbol, from, to), '1m', from, to)
         if (gaps.length === 0) return
@@ -218,7 +223,7 @@ export class MinuteHistory {
       }
       options.signal?.throwIfAborted()
       if (archived !== null) {
-        await this.saveRows(archived)
+        await this.saveRows(archived, options.signal)
         this.queueUpload(symbol, year, month)
       } else if (dayTime >= recentFrom) {
         const dayFrom = Math.max(from, dayTime)
@@ -229,11 +234,11 @@ export class MinuteHistory {
           const rows = await this.client.downloadRange('trade', symbol, '1m', gap.from, gap.to, {
             ...options,
             onPage: async (page) => {
-              await this.store.putCandles('trade', page.filter((candle) => candle.isClosed && candle.closeTime < this.now()))
+              await this.store.putCandles('trade', page.filter((candle) => candle.isClosed && candle.closeTime < this.now()), options.signal)
               this.queueUpload(symbol, year, month)
             },
           })
-          await this.store.putCandles('trade', rows.filter((candle) => candle.isClosed && candle.closeTime < this.now()))
+          await this.store.putCandles('trade', rows.filter((candle) => candle.isClosed && candle.closeTime < this.now()), options.signal)
           this.queueUpload(symbol, year, month)
         }
       }

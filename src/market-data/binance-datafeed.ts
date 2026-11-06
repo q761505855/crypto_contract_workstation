@@ -109,7 +109,9 @@ export class BinanceDatafeed implements Datafeed {
     from: number,
     to: number,
     notifySelection = true,
+    signal?: AbortSignal,
   ): Promise<KLineData[]> {
+    signal?.throwIfAborted()
     const timeframe = periodToTimeframe(period)
     if (notifySelection) this.onSelectionChange?.({ symbol, period })
     if (!Number.isFinite(from) || !Number.isFinite(to) || to < 0) return []
@@ -129,20 +131,22 @@ export class BinanceDatafeed implements Datafeed {
     const sequence = notifySelection ? ++this.historySequence : this.historySequence
     let active = true
     const report = (message: string) => {
-      if (notifySelection && active && sequence === this.historySequence) this.onWarning?.(message)
+      if (!signal?.aborted && notifySelection && active && sequence === this.historySequence) this.onWarning?.(message)
     }
     try {
       const older = minuteHistory && requestedFrom < effectiveFrom
         ? await this.service.loadCachedCandles('trade', symbol.ticker, timeframe, requestedFrom, effectiveFrom - 1)
         : []
+      signal?.throwIfAborted()
       const candles = await this.service.loadCandles(
         'trade',
         symbol.ticker,
         timeframe,
         effectiveFrom,
         to,
-        { onWarning: report, onStatus: report },
+        { onWarning: report, onStatus: report, ...(signal ? { signal } : {}) },
       )
+      signal?.throwIfAborted()
       return [...older, ...candles].map((candle) => ({
         timestamp: candle.openTime,
         open: Number(candle.open),
@@ -153,6 +157,7 @@ export class BinanceDatafeed implements Datafeed {
         turnover: Number(candle.quoteVolume),
       }))
     } catch (error) {
+      signal?.throwIfAborted()
       report(
         error instanceof Error ? error.message : String(error),
       )

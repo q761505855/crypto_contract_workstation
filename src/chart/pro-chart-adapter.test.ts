@@ -154,6 +154,8 @@ describe('ProChartAdapter', () => {
       { multiplier: 15, timespan: 'minute', text: '15m' },
       Number.MIN_SAFE_INTEGER,
       expect.any(Number),
+      true,
+      expect.any(AbortSignal),
     )
     expect(coreChart.applyNewData).toHaveBeenCalledWith(candles, true)
   })
@@ -166,13 +168,10 @@ describe('ProChartAdapter', () => {
       { timestamp: 2_700_000, open: 3, high: 4, low: 2.5, close: 3.5 },
     ]
     let onDataReady: (() => void) | undefined
-    const applyNewData = vi.fn(() => onDataReady?.())
+    let currentData = [{ timestamp: 0 }, { timestamp: 60_000 }, { timestamp: 120_000 }]
+    const applyNewData = vi.fn((rows) => { currentData = rows; onDataReady?.() })
     const coreChart = {
-      getDataList: vi.fn(() => [
-        { timestamp: 0 },
-        { timestamp: 60_000 },
-        { timestamp: 120_000 },
-      ]),
+      getDataList: vi.fn(() => currentData),
       getVisibleRange: vi.fn(() => ({
         from: 0,
         to: 1.8,

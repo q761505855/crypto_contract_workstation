@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Datafeed, Period } from '@klinecharts/pro'
 import type { MarketDataService } from '../market-data/market-data-service'
 import type { MarketCandle } from '../market-data/models'
-import { nextOpenTime } from '../market-data/intervals'
+import { alignOpenTime, nextOpenTime } from '../market-data/intervals'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { ReplayDatafeed } from './replay-datafeed'
 import { readIndicatorHistory } from '../market-data/indicator-history'
@@ -239,5 +239,273 @@ describe('ReplayDatafeed', () => {
     expect(base.unsubscribe).toHaveBeenCalledWith(DEFAULT_SYMBOL, period('1m'))
     feed.setReplayContext(null)
     expect(base.subscribe).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['1d', Date.UTC(2026, 0, 31), Date.UTC(2026, 1, 1)],
+    ['1w', Date.UTC(2026, 0, 26), Date.UTC(2026, 1, 2)],
+    ['1M', Date.UTC(2024, 1, 1), Date.UTC(2024, 2, 1)],
+  ])('builds a partial %s only from revealed minutes across calendar boundaries', async (timeframe, start, end) => {
+    const currentTime = end - 3 * minute
+    const rows = Array.from({ length: (end - start) / minute + 1 }, (_, index) => {
+      const openTime = start + index * minute
+      return openTime >= end - minute ? { ...candle(openTime), high: '999', close: '900' } : candle(openTime)
+    })
+    const { feed, service } = fixture([...rows, { ...candle(start, timeframe), high: '999', close: '900' }])
+    Object.assign(service, { usesMinuteHistory: () => true })
+    feed.setReplayContext({ ...context, currentTime })
+    const visible = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period(timeframe), start, end + 86_400_000)
+    expect(visible).toEqual([expect.objectContaining({ timestamp: start, high: 12, close: 11, volume: ((end - start) / minute - 2) * 2 })])
+    // Requesting an unfinished cached higher bucket can make the minute service
+    // read its entire future tail before the replay layer discards the result.
+    expect(vi.mocked(service.loadCachedCandles).mock.calls.filter((call) => call[2] === timeframe)
+      .every((call) => nextOpenTime(call[4], timeframe) <= currentTime + minute)).toBe(true)
+    const callback = vi.fn()
+    feed.subscribe(DEFAULT_SYMBOL, period(timeframe), callback)
+    feed.setReplayContext({ ...context, currentTime: currentTime + minute })
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledWith(expect.objectContaining({ timestamp: start, high: 12, close: 11, volume: ((end - start) / minute - 1) * 2 })))
+    expect(callback.mock.calls.every(([bar]) => bar.high === 12)).toBe(true)
+    expect(vi.mocked(service.loadCachedCandles).mock.calls.every((call) => call[4] < end - minute)).toBe(true)
+  })
+
+  it('does not publish stale subscription data after a session switches away and back', async () => {
+    const { feed, service } = fixture()
+    feed.setReplayContext({ ...context, currentTime: 0 })
+    const callback = vi.fn()
+    feed.subscribe(DEFAULT_SYMBOL, period('1m'), callback)
+    let resolve!: (rows: MarketCandle[]) => void
+    vi.mocked(service.loadCachedCandles).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    feed.setReplayContext(context)
+    feed.setReplayContext({ ...context, sessionId: 'two' })
+    feed.setReplayContext(context)
+    await vi.waitFor(() => expect(callback).toHaveBeenCalled())
+    callback.mockClear()
+    resolve([{ ...candle(minute), high: '999', close: '999' }])
+    await new Promise((done) => setTimeout(done, 0))
+    expect(callback).not.toHaveBeenCalled()
+  })
+
+  it('rechecks an in-flight history boundary after a rewind and return without restoring the old period', async () => {
+    const { feed, service } = fixture()
+    const selection = vi.fn()
+    feed.setSelectionListener(selection)
+    feed.setReplayContext(context)
+    let resolve!: (rows: MarketCandle[]) => void
+    vi.mocked(service.loadCachedCandles).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const pending = feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1m'), 0, 30 * minute)
+    feed.setReplayContext({ ...context, currentTime: 0 })
+    feed.setReplayContext(context)
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 30 * minute)
+    resolve([candle(0), { ...candle(minute), high: '999', close: '999' }])
+    const result = await pending
+    expect(result.map((bar) => bar.timestamp)).toEqual([0, minute])
+    expect(result.every((bar) => bar.high === 12)).toBe(true)
+    expect(selection.mock.calls.map(([item]) => item.period.text)).toEqual(['1m', '5m'])
+  })
+
+  it('keeps rejected symbols from changing the active selection', async () => {
+    const { feed } = fixture()
+    const selection = vi.fn()
+    feed.setSelectionListener(selection)
+    feed.setReplayContext(context)
+    await expect(feed.getHistoryKLineData({ ...DEFAULT_SYMBOL, ticker: 'ETHUSDT' }, period('1h'), 0, minute)).resolves.toEqual([])
+    expect(selection).not.toHaveBeenCalled()
+  })
+
+  it.each(SUPPORTED_PERIODS.filter((item) => item.text !== '1m').map((item) => item.text))('never substitutes a future complete %s cache for its revealed first minute', async (timeframe) => {
+    const start = alignOpenTime(Date.UTC(2026, 5, 17, 12), timeframe, 'floor')
+    const { feed, service } = fixture([
+      candle(start), { ...candle(start + minute), high: '999', close: '999' },
+      { ...candle(start, timeframe), high: '999', close: '999' },
+    ])
+    Object.assign(service, { usesMinuteHistory: () => true })
+    feed.setReplayContext({ ...context, currentTime: start })
+    const result = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period(timeframe), start, nextOpenTime(start, timeframe))
+    expect(result).toEqual([expect.objectContaining({ timestamp: start, high: 12, close: 11, volume: 2 })])
+    expect(vi.mocked(service.loadCachedCandles).mock.calls.every((call) => call[4] <= start + minute - 1)).toBe(true)
+  })
+
+  it('restarts a rejected old history request within the replacement session boundary', async () => {
+    const { feed, service } = fixture()
+    const selection = vi.fn()
+    feed.setSelectionListener(selection)
+    feed.setReplayContext(context)
+    let reject!: (reason: Error) => void
+    vi.mocked(service.loadCachedCandles).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+    const pending = feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1m'), 0, 30 * minute)
+    feed.setReplayContext({ ...context, sessionId: 'two', currentTime: 0 })
+    reject(new Error('old session database error'))
+    await expect(pending).resolves.toEqual([expect.objectContaining({ timestamp: 0, high: 12 })])
+    expect(selection).toHaveBeenCalledOnce()
+  })
+
+  it('does not publish warnings from a retired session subscription', async () => {
+    const { feed, service } = fixture()
+    const warning = vi.fn()
+    feed.setWarningListener(warning)
+    feed.setReplayContext({ ...context, currentTime: 0 })
+    const callback = vi.fn()
+    feed.subscribe(DEFAULT_SYMBOL, period('1m'), callback)
+    let reject!: (reason: Error) => void
+    vi.mocked(service.loadCachedCandles).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+    feed.setReplayContext(context)
+    feed.setReplayContext({ ...context, sessionId: 'two' })
+    reject(new Error('retired request failed'))
+    await vi.waitFor(() => expect(callback).toHaveBeenCalled())
+    expect(warning).not.toHaveBeenCalled()
+  })
+
+  it('stops an emission batch immediately if a callback rewinds the replay', async () => {
+    const { feed } = fixture(Array.from({ length: 6 }, (_, index) => candle(index * 5 * minute, '5m')))
+    const initial = { ...context, timeframe: '15m', currentTime: 0 }
+    feed.setReplayContext(initial)
+    const callback = vi.fn(() => { feed.setReplayContext(initial) })
+    feed.subscribe(DEFAULT_SYMBOL, period('5m'), callback)
+    feed.setReplayContext({ ...initial, currentTime: 15 * minute })
+    await vi.waitFor(() => expect(callback).toHaveBeenCalled())
+    expect(callback).toHaveBeenCalledOnce()
+    expect(callback.mock.calls[0]).toEqual([expect.objectContaining({ timestamp: 10 * minute })])
+  })
+
+  it('rejects an already-cancelled navigation before selection, warnings or cache work', async () => {
+    const { feed, service, base } = fixture()
+    const selection = vi.fn(), warning = vi.fn()
+    feed.setSelectionListener(selection)
+    feed.setWarningListener(warning)
+    feed.setReplayContext(context)
+    const controller = new AbortController()
+    controller.abort()
+    await expect(feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1h'), 0, 60 * minute, true, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(selection).not.toHaveBeenCalled()
+    expect(warning).not.toHaveBeenCalled()
+    expect(service.loadCachedCandles).not.toHaveBeenCalled()
+    expect(service.loadReplayCandles).not.toHaveBeenCalled()
+    expect(base.getHistoryKLineData).not.toHaveBeenCalled()
+  })
+
+  it('stops a retired cached navigation before it starts archive gap filling', async () => {
+    const { feed, service } = fixture([])
+    const warning = vi.fn()
+    feed.setWarningListener(warning)
+    feed.setReplayContext(context)
+    const controller = new AbortController()
+    let resolve!: (rows: MarketCandle[]) => void
+    vi.mocked(service.loadCachedCandles).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const pending = feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1h'), 0, 60 * minute, true, controller.signal)
+    controller.abort()
+    resolve([])
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(service.loadReplayCandles).not.toHaveBeenCalled()
+    expect(warning).not.toHaveBeenCalled()
+  })
+
+  it('passes navigation cancellation to archive work and suppresses its late warning and recursive reads', async () => {
+    const { feed, service } = fixture([])
+    const warning = vi.fn()
+    feed.setWarningListener(warning)
+    feed.setReplayContext(context)
+    const controller = new AbortController()
+    let finish!: () => void
+    vi.mocked(service.loadReplayCandles).mockImplementationOnce(async (_kind, _symbol, _timeframe, _from, _to, options) => {
+      await new Promise<void>((resolve) => { finish = resolve })
+      options?.onWarning?.('retired archive warning')
+      return []
+    })
+    const pending = feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1h'), 0, 60 * minute, true, controller.signal)
+    await vi.waitFor(() => expect(service.loadReplayCandles).toHaveBeenCalledOnce())
+    const reads = vi.mocked(service.loadCachedCandles).mock.calls.length
+    controller.abort()
+    finish()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(service.loadReplayCandles).toHaveBeenCalledWith('trade', 'BTCUSDT', '1m', 0, 2 * minute - 1, expect.objectContaining({ signal: controller.signal }))
+    expect(service.loadCachedCandles).toHaveBeenCalledTimes(reads)
+    expect(warning).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])('forwards a live history navigation signal while notifySelection is %s', async (notifySelection) => {
+    const { feed, base } = fixture()
+    vi.mocked(base.getHistoryKLineData).mockResolvedValue([])
+    const selection = vi.fn()
+    feed.setSelectionListener(selection)
+    const controller = new AbortController()
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1m'), 0, minute, notifySelection, controller.signal)
+    expect(base.getHistoryKLineData).toHaveBeenCalledWith(DEFAULT_SYMBOL, period('1m'), 0, minute, notifySelection, controller.signal)
+    expect(selection).toHaveBeenCalledTimes(notifySelection ? 1 : 0)
+  })
+
+  it('does not restart a cancelled live request after replay becomes active', async () => {
+    const { feed, base, service } = fixture()
+    const controller = new AbortController()
+    let resolve!: (rows: []) => void
+    vi.mocked(base.getHistoryKLineData).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const pending = feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1m'), 0, 30 * minute, true, controller.signal)
+    feed.setReplayContext(context)
+    controller.abort()
+    resolve([])
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(service.loadCachedCandles).not.toHaveBeenCalled()
+    expect(base.getHistoryKLineData).toHaveBeenCalledOnce()
+  })
+
+  it('reuses revealed canonical minutes across hour, day, week, month and minute navigation', async () => {
+    const start = Date.UTC(2025, 8, 1), shorter = Date.UTC(2025, 8, 10)
+    const currentTime = Date.UTC(2025, 8, 15, 4, 15), boundary = currentTime + 15 * minute
+    const { feed, service } = fixture(Array.from({ length: (boundary - start) / minute + 10 }, (_, index) => candle(start + index * minute)))
+    Object.assign(service, { usesMinuteHistory: () => true })
+    feed.setReplayContext({ ...context, timeframe: '15m', currentTime })
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1h'), shorter, boundary)
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1d'), start, boundary)
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1w'), start, boundary)
+    const month = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1M'), start, boundary)
+    const minutes = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1m'), currentTime, boundary)
+    expect(month.at(-1)).toMatchObject({ timestamp: start, volume: 40_860, high: 12 })
+    expect(minutes).toHaveLength(15)
+    expect(vi.mocked(service.loadCachedCandles).mock.calls.map((call) => call.slice(2))).toEqual([
+      ['1m', shorter, boundary - minute], ['1m', start, shorter - minute],
+    ])
+    expect(service.loadReplayCandles).not.toHaveBeenCalled()
+  })
+
+  it('reads only newly revealed minute tails during canonical replay advancement', async () => {
+    const { feed, service } = fixture()
+    Object.assign(service, { usesMinuteHistory: () => true })
+    feed.setReplayContext(context)
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 10 * minute)
+    feed.setReplayContext({ ...context, currentTime: 2 * minute })
+    const result = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 10 * minute)
+    expect(result).toEqual([expect.objectContaining({ timestamp: 0, volume: 6 })])
+    expect(vi.mocked(service.loadCachedCandles).mock.calls.map((call) => call.slice(2))).toEqual([
+      ['1m', 0, minute], ['1m', 2 * minute, 2 * minute],
+    ])
+  })
+
+  it.each(['rewind', 'session change'])('clears canonical minute reuse after a %s', async (restart) => {
+    const { feed, service } = fixture()
+    Object.assign(service, { usesMinuteHistory: () => true })
+    feed.setReplayContext(context)
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 10 * minute)
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('15m'), 0, 10 * minute)
+    expect(service.loadCachedCandles).toHaveBeenCalledOnce()
+    feed.setReplayContext(restart === 'rewind' ? { ...context, currentTime: 0 } : { ...context, sessionId: 'two' })
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 10 * minute)
+    expect(service.loadCachedCandles).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(service.loadCachedCandles).mock.calls[1]!.slice(2)).toEqual(['1m', 0, restart === 'rewind' ? 0 : minute])
+  })
+
+  it('does not let cancelled canonical reads populate the reusable minute pool', async () => {
+    const { feed, service } = fixture()
+    Object.assign(service, { usesMinuteHistory: () => true })
+    feed.setReplayContext(context)
+    const controller = new AbortController()
+    let resolve!: (rows: MarketCandle[]) => void
+    vi.mocked(service.loadCachedCandles).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const pending = feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 10 * minute, true, controller.signal)
+    controller.abort()
+    resolve([candle(0), { ...candle(minute), high: '999', close: '999' }])
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    const result = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('5m'), 0, 10 * minute)
+    expect(result).toEqual([expect.objectContaining({ high: 12, close: 11, volume: 4 })])
+    await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1h'), 0, 10 * minute)
+    expect(service.loadCachedCandles).toHaveBeenCalledTimes(2)
   })
 })

@@ -14,6 +14,7 @@ interface ReplayControlsProps {
   interactionLocked?: boolean
   chartStartTime: number | null
   onJumpToTime: (timestamp: number) => void
+  onLocateLatest: () => void
 }
 
 function displayTime(timestamp: number): string {
@@ -36,6 +37,7 @@ export function ReplayControls({
   interactionLocked = false,
   chartStartTime,
   onJumpToTime,
+  onLocateLatest,
 }: ReplayControlsProps) {
   const [toText, setToText] = useState('')
   const [selectedSessionId, setSelectedSessionId] = useState('')
@@ -77,6 +79,7 @@ export function ReplayControls({
         <TimeJumpControl
           disabled={replay.busy}
           onJump={onJumpToTime}
+          onLocateLatest={onLocateLatest}
         />
         <span>
           创建回放：{selection.symbol.ticker} · {selection.period.text}
@@ -236,6 +239,7 @@ export function ReplayControls({
       <TimeJumpControl
         disabled={interactionLocked}
         onJump={onJumpToTime}
+        onLocateLatest={onLocateLatest}
       />
       <span className="replay-position">
         {session.symbol.ticker} · 步进 {session.period.text} · 当前：

@@ -27,6 +27,7 @@ import {
 } from '../market-data/intervals'
 import { registerSupertrendIndicator } from './supertrend'
 import { registerPivotsIndicator } from './pivots-indicator'
+import { readChartHistory } from '../market-data/indicator-history'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -76,6 +77,14 @@ export interface ChartAdapterPort {
 
 export type ChartProFactory = (options: ChartProOptions) => ChartPro
 
+interface ViewportRestore {
+  timestamp: number
+  symbol: string
+  timeframe: string
+  sequence: number
+  started: boolean
+}
+
 const pivotHistoryReset = new WeakMap<ChartPro, () => void>()
 
 const createProChart: ChartProFactory = (options) => {
@@ -106,6 +115,11 @@ export class ProChartAdapter implements ChartAdapterPort {
   private coreChart: Chart | null = null
   private datafeed: Datafeed | null = null
   private reloadSequence = 0
+  private viewportRestore: ViewportRestore | null = null
+  private viewportAnchor: { timestamp: number; visibleTime: number } | null = null
+  private cancelPosition: (() => void) | null = null
+  private historyAbort = new AbortController()
+  private readonly candleOwners = new WeakMap<object, string>()
   private tooltipElement: HTMLDivElement | null = null
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
@@ -116,9 +130,18 @@ export class ProChartAdapter implements ChartAdapterPort {
     if (this.chart !== null) {
       throw new Error('KLineChart Pro is already mounted.')
     }
-    this.chart = this.factory(options)
-    this.coreChart = this.chart.getChart()
     this.datafeed = options.datafeed
+    // Preserve optional replay/indicator APIs and their original receiver.
+    const datafeed = new Proxy(options.datafeed, {
+      get: (target, property) => {
+        if (property === 'getHistoryKLineData') return this.loadChartHistory.bind(this)
+        if (property === 'subscribe') return this.subscribeChart.bind(this)
+        const value = Reflect.get(target, property, target) as unknown
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    this.chart = this.factory({ ...options, datafeed })
+    this.coreChart = this.chart.getChart()
     this.coreChart.subscribeAction?.(ON_PANE_DRAG, () => {
       // Only an explicit separator drag changes the archived height. Responsive
       // enlargement must not overwrite a user's desktop layout in their backup.
@@ -192,13 +215,124 @@ export class ProChartAdapter implements ChartAdapterPort {
   }
 
   setSymbol(symbol: SymbolInfo): void {
+    this.cancelHistoryWork()
     this.reloadSequence += 1
+    this.clearPosition()
+    this.viewportAnchor = null
     this.requireChart().setSymbol(symbol)
   }
 
   setPeriod(period: Period): void {
-    this.reloadSequence += 1
+    if (this.getPeriod().text === period.text) return
+    const current = this.getRightmostVisibleCandleTime()
+    const timestamp = this.viewportRestore?.timestamp ??
+      (current === this.viewportAnchor?.visibleTime ? this.viewportAnchor.timestamp : current)
+    const sequence = ++this.reloadSequence
+    this.cancelHistoryWork()
+    this.clearPosition()
+    if (timestamp !== null) this.viewportRestore = {
+      timestamp, sequence, symbol: this.getSymbol().ticker,
+      timeframe: period.text, started: false,
+    }
     this.requireChart().setPeriod(period)
+  }
+
+  private clearPosition(): void {
+    this.cancelPosition?.()
+    this.cancelPosition = null
+    this.viewportRestore = null
+  }
+
+  private cancelHistoryWork(): void {
+    this.historyAbort.abort()
+    this.historyAbort = new AbortController()
+  }
+
+  private selectionKey(symbol: SymbolInfo, period: Period): string {
+    return `${symbol.ticker.toUpperCase()}:${period.text}`
+  }
+
+  private ownLastCandle(candles: ReturnType<Chart['getDataList']>, symbol: SymbolInfo, period: Period): void {
+    const last = candles.at(-1)
+    if (last) this.candleOwners.set(last, this.selectionKey(symbol, period))
+  }
+
+  private subscribeChart(symbol: SymbolInfo, period: Period, callback: Parameters<Datafeed['subscribe']>[2]): void {
+    this.datafeed!.subscribe(symbol, period, candle => {
+      this.candleOwners.set(candle, this.selectionKey(symbol, period))
+      callback(candle)
+    })
+  }
+
+  private latestVisibleTime(): number {
+    const context = (this.datafeed as Datafeed & {
+      getReplayContext?: () => { currentTime: number; timeframe: string } | null
+    } | null)?.getReplayContext?.()
+    return context ? nextOpenTime(context.currentTime, context.timeframe) - 1 : Date.now()
+  }
+
+  private timeWindow(timestamp: number, period: Period): { target: number; from: number; to: number } {
+    const latest = this.latestVisibleTime()
+    const target = alignOpenTime(Math.min(timestamp, latest), period.text, 'floor')
+    return {
+      target,
+      from: Math.max(0, alignOpenTime(target, '1M', 'floor'), shiftOpenTime(target, period.text, -249)),
+      to: Math.min(shiftOpenTime(target, period.text, 249), nextOpenTime(alignOpenTime(target, '1M', 'floor'), '1M') - 1, latest),
+    }
+  }
+
+  private async loadChartHistory(symbol: SymbolInfo, period: Period, from: number, to: number, notifySelection?: boolean) {
+    const restore = this.viewportRestore
+    const anchored = notifySelection !== false && restore !== null && !restore.started &&
+      restore.symbol === symbol.ticker && restore.timeframe === period.text
+    if (anchored) {
+      restore.started = true
+      const range = this.timeWindow(restore.timestamp, period)
+      from = range.from
+      to = range.to
+    }
+    const signal = notifySelection === false ? undefined : this.historyAbort.signal
+    let candles: ReturnType<Chart['getDataList']>
+    try {
+      candles = await readChartHistory(this.datafeed!, symbol, period, from, to, notifySelection !== false, signal)
+      signal?.throwIfAborted()
+    } catch (error) {
+      if (signal?.aborted) return []
+      throw error
+    }
+    if (anchored && restore.sequence === this.reloadSequence) {
+      this.positionWhenReady(candles, restore.timestamp, period, restore.sequence)
+    }
+    this.ownLastCandle(candles, symbol, period)
+    return candles
+  }
+
+  private positionWhenReady(candles: ReturnType<Chart['getDataList']>, timestamp: number, period: Period, sequence: number): number | null {
+    if (candles.length === 0) {
+      this.clearPosition()
+      return null
+    }
+    const target = this.timeWindow(timestamp, period).target
+    const actual = candles.reduce((nearest, candle) => Math.abs(candle.timestamp - target) < Math.abs(nearest.timestamp - target) ? candle : nearest).timestamp
+    const core = this.requireCoreChart()
+    this.cancelPosition?.()
+    const position = () => {
+      if (sequence !== this.reloadSequence) { cleanup(); return }
+      // Ignore unrelated indicator/live readiness while the replacement loads.
+      if (!core.getDataList().includes(candles[0])) return
+      cleanup()
+      this.viewportRestore = null
+      this.viewportAnchor = { timestamp: actual === target ? timestamp : actual, visibleTime: actual }
+      core.scrollToTimestamp(actual, 0)
+      core.scrollByDistance(core.getBarSpace(), 0)
+    }
+    const cleanup = () => {
+      core.unsubscribeAction(ON_DATA_READY, position)
+      if (this.cancelPosition === cleanup) this.cancelPosition = null
+    }
+    this.cancelPosition = cleanup
+    core.subscribeAction(ON_DATA_READY, position)
+    return actual
   }
 
   async reloadData(): Promise<void> {
@@ -207,14 +341,22 @@ export class ProChartAdapter implements ChartAdapterPort {
     const datafeed = this.datafeed
     if (coreChart === null || datafeed === null) return
     const sequence = ++this.reloadSequence
-    const candles = await datafeed.getHistoryKLineData(
-      chart.getSymbol(),
-      chart.getPeriod(),
-      Number.MIN_SAFE_INTEGER,
-      Date.now(),
-    )
-    if (sequence !== this.reloadSequence) return
+    this.cancelHistoryWork()
+    const signal = this.historyAbort.signal
+    this.clearPosition()
+    chart.cancelHistoryRequests?.()
     pivotHistoryReset.get(chart)?.()
+    const replay = (datafeed as Datafeed & { getReplayContext?: () => unknown }).getReplayContext?.()
+    if (replay) coreChart.applyNewData([], false)
+    let candles: ReturnType<Chart['getDataList']>
+    try {
+      candles = await readChartHistory(datafeed, chart.getSymbol(), chart.getPeriod(), Number.MIN_SAFE_INTEGER, Date.now(), true, signal)
+    } catch (error) {
+      if (signal.aborted) return
+      throw error
+    }
+    if (sequence !== this.reloadSequence) return
+    this.ownLastCandle(candles, chart.getSymbol(), chart.getPeriod())
     coreChart.applyNewData(candles, candles.length > 0)
   }
 
@@ -228,7 +370,7 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   getRightmostVisibleCandleTime(): number | null {
     const chart = this.requireCoreChart()
-    const data = chart.getDataList()
+    const data = chart.getDataList?.() ?? []
     if (data.length === 0) return null
     const visible = chart.getVisibleRange()
     const index = Math.min(
@@ -245,42 +387,36 @@ export class ProChartAdapter implements ChartAdapterPort {
     const datafeed = this.datafeed
     if (datafeed === null) return null
     const period = chart.getPeriod()
-    const latest = alignOpenTime(Date.now(), period.text, 'floor')
-    const target = Math.min(
-      alignOpenTime(timestamp, period.text, 'floor'),
-      latest,
-    )
-    const from = Math.max(alignOpenTime(target, '1M', 'floor'), shiftOpenTime(target, period.text, -249))
-    const to = Math.min(
-      shiftOpenTime(target, period.text, 249),
-      nextOpenTime(alignOpenTime(target, '1M', 'floor'), '1M') - 1,
-      Date.now(),
-    )
+    const { from, to } = this.timeWindow(timestamp, period)
     const sequence = ++this.reloadSequence
-    const candles = await datafeed.getHistoryKLineData(
-      chart.getSymbol(),
-      period,
-      from,
-      to,
-    )
+    this.cancelHistoryWork()
+    const signal = this.historyAbort.signal
+    this.clearPosition()
+    chart.cancelHistoryRequests?.()
+    let candles: ReturnType<Chart['getDataList']>
+    try {
+      candles = await readChartHistory(datafeed, chart.getSymbol(), period, from, to, true, signal)
+    } catch (error) {
+      signal.throwIfAborted()
+      throw error
+    }
+    signal.throwIfAborted()
     if (sequence !== this.reloadSequence || candles.length === 0) {
       return null
     }
-    const actual = candles.reduce((nearest, candle) =>
-      Math.abs(candle.timestamp - target) <
-      Math.abs(nearest.timestamp - target)
-        ? candle
-        : nearest,
-    ).timestamp
-    const positionChart = () => {
-      coreChart.unsubscribeAction(ON_DATA_READY, positionChart)
-      if (sequence !== this.reloadSequence) return
-      coreChart.scrollToTimestamp(actual, 0)
-      // KLineCharts treats `visible.to` as an exclusive boundary and its
-      // timestamp positioning leaves one bar visible after the target.
-      coreChart.scrollByDistance(coreChart.getBarSpace(), 0)
+    const replay = (datafeed as Datafeed & { getReplayContext?: () => unknown }).getReplayContext?.()
+    const liveCandle = coreChart.getDataList().at(-1)
+    // Minute history contains closed minutes. Keep the current websocket bar
+    // when locating live data instead of replacing it with the previous close.
+    if (!replay && liveCandle && this.candleOwners.get(liveCandle) === this.selectionKey(chart.getSymbol(), period) &&
+        liveCandle.timestamp === alignOpenTime(Date.now(), period.text, 'floor') &&
+        liveCandle.timestamp >= from && liveCandle.timestamp <= to) {
+      const index = candles.findIndex(candle => candle.timestamp === liveCandle.timestamp)
+      if (index >= 0) candles[index] = liveCandle
+      else if (liveCandle.timestamp > candles.at(-1)!.timestamp) candles.push(liveCandle)
     }
-    coreChart.subscribeAction(ON_DATA_READY, positionChart)
+    const actual = this.positionWhenReady(candles, timestamp, period, sequence)
+    this.ownLastCandle(candles, chart.getSymbol(), period)
     pivotHistoryReset.get(chart)?.()
     coreChart.applyNewData(candles, true)
     return actual

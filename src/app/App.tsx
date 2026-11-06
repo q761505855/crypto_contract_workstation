@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -28,6 +29,7 @@ import {
 } from '../components/panels'
 import type { MarketSelection } from '../market-data/models'
 import { readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
+import { nextOpenTime } from '../market-data/intervals'
 import {
   INITIAL_LIVE_STATUS,
   type LiveMarketStatus,
@@ -211,6 +213,14 @@ export default function App() {
     })
   }, [])
 
+  const locateLatestChartTime = useCallback((): void => {
+    const session = replaySessionRef.current
+    const timestamp = mode === 'history' && session !== null
+      ? nextOpenTime(session.currentTime, session.period.text) - 1
+      : Date.now()
+    jumpChartToTime(timestamp)
+  }, [jumpChartToTime, mode])
+
   const completeChartTimeJump = useCallback(
     (timestamp: number | null): void => {
       if (timestamp === null) {
@@ -260,7 +270,7 @@ export default function App() {
     }
   }, [replay.session?.id])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nextContext: ReplayContext | null =
       mode === 'history' && replay.session !== null
         ? {
@@ -367,12 +377,13 @@ export default function App() {
           chartStartTime={chartRightmostCandleTime}
           interactionLocked={simulation.busy}
           onJumpToTime={jumpChartToTime}
+          onLocateLatest={locateLatestChartTime}
           replay={replay}
           selection={marketSelection}
         />
       ) : (
         <section className="replay-controls live-time-controls">
-          <TimeJumpControl onJump={jumpChartToTime} />
+          <TimeJumpControl onJump={jumpChartToTime} onLocateLatest={locateLatestChartTime} />
         </section>
       )}
       <footer className="status-footer">

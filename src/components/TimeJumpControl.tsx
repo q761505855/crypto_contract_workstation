@@ -3,6 +3,7 @@ import { useState } from 'react'
 interface TimeJumpControlProps {
   disabled?: boolean
   onJump: (timestamp: number) => void
+  onLocateLatest: () => void
 }
 
 function inputDateTime(timestamp: number): string {
@@ -14,6 +15,7 @@ function inputDateTime(timestamp: number): string {
 export function TimeJumpControl({
   disabled = false,
   onJump,
+  onLocateLatest,
 }: TimeJumpControlProps) {
   const [timeText, setTimeText] = useState(() => inputDateTime(Date.now()))
   const timestamp = new Date(timeText).getTime()
@@ -36,6 +38,9 @@ export function TimeJumpControl({
         type="button"
       >
         跳转
+      </button>
+      <button disabled={disabled} onClick={onLocateLatest} type="button">
+        定位最新
       </button>
     </div>
   )

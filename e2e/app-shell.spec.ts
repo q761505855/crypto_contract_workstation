@@ -4,6 +4,7 @@ import { alignOpenTime, nextOpenTime } from '../src/market-data/intervals'
 import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
 import { fixtureMinutePrices, installArchiveFixtures } from './archive-fixtures'
 import { traceNativeRestoreWrites } from './storage-diagnostics'
+import { installViewportProbe } from './viewport-probe'
 
 test.beforeEach(async ({ context }) => {
   // Cover every page in the context; individual manual cloud mocks override this.
@@ -39,19 +40,19 @@ const intervalMilliseconds: Record<string, number> = {
   '1M': 30 * 86_400_000,
 }
 
-async function mockBinance(page: import('@playwright/test').Page, pacedClock = false, symbolPrices: Record<string, number> = {}, options: { trend?: boolean } = {}) {
+async function mockBinance(page: import('@playwright/test').Page, pacedClock = false, symbolPrices: Record<string, number> = {}, options: { trend?: boolean; now?: number } = {}) {
   if (pacedClock) await page.clock.install()
   const archives = await installArchiveFixtures(page, symbolPrices, options)
-  const liveSockets: Array<{ sendPrice(price: string): void; streams: Set<string> }> = []
+  const liveSockets: Array<{ sendPrice(price: string, eventAt?: number): void; streams: Set<string> }> = []
   await page.routeWebSocket('wss://fstream.binance.com/**', (socket) => {
     const url = new URL(socket.url())
     expect(url.pathname).toBe('/market/stream')
     const streams = new Set((url.searchParams.get('streams') ?? '').split('/'))
     expect([...streams].every(stream => stream.includes('@kline_'))).toBe(true)
     let latestPrice = '60005'
-    const sendPrice = (price: string) => {
+    const sendPrice = (price: string, eventAt?: number) => {
       latestPrice = price
-      const eventTime = Date.now()
+      const eventTime = eventAt ?? options.now ?? Date.now()
       for (const stream of streams) {
         const [symbolText, type] = stream.split('@')
         const symbol = symbolText.toUpperCase()
@@ -674,6 +675,78 @@ test('round-trips pinned periods through JSON archives and cloud configuration',
   await expect(panel.getByTestId('backup-status')).toContainText('云端恢复完成')
   await page.reload()
   await expect(shortcuts.getByRole('button')).toHaveCount(0)
+})
+
+test('preserves the inspected time across periods and locates the latest live candle', async ({ page }) => {
+  test.setTimeout(120_000)
+  const now = Date.UTC(2025, 10, 1, 0, 15)
+  await page.clock.install({ time: now })
+  const { liveSockets } = await mockBinance(page, false, {}, { now })
+  const inspect = await installViewportProbe(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await selectChartPeriod(page, '1m')
+  const controls = page.getByTestId('replay-controls')
+  const target = new Date('2025-09-15T12:17').getTime()
+  await controls.getByLabel('图表跳转时间').fill('2025-09-15T12:17')
+  await controls.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect.poll(async () => (await inspect()).rightmost).toBe(target).catch(async error => { console.log(JSON.stringify((await inspect()).events)); throw error })
+  for (const text of ['1h', '1d', '1w', '1m']) {
+    await selectChartPeriod(page, text)
+    await expect.poll(async () => (await inspect()).debug.restore).toBeNull().catch(async error => { const state = await inspect(); console.log(JSON.stringify({ ...state, timestamps: undefined })); throw error })
+    await expect.poll(async () => (await inspect()).rightmost).toBe(alignOpenTime(target, text, 'floor'))
+  }
+  await page.getByRole('button', { name: '实时行情', exact: true }).click()
+  await expect(page.getByTestId('live-status')).toContainText('已连接')
+  const live = liveSockets.at(-1)!
+  const browserTime = await page.evaluate(() => Date.now())
+  await page.clock.fastForward(60_000 - browserTime % 60_000 + 5_000)
+  const liveTime = await page.evaluate(() => Date.now())
+  live.sendPrice('60009', liveTime)
+  await expect(page.getByTestId('live-status')).toContainText('60009')
+  await page.getByRole('button', { name: '定位最新', exact: true }).click()
+  await expect.poll(async () => (await inspect()).rightmost).toBe(alignOpenTime(liveTime, '1m', 'floor')).catch(async error => { const state = await inspect(); console.log(JSON.stringify({ ...state, timestamps: undefined, footer: await page.locator('.status-footer').innerText() })); throw error })
+  expect((await inspect()).last?.close).toBe(60009)
+  await page.screenshot({ path: 'test-results/viewport-live-latest.png' })
+})
+
+test('observes replay across periods without future bars and locates its revealed latest minute', async ({ page }) => {
+  test.setTimeout(120_000)
+  const now = Date.UTC(2025, 10, 1, 0, 15)
+  await page.clock.install({ time: now })
+  await mockBinance(page, false, {}, { now })
+  const inspect = await installViewportProbe(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByLabel('图表跳转时间').fill('2025-09-15T12:15')
+  await controls.getByRole('button', { name: '跳转', exact: true }).click()
+  const start = new Date('2025-09-15T12:15').getTime()
+  await expect.poll(async () => (await inspect()).rightmost).toBe(start)
+  await controls.getByLabel('回放结束时间').fill('2025-09-15T12:45')
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  await expect(controls).toContainText('1/3')
+  const boundary = start + 15 * 60_000
+  for (const text of ['1h', '1d', '1w', '1M', '1m']) {
+    await selectChartPeriod(page, text)
+    await expect.poll(async () => (await inspect()).debug.restore).toBeNull().catch(async error => { const state = await inspect(); console.log(JSON.stringify({ ...state, timestamps: undefined })); throw error })
+    await expect.poll(async () => (await inspect()).rightmost).toBe(alignOpenTime(start, text, 'floor')).catch(async error => { const state = await inspect(); console.log(JSON.stringify({ ...state, timestamps: undefined, footer: await page.locator('.status-footer').innerText() })); throw error })
+    const state = await inspect()
+    const last = alignOpenTime(boundary - 1, text, 'floor')
+    expect(state.timestamps.every(time => time <= last)).toBe(true)
+    expect(state.last?.timestamp).toBe(last)
+    expect(state.last?.volume).toBeCloseTo((boundary - last) / 60_000 * 100.5, 5)
+    await expect(controls).toContainText('1/3')
+  }
+  await controls.getByRole('button', { name: '定位最新', exact: true }).click()
+  await expect.poll(async () => (await inspect()).rightmost).toBe(boundary - 60_000)
+  await expect(controls).toContainText('1/3')
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect(controls).toContainText('2/3')
+  await controls.getByRole('button', { name: '定位最新', exact: true }).click()
+  await expect.poll(async () => (await inspect()).rightmost).toBe(boundary + 14 * 60_000)
+  await expect(page.getByTestId('simulation-panel').getByText('成交次数', { exact: true }).locator('..').locator('dd')).toHaveText('0')
+  await page.screenshot({ path: 'test-results/viewport-replay-no-future.png' })
 })
 
 test('keeps the latest trade price updating through rapid live period changes', async ({ page }) => {

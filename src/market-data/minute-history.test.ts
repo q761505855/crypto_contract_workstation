@@ -42,6 +42,30 @@ function setup(month: MarketCandle[] | null = candles(), clock = () => now) {
 }
 
 describe('canonical minute history', () => {
+  it('stops a cancelled archive before writing a retired month after an overlapping cache read', async () => {
+    const { service, store, archives, cloud } = setup()
+    const controller = new AbortController()
+    const read = store.getCandles.bind(store)
+    const put = vi.spyOn(store, 'putCandles')
+    vi.spyOn(store, 'getCandles').mockImplementation(async (...args) => {
+      if (archives.loadMonth.mock.calls.length > 0 && args[3] === start && args[4] === end) controller.abort()
+      return read(...args)
+    })
+    await expect(service.loadCandles('trade', 'BTCUSDT', '1m', start, start, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(put).not.toHaveBeenCalled()
+    expect(cloud.saveMonth).not.toHaveBeenCalled()
+  })
+
+  it('does not turn an aborted replay preparation into a permanent failure for the next navigation', async () => {
+    const { service, archives } = setup()
+    const controller = new AbortController()
+    archives.loadMonth.mockImplementationOnce(async () => { controller.abort(); throw new DOMException('retired', 'AbortError') })
+    const warn = vi.fn()
+    await expect(service.loadReplayCandles('trade', 'BTCUSDT', '1m', start, start, { signal: controller.signal, onWarning: warn })).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(service.loadReplayCandles('trade', 'BTCUSDT', '1m', start, start)).resolves.toHaveLength(1)
+    expect(warn).not.toHaveBeenCalled()
+    expect(archives.loadMonth).toHaveBeenCalledTimes(2)
+  })
   it('prepares replay through one monthly lookup rather than 499-bar requests', async () => {
     const {service,cloud,archives,rest} = setup(null)
     cloud.loadMonth.mockResolvedValue({tradeCandles:candles(),markCandles:candles()})

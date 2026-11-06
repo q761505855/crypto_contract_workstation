@@ -1,5 +1,5 @@
 diff --git a/node_modules/@klinecharts/pro/dist/index.d.ts b/node_modules/@klinecharts/pro/dist/index.d.ts
-index 1cb6404..c8b46ef 100644
+index 1cb6404..4f0a210 100644
 --- a/node_modules/@klinecharts/pro/dist/index.d.ts
 +++ b/node_modules/@klinecharts/pro/dist/index.d.ts
 @@ -1,4 +1,4 @@
@@ -8,24 +8,26 @@ index 1cb6404..c8b46ef 100644
  
  export interface SymbolInfo {
  	ticker: string;
-@@ -52,6 +52,7 @@ export interface ChartPro {
+@@ -52,6 +52,8 @@ export interface ChartPro {
  	getSymbol(): SymbolInfo;
  	setPeriod(period: Period): void;
  	getPeriod(): Period;
 +	getChart(): Chart;
++	cancelHistoryRequests?(): void;
  }
  export declare class DefaultDatafeed implements Datafeed {
  	constructor(apiKey: string);
-@@ -79,6 +80,7 @@ export declare class KLineChartPro implements ChartPro {
+@@ -79,6 +81,8 @@ export declare class KLineChartPro implements ChartPro {
  	getSymbol(): SymbolInfo;
  	setPeriod(period: Period): void;
  	getPeriod(): Period;
 +	getChart(): Chart;
++	cancelHistoryRequests(): void;
  }
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..5716c51 100644
+index 6f78d0e..180548b 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 @@ -2294,6 +2294,11 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
@@ -418,21 +420,22 @@ index 6f78d0e..5716c51 100644
  }
  const Dl = (e) => {
 -  let t, n = null, r, a = !1;
-+  let t, n = null, r, dataRequestSequence = 0;
++  let t, n = null, r, dataRequestSequence = 0, historyRequestSequence = 0;
    const [i, o] = $(e.theme), [s, c] = $(e.styles), [C, u] = $(e.locale), [y, p] = $(e.symbol), [L, M] = $(e.period), [P, K] = $(!1), [w, Q] = $([...e.mainIndicators]), [S, A] = $({}), [b, O] = $(!1), [H, t1] = $({
      key: e.timezone,
      text: b9(e.timezone, e.locale)
-@@ -3389,7 +3705,8 @@ const Dl = (e) => {
+@@ -3389,7 +3705,9 @@ const Dl = (e) => {
      setSymbol: p,
      getSymbol: () => y(),
      setPeriod: M,
 -    getPeriod: () => L()
 +    getPeriod: () => L(),
-+    getChart: () => n
++    getChart: () => n,
++    cancelHistoryRequests: () => { historyRequestSequence++; k(!1); }
    });
    const c1 = () => {
      n == null || n.resize();
-@@ -3405,28 +3722,23 @@ const Dl = (e) => {
+@@ -3405,28 +3723,23 @@ const Dl = (e) => {
          break;
        }
        case "day": {
@@ -469,7 +472,7 @@ index 6f78d0e..5716c51 100644
          break;
        }
      }
-@@ -3475,10 +3787,18 @@ const Dl = (e) => {
+@@ -3475,10 +3788,18 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -482,17 +485,17 @@ index 6f78d0e..5716c51 100644
 +        callback([], false);
 +        return;
 +      }
-+      const sequence = dataRequestSequence;
++      const sequence = dataRequestSequence, historySequence = historyRequestSequence;
 +      const f = data.timestamp, symbol = y(), period = L();
 +      (async () => {
 +        const [E] = D1(period, f, 1), [r1] = D1(period, E, 500), X = await e.datafeed.getHistoryKLineData(symbol, period, r1, E);
-+        if (sequence === dataRequestSequence) {
++        if (sequence === dataRequestSequence && historySequence === historyRequestSequence) {
 +          callback(X, X.length > 0);
 +        }
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3524,21 +3844,26 @@ const Dl = (e) => {
+@@ -3524,21 +3845,27 @@ const Dl = (e) => {
    }), a1(() => {
      const h = y();
      h != null && h.priceCurrency ? (r.innerHTML = h == null ? void 0 : h.priceCurrency.toLocaleUpperCase(), r.style.display = "flex") : r.style.display = "none", n == null || n.setPriceVolumePrecision((h == null ? void 0 : h.pricePrecision) ?? 2, (h == null ? void 0 : h.volumePrecision) ?? 0);
@@ -504,13 +507,12 @@ index 6f78d0e..5716c51 100644
 -      const f = y(), v = L();
 -      return a = !0, k(!0), (async () => {
 +    h && e.datafeed.unsubscribe(h.symbol, h.period);
-+    const f = y(), v = L(), sequence = ++dataRequestSequence;
++    const f = y(), v = L(), sequence = ++dataRequestSequence, historySequence = ++historyRequestSequence;
 +    k(!0);
 +    (async () => {
 +      try {
          const [E, r1] = D1(v, new Date().getTime(), 500), X = await e.datafeed.getHistoryKLineData(f, v, E, r1);
-+        if (sequence !== dataRequestSequence) return;
-         n == null || n.applyNewData(X, X.length > 0), e.datafeed.subscribe(f, v, (f1) => {
+-        n == null || n.applyNewData(X, X.length > 0), e.datafeed.subscribe(f, v, (f1) => {
 -          n == null || n.updateData(f1);
 -        }), a = !1, k(!1);
 -      })(), {
@@ -519,24 +521,30 @@ index 6f78d0e..5716c51 100644
 -      };
 -    }
 -    return h;
++        if (sequence !== dataRequestSequence) return;
++        if (historySequence === historyRequestSequence) n == null || n.applyNewData(X, X.length > 0);
++        e.datafeed.subscribe(f, v, (f1) => {
 +          if (sequence === dataRequestSequence) {
 +            n == null || n.updateData(f1);
 +          }
 +        });
 +      } finally {
-+        if (sequence === dataRequestSequence) k(!1);
++        if (sequence === dataRequestSequence && historySequence === historyRequestSequence) k(!1);
 +      }
 +    })();
 +    return { symbol: f, period: v };
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3994,6 +4319,9 @@ class jl {
+@@ -3994,6 +4321,12 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }
 +  getChart() {
 +    return this._chartApi.getChart();
++  }
++  cancelHistoryRequests() {
++    this._chartApi.cancelHistoryRequests();
 +  }
  }
  D5.forEach((e) => {
