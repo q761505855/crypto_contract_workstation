@@ -29,6 +29,34 @@ const input = {
 } as const
 
 describe('ReplayEngine', () => {
+  it('keeps the full session range while its future candles are buffered in stages', () => {
+    const engine = ReplayEngine.create(input, [candle(0), candle(60_000)], { buffered: true })
+    expect(engine.snapshot()).toMatchObject({ endTime: 180_000, candleCount: 4, status: 'paused' })
+    expect(() => engine.jumpToEnd()).toThrow(/准备/)
+    expect(engine.snapshot().currentTime).toBe(0)
+    engine.stepNext()
+    expect(engine.snapshot().status).toBe('paused')
+    expect(() => engine.stepNext()).toThrow(/准备/)
+    expect(engine.snapshot().currentTime).toBe(60_000)
+    engine.appendCandles([candle(120_000), candle(180_000)])
+    expect(engine.stepNext()?.openTime).toBe(120_000)
+    expect(engine.stepNext()?.openTime).toBe(180_000)
+    expect(engine.snapshot().status).toBe('completed')
+  })
+
+  it('restores a partially buffered session without shortening its end or resetting progress', () => {
+    const engine = ReplayEngine.create(input, [candle(0), candle(60_000)], { buffered: true })
+    engine.stepNext()
+    const restored = ReplayEngine.restore(engine.snapshot(), [candle(0), candle(60_000)], Date.now, { buffered: true })
+    expect(restored.snapshot()).toMatchObject({ currentTime: 60_000, currentIndex: 1, candleCount: 4, endTime: 180_000, status: 'paused' })
+    expect(() => restored.appendCandles([candle(180_000)])).toThrow(/缺口/)
+    expect(restored.snapshot().currentTime).toBe(60_000)
+    restored.appendCandles([candle(120_000), candle(180_000)])
+    restored.jumpToEnd()
+    expect(restored.reset().openTime).toBe(0)
+    expect(restored.snapshot().status).toBe('paused')
+  })
+
   it('creates a deterministic session and advances one candle at a time', () => {
     const now = vi.fn(() => 10)
     const engine = ReplayEngine.create(

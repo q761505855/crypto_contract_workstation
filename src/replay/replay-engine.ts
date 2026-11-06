@@ -5,6 +5,17 @@ import type {
   ReplaySpeed,
 } from './models'
 import { DEFAULT_TRADING_CONFIG } from './models'
+import { findMissingRanges } from '../market-data/gaps'
+import { nextOpenTime } from '../market-data/intervals'
+
+function candleCount(from: number, to: number, timeframe: string): number {
+  if (timeframe === '1M') {
+    const first = new Date(from)
+    const last = new Date(to)
+    return (last.getUTCFullYear() - first.getUTCFullYear()) * 12 + last.getUTCMonth() - first.getUTCMonth() + 1
+  }
+  return Math.floor((to - from) / (nextOpenTime(from, timeframe) - from)) + 1
+}
 
 function normalizedCandles(
   candles: readonly MarketCandle[],
@@ -43,7 +54,7 @@ export class ReplayEngine {
   static create(
     input: CreateReplaySessionInput,
     candles: readonly MarketCandle[],
-    options: { id?: string; now?: () => number } = {},
+    options: { id?: string; now?: () => number; buffered?: boolean } = {},
   ): ReplayEngine {
     const prepared = normalizedCandles(candles, input)
     if (prepared.length === 0) {
@@ -51,18 +62,19 @@ export class ReplayEngine {
     }
     const now = options.now ?? Date.now
     const timestamp = now()
+    const endTime = options.buffered ? input.endTime ?? prepared.at(-1)!.openTime : prepared.at(-1)!.openTime
     const session: ReplaySession = {
       schemaVersion: 2,
       id: options.id ?? crypto.randomUUID(),
       symbol: { ...input.symbol },
       period: { ...input.period },
       startTime: prepared[0].openTime,
-      endTime: prepared.at(-1)!.openTime,
+      endTime,
       currentTime: prepared[0].openTime,
       currentIndex: 0,
-      candleCount: prepared.length,
+      candleCount: options.buffered ? candleCount(prepared[0].openTime, endTime, input.period.text) : prepared.length,
       speed: input.speed ?? 1,
-      status: prepared.length === 1 ? 'completed' : 'paused',
+      status: prepared[0].openTime === endTime ? 'completed' : 'paused',
       hasTrades: false,
       active: true,
       tradingConfig: {
@@ -78,6 +90,7 @@ export class ReplayEngine {
     session: ReplaySession,
     candles: readonly MarketCandle[],
     now: () => number = Date.now,
+    options: { buffered?: boolean } = {},
   ): ReplayEngine {
     const prepared = normalizedCandles(candles, session)
     if (prepared.length === 0) {
@@ -98,11 +111,11 @@ export class ReplayEngine {
           ...(session.tradingConfig ?? DEFAULT_TRADING_CONFIG),
         },
         currentIndex: restoredIndex,
-        candleCount: prepared.length,
+        candleCount: options.buffered ? candleCount(prepared[0].openTime, session.endTime, session.period.text) : prepared.length,
         startTime: prepared[0].openTime,
-        endTime: prepared.at(-1)!.openTime,
+        endTime: options.buffered ? session.endTime : prepared.at(-1)!.openTime,
         status:
-          restoredIndex === prepared.length - 1
+          session.currentTime === (options.buffered ? session.endTime : prepared.at(-1)!.openTime)
             ? 'completed'
             : 'paused',
       },
@@ -122,8 +135,22 @@ export class ReplayEngine {
     return this.candles[this.session.currentIndex]
   }
 
+  bufferedCandles(): readonly MarketCandle[] { return this.candles }
+
+  appendCandles(candles: readonly MarketCandle[]): void {
+    const from = nextOpenTime(this.candles.at(-1)!.openTime, this.session.period.text)
+    const prepared = normalizedCandles(candles, { ...this.session, startTime: from })
+    if (prepared.length === 0) return
+    if (findMissingRanges(prepared, this.session.period.text, from, prepared.at(-1)!.openTime).length > 0) {
+      throw new Error('下一段回放数据仍有缺口')
+    }
+    // Append individually: a month of 1m rows can exceed JS argument limits.
+    for (const candle of prepared) this.candles.push(candle)
+  }
+
   stepNext(): MarketCandle | null {
     if (this.session.currentIndex >= this.candles.length - 1) {
+      if (this.session.currentTime < this.session.endTime) throw new Error('需要先准备下一段回放数据')
       this.update({ status: 'completed' })
       return null
     }
@@ -132,7 +159,7 @@ export class ReplayEngine {
     this.update({
       currentIndex: nextIndex,
       currentTime: candle.openTime,
-      status: nextIndex === this.candles.length - 1 ? 'completed' : 'paused',
+      status: candle.openTime === this.session.endTime ? 'completed' : 'paused',
     })
     return candle
   }
@@ -156,12 +183,13 @@ export class ReplayEngine {
     this.update({
       currentIndex: 0,
       currentTime: candle.openTime,
-      status: this.candles.length === 1 ? 'completed' : 'paused',
+      status: candle.openTime === this.session.endTime ? 'completed' : 'paused',
     })
     return candle
   }
 
   jumpToEnd(onCandle?: (candle: MarketCandle) => void): MarketCandle {
+    if (this.candles.at(-1)!.openTime < this.session.endTime) throw new Error('需要先准备剩余回放数据')
     let candle = this.currentCandle()
     while (this.session.currentIndex < this.candles.length - 1) {
       candle = this.stepNext()!

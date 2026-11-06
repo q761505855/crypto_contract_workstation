@@ -710,6 +710,53 @@ test('preserves the inspected time across periods and locates the latest live ca
   await page.screenshot({ path: 'test-results/viewport-live-latest.png' })
 })
 
+test('prepares only next month when creating and restoring a long replay and rolls the buffer forward', async ({ page }) => {
+  test.setTimeout(180_000)
+  const now = Date.UTC(2026, 10, 1, 0, 15)
+  await page.clock.install({ time: now })
+  const { archiveRequests } = await mockBinance(page, false, {}, { now })
+  const inspect = await installViewportProbe(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await selectChartPeriod(page, '1d')
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByLabel('图表跳转时间').fill('2026-01-31T12:00')
+  await controls.getByRole('button', { name: '跳转', exact: true }).click()
+  const start = Date.UTC(2026, 0, 31)
+  await expect.poll(async () => (await inspect()).rightmost).toBe(start)
+  const beforeCreate = archiveRequests.length
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled({ timeout: 60_000 }).catch(async error => {
+    console.log(JSON.stringify({ probe: await inspect(), requests: archiveRequests, controls: await controls.innerText() }))
+    throw error
+  })
+  await expect(controls).toContainText('1/274')
+  const createdRequests = archiveRequests.slice(beforeCreate).filter(url => url.endsWith('.zip'))
+  expect(createdRequests.some(url => url.includes('2026-02.zip'))).toBe(true)
+  const laterThan = (urls: string[], lastMonth: number) => urls.filter(url => {
+    const match = /-(\d{4})-(\d{2})\.zip$/.exec(url)
+    return match === null || Number(`${match[1]}${match[2]}`) > lastMonth
+  })
+  // Older months can be requested by chart pagination; no future month beyond February.
+  expect(laterThan(createdRequests, 202602)).toEqual([])
+  await expect.poll(async () => (await inspect()).last?.timestamp).toBe(start)
+
+  const beforeStep = archiveRequests.length
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect(controls).toContainText('2/274', { timeout: 60_000 })
+  const stepRequests = archiveRequests.slice(beforeStep).filter(url => url.endsWith('.zip'))
+  expect(stepRequests.some(url => url.includes('2026-03.zip'))).toBe(true)
+  expect(laterThan(stepRequests, 202603)).toEqual([])
+  await expect.poll(async () => (await inspect()).last?.timestamp).toBe(Date.UTC(2026, 1, 1))
+  const beforeReload = archiveRequests.length
+  await page.reload()
+  await expect(controls).toContainText('2/274', { timeout: 60_000 })
+  await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
+  expect(archiveRequests.slice(beforeReload).filter(url => url.endsWith('.zip'))).toEqual([])
+  await expect(controls.getByRole('alert')).toHaveCount(0)
+})
+
 test('observes replay across periods without future bars and locates its revealed latest minute', async ({ page }) => {
   test.setTimeout(120_000)
   const now = Date.UTC(2025, 10, 1, 0, 15)

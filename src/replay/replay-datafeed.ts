@@ -304,7 +304,7 @@ export class ReplayDatafeed implements Datafeed {
     const minuteHistory = this.service.usesMinuteHistory?.() ?? false
     if (minuteHistory) {
       // Library period switches can ask for hundreds of weeks. Prepare chart
-      // history in calendar chunks; explicit session preparation remains full.
+      // history in calendar chunks; session buffering has its own month limit.
       from = Math.max(from, shiftOpenTime(alignOpenTime(to, '1M', 'floor'), '1M', -1))
     }
     if (from > to) return []

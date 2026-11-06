@@ -7,6 +7,8 @@ import { useSimulationController } from '../simulation/useSimulationController'
 import { SimulationEngine } from '../simulation/simulation-engine'
 import { ReplayEngine } from './replay-engine'
 import { useReplayController } from './useReplayController'
+import type { ReplaySession } from './models'
+import { nextOpenTime } from '../market-data/intervals'
 
 const minute = 60_000
 const input = { symbol: DEFAULT_SYMBOL, period: SUPPORTED_PERIODS[0], startTime: 0, endTime: 5 * minute }
@@ -16,9 +18,19 @@ const candles: MarketCandle[] = Array.from({ length: 6 }, (_, index) => ({
   volume: '10', quoteVolume: '1000', tradeCount: 1, isClosed: true, source: 'binance',
 }))
 
-function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: MarketCandle[] } = {}) {
+function sourceRows(timeframe: string, from: number, to: number): MarketCandle[] {
+  const rows: MarketCandle[] = []
+  for (let time = from; time <= to; time = nextOpenTime(time, timeframe)) {
+    rows.push({ ...candles[0], timeframe, openTime: time, closeTime: nextOpenTime(time, timeframe) - 1 })
+  }
+  return rows
+}
+
+const dailyInput = { symbol: DEFAULT_SYMBOL, period: SUPPORTED_PERIODS.find(p => p.text === '1d')!, startTime: Date.UTC(2026, 0, 31), endTime: Date.UTC(2026, 3, 2) }
+
+function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: MarketCandle[]; savedSession?: ReplaySession } = {}) {
   const source = options.sourceCandles ?? candles
-  const saved = options.restore ? ReplayEngine.create(input, source).snapshot() : undefined
+  const saved = options.savedSession ?? (options.restore ? ReplayEngine.create(input, source).snapshot() : undefined)
   const marks = options.noMarks ? [] : candles
   const runtime = {
     replaySessions: {
@@ -44,6 +56,109 @@ function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: 
 }
 
 describe('offline replay and simulation controllers', () => {
+  it.each([undefined, Date.UTC(2026, 7, 1)])('prepares January and February only while preserving the session end %s', async (endTime) => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 10, 6))
+    try {
+      const { result, runtime } = setup()
+      await waitFor(() => expect(result.current.replay.busy).toBe(false))
+      vi.mocked(runtime.service.loadCandles).mockImplementation(async (_kind, _symbol, timeframe, from, to) => {
+        // Daily source candles keep this a small real engine/controller test.
+        return sourceRows(timeframe, from, to)
+      })
+      const startTime = Date.UTC(2026, 0, 31)
+      await act(async () => { await result.current.replay.createSession({ symbol: DEFAULT_SYMBOL, period: SUPPORTED_PERIODS.find(p => p.text === '1d')!, startTime, endTime }) })
+      expect(runtime.service.loadCandles).toHaveBeenCalledWith('trade', 'BTCUSDT', '1d', startTime, Date.UTC(2026, 1, 28), expect.any(Object))
+      expect(result.current.replay.session?.endTime).toBe(endTime ?? Date.UTC(2026, 10, 5))
+      expect(result.current.replay.session?.status).toBe('paused')
+      await act(async () => { await result.current.replay.next() })
+      expect(result.current.replay.session?.currentTime).toBe(Date.UTC(2026, 1, 1))
+      expect(runtime.service.loadCandles).toHaveBeenLastCalledWith('trade', 'BTCUSDT', '1d', Date.UTC(2026, 2, 1), Date.UTC(2026, 2, 31), expect.any(Object))
+      expect(runtime.service.loadCandles).toHaveBeenCalledTimes(2)
+    } finally { clock.mockRestore() }
+  })
+
+  it.each([
+    ['1d', Date.UTC(2023, 11, 31), Date.UTC(2024, 0, 31)],
+    ['1d', Date.UTC(2024, 0, 31), Date.UTC(2024, 1, 29)],
+    ['1w', Date.UTC(2026, 0, 5), Date.UTC(2026, 1, 16)],
+    ['1M', Date.UTC(2026, 0, 1), Date.UTC(2026, 1, 1)],
+  ])('bounds %s source bars across calendar boundaries', async (timeframe, startTime, lastPrepared) => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await act(async () => { await result.current.replay.createSession({ ...dailyInput, period: SUPPORTED_PERIODS.find(p => p.text === timeframe)!, startTime }) })
+    expect(result.current.replay.error).toBe('')
+    expect(runtime.service.loadCandles).toHaveBeenCalledWith('trade', 'BTCUSDT', timeframe, startTime, lastPrepared, expect.any(Object))
+  })
+
+  it('restores only through next month and retains the saved full end and cursor', async () => {
+    const original = ReplayEngine.create(dailyInput, sourceRows('1d', dailyInput.startTime, Date.UTC(2026, 1, 28)), { buffered: true })
+    original.stepNext()
+    const { result, runtime } = setup({ savedSession: original.snapshot() })
+    vi.mocked(runtime.service.loadReplayCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    expect(result.current.replay.error).toBe('')
+    expect(runtime.service.loadReplayCandles).toHaveBeenCalledWith('trade', 'BTCUSDT', '1d', Date.UTC(2026, 0, 31), Date.UTC(2026, 2, 31), expect.objectContaining({ prefetchTo: Date.UTC(2026, 2, 31) }))
+    expect(result.current.replay.session).toMatchObject({ currentTime: Date.UTC(2026, 1, 1), currentIndex: 1, endTime: Date.UTC(2026, 3, 2), candleCount: 62 })
+  })
+
+  it('does not advance on an incomplete next month and can retry without duplicate trading events', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await act(async () => { await result.current.replay.createSession(dailyInput) })
+    const events: number[] = []
+    result.current.replay.subscribeCandle(event => { events.push(event.candle.openTime) })
+    vi.mocked(runtime.service.loadCandles).mockResolvedValueOnce([])
+    await act(async () => { await result.current.replay.next() })
+    expect(result.current.replay.error).toMatch(/缺口/)
+    expect(result.current.replay.session?.currentTime).toBe(Date.UTC(2026, 0, 31))
+    expect(events).toEqual([])
+    await act(async () => { await result.current.replay.next() })
+    expect(events).toEqual([Date.UTC(2026, 1, 1)])
+    expect(result.current.replay.session?.currentIndex).toBe(1)
+  })
+
+  it('processes every intermediate trading candle while loading only one next month per chunk on jump to end', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await act(async () => { await result.current.replay.createSession(dailyInput) })
+    const events: number[] = []
+    result.current.replay.subscribeCandle(event => { events.push(event.candle.openTime) })
+    await act(async () => { await result.current.replay.jumpToEnd() })
+    expect(events).toHaveLength(61)
+    expect(new Set(events).size).toBe(61)
+    expect(events.at(-1)).toBe(Date.UTC(2026, 3, 2))
+    expect(result.current.replay.session).toMatchObject({ currentIndex: 61, candleCount: 62, status: 'completed' })
+    expect(vi.mocked(runtime.service.loadCandles).mock.calls.map(call => [call[3], call[4]])).toEqual([
+      [Date.UTC(2026, 0, 31), Date.UTC(2026, 1, 28)],
+      [Date.UTC(2026, 2, 1), Date.UTC(2026, 2, 31)],
+      [Date.UTC(2026, 3, 1), Date.UTC(2026, 3, 2)],
+    ])
+  })
+
+  it('cancels next-month preparation when the user ends the session', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await act(async () => { await result.current.replay.createSession(dailyInput) })
+    let release!: (rows: MarketCandle[]) => void
+    let signal: AbortSignal | undefined
+    vi.mocked(runtime.service.loadCandles).mockImplementationOnce(async (_k, _s, _tf, _from, _to, options) => {
+      signal = options?.signal
+      return new Promise(resolve => { release = resolve })
+    })
+    let pending!: Promise<void>
+    act(() => { pending = result.current.replay.next() })
+    await act(async () => { await result.current.replay.endSession() })
+    await act(async () => { release(sourceRows('1d', Date.UTC(2026, 2, 1), Date.UTC(2026, 2, 31))); await pending })
+    expect(signal?.aborted).toBe(true)
+    expect(result.current.replay.busy).toBe(false)
+    expect(result.current.replay.session).toBeNull()
+    expect(result.current.replay.error).toBe('')
+  })
+
   it('exposes monthly preparation progress while creating a session', async () => {
     const {result,runtime} = setup()
     await waitFor(()=>expect(result.current.replay.busy).toBe(false))
