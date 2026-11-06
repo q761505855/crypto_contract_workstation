@@ -1346,7 +1346,7 @@ test('preserves the inspected time across periods and locates the latest live ca
   await page.screenshot({ path: 'test-results/viewport-live-latest.png' })
 })
 
-test('prepares only next month when creating and restoring a long replay and rolls the buffer forward', { tag: '@integration' }, async ({ page }) => {
+test('prepares only next month when creating and restoring a long replay and rolls the buffer forward', { tag: ['@integration', '@month-buffer'] }, async ({ page }) => {
   const started = Date.now()
   const profile = async (phase: string) => {
     if (!process.env.E2E_PROFILE) return
@@ -1496,7 +1496,7 @@ test('keeps the latest trade price updating through rapid live period changes', 
   await expect(page.locator('.status-footer')).not.toContainText('切换过于频繁')
 })
 
-test('exercises Pro chart interactions and the production path', { tag: '@integration' }, async ({ page }) => {
+test('exercises Pro chart interactions and the production path', { tag: ['@integration', '@production-path'] }, async ({ page }) => {
   test.setTimeout(360_000)
   const { archiveRequests } = await mockBinance(page, true, {}, { integration: true })
   // The historical download/import checks below still use real archive paths.

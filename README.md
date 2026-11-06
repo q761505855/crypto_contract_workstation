@@ -207,6 +207,8 @@ Pages 回归先自动构建并校验专用测试插桩产物，强制使用假�
 
 CI 与发布固定使用 Ubuntu 24.04，避免 `ubuntu-latest` 升级改变系统依赖和字体安装耗时。`node scripts/install-playwright.mjs` 只下载测试使用的 Chromium headless shell，并实际启动验证；仅在缺少运行库时补装系统依赖。新提交自动取消同分支过时的 CI。
 
+CI 完成类型、单元测试及构建验证后，将完整浏览器用例分为四个独立 runner 并行执行：普通界面、存储与请求保护、跨月回放、完整生产路径。各用例只归属一组，完整覆盖保持不变；大数据用例各自独占 runner。本地 `npm run test:e2e` 仍运行全部分组，也可用 `-- --project=chromium-monthly-replay` 等参数定向排查。
+
 ## 构建
 
 ```bash

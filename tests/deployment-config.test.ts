@@ -62,7 +62,8 @@ describe('deployment configuration', () => {
     const triggers = capture(workflow, /^on:\n([\s\S]*?)^permissions:/m)
     const permissions = capture(workflow, /^permissions:\n([\s\S]*?)^concurrency:/m)
     const concurrency = capture(workflow, /^concurrency:\n([\s\S]*?)^jobs:/m)
-    const verifyJob = capture(workflow, /^  verify:\n([\s\S]*)$/m)
+    const verifyJob = capture(workflow, /^  verify:\n([\s\S]*?)^  browser:/m)
+    const browserJob = capture(workflow, /^  browser:\n([\s\S]*)$/m)
 
     expect(triggers).toMatch(/^  pull_request:$/m)
     expect(triggers).toMatch(/^  push:\n    branches:\n      - main$/m)
@@ -75,8 +76,16 @@ describe('deployment configuration', () => {
     expectLinesInOrder(verifyJob, [
       '        run: npm ci',
       '        run: npm run check',
+    ])
+    expect(browserJob).toMatch(/^    needs: verify$/m)
+    expect(browserJob).toMatch(/^    runs-on: ubuntu-24\.04$/m)
+    for (const project of ['chromium', 'chromium-integration', 'chromium-monthly-replay', 'chromium-production']) {
+      expect(browserJob).toContain(`          - ${project}\n`)
+    }
+    expectLinesInOrder(browserJob, [
+      '        run: npm ci',
       '        run: node scripts/install-playwright.mjs',
-      '        run: npm run test:e2e',
+      '        run: npm run test:e2e -- --project=${{ matrix.project }}',
     ])
     expectNoSecrets(workflow)
   })
