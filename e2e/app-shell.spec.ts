@@ -1399,6 +1399,44 @@ test.describe('mobile workstation', () => {
     await expect.poll(() => page.evaluate(() => (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.getStyles().yAxis.inside)).toBe(false)
   })
 
+  test('shows the complete mobile crosshair price and percentage without widening the axis gesture area', async ({ page }) => {
+    await mockBinance(page, true)
+    await mockGitHub(page, true)
+    await installViewportProbe(page)
+    const { axis } = await trackPriceAxis(page)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('./')
+    await expectCanvasContent(page)
+    const plot = page.locator('[data-pane-id="candle_pane"] > div').first()
+    const labels = () => plot.locator('canvas').nth(1).evaluate(canvas =>
+      (window as unknown as { chartAxisTestLabels: Map<HTMLCanvasElement, { text: string; x: number; width: number }[]> }).chartAxisTestLabels.get(canvas)?.filter(label => /^[\d,]+\.\d+ \([+-]\d+\.\d{2}%\)$/.test(label.text)) ?? [])
+    await plot.tap({ position: { x: 100, y: 180 } })
+    await expect.poll(async () => (await labels()).length).toBe(1)
+    for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 740 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport)
+      await page.clock.runFor(300)
+      for (const precision of [2, 8]) {
+        await page.evaluate(value => {
+          const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+          core.setPriceVolumePrecision(value, 2)
+          core.executeAction('onCrosshairChange' as import('klinecharts').ActionType, { x: 100, y: core.getSize('candle_pane')!.height * (0.4 + value * 0.025), paneId: 'candle_pane' })
+        }, precision)
+        await page.clock.runFor(100)
+        await expect.poll(async () => (await labels()).length).toBe(1)
+        const label = (await labels())[0]
+        expect(label.text.split(' ')[0].split('.')[1]).toHaveLength(precision)
+        const plotBox = (await plot.boundingBox())!
+        const axisBox = (await axis.boundingBox())!
+        expect(axisBox.width).toBe(64)
+        expect(label.width).toBeGreaterThan(axisBox.width)
+        expect(label.x).toBeGreaterThanOrEqual(0)
+        expect(label.x + label.width).toBeLessThanOrEqual(plotBox.width)
+        expect(plotBox.x + label.x + label.width).toBeCloseTo(axisBox.x + axisBox.width - 3, 0)
+      }
+      await page.screenshot({ path: test.info().outputPath(`complete-crosshair-price-${viewport.width}.png`), fullPage: true })
+    }
+  })
+
   test('handles real axis swipes, pinch and cancellation while keeping the fixed mobile viewport stable', async ({ page, context }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await mockBinance(page)
