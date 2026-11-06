@@ -44,11 +44,25 @@ async function createArtifact(
   return rootDirectory
 }
 
-function runVerifier(rootDirectory: string, embeddedToken = '', testProbe = false) {
-  return execFile(process.execPath, [verifierPath], { cwd: rootDirectory, env: {...process.env, VITE_GITHUB_TOKEN:embeddedToken, E2E_CHART_PROBE:testProbe ? '1' : ''} })
+function runVerifier(rootDirectory: string, embeddedToken = '', testProbe = false, requireConnection = false) {
+  return execFile(process.execPath, [verifierPath], { cwd: rootDirectory, env: {...process.env, VITE_GITHUB_TOKEN:embeddedToken, E2E_CHART_PROBE:testProbe ? '1' : '', REQUIRE_CLOUD_CONNECTION:requireConnection ? '1' : ''} })
 }
 
 describe('verify:pages', () => {
+  it('requires the published connection to match the deployment credential', async () => {
+    const token = 'ghp_test_cloud_credential_123456789'
+    const root = await createArtifact('<script src="/crypto_contract_workstation/assets/index.js"></script>')
+    await expect(runVerifier(root, token, false, true)).rejects.toThrow(/missing or invalid/)
+    const file = join(root, 'dist/cloud-connection.json')
+    const connection = { schemaVersion: 1, project: 'crypto-contract-workstation', token }
+    await writeFile(file, JSON.stringify({ ...connection, token: 'different' }))
+    await expect(runVerifier(root, token, false, true)).rejects.toThrow(/does not match/)
+    await writeFile(file, JSON.stringify({ ...connection, project: 'another-project' }))
+    await expect(runVerifier(root, token, false, true)).rejects.toThrow(/does not match/)
+    await writeFile(file, JSON.stringify(connection))
+    await expect(runVerifier(root, token, false, true)).resolves.toBeDefined()
+    await expect(runVerifier(root, '', false, true)).rejects.toThrow(/does not match/)
+  })
   it('permits instrumentation only in the isolated smoke-test artifact', async () => {
     const root = await createArtifact('<script src="/crypto_contract_workstation/assets/index.js"></script>', 'window.__viewportTestAdapter = {}')
     await expect(runVerifier(root)).rejects.toThrow(/Browser-test instrumentation/)

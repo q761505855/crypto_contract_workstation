@@ -205,7 +205,7 @@ export function findLocalAssetUrls(indexHtml) {
   )
 }
 
-export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedCloudToken = '', allowTestProbe = false } = {}) {
+export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedCloudToken = '', allowTestProbe = false, requireCloudConnection = false } = {}) {
   const artifactDirectory = resolve(distDirectory)
   let files
 
@@ -218,6 +218,16 @@ export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedClou
   }
 
   const problems = []
+  if (requireCloudConnection) {
+    try {
+      const connection = JSON.parse(await readFile(resolve(artifactDirectory, 'cloud-connection.json'), 'utf8'))
+      if (!embeddedCloudToken || connection.schemaVersion !== 1 || connection.project !== 'crypto-contract-workstation' || connection.token !== embeddedCloudToken) {
+        problems.push('Published cloud connection does not match the configured deployment credential')
+      }
+    } catch {
+      problems.push('Published cloud-connection.json is missing or invalid')
+    }
+  }
   const artifactFiles = new Set(files.map((file) => resolve(file)))
   for (const requiredFile of REQUIRED_ATTRIBUTION_FILES) {
     if (!artifactFiles.has(resolve(artifactDirectory, requiredFile))) {
@@ -309,7 +319,7 @@ export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedClou
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const env = loadEnv('production', process.cwd(), '')
-  verifyPagesArtifact('dist', {embeddedCloudToken:env.VITE_GITHUB_TOKEN ?? '', allowTestProbe:env.E2E_CHART_PROBE === '1'}).then(
+  verifyPagesArtifact('dist', {embeddedCloudToken:env.VITE_GITHUB_TOKEN ?? '', allowTestProbe:env.E2E_CHART_PROBE === '1', requireCloudConnection:env.REQUIRE_CLOUD_CONNECTION === '1'}).then(
     () => {
       console.log('GitHub Pages artifact verification passed.')
     },

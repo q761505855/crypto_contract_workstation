@@ -41,11 +41,11 @@ function savedBaseUrl(): string {
   }
 }
 
-export function createMarketDataRuntime(): MarketDataRuntime {
+export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime {
   const store = new IndexedDbMarketDataStore()
   const requestGuard = createBrowserRequestGuard()
   const client = new BinanceRestClient(savedBaseUrl(), fetch, Date.now, undefined, requestGuard)
-  const defaultGitHubClient = createDefaultGitHubClient() ?? new GitHubContentsClient(defaultStorageTarget())
+  const defaultGitHubClient = createDefaultGitHubClient(cloudToken) ?? new GitHubContentsClient(defaultStorageTarget())
   const service = new MarketDataService(client, store, {
     archives: new BinanceArchiveClient(),
     cloud: new GitHubHistoryStore(defaultGitHubClient),

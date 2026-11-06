@@ -6,7 +6,17 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
     base: env.VITE_BASE_PATH || '/',
-    plugins: [react(), ...(env.E2E_CHART_PROBE === '1' ? [{
+    plugins: [react(), {
+      name: 'published-cloud-connection',
+      generateBundle() {
+        const token = env.VITE_GITHUB_TOKEN?.trim()
+        if (token) this.emitFile({
+          type: 'asset',
+          fileName: 'cloud-connection.json',
+          source: JSON.stringify({ schemaVersion: 1, project: 'crypto-contract-workstation', token }),
+        })
+      },
+    }, ...(env.E2E_CHART_PROBE === '1' ? [{
       name: 'e2e-chart-probe',
       enforce: 'pre' as const,
       transform(source: string, id: string) {

@@ -52,6 +52,7 @@ jobs:
         run: npm run verify:pages
         env:
           VITE_GITHUB_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}
+          REQUIRE_CLOUD_CONNECTION: '1'
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:

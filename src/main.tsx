@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import App from './app/App'
 import { createMarketDataRuntime } from './market-data/runtime'
 import { ConfigAutoSync } from './github-sync/config-auto-sync'
+import { resolveDefaultGitHubToken } from './github-sync/default-storage'
 
 const rootElement = document.getElementById('root')
 if (rootElement === null) {
@@ -11,7 +12,7 @@ if (rootElement === null) {
 
 const root = createRoot(rootElement)
 root.render(<div className="startup-sync" role="status">正在检查云端配置…</div>)
-const runtime = createMarketDataRuntime()
+const runtime = createMarketDataRuntime(await resolveDefaultGitHubToken())
 if (runtime.defaultGitHubClient) {
   runtime.configSync = new ConfigAutoSync({ storage: localStorage, backups: runtime.backups, sync: runtime.githubSync, client: runtime.defaultGitHubClient })
   await runtime.configSync.start()

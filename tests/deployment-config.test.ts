@@ -138,6 +138,7 @@ describe('deployment configuration', () => {
     expect(buildJob.indexOf(productionBuildStep)).toBeGreaterThan(buildJob.indexOf(browserTestStep))
     expect(buildJob.indexOf(productionBuildStep)).toBeLessThan(buildJob.indexOf(uploadStep))
     expect(captureStep(buildJob, 'Verify final Pages artifact')).toContain('run: npm run verify:pages')
+    expect(captureStep(buildJob, 'Verify final Pages artifact')).toContain("REQUIRE_CLOUD_CONNECTION: '1'")
     expect(verifyStep).toBe(
       ['      - name: Verify Pages artifact', '        run: npm run verify:pages'].join(
         '\n',
