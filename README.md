@@ -199,7 +199,9 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-开发服务器的 Playwright 配置会启用 `E2E_CHART_PROBE=1`，供视口和指标测试观察真实图表。运行 `npm run test:e2e:pages` 会先自动构建并校验包含测试插桩的 Pages 产物，强制使用专用假凭据 `e2e-mock-storage-token`，再启动预览和测试，无需修改 Actions 工作流。测试结束后运行普通构建以生成正式产物；现有发布工作流已在浏览器测试后重新构建，最终产物校验会拒绝残留的测试插桩。
+开发服务器的完整 Playwright 回归通过 `npm run test:e2e` 运行，并启用 `E2E_CHART_PROBE=1` 供视口和指标测试观察真实图表；独立 CI 保留完整业务回归。发布使用 `npm run test:e2e:pages`，仅运行桌面和手机两项快速冒烟检查：页面启动、JS/CSS 资源、图表容器、回放设置和数据管理入口、布局及未捕获异常，不下载整月行情，也不依赖外部服务可用性。每项最多 30 秒、不自动重试。
+
+Pages 冒烟检查先自动构建并校验不含测试插桩的产物，强制使用专用假凭据 `e2e-mock-storage-token`，再启动预览，无需修改 Actions 工作流。现有发布工作流在浏览器检查后使用正式凭据重新构建，最终产物校验会拒绝残留的测试插桩。
 
 ## 构建
 
