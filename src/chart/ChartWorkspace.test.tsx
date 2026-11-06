@@ -49,6 +49,18 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+it('disposes the previous chart when configuration restore remounts the workspace', () => {
+  const dispose = vi.fn()
+  const adapter = {
+    mount: vi.fn(), dispose,
+    getSymbol: () => ({ ticker: 'BTCUSDT' }), getPeriod: () => ({ multiplier: 15, timespan: 'minute', text: '15m' }),
+    setSimulationOverlays: vi.fn(), setTheme: vi.fn(), setTimezone: vi.fn(),
+  } as unknown as ChartAdapterPort
+  const view = render(<ChartWorkspace createAdapter={() => adapter} />)
+  view.unmount()
+  expect(dispose).toHaveBeenCalledOnce()
+})
+
 describe('ChartWorkspace', () => {
   it('saves changed candle types without overwriting an imported preference from a stale chart', () => {
     vi.useFakeTimers()

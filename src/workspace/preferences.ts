@@ -1,3 +1,5 @@
+import { writePreference } from '../storage/preference-events'
+
 export const WORKSPACE_PREFERENCES_KEY = 'workspace.layout.v1'
 
 export interface WorkspacePreferences {
@@ -74,5 +76,5 @@ export function loadWorkspacePreferences(storage?: Pick<Storage, 'getItem'>): Wo
 export function saveWorkspacePreferences(value: WorkspacePreferences, storage?: Pick<Storage, 'setItem'>): void {
   const validated = validateWorkspacePreferences(value)
   const local = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage)
-  local?.setItem(WORKSPACE_PREFERENCES_KEY, JSON.stringify(validated))
+  if (local) writePreference(local, WORKSPACE_PREFERENCES_KEY, JSON.stringify(validated))
 }

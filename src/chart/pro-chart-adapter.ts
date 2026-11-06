@@ -63,6 +63,7 @@ export interface SimulationOverlayState {
 }
 
 export interface ChartAdapterPort {
+  dispose?(): void
   mount(options: ChartProOptions): void
   getPeriod(): Period
   getSymbol(): SymbolInfo
@@ -140,6 +141,18 @@ export class ProChartAdapter implements ChartAdapterPort {
   private subPaneMinimumHeight = 0
 
   constructor(private readonly factory: ChartProFactory = createProChart) {}
+
+  dispose(): void {
+    this.cancelHistoryWork()
+    this.clearPosition()
+    this.hideTradeTooltip()
+    this.tooltipElement?.remove()
+    this.tooltipElement = null
+    this.chart?.dispose?.()
+    this.chart = null
+    this.coreChart = null
+    this.datafeed = null
+  }
 
   mount(options: ChartProOptions): void {
     if (this.chart !== null) {

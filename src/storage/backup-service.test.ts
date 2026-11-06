@@ -136,7 +136,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
             name: 'RSI',
             calcParams: [6, 12, 24],
             visible: true,
-            styles: null,
+            styles: { rsiLevels: { oversold: 0, overbought: 100 }, rsiLines: [{ color: '#12345600', size: 0 }, { color: '#76808f80' }] },
           },
           { name: 'TTM_SQUEEZE', calcParams: [14, 2.5, 1.25], visible: true, styles: { bars: [{ noChangeColor: '#abcdef', borderSize: 0 }] } },
           { name: 'TTM_WAVE_A', calcParams: [5, 21, 34], visible: false, styles: { bars: [{ noChangeColor: '#123456', positiveColor: '#12ab34', negativeColor: '#ed1234', borderSize: 0 }, { positiveColor: '#34ab56', negativeColor: '#ed5678' }] } },
@@ -149,6 +149,18 @@ function indicatorPreferences(): ChartIndicatorPreferences {
 }
 
 describe('WorkstationBackupService', () => {
+  it.each([{ oversold: 50, overbought: 70 }, { oversold: 30, overbought: 101 }, null])('rejects invalid RSI levels before importing business data (%j)', async levels => {
+    const storage = new MemoryPreferences()
+    const service = new WorkstationBackupService(`rsi-invalid-${crypto.randomUUID()}`, storage)
+    const prefs = indicatorPreferences()
+    prefs.sub[0].indicators[0].styles = { rsiLevels: levels }
+    await expect(service.import({ fileType: BACKUP_FILE_TYPE, schemaVersion: 1, kind: 'all', exportedAt: 0, data: {
+      preferences: { binanceRestBaseUrl: 'https://changed.test', favoriteSymbols: [], chartIndicators: prefs },
+      symbols: [symbol()], tradeCandles: [candle()],
+    } })).rejects.toThrow(/RSI/)
+    expect(storage.getItem('marketData.binanceBaseUrl')).toBeNull()
+    expect((await service.exportAll()).data.tradeCandles).toEqual([])
+  })
   it('round-trips candle types in config and full archives, preserving legacy absence', async () => {
     const sourceStorage = new MemoryPreferences()
     sourceStorage.setItem('chart.candleType.v1', JSON.stringify('heikin_ashi'))

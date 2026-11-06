@@ -154,6 +154,7 @@ export function ChartWorkspace({
       resizeObserver?.disconnect()
       synchronizeLayoutRef.current = null
       host.removeEventListener('click', openSymbolPicker, true)
+      adapter?.dispose?.()
     }
   }, [])
 

@@ -1,16 +1,31 @@
 diff --git a/node_modules/klinecharts/dist/index.d.ts b/node_modules/klinecharts/dist/index.d.ts
-index db8d576..6e37137 100644
+index db8d576..0b6609c 100644
 --- a/node_modules/klinecharts/dist/index.d.ts
 +++ b/node_modules/klinecharts/dist/index.d.ts
-@@ -213,0 +214 @@
+@@ -211,10 +211,12 @@ export interface CandleTooltipCustomCallbackData {
+ }
+ export type CandleTooltipCustomCallback = (data: CandleTooltipCustomCallbackData, styles: CandleStyle) => TooltipLegend[];
+ export interface CandleTooltipStyle extends TooltipStyle, Offset {
 +	showIndicator?: boolean;
-@@ -217,0 +219 @@
+ 	custom: CandleTooltipCustomCallback | TooltipLegend[];
+ 	rect: CandleTooltipRectStyle;
+ }
+ export declare enum CandleType {
 +	HeikinAshi = "heikin_ashi",
-@@ -843,0 +846,2 @@
+ 	CandleSolid = "candle_solid",
+ 	CandleStroke = "candle_stroke",
+ 	CandleUpStroke = "candle_up_stroke",
+@@ -840,6 +842,8 @@ export interface Chart {
+ 	getLocale: () => string;
+ 	setStyles: (styles: string | DeepPartial<Styles>) => void;
+ 	getStyles: () => Styles;
 +	setPriceRangeAuto: (auto: boolean) => void;
 +	getPriceRangeAuto: () => boolean;
+ 	setCustomApi: (customApi: Partial<CustomApi>) => void;
+ 	setPriceVolumePrecision: (pricePrecision: number, volumePrecision: number) => void;
+ 	getPriceVolumePrecision: () => Precision;
 diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
-index 86b1dce..c4a5232 100644
+index 86b1dce..6b98b6b 100644
 --- a/node_modules/klinecharts/dist/index.esm.js
 +++ b/node_modules/klinecharts/dist/index.esm.js
 @@ -179,6 +179,7 @@ var CandleTooltipRectPosition;
@@ -21,7 +36,39 @@ index 86b1dce..c4a5232 100644
      CandleType["CandleSolid"] = "candle_solid";
      CandleType["CandleStroke"] = "candle_stroke";
      CandleType["CandleUpStroke"] = "candle_up_stroke";
-@@ -6491,12 +6492,35 @@ var ChartStore = /** @class */ (function () {
+@@ -3497,6 +3498,31 @@ var rateOfChange = {
+ var relativeStrengthIndex = {
+     name: 'RSI',
+     shortName: 'RSI',
++    minValue: 0,
++    maxValue: 100,
++    draw: function (params) {
++        var ctx = params.ctx, yAxis = params.yAxis, bounding = params.bounding;
++        var styles = params.indicator.styles || {};
++        var levels = styles.rsiLevels || { oversold: 30, overbought: 70 };
++        var values = [levels.oversold, 50, levels.overbought];
++        var colors = ['#26a69a', '#76808f', '#ef5350'];
++        ctx.save();
++        ctx.setLineDash([4, 4]);
++        ctx.font = '11px sans-serif';
++        values.forEach(function (value, index) {
++            var line = (styles.rsiLines || [])[index] || {};
++            var y = yAxis.convertToPixel(value);
++            ctx.lineWidth = line.size === undefined ? 1 : line.size;
++            ctx.strokeStyle = line.color === undefined ? colors[index] : line.color;
++            ctx.fillStyle = ctx.strokeStyle;
++            if (ctx.lineWidth > 0 && line.size !== 0) {
++                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(bounding.width, y); ctx.stroke();
++                ctx.fillText(['超卖 ', '', '超买 '][index] + value, 6, y - 4);
++            }
++        });
++        ctx.restore();
++        return false;
++    },
+     calcParams: [6, 12, 24],
+     figures: [
+         { key: 'rsi1', title: 'RSI1: ', type: 'line' },
+@@ -6491,12 +6517,35 @@ var ChartStore = /** @class */ (function () {
      ChartStore.prototype.getVisibleDataList = function () {
          return this._visibleDataList;
      };
@@ -57,7 +104,7 @@ index 86b1dce..c4a5232 100644
                          success = false;
                          adjustFlag = false;
                          dataLengthChange = 0;
-@@ -6601,6 +6625,7 @@ var ChartStore = /** @class */ (function () {
+@@ -6601,6 +6650,7 @@ var ChartStore = /** @class */ (function () {
          this._loading = true;
          this._dataList = [];
          this._visibleDataList = [];
@@ -65,7 +112,7 @@ index 86b1dce..c4a5232 100644
          this._timeScaleStore.clear();
          this._tooltipStore.clear();
      };
-@@ -6686,6 +6711,7 @@ var Canvas = /** @class */ (function () {
+@@ -6686,6 +6736,7 @@ var Canvas = /** @class */ (function () {
          this._nextPixelWidth = 0;
          this._nextPixelHeight = 0;
          this._requestAnimationId = DEFAULT_REQUEST_ID;
@@ -73,7 +120,7 @@ index 86b1dce..c4a5232 100644
          this._mediaQueryListener = function () {
              var pixelRatio = getPixelRatio(_this._element);
              _this._nextPixelWidth = Math.round(_this._element.clientWidth * pixelRatio);
-@@ -6736,10 +6762,15 @@ var Canvas = /** @class */ (function () {
+@@ -6736,10 +6787,15 @@ var Canvas = /** @class */ (function () {
      };
      Canvas.prototype._executeListener = function (fn) {
          var _this = this;
@@ -90,7 +137,7 @@ index 86b1dce..c4a5232 100644
                  _this._listener();
                  _this._requestAnimationId = DEFAULT_REQUEST_ID;
              });
-@@ -7629,6 +7660,9 @@ var CandleBarView = /** @class */ (function (_super) {
+@@ -7629,6 +7685,9 @@ var CandleBarView = /** @class */ (function (_super) {
              var yAxis_1 = pane.getAxisComponent();
              this.eachChildren(function (data, barSpace) {
                  var kLineData = data.data, x = data.x;
@@ -100,7 +147,7 @@ index 86b1dce..c4a5232 100644
                  if (isValid(kLineData)) {
                      var open_1 = kLineData.open, high = kLineData.high, low = kLineData.low, close_1 = kLineData.close;
                      var type = candleBarOptions.type, styles = candleBarOptions.styles;
-@@ -7658,6 +7692,7 @@ var CandleBarView = /** @class */ (function (_super) {
+@@ -7658,6 +7717,7 @@ var CandleBarView = /** @class */ (function (_super) {
                      priceY.sort(function (a, b) { return a - b; });
                      var rects = [];
                      switch (type) {
@@ -108,7 +155,7 @@ index 86b1dce..c4a5232 100644
                          case CandleType.CandleSolid: {
                              rects = _this._createSolidBar(x, priceY, barSpace, colors);
                              break;
-@@ -9081,6 +9116,9 @@ var CandleHighLowPriceView = /** @class */ (function (_super) {
+@@ -9081,6 +9141,9 @@ var CandleHighLowPriceView = /** @class */ (function (_super) {
              var lowX_1 = 0;
              this.eachChildren(function (data) {
                  var kLineData = data.data, x = data.x;
@@ -118,7 +165,7 @@ index 86b1dce..c4a5232 100644
                  if (isValid(kLineData)) {
                      if (high_1 < kLineData.high) {
                          high_1 = kLineData.high;
-@@ -9343,6 +9381,10 @@ var CandleTooltipView = /** @class */ (function (_super) {
+@@ -9343,6 +9406,10 @@ var CandleTooltipView = /** @class */ (function (_super) {
              var styles = chartStore.getStyles();
              var candleStyles = styles.candle;
              var indicatorStyles = styles.indicator;
@@ -129,7 +176,26 @@ index 86b1dce..c4a5232 100644
              if (candleStyles.tooltip.showType === TooltipShowType.Rect &&
                  indicatorStyles.tooltip.showType === TooltipShowType.Rect) {
                  var isDrawCandleTooltip = this.isDrawTooltip(crosshair, candleStyles.tooltip);
-@@ -10184,6 +10226,8 @@ var YAxisWidget = /** @class */ (function (_super) {
+@@ -10142,7 +10209,17 @@ var CrosshairHorizontalLabelView = /** @class */ (function (_super) {
+                 text = chartStore.getCustomApi().formatBigNumber(text);
+             }
+         }
+-        return formatFoldDecimal(formatThousands(text, chartStore.getThousandsSeparator()), chartStore.getDecimalFoldThreshold());
++        var formatted = formatFoldDecimal(formatThousands(text, chartStore.getThousandsSeparator()), chartStore.getDecimalFoldThreshold());
++        if (yAxis.isInCandle()) {
++            var rows = chartStore.getDataList();
++            var latest = rows.length ? rows[rows.length - 1].close : NaN;
++            if (Number.isFinite(latest) && latest > 0 && Number.isFinite(value)) {
++                var difference = (value - latest) / latest * 100;
++                var rounded = Number(difference.toFixed(2));
++                return formatted + ' (' + (rounded >= 0 ? '+' : '') + rounded.toFixed(2) + '%)';
++            }
++        }
++        return formatted;
+     };
+     CrosshairHorizontalLabelView.prototype.getTextAttrs = function (text, _textWidth, crosshair, bounding, axis, _styles) {
+         var yAxis = axis;
+@@ -10184,6 +10261,8 @@ var YAxisWidget = /** @class */ (function (_super) {
          _this._overlayYAxisView = new OverlayYAxisView(_this);
          _this._crosshairHorizontalLabelView = new CrosshairHorizontalLabelView(_this);
          _this.getContainer().style.cursor = 'ns-resize';
@@ -138,7 +204,7 @@ index 86b1dce..c4a5232 100644
          _this.addChild(_this._overlayYAxisView);
          return _this;
      }
-@@ -10303,7 +10347,8 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10303,7 +10382,8 @@ var YAxisImp = /** @class */ (function (_super) {
          var specifyMin = Number.MAX_SAFE_INTEGER;
          var specifyMax = Number.MIN_SAFE_INTEGER;
          var indicatorPrecision = Number.MAX_SAFE_INTEGER;
@@ -148,7 +214,7 @@ index 86b1dce..c4a5232 100644
          indicators.forEach(function (indicator) {
              var _a, _b, _c;
              if (!shouldOhlc) {
-@@ -10346,6 +10391,7 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10346,6 +10426,7 @@ var YAxisImp = /** @class */ (function (_super) {
              var dataIndex = _a.dataIndex, data = _a.data;
              if (isValid(data)) {
                  if (shouldCompareHighLow) {
@@ -156,7 +222,23 @@ index 86b1dce..c4a5232 100644
                      min = Math.min(min, data.low);
                      max = Math.max(max, data.high);
                  }
-@@ -12085,12 +12131,18 @@ var SyntheticEvent = /** @class */ (function () {
+@@ -10617,6 +10698,15 @@ var YAxisImp = /** @class */ (function (_super) {
+                 valueText = customApi.formatBigNumber(valueText);
+             }
+             valueText = formatFoldDecimal(valueText, chartStore.getDecimalFoldThreshold());
++            if (this.isInCandle()) {
++                var rows = chartStore.getDataList();
++                var latest = rows.length ? rows[rows.length - 1].close : NaN;
++                if (Number.isFinite(latest) && latest > 0) {
++                    var range = this.getRange();
++                    var maxDifference = Math.max(Math.abs((range.to - latest) / latest * 100), Math.abs((range.from - latest) / latest * 100));
++                    valueText += ' (-' + maxDifference.toFixed(2) + '%)';
++                }
++            }
+             crosshairVerticalTextWidth += (crosshairStyles.horizontal.text.paddingLeft +
+                 crosshairStyles.horizontal.text.paddingRight +
+                 crosshairStyles.horizontal.text.borderSize * 2 +
+@@ -12085,12 +12175,18 @@ var SyntheticEvent = /** @class */ (function () {
          {
              var boundTouchMoveWithDownHandler_1 = this._touchMoveHandler.bind(this);
              var boundTouchEndHandler_1 = this._touchEndHandler.bind(this);
@@ -175,7 +257,7 @@ index 86b1dce..c4a5232 100644
              this._clearLongTapTimeout();
              this._longTapTimeoutId = setTimeout(this._longTapHandler.bind(this, downEvent), 500 /* Delay.LongTap */);
          }
-@@ -12375,6 +12427,7 @@ var Event = /** @class */ (function () {
+@@ -12375,6 +12471,7 @@ var Event = /** @class */ (function () {
          // 用来记录捏合缩放的尺寸
          this._pinchScale = 1;
          this._mouseDownWidget = null;
@@ -183,7 +265,7 @@ index 86b1dce..c4a5232 100644
          this._prevYAxisRange = null;
          this._xAxisStartScaleCoordinate = null;
          this._xAxisStartScaleDistance = 0;
-@@ -12416,12 +12469,30 @@ var Event = /** @class */ (function () {
+@@ -12416,12 +12513,30 @@ var Event = /** @class */ (function () {
          container.addEventListener('keydown', this._boundKeyBoardDownEvent);
      }
      Event.prototype.pinchStartEvent = function () {
@@ -214,7 +296,7 @@ index 86b1dce..c4a5232 100644
          if ((pane === null || pane === void 0 ? void 0 : pane.getId()) !== PaneIdConstants.X_AXIS && (widget === null || widget === void 0 ? void 0 : widget.getName()) === WidgetNameConstants.MAIN) {
              var event_1 = this._makeWidgetEvent(e, widget);
              var zoomScale = (scale - this._pinchScale) * 5;
-@@ -12438,13 +12509,30 @@ var Event = /** @class */ (function () {
+@@ -12438,13 +12553,30 @@ var Event = /** @class */ (function () {
          return true;
      };
      Event.prototype.mouseWheelVertEvent = function (e, scale) {
@@ -246,7 +328,7 @@ index 86b1dce..c4a5232 100644
          return false;
      };
      Event.prototype.mouseDownEvent = function (e) {
-@@ -12707,6 +12795,12 @@ var Event = /** @class */ (function () {
+@@ -12707,6 +12839,12 @@ var Event = /** @class */ (function () {
      };
      Event.prototype.touchStartEvent = function (e) {
          var _a = this._findWidgetByEvent(e), pane = _a.pane, widget = _a.widget;
@@ -259,7 +341,7 @@ index 86b1dce..c4a5232 100644
          if (widget !== null) {
              var event_8 = this._makeWidgetEvent(e, widget);
              var name_7 = widget.getName();
-@@ -12758,6 +12852,26 @@ var Event = /** @class */ (function () {
+@@ -12758,6 +12896,26 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchMoveEvent = function (e) {
@@ -286,7 +368,7 @@ index 86b1dce..c4a5232 100644
          var _a, _b, _c;
          var _d = this._findWidgetByEvent(e), pane = _d.pane, widget = _d.widget;
          if (widget !== null) {
-@@ -12779,7 +12893,8 @@ var Event = /** @class */ (function () {
+@@ -12779,7 +12937,8 @@ var Event = /** @class */ (function () {
                      }
                      else {
                          if (this._startScrollCoordinate !== null &&
@@ -296,7 +378,7 @@ index 86b1dce..c4a5232 100644
                              var distance = event_9.x - this._startScrollCoordinate.x;
                              chartStore.getTimeScaleStore().scroll(distance);
                          }
-@@ -12800,6 +12915,10 @@ var Event = /** @class */ (function () {
+@@ -12800,6 +12959,10 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchEndEvent = function (e) {
@@ -307,7 +389,7 @@ index 86b1dce..c4a5232 100644
          var _this = this;
          var widget = this._findWidgetByEvent(e).widget;
          if (widget !== null) {
-@@ -13427,6 +13546,15 @@ var ChartImp = /** @class */ (function () {
+@@ -13427,6 +13590,15 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getPriceVolumePrecision = function () {
          return this._chartStore.getPrecision();
      };

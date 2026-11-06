@@ -1,3 +1,5 @@
+import { writePreference } from '../storage/preference-events'
+
 export const CANDLE_TYPE_KEY = 'chart.candleType.v1'
 export const CANDLE_TYPES = ['candle_solid', 'candle_stroke', 'candle_up_stroke', 'candle_down_stroke', 'ohlc', 'area', 'heikin_ashi'] as const
 export type ChartCandleType = typeof CANDLE_TYPES[number]
@@ -20,5 +22,5 @@ export function readCandleType(storage: Pick<Storage, 'getItem'> = localStorage)
 }
 
 export function saveCandleType(value: ChartCandleType, storage: Pick<Storage, 'setItem'> = localStorage): void {
-  storage.setItem(CANDLE_TYPE_KEY, JSON.stringify(validateCandleType(value)))
+  writePreference(storage, CANDLE_TYPE_KEY, JSON.stringify(validateCandleType(value)))
 }

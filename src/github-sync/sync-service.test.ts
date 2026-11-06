@@ -80,7 +80,7 @@ function backup(): BackupEnvelope {
       schemaVersion: 1,
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
-        { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
+        { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#12345600', size: 0 }] } },
         { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
       ],
       sub: [{ height: 210, indicators: [
@@ -88,7 +88,8 @@ function backup(): BackupEnvelope {
       ] },
       { height: 180, indicators: [{ name: 'TTM_WAVE_A', calcParams: [5, 21, 34], visible: false, styles: { bars: [{ noChangeColor: '#123456', positiveColor: '#12ab34', negativeColor: '#ed1234', borderSize: 0 }, { positiveColor: '#34ab56', negativeColor: '#ed5678' }] } }] },
       { height: 190, indicators: [{ name: 'TTM_WAVE_B', calcParams: [5, 55, 89], visible: true, styles: null }] },
-      { height: 200, indicators: [{ name: 'TTM_WAVE_C', calcParams: [5, 144, 233], visible: true, styles: null }] }],
+      { height: 200, indicators: [{ name: 'TTM_WAVE_C', calcParams: [5, 144, 233], visible: true, styles: null }] },
+      { height: 190, indicators: [{ name: 'RSI', calcParams: [6, 12, 24], visible: false, styles: { rsiLevels: { oversold: 0, overbought: 100 }, rsiLines: [{ color: '#26a69a00', size: 0 }, { color: '#76808f80' }, { color: '#ef5350' }] } }] }],
     },
   }
   return {
@@ -238,6 +239,23 @@ async function seedLegacyMonth(remote: MemoryGitHubClient): Promise<void> {
 }
 
 describe('GitHubSyncService', () => {
+  it('reads validated configuration from a fixed snapshot without importing business data', async () => {
+    const remote = new MemoryGitHubClient()
+    const backups = new MemoryBackupService()
+    const sync = service(backups)
+    await sync.upload(client(remote), 'stop')
+    const value = await sync.readConfig(client(remote))
+    expect(value.preferences).toEqual(backup().data.preferences)
+    expect(backups.imports).toHaveLength(0)
+    const before = structuredClone(remote.files)
+    const prefs = { ...value.preferences!, favoriteSymbols: [], pinnedPeriods: [] }
+    await sync.writeConfig(client(remote), prefs, value)
+    expect((await sync.readConfig(client(remote))).preferences).toEqual(prefs)
+    for (const [path, file] of before) if (!path.startsWith('config/') && path !== 'manifest.json') {
+      expect(remote.files.get(path)?.sha).toBe(file.sha)
+      expect([...remote.files.get(path)!.bytes]).toEqual([...file.bytes])
+    }
+  })
   it('round-trips the complete configuration through real storage and retains workspace false, null and legacy absence', async () => {
     const storage = () => {
       const values = new Map<string, string>()

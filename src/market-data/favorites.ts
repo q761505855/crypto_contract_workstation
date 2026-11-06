@@ -1,3 +1,5 @@
+import { writePreference } from '../storage/preference-events'
+
 export const FAVORITE_SYMBOLS_STORAGE_KEY = 'marketData.favoriteSymbols'
 
 type ReadableStorage = Pick<Storage, 'getItem'>
@@ -28,7 +30,7 @@ export function saveFavoriteSymbols(
   favorites: readonly string[],
   storage: WritableStorage = localStorage,
 ): void {
-  storage.setItem(
+  writePreference(storage,
     FAVORITE_SYMBOLS_STORAGE_KEY,
     JSON.stringify([
       ...new Set(

@@ -1482,3 +1482,13 @@ button:disabled {
   .workspace-shell .chart-host .klinecharts-pro-modal .button-container > button { min-height: 44px; }
   .workspace-shell .chart-host .klinecharts-pro-modal .title-container .close-icon { min-width: 36px; min-height: 36px; }
 }
+.startup-sync { padding: 24px; color: #9eaab8; background: #101722; min-height: 100vh; }
+.config-sync-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 3px 12px; font-size: 11px; color: #9eaab8; overflow-wrap: anywhere; }
+.config-sync-status.is-synced { color: #68c9a8; }
+.config-sync-status.is-conflict, .config-sync-status.is-error { color: #f5b565; }
+.config-sync-status button { padding: 2px 6px; font-size: 11px; }
+.workspace-shell > .config-sync-status { flex: 0 0 32px; min-height: 32px; max-height: 32px; min-width: 0; flex-wrap: nowrap; }
+.config-sync-status > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.config-sync-status > .button-row { flex-shrink: 0; }
+.config-sync-status button { flex-shrink: 0; }
+.config-sync-status .button-row button, .workspace-shell > .config-sync-status > button { min-height: 24px; }

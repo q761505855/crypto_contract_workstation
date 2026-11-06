@@ -1,4 +1,5 @@
 import type { SymbolInfo } from '@klinecharts/pro'
+import { writePreference } from '../storage/preference-events'
 
 export const SELECTED_SYMBOL_STORAGE_KEY = 'marketData.selectedSymbol'
 
@@ -38,7 +39,7 @@ export function readSelectedSymbol(storage: Pick<Storage, 'getItem'> = localStor
 
 export function saveSelectedSymbol(symbol: SymbolInfo, storage: Pick<Storage, 'setItem'> = localStorage): void {
   try {
-    storage.setItem(SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(validateSelectedSymbol(symbol)))
+    writePreference(storage, SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(validateSelectedSymbol(symbol)))
   } catch {
     // Selecting a product remains usable when browser storage is unavailable.
   }

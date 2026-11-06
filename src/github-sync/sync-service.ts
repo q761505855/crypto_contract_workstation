@@ -13,6 +13,7 @@ import {
   GitHubConflictError,
   GitHubContentsClient,
   type GitHubFile,
+  type GitHubSnapshot,
 } from './github-client'
 
 const MANIFEST_TYPE = 'crypto-contract-workstation-manifest'
@@ -78,6 +79,24 @@ export interface SyncResult {
 }
 
 export type SyncProgress = (message: string) => void
+
+export interface RemoteConfig {
+  snapshot: GitHubSnapshot
+  manifest: SyncManifest | null
+  preferences: BackupPreferences | null
+}
+
+function configDocuments(preferences: BackupPreferences): { path: string; bytes: Uint8Array; category: 'config' }[] {
+  const { favoriteSymbols, ...settings } = preferences
+  return [
+    { path: 'config/preferences.json', bytes: jsonBytes({ schemaVersion: 1, ...settings }), category: 'config' },
+    { path: 'config/favorites.json', bytes: jsonBytes({ schemaVersion: 1, favoriteSymbols }), category: 'config' },
+  ]
+}
+
+export function configurationEnvelope(preferences: BackupPreferences): BackupEnvelope {
+  return { fileType: BACKUP_FILE_TYPE, schemaVersion: BACKUP_SCHEMA_VERSION, kind: 'preferences', exportedAt: Date.now(), data: { preferences } }
+}
 
 interface MarketChunk {
   fileType: 'crypto-contract-workstation-market-chunk'
@@ -263,6 +282,46 @@ export class GitHubSyncService {
     private readonly now: () => number = Date.now,
   ) {}
 
+  /** Read only config files, at one immutable Git snapshot, and validate before applying anything. */
+  async readConfig(client: GitHubContentsClient, signal?: AbortSignal): Promise<RemoteConfig> {
+    const snapshot = await client.getSnapshot({ signal })
+    const options = { ref: snapshot.commitSha, signal }
+    const manifestFile = await client.getFile('manifest.json', options)
+    const remote = manifestFile ? manifest(parseJson(manifestFile.bytes, 'manifest.json')) : null
+    const entries = remote?.files.filter(entry => entry.category === 'config') ?? []
+    if (!entries.length) return { snapshot, manifest: remote, preferences: null }
+    const preferences: Record<string, unknown> = {}
+    for (const entry of entries) {
+      if (entry.path !== 'config/preferences.json' && entry.path !== 'config/favorites.json') throw new Error(`远端配置路径不受支持：${entry.path}`)
+      const file = await client.getFile(entry.path, options)
+      if (!file || file.bytes.length !== entry.size || await sha256(file.bytes) !== entry.checksum) throw new Error(`远端文件校验失败：${entry.path}`)
+      const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
+      if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
+      if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'pinnedPeriods', 'workspace', 'candleType']) {
+        if (value[key] !== undefined) preferences[key] = value[key]
+      }
+    }
+    const validated = validateBackupEnvelope(configurationEnvelope(preferences as unknown as BackupPreferences)).data.preferences!
+    return { snapshot, manifest: remote, preferences: validated }
+  }
+
+  /** Commit an immutable merged configuration and its manifest without touching other categories. */
+  async writeConfig(client: GitHubContentsClient, preferences: BackupPreferences, remote: RemoteConfig): Promise<void> {
+    const validated = validateBackupEnvelope(configurationEnvelope(preferences)).data.preferences!
+    const entries = new Map((remote.manifest?.files ?? []).map(entry => [entry.path, entry]))
+    const pending: { path: string; bytes: Uint8Array }[] = []
+    for (const file of configDocuments(validated)) {
+      const checksum = await sha256(file.bytes)
+      if (entries.get(file.path)?.checksum === checksum) continue
+      entries.set(file.path, { path: file.path, checksum, size: file.bytes.length, category: 'config', updatedAt: this.now() })
+      pending.push(file)
+    }
+    if (!pending.length) return
+    const next: SyncManifest = { fileType: MANIFEST_TYPE, schemaVersion: 1, updatedAt: this.now(), files: [...entries.values()].sort((a, b) => a.path.localeCompare(b.path)) }
+    await client.commitFiles([...pending, { path: 'manifest.json', bytes: jsonBytes(next) }], '自动同步工作站应用配置', remote.snapshot)
+  }
+
   async prepare(
     selection: SyncSelection = ALL_SYNC_SELECTION,
   ): Promise<SyncFile[]> {
@@ -278,29 +337,7 @@ export class GitHubSyncService {
     }> = []
     const preferences = data.preferences!
     if (selection.config) {
-      files.push(
-        {
-          path: 'config/preferences.json',
-          bytes: jsonBytes({
-            schemaVersion: 1,
-            binanceRestBaseUrl: preferences.binanceRestBaseUrl,
-            chartIndicators: preferences.chartIndicators,
-            selectedSymbol: preferences.selectedSymbol,
-            pinnedPeriods: preferences.pinnedPeriods,
-            workspace: preferences.workspace,
-            candleType: preferences.candleType,
-          }),
-          category: 'config',
-        },
-        {
-          path: 'config/favorites.json',
-          bytes: jsonBytes({
-            schemaVersion: 1,
-            favoriteSymbols: preferences.favoriteSymbols,
-          }),
-          category: 'config',
-        },
-      )
+      files.push(...configDocuments(preferences))
     }
     if (selection.sessions) {
       for (const session of data.sessions ?? []) {

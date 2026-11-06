@@ -65,7 +65,7 @@ export function BackupSyncPanel({
     ...ALL_SYNC_SELECTION,
   })
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState('已选择默认项目云端；配置可手动比较、上传和拉取。')
+  const [status, setStatus] = useState('已选择默认项目云端；应用配置修改后自动同步，启动时自动检查并恢复云端配置。')
   const [error, setError] = useState('')
   const [logs, setLogs] = useState<string[]>([])
   const importInputRef = useRef<HTMLInputElement | null>(null)
@@ -323,7 +323,7 @@ export function BackupSyncPanel({
       <section>
         <h3>GitHub 公共仓库同步</h3>
         <p className="muted-text">
-          默认项目云端已选中，历史分钟数据下载后自动上传。应用配置仍使用下方手动比较、上传和拉取。
+          默认项目云端已选中，历史分钟数据下载后自动上传。应用配置修改后自动同步，启动时自动检查云端；下方保留比较、上传和拉取入口。
           默认连接使用部署凭据；手动 Token 仅保存在当前页面内存。
         </p>
         <p className="muted-text">{isSharedRepository ? `项目目录：${defaultTarget.root}。同一公共存储仓库的所有分支均使用此项目目录。${isDefaultTarget && hasCredential ? '默认连接可用，无需填写 Token。' : hasCredential ? '已填写手动 Token。' : '当前未配置写入凭据，可填写 Token 后同步。'}` : '手动仓库使用仓库根目录，兼容原有存档。'}</p>

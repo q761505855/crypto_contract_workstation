@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { alignOpenTime, nextOpenTime } from '../src/market-data/intervals'
 import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
 import { fixtureMinutePrices, installArchiveFixtures } from './archive-fixtures'
@@ -79,6 +79,145 @@ test.beforeEach(async ({ context }) => {
   await context.route('https://api.github.com/**', (route) =>
     route.fulfill({ status: 404, json: { message: 'Not Found' } }),
   )
+})
+
+test('updates another open tab after configuration sync and preserves its next layout edit', async ({ page, context }) => {
+  test.setTimeout(120_000)
+  await mockBinance(page, true)
+  const github = await mockGitHub(page, true)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const other = await context.newPage()
+  await mockBinance(other, true)
+  await other.goto('./')
+  await expectCanvasContent(other)
+  await page.getByRole('button', { name: '工作区', exact: true }).click()
+  await page.getByRole('dialog', { name: '工作区面板', exact: true }).getByLabel('账户摘要', { exact: true }).uncheck()
+  await page.clock.runFor(1_500)
+  await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+  await other.getByRole('button', { name: '工作区', exact: true }).click()
+  const dialog = other.getByRole('dialog', { name: '工作区面板', exact: true })
+  await expect(dialog.getByLabel('账户摘要', { exact: true })).not.toBeChecked()
+  await dialog.getByLabel('下单面板', { exact: true }).uncheck()
+  await page.clock.runFor(1_500)
+  await expect.poll(() => {
+    const file = github.files.get('projects/crypto-contract-workstation/config/preferences.json')
+    return file ? JSON.parse(file.bytes.toString()).workspace.panels : null
+  }).toMatchObject({ account: false, order: false })
+})
+
+test('keeps an active replay on its symbol when cloud preferences restore another product', async ({ page }) => {
+  test.setTimeout(120_000)
+  await mockBinance(page, true)
+  await installViewportProbe(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await jumpChart(page, '2026-07-22T00:00')
+  await expect(page.getByTestId('replay-controls').getByText(/起点：/)).toContainText('2026/7/22')
+  await setReplayEnd(page, '2026-07-22T05:00')
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
+  await page.evaluate(() => {
+    localStorage.setItem('marketData.selectedSymbol', JSON.stringify({ ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 }))
+    window.dispatchEvent(new CustomEvent('workstation:preferences-restored', { detail: { source: 'cloud' } }))
+  })
+  await page.clock.runFor(1_000)
+  await expectCanvasContent(page)
+  await expect(page.locator('.klinecharts-pro-period-bar .symbol')).toContainText('BTCUSDT')
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('marketData.selectedSymbol')!).ticker)).toBe('ETHUSDT')
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expectCanvasContent(page)
+  await expect(page.locator('.klinecharts-pro-period-bar .symbol')).toContainText('BTCUSDT')
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('marketData.selectedSymbol')!).ticker)).toBe('ETHUSDT')
+  await controls.getByRole('button', { name: '回放设置', exact: true }).click()
+  await page.getByRole('dialog', { name: '回放会话操作' }).getByRole('button', { name: '结束会话', exact: true }).click()
+  await expect(page.locator('.klinecharts-pro-period-bar .symbol')).toContainText('ETHUSDT')
+})
+
+test('automatically archives RSI levels and alpha colors and restores cloud configuration before mounting', async ({ page }) => {
+  test.setTimeout(120_000)
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await mockBinance(page, true)
+  const github = await mockGitHub(page, true)
+  await installViewportProbe(page)
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('chart.indicators.v1')) localStorage.setItem('chart.indicators.v1', JSON.stringify({ schemaVersion: 1, main: [], sub: [{ height: 200, indicators: [{ name: 'RSI', calcParams: [6, 12, 24], visible: true, styles: null }] }] }))
+    const labels: string[] = []
+    const gears: { x: number; y: number }[] = []
+    Object.assign(window, { rsiTestLabels: labels, rsiTestGears: gears })
+    const draw = CanvasRenderingContext2D.prototype.fillText
+    let rsi = false
+    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, ...args) {
+      if (String(text).startsWith('RSI(')) rsi = true
+      if (text === '\ue902' && rsi) {
+        const p = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        gears.push({ x: rect.left + p.x / devicePixelRatio, y: rect.top + p.y / devicePixelRatio })
+        rsi = false
+      }
+      if (/超卖|超买|^50$|\([+-][\d.]+%\)/.test(String(text))) labels.push(String(text))
+      return draw.call(this, text, x, y, ...args)
+    }
+  })
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+  await expect.poll(() => page.evaluate(() => (window as unknown as { rsiTestLabels: string[] }).rsiTestLabels)).toEqual(expect.arrayContaining(['超卖 30', '50', '超买 70']))
+  await page.clock.runFor(600)
+  await waitForChartRender(page)
+  const gear = await page.evaluate(() => (window as unknown as { rsiTestGears: { x: number; y: number }[] }).rsiTestGears.at(-1))
+  expect(gear).toBeDefined()
+  await page.mouse.move(gear!.x, gear!.y)
+  await page.clock.runFor(50)
+  await page.mouse.click(gear!.x + 5, gear!.y + 5)
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  await expect(settings).toBeVisible()
+  await settings.getByLabel('超卖水平', { exact: true }).fill('20')
+  await settings.getByLabel('超买水平', { exact: true }).fill('80')
+  await settings.getByLabel('超卖线颜色', { exact: true }).fill('#123456')
+  await settings.getByLabel('超卖线颜色透明度', { exact: true }).fill('100')
+  await settings.getByLabel('50 中线颜色透明度', { exact: true }).fill('50')
+  await page.locator('.klinecharts-pro-modal').getByText('确定', { exact: true }).click()
+  await page.clock.runFor(1_500)
+  const configPath = 'projects/crypto-contract-workstation/config/preferences.json'
+  const cloud = () => {
+    const file = github.files.get(configPath)
+    return file ? JSON.parse(file.bytes.toString()) : null
+  }
+  await expect.poll(cloud).toMatchObject({ chartIndicators: { sub: [{ indicators: [{ name: 'RSI', calcParams: [6, 12, 24], styles: { rsiLevels: { oversold: 20, overbought: 80 }, rsiLines: [{ color: '#12345600' }, { color: '#76808f80' }] } }] }] } })
+  await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+  await expect.poll(() => page.evaluate(() => (window as unknown as { rsiTestLabels: string[] }).rsiTestLabels)).toEqual(expect.arrayContaining(['超卖 20', '超买 80']))
+  const host = await page.getByTestId('chart-host').boundingBox()
+  await page.mouse.move(host!.x + host!.width / 2, host!.y + 100)
+  await expect.poll(() => page.evaluate(() => (window as unknown as { rsiTestLabels: string[] }).rsiTestLabels.some(text => /\([+-][\d.]+%\)/.test(text)))).toBe(true)
+  await page.screenshot({ path: test.info().outputPath('rsi-alpha-and-price-difference.png'), fullPage: true })
+  await page.getByTestId('open-data-manager').click()
+  const backupPanel = page.getByTestId('backup-sync-panel')
+  const download = page.waitForEvent('download')
+  await backupPanel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const archive = await (await download).path()
+  expect(archive).not.toBeNull()
+  const json = JSON.parse(await readFile(archive!, 'utf8'))
+  expect(json.data.preferences.chartIndicators).toEqual(cloud().chartIndicators)
+  json.data.preferences.chartIndicators.sub[0].indicators[0].styles.rsiLevels.oversold = 25
+  page.once('dialog', dialog => dialog.accept())
+  await backupPanel.getByTestId('import-backup-file').setInputFiles({ name: 'rsi-alpha.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(json)) })
+  await expect(backupPanel.getByTestId('backup-status')).toContainText('导入完成')
+  // Reload before the debounce expires: pending imported settings must survive.
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(cloud).toMatchObject({ chartIndicators: { sub: [{ indicators: [{ styles: { rsiLevels: { oversold: 25, overbought: 80 } } }] }] } })
+  // Simulate a browser without existing preferences. Cloud files stay in the mock repository.
+  await page.evaluate(() => localStorage.clear())
+  await page.reload()
+  await expectCanvasContent(page)
+  const restored = await page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!))
+  expect(restored).toEqual(cloud().chartIndicators)
+  await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+  await page.screenshot({ path: test.info().outputPath('automatic-cloud-restore-mobile.png'), fullPage: true })
 })
 
 test('selects Heikin Ashi from settings, retains real prices and restores the selection from a config archive', async ({ page }) => {
@@ -543,7 +682,8 @@ interface MockGitHubFile {
   sha: string
 }
 
-async function mockGitHub(page: import('@playwright/test').Page) {
+async function mockGitHub(page: import('@playwright/test').Page, shared = false) {
+  const repoPath = shared ? '/repos/q761505855/personal-cloud-storage' : '/repos/alice/trading-backup'
   const files = new Map<string, MockGitHubFile>()
   const trees = new Map<string, Map<string, MockGitHubFile>>([['tree-0', new Map()]])
   const commits = new Map<string, { tree: string; parent?: string }>([['commit-0', { tree: 'tree-0' }]])
@@ -553,8 +693,8 @@ async function mockGitHub(page: import('@playwright/test').Page) {
   await page.route('https://api.github.com/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
-    const suffix = url.pathname.slice('/repos/alice/trading-backup'.length)
-    if (url.pathname.startsWith('/repos/alice/trading-backup/') && suffix.startsWith('/git/')) {
+    const suffix = url.pathname.slice(repoPath.length)
+    if (url.pathname.startsWith(`${repoPath}/`) && suffix.startsWith('/git/')) {
       if (request.method() === 'GET' && suffix === '/git/ref/heads/main') {
         await route.fulfill({ json: { object: { sha: head } } })
         return
@@ -603,7 +743,7 @@ async function mockGitHub(page: import('@playwright/test').Page) {
     }
     if (
       request.method() === 'GET' &&
-      url.pathname === '/repos/alice/trading-backup'
+      url.pathname === repoPath
     ) {
       await route.fulfill({
         json: {
@@ -615,10 +755,7 @@ async function mockGitHub(page: import('@playwright/test').Page) {
       })
       return
     }
-    const match =
-      /^\/repos\/alice\/trading-backup\/contents\/(.+)$/.exec(
-        url.pathname,
-      )
+    const match = url.pathname.startsWith(`${repoPath}/contents/`) ? [url.pathname, url.pathname.slice(`${repoPath}/contents/`.length)] : null
     if (match === null) {
       await route.fulfill({ status: 404, json: { message: 'Not Found' } })
       return
@@ -1173,6 +1310,7 @@ test('prepares only next month when creating and restoring a long replay and rol
   const start = Date.UTC(2026, 0, 31)
   await expect.poll(async () => (await inspect()).rightmost).toBe(start)
   const beforeCreate = archiveRequests.length
+  await expect(controls.getByText(/起点：/)).toContainText('2026/1/31')
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
   await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled({ timeout: 60_000 }).catch(async error => {
     console.log(JSON.stringify({ probe: await inspect(), requests: archiveRequests, controls: await controls.innerText() }))
@@ -1682,16 +1820,11 @@ test('exercises Pro chart interactions and the production path', async ({ page }
   const download = await downloadPromise
   const downloadPath = await download.path()
   expect(downloadPath).not.toBeNull()
-  const exportStatus = await backupPanel
-    .getByTestId('backup-status')
-    .textContent()
   page.once('dialog', (dialog) => dialog.accept())
   await backupPanel
     .getByTestId('import-backup-file')
     .setInputFiles(downloadPath!)
-  await expect
-    .poll(() => backupPanel.getByTestId('backup-status').textContent())
-    .not.toBe(exportStatus)
+  await expect(backupPanel.getByTestId('backup-status')).toContainText('导入完成', { timeout: 90_000 })
 
   await backupPanel.getByTestId('github-owner').fill('alice')
   await backupPanel
@@ -2387,8 +2520,8 @@ test('adds independent TTM Wave ABC panes and round-trips parameters and colors 
       await settings.locator('input').nth(index).blur()
     }
     await expect(settings.locator('input[type="color"]')).toHaveCount(4)
-    await settings.getByLabel('波形一零线上方颜色').fill(color)
-    await settings.getByLabel('波形一零线下方颜色').fill(negative)
+    await settings.getByLabel('波形一零线上方颜色', { exact: true }).fill(color)
+    await settings.getByLabel('波形一零线下方颜色', { exact: true }).fill(negative)
     await page.getByText('确定', { exact: true }).click()
   }
   await expect.poll(plots).toEqual([

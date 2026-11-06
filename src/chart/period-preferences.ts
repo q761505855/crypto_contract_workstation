@@ -1,4 +1,5 @@
 import { SUPPORTED_PERIODS } from './chart-config'
+import { writePreference } from '../storage/preference-events'
 
 export const PINNED_PERIODS_KEY = 'chart.pinnedPeriods.v1'
 export const DEFAULT_PINNED_PERIODS: readonly string[] = ['5m', '15m', '1h', '4h']
@@ -26,5 +27,5 @@ export function readPinnedPeriods(storage: Pick<Storage, 'getItem'> = localStora
 
 export function savePinnedPeriods(periods: readonly string[], storage: Pick<Storage, 'setItem'> = localStorage): void {
   const validated = validatePinnedPeriods(periods)
-  storage.setItem(PINNED_PERIODS_KEY, JSON.stringify(validated))
+  writePreference(storage, PINNED_PERIODS_KEY, JSON.stringify(validated))
 }

@@ -1,10 +1,11 @@
 import Decimal from 'decimal.js'
-import { readCandleType, saveCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
+import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
+import { CONFIG_PENDING_KEY, preferencesRestored } from './preference-events'
 import { SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
 import {
   loadWorkspacePreferences,
-  saveWorkspacePreferences,
+  WORKSPACE_PREFERENCES_KEY,
   validateWorkspacePreferences,
   type WorkspacePreferences,
 } from '../workspace/preferences'
@@ -881,9 +882,13 @@ export class WorkstationBackupService {
     })
   }
 
-  async import(value: unknown, onProgress?: (message: string) => void): Promise<BackupImportReport> {
+  async import(value: unknown, onProgress?: (message: string) => void, options: { source?: 'local' | 'cloud' } = {}): Promise<BackupImportReport> {
     onProgress?.('正在校验备份数据…')
     const envelope = validateBackupEnvelope(value, loadChartIndicatorPreferences(this.storage))
+    if (envelope.kind === 'preferences') {
+      this.restorePreferences(envelope.data.preferences!, options.source ?? 'local')
+      return { kind: 'preferences', symbols: 0, tradeCandles: 0, markCandles: 0, sessions: 0, simulations: 0, preferences: true }
+    }
     const candleCount = envelope.data.tradeCandles?.length ?? 0
     onProgress?.(`正在恢复行情：${candleCount.toLocaleString()} 根…`)
     const database = await openWorkstationDatabase(this.databaseName)
@@ -948,32 +953,7 @@ export class WorkstationBackupService {
     }
     if (envelope.data.preferences !== undefined) {
       onProgress?.('正在应用恢复的配置…')
-      this.storage.setItem(
-        BASE_URL_PREFERENCE,
-        envelope.data.preferences.binanceRestBaseUrl,
-      )
-      this.storage.setItem(
-        FAVORITES_PREFERENCE,
-        JSON.stringify(envelope.data.preferences.favoriteSymbols),
-      )
-      if (envelope.data.preferences.chartIndicators !== undefined) {
-        this.storage.setItem(
-          CHART_INDICATORS_PREFERENCE,
-          JSON.stringify(envelope.data.preferences.chartIndicators),
-        )
-      }
-      if (envelope.data.preferences.selectedSymbol !== undefined) {
-        this.storage.setItem(SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(envelope.data.preferences.selectedSymbol))
-      }
-      if (envelope.data.preferences.pinnedPeriods !== undefined) {
-        this.storage.setItem(PINNED_PERIODS_KEY, JSON.stringify(envelope.data.preferences.pinnedPeriods))
-      }
-      if (envelope.data.preferences.workspace !== undefined) {
-        saveWorkspacePreferences(envelope.data.preferences.workspace, this.storage)
-      }
-      if (envelope.data.preferences.candleType !== undefined) {
-        saveCandleType(envelope.data.preferences.candleType, this.storage)
-      }
+      this.restorePreferences(envelope.data.preferences, options.source ?? 'local')
     }
     return {
       kind: envelope.kind,
@@ -984,6 +964,24 @@ export class WorkstationBackupService {
       simulations: envelope.data.simulations?.length ?? 0,
       preferences: envelope.data.preferences !== undefined,
     }
+  }
+
+  private restorePreferences(preferences: BackupPreferences, source: 'local' | 'cloud'): void {
+    if (source === 'local') this.storage.setItem(CONFIG_PENDING_KEY, 'true')
+    this.storage.setItem(BASE_URL_PREFERENCE, preferences.binanceRestBaseUrl)
+    this.storage.setItem(FAVORITES_PREFERENCE, JSON.stringify(preferences.favoriteSymbols))
+    const fields = {
+      chartIndicators: CHART_INDICATORS_PREFERENCE,
+      selectedSymbol: SELECTED_SYMBOL_STORAGE_KEY,
+      pinnedPeriods: PINNED_PERIODS_KEY,
+      workspace: WORKSPACE_PREFERENCES_KEY,
+      candleType: CANDLE_TYPE_KEY,
+    } as const
+    for (const [field, key] of Object.entries(fields)) {
+      const value = preferences[field as keyof typeof fields]
+      if (value !== undefined) this.storage.setItem(key, JSON.stringify(value))
+    }
+    preferencesRestored(this.storage, source)
   }
 
   private envelope(kind: BackupKind, data: BackupData): BackupEnvelope {

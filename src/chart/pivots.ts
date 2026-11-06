@@ -1,5 +1,6 @@
 import type { KLineData } from 'klinecharts'
 import { alignOpenTime, nextOpenTime } from '../market-data/intervals'
+import { isChartColor } from './colors'
 
 export const PIVOT_TYPES = ['Traditional', 'Fibonacci', 'Woodie', 'Classic', 'DM', 'Camarilla'] as const
 export const PIVOT_ANCHORS = [
@@ -41,7 +42,7 @@ export interface PivotSettings {
 /** Preserve legacy switches and hidden colors; collapse legacy colors via P/R1/S1. */
 export function validatePivotParams(params: unknown[], previous?: unknown[]): (string | number | boolean)[] {
   const fail = () => { throw new Error('PIVOTS.calcParams 无效') }
-  const color = (value: unknown) => typeof value === 'string' && /^#[\da-f]{6}$/i.test(value)
+  const color = isChartColor
   if (params.length !== 30 && params.length !== 37) fail()
   if (!PIVOT_TYPES.includes(params[0] as PivotType) || !PIVOT_ANCHORS.includes(params[1] as PivotSettings['anchor']) ||
       !Number.isInteger(params[2]) || Number(params[2]) < 1 || Number(params[2]) > 200 ||
@@ -75,7 +76,7 @@ export function pivotSettings(params: unknown[] = PIVOTS_DEFAULT_PARAMS): PivotS
     width: boundedInteger(params[7], 1, 100),
     showPrevious: params[33] === true,
     previousColors: Object.fromEntries((['P', 'R', 'S'] as const).map((group, i) => [group,
-      typeof params[34 + i] === 'string' && /^#[\da-f]{6}$/i.test(params[34 + i] as string) ? params[34 + i] : PREVIOUS_PIVOT_COLORS[group],
+      isChartColor(params[34 + i]) ? params[34 + i] : PREVIOUS_PIVOT_COLORS[group],
     ])) as PivotColors,
     levels: Object.fromEntries(PIVOT_LEVELS.map((level, index) => {
       const group = pivotGroup(level)
@@ -83,7 +84,7 @@ export function pivotSettings(params: unknown[] = PIVOTS_DEFAULT_PARAMS): PivotS
       const color = params[30 + groupIndex] ?? params[9 + groupIndex * 2]
       return [level, {
         visible: params[8 + index * 2] !== false,
-        color: typeof color === 'string' && /^#[\da-f]{6}$/i.test(color) ? color : PIVOT_COLORS[group],
+        color: isChartColor(color) ? color : PIVOT_COLORS[group],
       }]
     })) as PivotSettings['levels'],
   }

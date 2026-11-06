@@ -15,6 +15,8 @@ import { BinanceArchiveClient } from './archive-client'
 import { createDefaultGitHubClient, defaultStorageTarget } from '../github-sync/default-storage'
 import { GitHubContentsClient } from '../github-sync/github-client'
 import { GitHubHistoryStore } from '../github-sync/history-store'
+import { writePreference } from '../storage/preference-events'
+import type { ConfigAutoSync } from '../github-sync/config-auto-sync'
 
 const BASE_URL_PREFERENCE = 'marketData.binanceBaseUrl'
 
@@ -28,6 +30,7 @@ export interface MarketDataRuntime {
   backups: WorkstationBackupService
   githubSync: GitHubSyncService
   defaultGitHubClient?: GitHubContentsClient
+  configSync?: ConfigAutoSync
 }
 
 function savedBaseUrl(): string {
@@ -65,7 +68,7 @@ export function createMarketDataRuntime(): MarketDataRuntime {
 
 export function saveBaseUrlPreference(baseUrl: string): void {
   try {
-    localStorage.setItem(BASE_URL_PREFERENCE, baseUrl)
+    writePreference(localStorage, BASE_URL_PREFERENCE, baseUrl)
   } catch {
     // The current session still uses the value when storage is unavailable.
   }

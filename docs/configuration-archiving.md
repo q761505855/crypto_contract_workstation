@@ -6,7 +6,7 @@
 
 用户修改配置后先保存到当前浏览器。导出“应用配置”和“全部数据”时都应包含它；GitHub 同步选择“应用配置”时，应参与差异比较、上传、校验、冲突处理和拉取恢复。刷新页面或在另一个浏览器恢复存档后，应得到相同配置。
 
-用户配置同步继续沿用手动操作流程。保存本地设置不会自动发起配置上传；用户在“数据管理 → GitHub 公共仓库同步”中比较、上传或拉取。默认已连接通用存储仓库，配置路径均相对 `projects/crypto-contract-workstation/`；历史行情下载后自动上传到同项目的 `data/market-history/`，与配置的触发方式分开。详见 [通用云端存储约定](cloud-storage.md)。
+用户配置修改后先本地保存，约一秒内的连续操作合并后自动同步至默认云端。启动时先检查云端：没有待上传修改就恢复远端配置，再初始化界面；有待上传修改则根据本设备上次成功同步的基线进行三方比较。不同字段自动合并，同字段冲突保留本地并提示，可选择“保留本地并同步”或“使用云端冲突项”。数组按整个字段比较，工作区对象可按面板字段合并。断网或提交竞争会保留待同步状态，自动退避重试，联网／重新聚焦时也会检查；刷新后继续。下方原有手动比较、上传、拉取入口仍可用。默认已连接通用存储仓库，配置路径均相对 `projects/crypto-contract-workstation/`；历史行情仍自动上传到同项目的 `data/market-history/`。详见 [通用云端存储约定](cloud-storage.md)。
 
 不能把“组件 useState 里记住了”或“刷新后还在”作为配置修改的完整验收标准。
 
@@ -15,7 +15,7 @@
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
@@ -56,7 +56,15 @@ Token 等凭据不得进入用户配置存档。手动 Token 只保留在页面�
 - 所有远端文件先通过大小和 SHA-256 校验，再完成存档结构和字段校验，最后写入。校验失败不得留下部分导入的数据。
 - 字段重命名、类型变化或语义变化需要明确迁移方案；不能简单删除旧解析器或无条件提升版本导致旧存档失效。
 
-当前恢复配置后需要刷新页面，使指标、当前产品、固定周期等组件从已恢复的存储重新加载。界面会提示刷新，不自动重载以免中断用户操作。若后续改成即时生效，需要同步所有相关组件，避免后台持有的旧状态反向写回。
+自动云端恢复在启动界面之前完成；启动网络失败后稍晚恢复，以及自动合并后的远端更改，会通知界面更新工作区布局、产品和行情地址，并重建图表及配置面板，释放旧图表的订阅与监听，避免旧状态反向写回。不会导入会话、交易或行情数据。手动 JSON 导入／手动云端拉取仍按界面提示刷新以应用全部配置和活动会话；待上传标记在写配置之前记录，刷新后自动比较和上传。
+
+RSI 的周期列表继续使用原来的 `calcParams`（最多五条周期），新水平值保存在 `styles.rsiLevels: { oversold, overbought }`，默认 30／70，必须是有限数字且满足 `0 ≤ oversold < 50 < overbought ≤ 100`。中线固定 50。三条线的颜色位于 `styles.rsiLines[0..2].color`，顺序为超卖、中线、超买，默认绿／灰／红；线宽 0 与 alpha 0 均保留。旧存档缺少上述新样式时保留目标浏览器对应 RSI 的现有设置，目标无设置时使用绘制默认值，不更改旧周期含义。显式非法对象、阈值、颜色或线宽在任何配置／业务写入前拒绝。
+
+所有现有颜色选择器增加透明度百分比，0% 不透明、100% 完全透明，采用六位或带 alpha 的八位十六进制保存。统一校验亦接受旧三／四位十六进制、合法 rgb／rgba 和 transparent，Pivots 的参数颜色及 TTM Wave 的方向颜色复用相同入口；旧不透明颜色不变，带 alpha 的自定义色不进行旧默认色迁移。选择、参数、水平值、透明度与副图高度均随 `chartIndicators` 进入配置／完整 JSON 与 GitHub 往返，不提升 Schema 1。
+
+设备的 `github.configPending.v1` 记录待上传状态，`github.configBaseline.v1` 保存最后确认的配置基线，用于判断跨设备冲突。它们是同步运行状态，不属于 `BackupPreferences`，不导出或上传；Token、请求保护额度、冷却及跨页面锁仍不进入配置。自动配置提交只更新本项目的配置文件及项目清单，保留清单中其他类别和远端其他项目文件。没有配置更改时不创建提交。
+
+同步基线分别保存已确认的本地快照和远端快照，上传期间再次发生本地修改时，只确认上传开始时的本地值，下一轮继续合并，避免把尚未应用到界面的远端字段误判为用户回改。基线只在完整配置写入后更新，其他标签收到该存储事件后重载配置界面，避免旧标签反写。活动回放期间，云端的当前产品偏好先保存，图表继续显示会话产品，结束会话后再应用该偏好；保留会话产品不会重新上传并覆盖云端产品。
 
 工作区配置使用独立的 `workspace` 对象，内部 `schemaVersion: 1`，不提升 JSON 或云端配置的顶层版本。`panels` 必须完整包含 `account`、`order`、`dock`、`replay`、`status` 五个布尔值，默认全部显示；`chartHeight` 和 `mobileChartHeight` 分别保存桌面与手机图表高度，`null` 表示自动适配，手动高度只接受 280–1600 的整数；`dockHeight` 保存底部区域高度，默认 220，只接受 160–480 的整数。各屏幕的自动显示计算不应反写另一屏幕的尺寸。工作区设置经统一入口保存后刷新可恢复；使用“应用配置”或“全部数据”导出可携带到其他浏览器，GitHub 勾选“应用配置”时会参与比较、上传与拉取。手动恢复后同样按提示刷新，使布局与其他配置一起从存储加载，避免活动页面旧状态覆盖恢复值。
 
@@ -66,7 +74,7 @@ KC 与 TTM Squeeze 不增加顶层配置字段或版本。`KC.calcParams` 依次
 
 窄屏下的主图／副图最小显示高度属于自适应布局计算，不是新增用户配置。`ProChartAdapter.layoutSubPanes()` 临时放大副图，`getIndicatorPreferences()` 仍返回原始存档高度，避免切换设备后把手机显示尺寸写回桌面布局。只有用户主动拖动分隔线时更新相关副图的存档高度，继续通过 `chartIndicators.sub[].height` 导出、上传和恢复，不另建存储键。
 
-TTM Wave 使用三个独立名称 `TTM_WAVE_A`、`TTM_WAVE_B`、`TTM_WAVE_C`。各自 calcParams 是三个严格递增的正整数周期（快线、慢线一、慢线二）；默认分别为 `[8, 34, 55]`、`[8, 89, 144]`、`[8, 233, 377]`。周期数量、类型、取值或顺序非法均在存档写入前拒绝。两组波形零线上方／下方颜色分别存在 `styles.bars[].positiveColor`／`negativeColor`，只接受六位十六进制颜色；非法值在写入前拒绝。旧单色 `noChangeColor` 保留并作为缺少 positiveColor 时的上方回退色；缺少 negativeColor 时使用对应波形的默认红／橙红色，不擅自填字段覆盖旧存档。零轴样式存在 `styles.lines`，其余可见性、布局和兼容语义沿用 chartIndicators。配置／完整 JSON 和 GitHub 应用配置覆盖全部三个指标及四种颜色；缺字段保留、空列表清空、false 与样式 0 原样恢复，恢复后需刷新。不新增顶层字段、存储键或版本，不改动设备保护或凭据。
+TTM Wave 使用三个独立名称 `TTM_WAVE_A`、`TTM_WAVE_B`、`TTM_WAVE_C`。各自 calcParams 是三个严格递增的正整数周期（快线、慢线一、慢线二）；默认分别为 `[8, 34, 55]`、`[8, 89, 144]`、`[8, 233, 377]`。周期数量、类型、取值或顺序非法均在存档写入前拒绝。两组波形零线上方／下方颜色分别存在 `styles.bars[].positiveColor`／`negativeColor`，接受统一校验支持的颜色与透明度；非法值在写入前拒绝。旧单色 `noChangeColor` 保留并作为缺少 positiveColor 时的上方回退色；缺少 negativeColor 时使用对应波形的默认红／橙红色，不擅自填字段覆盖旧存档。零轴样式存在 `styles.lines`，其余可见性、布局和兼容语义沿用 chartIndicators。配置／完整 JSON 和 GitHub 应用配置覆盖全部三个指标及四种颜色；缺字段保留、空列表清空、false 与样式 0 原样恢复，恢复后需刷新。不新增顶层字段、存储键或版本，不改动设备保护或凭据。
 
 Wave 配色升级：A/B/C 共享绿／红的零轴方向含义，仅有轻微色调差异；两组波形使用深浅与宽窄区分。统一配置校验入口会在克隆后的样式中，将各版本已发布默认色（最初 ABC 固定配色及后续统一的 `#26a69a/#66bb6a`、`#ef5350/#ff8a65`）映射为各指标当前默认色；其他自定义色、false、样式 0 和缺失字段不变，不修改传入存档对象。迁移可重复执行，适用于本地读取、JSON 配置／完整存档和云端解析恢复，无需提高 schemaVersion；刷新后图表生效。宽窄比例为绘制规则，不是新增用户设置。
 

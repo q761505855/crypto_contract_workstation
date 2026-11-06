@@ -22,6 +22,8 @@ import {
 } from '../components/ModeSwitch'
 import { DataManager } from '../components/DataManager'
 import { HistoryUploadStatus } from '../components/HistoryUploadStatus'
+import { ConfigSyncStatus } from '../components/ConfigSyncStatus'
+import { PREFERENCES_RESTORED } from '../storage/preference-events'
 import { ReplayControls } from '../components/ReplayControls'
 import { TimeJumpControl } from '../components/TimeJumpControl'
 import { LiveStatus } from '../components/panels'
@@ -36,7 +38,7 @@ import {
   INITIAL_LIVE_STATUS,
   type LiveMarketStatus,
 } from '../market-data/live-models'
-import { createMarketDataRuntime } from '../market-data/runtime'
+import { createMarketDataRuntime, type MarketDataRuntime } from '../market-data/runtime'
 import type { ReplayContext } from '../replay/models'
 import { useReplayController } from '../replay/useReplayController'
 import { classifyRiskPrice } from '../simulation/risk-price'
@@ -89,7 +91,7 @@ function simulationPriceText(price: number, precision: number): string {
   return price.toFixed(Math.min(20, Math.max(0, precision)))
 }
 
-export default function App() {
+export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [mode, setMode] = useState<WorkstationMode>('history')
   const [layout, setLayout] = useState(loadWorkspacePreferences)
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
@@ -144,11 +146,13 @@ export default function App() {
     return () => document.removeEventListener('keydown', keydown)
   }, [mobile, mobilePanel])
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
-  const [marketRuntime] = useState(createMarketDataRuntime)
+  const [marketRuntime] = useState(() => runtime ?? createMarketDataRuntime())
+  const [configEpoch, setConfigEpoch] = useState(0)
   const [marketSelection, setMarketSelection] = useState<MarketSelection>(() => ({
     symbol: readSelectedSymbol() ?? DEFAULT_SYMBOL,
     period: SUPPORTED_PERIODS[3],
   }))
+  const selectionInitialized = useRef(false)
   const [marketWarning, setMarketWarning] = useState('')
   const [liveStatus, setLiveStatus] = useState<LiveMarketStatus>({
     ...INITIAL_LIVE_STATUS,
@@ -164,7 +168,24 @@ export default function App() {
   const replay = useReplayController(marketRuntime)
   const simulation = useSimulationController(marketRuntime, replay)
   const replaySessionRef = useRef(replay.session)
+  const deferredCloudSymbolRef = useRef<MarketSelection['symbol'] | null>(null)
   replaySessionRef.current = replay.session
+  useEffect(() => {
+    const restored = (event: Event) => {
+      if ((event as CustomEvent<{ source: string }>).detail?.source !== 'cloud') return
+      const nextLayout = loadWorkspacePreferences()
+      layoutRef.current = nextLayout
+      setLayout(nextLayout)
+      setFocusMode(false)
+      const symbol = readSelectedSymbol()
+      if (replaySessionRef.current !== null) deferredCloudSymbolRef.current = symbol
+      else setMarketSelection(current => ({ ...current, symbol: symbol ?? current.symbol }))
+      void marketRuntime.backups.exportPreferences().then(value => marketRuntime.service.setBaseUrl(value.data.preferences!.binanceRestBaseUrl))
+      setConfigEpoch(current => current + 1)
+    }
+    window.addEventListener(PREFERENCES_RESTORED, restored)
+    return () => window.removeEventListener(PREFERENCES_RESTORED, restored)
+  }, [marketRuntime])
   const simulationOverlays = useMemo<SimulationOverlayState>(() => {
     if (mode !== 'history') return { currentTime: null, positions: [], trades: [] }
     const precision = marketSelection.symbol.pricePrecision ?? 8
@@ -272,6 +293,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!selectionInitialized.current) { selectionInitialized.current = true; return }
+    if (replaySessionRef.current?.symbol.ticker === marketSelection.symbol.ticker) return
     saveSelectedSymbol(marketSelection.symbol)
   }, [marketSelection.symbol])
 
@@ -296,10 +319,16 @@ export default function App() {
 
   useEffect(() => {
     if (replay.session !== null) {
+      const preferred = readSelectedSymbol()
+      if (preferred && preferred.ticker !== replay.session.symbol.ticker) deferredCloudSymbolRef.current = preferred
       setMarketSelection({
         symbol: replay.session.symbol,
         period: replay.session.period,
       })
+    } else if (deferredCloudSymbolRef.current !== null) {
+      const symbol = deferredCloudSymbolRef.current
+      deferredCloudSymbolRef.current = null
+      setMarketSelection(current => ({ ...current, symbol }))
     }
   }, [replay.session?.id])
 
@@ -347,6 +376,7 @@ export default function App() {
       if (!window.confirm('切换交易对需要结束当前回放会话，是否继续？')) {
         return
       }
+      deferredCloudSymbolRef.current = null
       void replay.endSession().then(() => setMarketSelection(next))
       return
     }
@@ -367,6 +397,7 @@ export default function App() {
           <button type="button" className="focus-mode-button" aria-pressed={focusMode} onClick={() => { setFocusMode(current => !current); setMobilePanel(null) }}>{focusMode ? '退出专注' : '专注看图'}</button>
         </div>
       </header>
+      {marketRuntime.configSync && <ConfigSyncStatus service={marketRuntime.configSync} />}
       <div
         data-testid={mode === 'history' ? 'simulation-panel' : 'live-workspace'}
         className={`workspace-content${visible('order') ? '' : ' is-order-hidden'}${chartHeight === null ? '' : ' has-fixed-chart'}${focusMode ? ' is-focus-mode' : ''}`}
@@ -380,6 +411,7 @@ export default function App() {
         </div>
         <div className="chart-region">
           <ChartWorkspace
+            key={configEpoch}
             datafeed={marketRuntime.replayDatafeed}
             jumpRequest={chartJumpRequest}
             onJumpComplete={completeChartTimeJump}
@@ -439,7 +471,7 @@ export default function App() {
         <button type="button" className="dialog-done" onClick={() => { setWorkspaceMenu(false); setChartSizeOpen(true) }}>调整图表与指标高度</button>
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
       </WorkspaceDialog>
-      <DataManager onApplySelection={applyMarketSelection} onClose={() => setDataManagerOpen(false)} open={dataManagerOpen} runtime={marketRuntime} selection={marketSelection} />
+      <DataManager key={configEpoch} onApplySelection={applyMarketSelection} onClose={() => setDataManagerOpen(false)} open={dataManagerOpen} runtime={marketRuntime} selection={marketSelection} />
     </main>
   )
 }

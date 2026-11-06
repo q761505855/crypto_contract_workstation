@@ -1,5 +1,5 @@
 diff --git a/node_modules/@klinecharts/pro/dist/index.d.ts b/node_modules/@klinecharts/pro/dist/index.d.ts
-index 1cb6404..4f0a210 100644
+index 1cb6404..8a1a4be 100644
 --- a/node_modules/@klinecharts/pro/dist/index.d.ts
 +++ b/node_modules/@klinecharts/pro/dist/index.d.ts
 @@ -1,4 +1,4 @@
@@ -8,7 +8,15 @@ index 1cb6404..4f0a210 100644
  
  export interface SymbolInfo {
  	ticker: string;
-@@ -52,6 +52,8 @@ export interface ChartPro {
+@@ -40,6 +40,7 @@ export interface ChartProOptions {
+ 	datafeed: Datafeed;
+ }
+ export interface ChartPro {
++	dispose?(): void;
+ 	setTheme(theme: string): void;
+ 	getTheme(): string;
+ 	setStyles(styles: DeepPartial<Styles>): void;
+@@ -52,6 +53,8 @@ export interface ChartPro {
  	getSymbol(): SymbolInfo;
  	setPeriod(period: Period): void;
  	getPeriod(): Period;
@@ -17,7 +25,15 @@ index 1cb6404..4f0a210 100644
  }
  export declare class DefaultDatafeed implements Datafeed {
  	constructor(apiKey: string);
-@@ -79,6 +81,8 @@ export declare class KLineChartPro implements ChartPro {
+@@ -64,6 +67,7 @@ export declare class DefaultDatafeed implements Datafeed {
+ 	unsubscribe(symbol: SymbolInfo, period: Period): void;
+ }
+ export declare class KLineChartPro implements ChartPro {
++	dispose(): void;
+ 	constructor(options: ChartProOptions);
+ 	private _container;
+ 	private _chartApi;
+@@ -79,6 +83,8 @@ export declare class KLineChartPro implements ChartPro {
  	getSymbol(): SymbolInfo;
  	setPeriod(period: Period): void;
  	getPeriod(): Period;
@@ -27,7 +43,7 @@ index 1cb6404..4f0a210 100644
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..632c594 100644
+index 6f78d0e..76f60bd 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 @@ -2294,7 +2294,21 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
@@ -469,7 +485,7 @@ index 6f78d0e..632c594 100644
    AO: [
      { paramNameKey: "params_1", precision: 0, min: 1, default: 5 },
      { paramNameKey: "params_2", precision: 0, min: 1, default: 34 }
-@@ -3242,9 +3624,43 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3242,9 +3624,50 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
    ]
  }, xl = /* @__PURE__ */ g('<div class="klinecharts-pro-indicator-setting-modal-content"></div>'), kl = /* @__PURE__ */ g("<span></span>"), Al = (e) => {
    const [t, n] = $(B.clone(e.params.calcParams)), r = (a) => bl[a];
@@ -492,20 +508,27 @@ index 6f78d0e..632c594 100644
 +    ["波形一零线下方颜色", "bars", 0, "negativeColor", wavePalette[1]],
 +    ["波形二零线上方颜色", "bars", 1, "positiveColor", wavePalette[2]],
 +    ["波形二零线下方颜色", "bars", 1, "negativeColor", wavePalette[3]]
++  ] : e.params.indicatorName === "RSI" ? [
++    ["超卖线颜色", "rsiLines", 0, "color", "#26a69a"],
++    ["50 中线颜色", "rsiLines", 1, "color", "#76808f"],
++    ["超买线颜色", "rsiLines", 2, "color", "#ef5350"]
 +  ] : [];
 +  const styleControls = () => colorControls.map(([label, group, index, key, fallback]) => {
 +    const labelElement = document.createElement("span");
 +    labelElement.textContent = label;
-+    const input = document.createElement("input");
-+    input.type = "color";
-+    input.setAttribute("aria-label", label);
-+    input.value = editableStyles[group]?.[index]?.[key] ?? (isWave && key === "positiveColor" ? editableStyles[group]?.[index]?.noChangeColor : undefined) ?? fallback;
-+    input.addEventListener("input", () => {
++    const input = alphaColorControl(label, editableStyles[group]?.[index]?.[key] ?? (isWave && key === "positiveColor" ? editableStyles[group]?.[index]?.noChangeColor : undefined) ?? fallback, (color) => {
 +      editableStyles[group] ??= [];
 +      editableStyles[group][index] ??= {};
-+      editableStyles[group][index][key] = input.value;
++      editableStyles[group][index][key] = color;
 +    });
 +    return [labelElement, input];
++  });
++  const levelControls = () => e.params.indicatorName !== "RSI" ? [] : [["超卖水平", "oversold", 30, 0, 49.99], ["超买水平", "overbought", 70, 50.01, 100]].map(([label, key, fallback, min, max]) => {
++    const span = document.createElement("span"); span.textContent = label;
++    const input = document.createElement("input"); input.type = "number"; input.min = min; input.max = max; input.step = "0.01";
++    input.setAttribute("aria-label", label); input.value = editableStyles.rsiLevels?.[key] ?? fallback;
++    input.addEventListener("input", () => { editableStyles.rsiLevels ??= { oversold: 30, overbought: 70 }; editableStyles.rsiLevels[key] = input.value === "" ? NaN : Number(input.value); });
++    return [span, input];
 +  });
    return d(T1, {
      get title() {
@@ -514,7 +537,7 @@ index 6f78d0e..632c594 100644
      },
      width: 360,
      get buttons() {
-@@ -3255,7 +3671,12 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3255,7 +3678,16 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
            const a = r(e.params.indicatorName), i = [];
            B.clone(t()).forEach((o, s) => {
              !B.isValid(o) || o === "" ? "default" in a[s] && i.push(a[s].default) : i.push(o);
@@ -524,11 +547,15 @@ index 6f78d0e..632c594 100644
 +            window.alert("周期必须是正整数，且快线周期 < 慢线一周期 < 慢线二周期");
 +            return;
 +          }
++          const levels = editableStyles.rsiLevels;
++          if (e.params.indicatorName === "RSI" && levels && (!Number.isFinite(levels.oversold) || levels.oversold < 0 || levels.oversold >= 50 || !Number.isFinite(levels.overbought) || levels.overbought <= 50 || levels.overbought > 100)) {
++            window.alert("RSI 水平线必须满足 0 ≤ 超卖 < 50 < 超买 ≤ 100"); return;
++          }
 +          e.onConfirm(i, colorControls.length ? editableStyles : undefined), e.onClose();
          }
        }];
      },
-@@ -3264,15 +3685,17 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3264,15 +3696,17 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
      },
      get children() {
        const a = xl.cloneNode(!0);
@@ -549,7 +576,7 @@ index 6f78d0e..632c594 100644
          },
          get precision() {
            return i.precision;
-@@ -3280,11 +3703,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3280,11 +3714,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
          get min() {
            return i.min;
          },
@@ -561,17 +588,46 @@ index 6f78d0e..632c594 100644
            c[o] = s, n(c);
          }
 -      })])), a;
-+      })]), ...styleControls()]), a;
++      })]), ...levelControls(), ...styleControls()]), a;
      }
    });
  }, Ml = /* @__PURE__ */ g('<svg viewBox="0 0 1024 1024"><path d="M945.066667 898.133333l-189.866667-189.866666c55.466667-64 87.466667-149.333333 87.466667-241.066667 0-204.8-168.533333-373.333333-373.333334-373.333333S96 264.533333 96 469.333333 264.533333 842.666667 469.333333 842.666667c91.733333 0 174.933333-34.133333 241.066667-87.466667l189.866667 189.866667c6.4 6.4 14.933333 8.533333 23.466666 8.533333s17.066667-2.133333 23.466667-8.533333c8.533333-12.8 8.533333-34.133333-2.133333-46.933334zM469.333333 778.666667C298.666667 778.666667 160 640 160 469.333333S298.666667 160 469.333333 160 778.666667 298.666667 778.666667 469.333333 640 778.666667 469.333333 778.666667z"></path></svg>'), wl = /* @__PURE__ */ g('<img alt="symbol">'), Sl = /* @__PURE__ */ g("<li><div><span></span></div></li>"), Tl = (e) => {
-@@ -3341,6 +3767,29 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3341,6 +3778,58 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
  };
  q(["click"]);
  const Il = /* @__PURE__ */ g('<i class="icon-close klinecharts-pro-load-icon"></i>'), Nl = /* @__PURE__ */ g('<div class="klinecharts-pro-content"><div class="klinecharts-pro-widget"></div></div>');
++const alphaColorControl = (label, value, onChange) => {
++  const wrapper = document.createElement("div");
++  wrapper.style.cssText = "display:flex;align-items:center;gap:6px;min-width:0;max-width:200px";
++  const color = document.createElement("input"); color.type = "color"; color.style.cssText = "width:64px;min-width:30px"; color.setAttribute("aria-label", label);
++  const opacity = document.createElement("input"); opacity.type = "number"; opacity.min = "0"; opacity.max = "100"; opacity.step = "1"; opacity.style.cssText = "width:65px;min-width:40px"; opacity.setAttribute("aria-label", `${label}透明度`);
++  const percent = document.createElement("span"); percent.textContent = "%";
++  let alpha = 1;
++  const setValue = (value) => {
++    let hex = String(value ?? "#000000").toLowerCase();
++    if (/^#[0-9a-f]{3,4}$/.test(hex)) hex = "#" + [...hex.slice(1)].map(c => c + c).join("");
++    const rgba = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/.exec(hex);
++    if (rgba) hex = "#" + rgba.slice(1, 4).map(n => Number(n).toString(16).padStart(2, "0")).join("") + (rgba[4] === undefined ? "" : Math.round(Number(rgba[4]) * 255).toString(16).padStart(2, "0"));
++    if (hex === "transparent") hex = "#00000000";
++    alpha = hex.length === 9 ? parseInt(hex.slice(7), 16) / 255 : 1;
++    color.value = hex.slice(0, 7); opacity.value = String(Math.round((1 - alpha) * 100));
++  };
++  const emit = () => { const byte = Math.round(alpha * 255); onChange(color.value + (byte === 255 ? "" : byte.toString(16).padStart(2, "0"))); };
++  color.addEventListener("input", emit);
++  opacity.addEventListener("input", () => { if (opacity.value === "" || !opacity.validity.valid) return; alpha = 1 - Number(opacity.value) / 100; emit(); });
++  wrapper.append(color, opacity, percent); setValue(value);
++  Object.defineProperty(wrapper, "value", { set: setValue });
++  Object.defineProperty(wrapper, "disabled", { set: value => { color.disabled = value; opacity.disabled = value; } });
++  return wrapper;
++};
 +const parameterControl = (e) => {
 +  const config = e.config;
 +  if (!config.options && !config.type) return d(c5, e);
++  if (config.type === "color") {
++    const control = alphaColorControl(config.paramNameKey, e.value, e.onChange);
++    Z(() => { control.value = e.value; control.disabled = e.disabled; });
++    return control;
++  }
 +  const control = document.createElement(config.options ? "select" : "input");
 +  control.className = "klinecharts-pro-parameter-control";
 +  control.setAttribute("aria-label", config.paramNameKey);
@@ -595,7 +651,7 @@ index 6f78d0e..632c594 100644
  function V1(e, t, n, r) {
    return t === "VOL" && (r = {
      gap: {
-@@ -3349,6 +3798,7 @@ function V1(e, t, n, r) {
+@@ -3349,6 +3838,7 @@ function V1(e, t, n, r) {
      ...r
    }), (e == null ? void 0 : e.createIndicator({
      name: t,
@@ -603,7 +659,7 @@ index 6f78d0e..632c594 100644
      // @ts-expect-error
      createTooltipDataSource: ({
        indicator: a,
-@@ -3359,10 +3809,11 @@ function V1(e, t, n, r) {
+@@ -3359,10 +3849,11 @@ function V1(e, t, n, r) {
          icons: o
        };
      }
@@ -616,7 +672,7 @@ index 6f78d0e..632c594 100644
    const [i, o] = $(e.theme), [s, c] = $(e.styles), [C, u] = $(e.locale), [y, p] = $(e.symbol), [L, M] = $(e.period), [P, K] = $(!1), [w, Q] = $([...e.mainIndicators]), [S, A] = $({}), [b, O] = $(!1), [H, t1] = $({
      key: e.timezone,
      text: b9(e.timezone, e.locale)
-@@ -3389,7 +3840,9 @@ const Dl = (e) => {
+@@ -3389,7 +3880,9 @@ const Dl = (e) => {
      setSymbol: p,
      getSymbol: () => y(),
      setPeriod: M,
@@ -627,7 +683,7 @@ index 6f78d0e..632c594 100644
    });
    const c1 = () => {
      n == null || n.resize();
-@@ -3405,28 +3858,23 @@ const Dl = (e) => {
+@@ -3405,28 +3898,23 @@ const Dl = (e) => {
          break;
        }
        case "day": {
@@ -664,7 +720,7 @@ index 6f78d0e..632c594 100644
          break;
        }
      }
-@@ -3475,10 +3923,18 @@ const Dl = (e) => {
+@@ -3475,10 +3963,18 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -687,7 +743,7 @@ index 6f78d0e..632c594 100644
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3503,7 +3959,8 @@ const Dl = (e) => {
+@@ -3503,7 +3999,8 @@ const Dl = (e) => {
                visible: !0,
                indicatorName: f.indicatorName,
                paneId: f.paneId,
@@ -697,7 +753,13 @@ index 6f78d0e..632c594 100644
              });
              break;
            }
-@@ -3524,21 +3981,27 @@ const Dl = (e) => {
+@@ -3520,25 +4017,33 @@ const Dl = (e) => {
+         }
+     });
+   }), k0(() => {
++    dataRequestSequence++; historyRequestSequence++;
++    e.datafeed.unsubscribe(y(), L());
+     window.removeEventListener("resize", c1), y5(t);
    }), a1(() => {
      const h = y();
      h != null && h.priceCurrency ? (r.innerHTML = h == null ? void 0 : h.priceCurrency.toLocaleUpperCase(), r.style.display = "flex") : r.style.display = "none", n == null || n.setPriceVolumePrecision((h == null ? void 0 : h.pricePrecision) ?? 2, (h == null ? void 0 : h.volumePrecision) ?? 0);
@@ -738,7 +800,7 @@ index 6f78d0e..632c594 100644
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3725,7 +4188,7 @@ const Dl = (e) => {
+@@ -3725,7 +4230,7 @@ const Dl = (e) => {
            const f = {};
            h.forEach((v) => {
              const _ = v.key;
@@ -747,7 +809,7 @@ index 6f78d0e..632c594 100644
            }), n == null || n.setStyles(f);
          }
        });
-@@ -3767,11 +4230,12 @@ const Dl = (e) => {
+@@ -3767,11 +4272,12 @@ const Dl = (e) => {
              calcParams: []
            });
          },
@@ -762,7 +824,16 @@ index 6f78d0e..632c594 100644
            }, f.paneId);
          }
        });
-@@ -3994,6 +4458,12 @@ class jl {
+@@ -3875,7 +4381,7 @@ class jl {
+       this._container = t.container;
+     this._container.classList.add("klinecharts-pro"), this._container.setAttribute("data-theme", t.theme ?? "light");
+     const n = this;
+-    H5(() => d(Dl, {
++    this._dispose = H5(() => d(Dl, {
+       ref: (r) => {
+         n._chartApi = r;
+       },
+@@ -3994,6 +4500,16 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }
@@ -771,6 +842,10 @@ index 6f78d0e..632c594 100644
 +  }
 +  cancelHistoryRequests() {
 +    this._chartApi.cancelHistoryRequests();
++  }
++  dispose() {
++    this._dispose?.();
++    this._dispose = undefined;
 +  }
  }
  D5.forEach((e) => {

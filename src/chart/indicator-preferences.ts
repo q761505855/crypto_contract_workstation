@@ -1,5 +1,8 @@
 import { TTM_WAVE_PALETTES, type TtmWave } from './ttm-wave-colors'
 import { validatePivotParams } from './pivots'
+import { validateStyleColors } from './colors'
+import { validateRsiLevels } from './rsi'
+import { writePreference } from '../storage/preference-events'
 
 export const CHART_INDICATORS_PREFERENCE = 'chart.indicators.v1'
 
@@ -94,9 +97,7 @@ function indicator(
       styles.bars.forEach((value, index) => {
         const bar = record(value, `${field}.styles.bars[${index}]`)
         for (const key of ['positiveColor', 'negativeColor']) {
-          if (bar[key] !== undefined && (typeof bar[key] !== 'string' || !/^#[0-9a-f]{6}$/i.test(bar[key] as string))) {
-            throw new Error(`${field}.styles.bars[${index}].${key} 必须是六位十六进制颜色`)
-          }
+          if (bar[key] !== undefined) validateStyleColors({ [key]: bar[key] }, `${field}.styles.bars[${index}]`)
         }
       })
     }
@@ -104,7 +105,27 @@ function indicator(
   if (typeof item.visible !== 'boolean') {
     throw new Error(`${field}.visible 必须是布尔值`)
   }
-  const validatedStyles = jsonValue(item.styles ?? null, `${field}.styles`)
+  let validatedStyles = jsonValue(item.styles ?? null, `${field}.styles`)
+  validateStyleColors(validatedStyles, `${field}.styles`)
+  if (item.name === 'RSI') {
+    const prior = previous.find(setting => setting.name === 'RSI')?.styles
+    for (const key of ['rsiLevels', 'rsiLines']) {
+      const incoming = validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles) ? validatedStyles : null
+      if (incoming?.[key] === undefined && prior && typeof prior === 'object' && !Array.isArray(prior) && prior[key] !== undefined) {
+        validatedStyles ??= {}
+        ;(validatedStyles as Record<string, JsonValue>)[key] = jsonValue(prior[key], `${field}.styles.${key}`)
+      }
+    }
+    if (validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles)) {
+      if (Object.hasOwn(validatedStyles, 'rsiLevels')) validateRsiLevels(validatedStyles.rsiLevels)
+      const lines = validatedStyles.rsiLines
+      if (lines !== undefined && (!Array.isArray(lines) || lines.length > 3 || lines.some(line => line !== null &&
+          (typeof line !== 'object' || Array.isArray(line) || (line.size !== undefined &&
+            (typeof line.size !== 'number' || !Number.isFinite(line.size) || line.size < 0)))))) {
+        throw new Error('RSI.rsiLines 水平线样式无效')
+      }
+    }
+  }
   if (['TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C'].includes(item.name) &&
       validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles)) {
     const palette = TTM_WAVE_PALETTES[item.name.slice(-1) as TtmWave]
@@ -189,5 +210,5 @@ export function saveChartIndicatorPreferences(
   storage: WritableStorage = localStorage,
 ): void {
   const validated = validateChartIndicatorPreferences(preferences)
-  storage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(validated))
+  writePreference(storage, CHART_INDICATORS_PREFERENCE, JSON.stringify(validated))
 }
