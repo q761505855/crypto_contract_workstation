@@ -474,7 +474,8 @@ describe('ProChartAdapter', () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: 'simulation-long-entry',
-          name: 'priceLine',
+          name: 'simulationPriceLine',
+          extendData: '多仓开仓均价',
         }),
         expect.objectContaining({
           id: 'simulation-trade-trade-1',

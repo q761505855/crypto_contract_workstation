@@ -31,6 +31,7 @@ import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { readChartHistory } from '../market-data/indicator-history'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
+import { registerSimulationPriceLine, SIMULATION_PRICE_LINE } from './simulation-price-line'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -100,6 +101,7 @@ interface ViewportRestore {
 const pivotHistoryReset = new WeakMap<ChartPro, () => void>()
 
 const createProChart: ChartProFactory = (options) => {
+  registerSimulationPriceLine()
   registerSupertrendIndicator()
   registerKeltnerIndicator()
   registerTtmSqueezeIndicator()
@@ -589,7 +591,8 @@ export class ProChartAdapter implements ChartAdapterPort {
       overlays.push({
         id: `simulation-${id}`,
         groupId: 'simulation',
-        name: 'priceLine',
+        name: SIMULATION_PRICE_LINE,
+        extendData: label,
         onMouseEnter: (event) => {
           this.showTradeTooltip(`${label} · ${value}`, event.pageX ?? 0, event.pageY ?? 0)
           return true

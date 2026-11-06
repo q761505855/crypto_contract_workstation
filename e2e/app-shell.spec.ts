@@ -2010,6 +2010,42 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
   return { axis, readTicks, pricePerPixel, readTimeTicks }
 }
 
+test('shows position and risk names beside their chart price labels', async ({ page }) => {
+  await mockBinance(page, true)
+  await installViewportProbe(page)
+  await trackPriceAxis(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const expected = await page.evaluate(() => {
+    const adapter = (window as unknown as { __viewportTestAdapter: {
+      coreChart: import('klinecharts').Chart
+      setSimulationOverlays(state: import('../src/chart/pro-chart-adapter').SimulationOverlayState): void
+    } }).__viewportTestAdapter
+    const rows = adapter.coreChart.getDataList().slice(-40)
+    const low = Math.min(...rows.map(row => row.low))
+    const high = Math.max(...rows.map(row => row.high))
+    const price = (step: number) => low + (high - low) * step / 8
+    adapter.setSimulationOverlays({
+      currentTime: rows.at(-20)!.timestamp,
+      positions: [
+        { side: 'long', entryPrice: price(3), takeProfitPrice: price(5), stopLossPrice: price(1), liquidationPrice: price(0) },
+        { side: 'short', entryPrice: price(4), takeProfitPrice: price(2), stopLossPrice: price(6), liquidationPrice: price(7) },
+      ],
+      trades: [],
+    })
+    return [
+      ['多仓开仓均价', price(3)], ['多仓止盈', price(5)], ['多仓止损', price(1)],
+      ['空仓开仓均价', price(4)], ['空仓止盈', price(2)], ['空仓止损', price(6)],
+    ].map(([name, value]) => `${name} · ${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+  })
+  await expect.poll(() => page.evaluate(() =>
+    [...(window as unknown as {
+      chartAxisTestLabels: Map<HTMLCanvasElement, { text: string }[]>
+    }).chartAxisTestLabels.values()].flat().map(label => label.text),
+  )).toEqual(expect.arrayContaining(expected))
+  await page.screenshot({ path: test.info().outputPath('named-price-labels.png') })
+})
+
 test('restores product favorites and the selected product after reload', { tag: '@release' }, async ({ page }) => {
   await mockBinance(page, true)
   await page.goto('./')
