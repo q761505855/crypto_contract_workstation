@@ -205,6 +205,8 @@ npm run test:e2e
 
 Pages 回归先自动构建并校验专用测试插桩产物，强制使用假凭据 `e2e-mock-storage-token`，再启动预览，无需修改 Actions 工作流。现有发布工作流在浏览器检查后使用正式凭据重新构建，最终产物校验会拒绝残留的测试插桩。此调整只修改测试组织和夹具，不变更用户配置、存档格式、旧存档兼容语义或云端命名空间。
 
+CI 与发布固定使用 Ubuntu 24.04，避免 `ubuntu-latest` 升级改变系统依赖和字体安装耗时。`node scripts/install-playwright.mjs` 只下载测试使用的 Chromium headless shell，并实际启动验证；仅在缺少运行库时补装系统依赖。新提交自动取消同分支过时的 CI。
+
 ## 构建
 
 ```bash

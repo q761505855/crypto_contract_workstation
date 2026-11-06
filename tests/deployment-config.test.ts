@@ -60,19 +60,22 @@ describe('deployment configuration', () => {
       await readFile('.github/workflows/ci.yml', 'utf8'),
     )
     const triggers = capture(workflow, /^on:\n([\s\S]*?)^permissions:/m)
-    const permissions = capture(workflow, /^permissions:\n([\s\S]*?)^jobs:/m)
+    const permissions = capture(workflow, /^permissions:\n([\s\S]*?)^concurrency:/m)
+    const concurrency = capture(workflow, /^concurrency:\n([\s\S]*?)^jobs:/m)
     const verifyJob = capture(workflow, /^  verify:\n([\s\S]*)$/m)
 
     expect(triggers).toMatch(/^  pull_request:$/m)
     expect(triggers).toMatch(/^  push:\n    branches:\n      - main$/m)
     expect(permissions).toMatch(/^  contents: read$/m)
-    expect(verifyJob).toMatch(/^    runs-on: ubuntu-latest$/m)
+    expect(concurrency).toContain('cancel-in-progress: true')
+    expect(concurrency).toContain('group: ci-${{ github.event.pull_request.number || github.ref }}')
+    expect(verifyJob).toMatch(/^    runs-on: ubuntu-24\.04$/m)
     expect(verifyJob).toMatch(/^        uses: actions\/checkout@v6$/m)
     expect(verifyJob).toMatch(/^        uses: actions\/setup-node@v6$/m)
     expectLinesInOrder(verifyJob, [
       '        run: npm ci',
       '        run: npm run check',
-      '        run: npx playwright install --with-deps chromium',
+      '        run: node scripts/install-playwright.mjs',
       '        run: npm run test:e2e',
     ])
     expectNoSecrets(workflow)
@@ -105,6 +108,8 @@ describe('deployment configuration', () => {
     expect(permissions).toMatch(/^  contents: read$/m)
     expect(permissions).toMatch(/^  pages: write$/m)
     expect(permissions).toMatch(/^  id-token: write$/m)
+    expect(buildJob).toMatch(/^    runs-on: ubuntu-24\.04$/m)
+    expect(deployJob).toMatch(/^    runs-on: ubuntu-24\.04$/m)
     expect(buildJob).toMatch(/^        uses: actions\/checkout@v6$/m)
     expect(buildJob).toMatch(/^        uses: actions\/setup-node@v6$/m)
     expect(buildJob).toMatch(/^        uses: actions\/configure-pages@v5$/m)
@@ -118,7 +123,7 @@ describe('deployment configuration', () => {
       ].join('\n'),
     )
     expect(buildJob.slice(buildJob.indexOf(buildStep) + buildStep.length)).toMatch(
-      /^\n      - name: Verify Pages artifact\n        run: npm run verify:pages\n      - name: Install Playwright Chromium\n        run: npx playwright install --with-deps chromium\n      - name: Pages browser smoke test\n        run: npm run test:e2e:pages\n      - name: Build Pages artifact with default cloud authorization/m,
+      /^\n      - name: Verify Pages artifact\n        run: npm run verify:pages\n      - name: Install Playwright Chromium\n        run: node scripts\/install-playwright\.mjs\n      - name: Pages browser smoke test\n        run: npm run test:e2e:pages\n      - name: Build Pages artifact with default cloud authorization/m,
     )
     expect(productionBuildStep).toContain('VITE_GITHUB_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}')
     expect(buildJob.indexOf(productionBuildStep)).toBeGreaterThan(buildJob.indexOf(browserTestStep))
@@ -132,7 +137,7 @@ describe('deployment configuration', () => {
     expect(installBrowserStep).toBe(
       [
         '      - name: Install Playwright Chromium',
-        '        run: npx playwright install --with-deps chromium',
+        '        run: node scripts/install-playwright.mjs',
       ].join('\n'),
     )
     expect(browserTestStep).toBe(
@@ -155,7 +160,7 @@ describe('deployment configuration', () => {
       '        uses: actions/configure-pages@v5',
       '        run: npm run build',
       '        run: npm run verify:pages',
-      '        run: npx playwright install --with-deps chromium',
+      '        run: node scripts/install-playwright.mjs',
       '        run: npm run test:e2e:pages',
       '        uses: actions/upload-pages-artifact@v4',
     ])

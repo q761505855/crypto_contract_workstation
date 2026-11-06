@@ -9,9 +9,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -25,6 +29,6 @@ jobs:
       - name: Typecheck, unit test, and build
         run: npm run check
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        run: node scripts/install-playwright.mjs
       - name: Browser smoke test
         run: npm run test:e2e

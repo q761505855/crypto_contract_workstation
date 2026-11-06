@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -40,7 +40,7 @@ jobs:
       - name: Verify Pages artifact
         run: npm run verify:pages
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        run: node scripts/install-playwright.mjs
       - name: Pages browser smoke test
         run: npm run test:e2e:pages
       - name: Build Pages artifact with default cloud authorization
@@ -61,7 +61,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     steps:
       - name: Deploy
