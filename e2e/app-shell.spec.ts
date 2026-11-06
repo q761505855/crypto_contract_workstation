@@ -2461,6 +2461,113 @@ test('adds independent TTM Wave ABC panes and round-trips parameters and colors 
   expect(errors).toEqual([])
 })
 
+test.describe('indicator settings dialog layout', () => {
+  test.use({ hasTouch: true, isMobile: true })
+  test('keeps indicator actions fixed while only parameters scroll across desktop and phone viewports', async ({ page }) => {
+    test.setTimeout(90_000)
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.setViewportSize({ width: 1138, height: 676 })
+    await mockBinance(page)
+    await mockGitHub(page)
+    await page.addInitScript(defaults => {
+      localStorage.setItem('chart.indicators.v1', JSON.stringify({ schemaVersion: 1, main: [{ name: 'PIVOTS', calcParams: defaults, visible: true, styles: null }], sub: [] }))
+      const points: { x: number; y: number }[] = []
+      Object.assign(window, { dialogGearPoints: points })
+      const original = CanvasRenderingContext2D.prototype.fillText
+      CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
+        if (text === '\ue902') {
+          const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+          const rect = this.canvas.getBoundingClientRect()
+          points.push({ x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio })
+        }
+        return Reflect.apply(original, this, [text, x, y, ...args])
+      }
+    }, [...PIVOTS_DEFAULT_PARAMS])
+    await page.goto('./')
+    await expectCanvasContent(page)
+    await expect.poll(() => page.evaluate(() => (window as unknown as { dialogGearPoints: unknown[] }).dialogGearPoints.length)).toBeGreaterThan(0)
+    const gear = (await page.evaluate(() => (window as unknown as { dialogGearPoints: { x: number; y: number }[] }).dialogGearPoints.at(-1)))!
+    await page.mouse.click(gear.x + 3, gear.y + 3)
+    const modal = page.locator('.klinecharts-pro-modal .inner')
+    const settings = modal.locator('.klinecharts-pro-indicator-setting-modal-content')
+    const confirm = modal.getByRole('button', { name: '确定', exact: true })
+    await expect(confirm).toBeInViewport({ ratio: 1, timeout: 1500 })
+    const draft = settings.locator('.klinecharts-pro-input input').first()
+    await draft.fill('17')
+    const cdp = await page.context().newCDPSession(page)
+    for (const viewport of [{ width: 1138, height: 676 }, { width: 390, height: 844 }, { width: 320, height: 740 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport)
+      await expect(confirm).toBeInViewport({ ratio: 1 })
+      await expect(modal.locator('.close-icon')).toBeInViewport({ ratio: 1 })
+      await expect(draft).toHaveValue('17')
+      const box = (await modal.boundingBox())!
+      expect(box.y).toBeGreaterThanOrEqual(0)
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height)
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width)
+      const body = modal.locator(':scope > .content-container')
+      const bodyBox = (await body.boundingBox())!
+      const buttonBefore = (await confirm.boundingBox())!
+      const headerBefore = (await modal.locator('.title-container').boundingBox())!
+      const x = bodyBox.x + 8
+      const touch = viewport.width < 768 || viewport.height < 520
+      const swipe = async (up: boolean) => {
+        const low = bodyBox.y + bodyBox.height - 24, high = bodyBox.y + 24
+        const start = up ? low : high, end = up ? high : low
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: start }] })
+        for (let step = 1; step <= 8; step++) {
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: start + (end - start) * step / 8 }] })
+          await page.waitForTimeout(16)
+        }
+        // Hold the finger still before lifting to end the drag without a fling.
+        await page.waitForTimeout(120)
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: end }] })
+        await page.waitForTimeout(16)
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      }
+      if (touch) {
+        for (let attempt = 0; attempt < 6 && await body.evaluate(el => el.scrollTop) > 0; attempt++) await swipe(false)
+      } else {
+        await page.mouse.move(x, bodyBox.y + bodyBox.height / 2)
+        await page.mouse.wheel(0, -10000)
+      }
+      await expect.poll(() => body.evaluate(el => el.scrollTop), { message: `parameter scroll reset at ${viewport.width}x${viewport.height}` }).toBe(0)
+      if (touch) {
+        await swipe(true)
+        await expect.poll(() => body.evaluate(el => el.scrollTop)).toBeGreaterThan(0)
+        for (let attempt = 0; attempt < 8 && await body.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop) > 1; attempt++) await swipe(true)
+      } else {
+        await page.mouse.wheel(0, 10000)
+      }
+      await expect(settings.getByLabel('上期 S 颜色', { exact: true })).toBeInViewport({ ratio: 1 })
+      await expect(confirm).toBeInViewport({ ratio: 1 })
+      expect((await confirm.boundingBox())!.y).toBeCloseTo(buttonBefore.y, 0)
+      expect((await modal.locator('.title-container').boundingBox())!.y).toBeCloseTo(headerBefore.y, 0)
+      if (viewport.width === 1138 || viewport.width === 390) await page.screenshot({ path: test.info().outputPath(`indicator-settings-${viewport.width}.png`) })
+    }
+    // A software keyboard reduces the visual viewport without resizing layout.
+    await page.evaluate(() => {
+      Object.defineProperty(window.visualViewport!, 'height', { configurable: true, get: () => 220 })
+      window.visualViewport!.dispatchEvent(new Event('resize'))
+    })
+    await expect.poll(async () => {
+      const box = (await modal.boundingBox())!
+      return box.y >= 0 && box.y + box.height <= 220
+    }).toBe(true)
+    await expect(confirm).toBeInViewport({ ratio: 1 })
+    await expect(modal.locator('.close-icon')).toBeInViewport({ ratio: 1 })
+    await confirm.tap()
+    await expect(modal).toBeHidden({ timeout: 2000 })
+    await page.evaluate(() => {
+      Reflect.deleteProperty(window.visualViewport!, 'height')
+      window.visualViewport!.dispatchEvent(new Event('resize'))
+    })
+    expect(errors).toEqual([])
+    await cdp.detach()
+  })
+})
+
 test('renders standard pivot levels and persists type, timeframe, labels and level settings', async ({ page }) => {
   test.setTimeout(120_000)
   await mockBinance(page, true)
@@ -2505,7 +2612,7 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { pivotTestLabels: string[] }).pivotTestLabels.some((label) => label.startsWith('P (')),
   )).toBe(true)
-  expect(await page.evaluate(() => [...new Set(
+  await expect.poll(() => page.evaluate(() => [...new Set(
     (window as unknown as { pivotTestTitles: string[] }).pivotTestTitles,
   )])).toEqual(['Pivots'])
   await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText('15m')

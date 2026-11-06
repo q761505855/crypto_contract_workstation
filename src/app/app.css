@@ -8,8 +8,8 @@
 
 .klinecharts-pro-indicator-setting-modal-content {
   grid-template-columns: minmax(0, 1fr) 200px;
-  max-height: min(65vh, 520px);
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
   padding-right: 8px;
   column-gap: 12px;
 }
@@ -1290,9 +1290,6 @@ button:disabled {
 .workspace-shell .chart-workspace { flex: 1; min-height: 200px; height: auto; border-right: 0; }
 .workspace-shell .chart-host { height: 100%; min-height: 0; }
 .workspace-content.has-fixed-chart .chart-workspace { flex: none; height: var(--workspace-chart-height); min-height: var(--workspace-chart-height); }
-.workspace-shell .chart-host .klinecharts-pro-modal .inner { max-height: calc(100% - 16px); overflow: hidden; }
-.workspace-shell .chart-host .klinecharts-pro-modal .inner > .title-container { flex-shrink: 0; }
-.workspace-shell .chart-host .klinecharts-pro-modal .inner > .content-container { min-height: 0; overflow: auto; }
 .workspace-content.has-fixed-chart .chart-region { align-self: start; }
 .replay-region { position: relative; flex-shrink: 0; min-width: 0; }
 .workspace-shell .replay-controls { min-height: 48px; gap: 6px; padding: 7px 40px 7px 12px; font-size: 12px; border-top: 1px solid #263345; background: #111a27; }
@@ -1462,4 +1459,26 @@ button:disabled {
   .order-expander, .dock-expander { display: none; }
   .order-region .panel-toggle[data-direction=right][data-expanded=true] svg { transform: none; }
   .workspace-shell .status-footer > .panel-toggle { min-height: 32px; }
+}
+
+/* Native chart dialogs use the visible viewport, independent of chart height. */
+.workspace-shell .chart-workspace:has(.klinecharts-pro-modal) { container-type: normal; overflow: visible; z-index: 500; }
+.workspace-shell .chart-host .klinecharts-pro-modal { position: fixed; inset: 0; top: var(--workspace-viewport-top, 0px); bottom: auto; width: 100%; height: var(--workspace-viewport-height, 100dvh); padding: 16px; align-items: center; background: #020814a6; }
+.workspace-shell .chart-host .klinecharts-pro-modal .inner { display: flex; flex-direction: column; max-width: 100%; max-height: calc(var(--workspace-viewport-height, 100dvh) - 32px); overflow: hidden; }
+.workspace-shell .chart-host .klinecharts-pro-modal:has(.klinecharts-pro-indicator-setting-modal-content) .inner { width: min(560px, 100%) !important; }
+.workspace-shell .chart-host .klinecharts-pro-modal .inner > .title-container { flex: 0 0 auto; }
+.workspace-shell .chart-host .klinecharts-pro-modal .inner > .content-container { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
+.workspace-shell .chart-host .klinecharts-pro-modal .inner > .button-container { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px; background: var(--klinecharts-pro-popover-background-color); border-top: 1px solid var(--klinecharts-pro-border-color); }
+.workspace-shell .chart-host .klinecharts-pro-modal .button-container > button { flex-shrink: 0; min-height: 40px; min-width: 88px; margin: 0; }
+.workspace-shell .chart-host .klinecharts-pro-indicator-setting-modal-content { max-height: none; overflow: visible; padding-right: 0; }
+.workspace-shell .chart-host .klinecharts-pro-indicator-setting-modal-content > span { min-width: 0; overflow-wrap: anywhere; }
+.workspace-shell .chart-host .klinecharts-pro-indicator-setting-modal-content > .klinecharts-pro-input,
+.workspace-shell .chart-host .klinecharts-pro-indicator-setting-modal-content > select { width: 100% !important; min-width: 0; max-width: 100%; }
+@media (max-width: 767px), (max-width: 1023px) and (max-height: 520px) {
+  .workspace-shell .chart-host .klinecharts-pro-modal { padding: 8px; }
+  .workspace-shell .chart-host .klinecharts-pro-modal .inner { max-height: calc(var(--workspace-viewport-height, 100dvh) - 16px); }
+  .workspace-shell .chart-host .klinecharts-pro-modal .inner > .content-container { padding: 12px 16px; }
+  .workspace-shell .chart-host .klinecharts-pro-modal .inner > .button-container { padding: 8px 16px max(8px, env(safe-area-inset-bottom)); }
+  .workspace-shell .chart-host .klinecharts-pro-modal .button-container > button { min-height: 44px; }
+  .workspace-shell .chart-host .klinecharts-pro-modal .title-container .close-icon { min-width: 36px; min-height: 36px; }
 }
