@@ -7,6 +7,20 @@ import { traceNativeRestoreWrites } from './storage-diagnostics'
 import { installViewportProbe } from './viewport-probe'
 import { installCachedMarketFixture, seedSymbolListing } from './market-fixtures'
 
+async function setPriceRangeMode(page: import('@playwright/test').Page, auto: boolean, touch = false) {
+  const toggle = page.getByRole('button', { name: '自动价格范围', exact: true })
+  if (await toggle.getAttribute('aria-pressed') !== String(auto)) {
+    if (touch) await toggle.tap()
+    else await toggle.click()
+  }
+  await expect(toggle).toHaveAttribute('aria-pressed', String(auto))
+}
+
+async function revealHeaderActions(page: import('@playwright/test').Page) {
+  const toggle = page.getByRole('button', { name: '工具 ⌄', exact: true })
+  if (await toggle.isVisible()) await toggle.click()
+}
+
 test('keeps hedged positions and their risk orders isolated through reload and session import', { tag: '@release' }, async ({ page }) => {
   test.setTimeout(60_000)
   await mockBinance(page, true)
@@ -43,6 +57,7 @@ test('keeps hedged positions and their risk orders isolated through reload and s
   await longReduce.getByRole('button', { name: '完成' }).click()
   await expect(short.getByText('数量', { exact: true }).locator('..').locator('dd')).toHaveText(shortQuantity!)
 
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const backups = page.getByTestId('backup-sync-panel')
   const downloadEvent = page.waitForEvent('download')
@@ -60,6 +75,7 @@ test('keeps hedged positions and their risk orders isolated through reload and s
   await (await openPositionEditor(page, 'short', 'reduce')).getByRole('button', { name: '全部平仓' }).click()
   await expect(panel).toContainText('当前无持仓')
 
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   page.once('dialog', dialog => dialog.accept())
   await backups.getByTestId('import-backup-file').setInputFiles(path!)
@@ -133,6 +149,7 @@ test('updates another open tab after configuration sync and preserves its next l
   await mockBinance(other, true)
   await other.goto('./')
   await expectCanvasContent(other)
+  await revealHeaderActions(page)
   await page.getByRole('button', { name: '工作区', exact: true }).click()
   await page.getByRole('dialog', { name: '工作区面板', exact: true }).getByLabel('账户摘要', { exact: true }).uncheck()
   await page.clock.runFor(1_500)
@@ -234,6 +251,7 @@ test('automatically archives RSI levels and alpha colors and restores cloud conf
   await page.mouse.move(host!.x + host!.width / 2, host!.y + 100)
   await expect.poll(() => page.evaluate(() => (window as unknown as { rsiTestLabels: string[] }).rsiTestLabels.some(text => /\([+-][\d.]+%\)/.test(text)))).toBe(true)
   await page.screenshot({ path: test.info().outputPath('rsi-alpha-and-price-difference.png'), fullPage: true })
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const backupPanel = page.getByTestId('backup-sync-panel')
   const download = page.waitForEvent('download')
@@ -282,6 +300,7 @@ test('selects Heikin Ashi from settings, retains real prices and restores the se
   await page.reload()
   await expectCanvasContent(page)
   await expect(note).toBeVisible()
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const panel = page.getByTestId('backup-sync-panel')
   const download = page.waitForEvent('download')
@@ -291,6 +310,7 @@ test('selects Heikin Ashi from settings, retains real prices and restores the se
   await page.getByTestId('close-data-manager').click()
   await selectType('全实心')
   await expect(note).toHaveCount(0)
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   page.once('dialog', dialog => dialog.accept())
   await panel.getByTestId('import-backup-file').setInputFiles(path!)
@@ -361,7 +381,7 @@ test('organizes the workspace, hides every extra panel and restores chart sizing
   await mockBinance(page, true)
   await page.goto('./')
   await expectCanvasContent(page)
-  for (const label of ['下单面板', '持仓面板', '回放控制', '底部状态']) {
+  for (const label of ['下单面板', '持仓面板']) {
     const collapse = page.getByRole('button', { name: `收起${label}`, exact: true })
     await expect(collapse).toHaveAttribute('aria-expanded', 'true', { timeout: 2500 })
     await collapse.click()
@@ -371,28 +391,31 @@ test('organizes the workspace, hides every extra panel and restores chart sizing
     await expand.click()
     await expect(collapse).toHaveAttribute('aria-expanded', 'true')
   }
-  for (const label of ['下单面板', '回放控制', '底部状态']) await page.getByRole('button', { name: `收起${label}`, exact: true }).click()
-  await expect(page.getByTestId('replay-controls')).toBeHidden()
-  await expect(page.locator('.status-footer').getByText('历史训练模拟', { exact: true })).toBeHidden()
+  for (const label of ['下单面板']) await page.getByRole('button', { name: `收起${label}`, exact: true }).click()
+  await expect(page.getByTestId('replay-controls')).toBeVisible()
+  await expect(page.locator('.status-footer').getByText('历史训练模拟', { exact: true })).toBeVisible()
   await page.reload()
-  for (const label of ['下单面板', '回放控制', '底部状态']) {
+  for (const label of ['下单面板']) {
     const expand = page.getByRole('button', { name: `展开${label}`, exact: true })
     await expect(expand).toHaveAttribute('aria-expanded', 'false')
     await expand.click()
   }
   await expect(page.getByTestId('replay-controls')).toBeVisible()
   await expect(page.locator('.status-footer').getByText('历史训练模拟', { exact: true })).toBeVisible()
+  await revealHeaderActions(page)
   await page.getByRole('button', { name: '工作区', exact: true }).click({ timeout: 2500 })
   const settings = page.getByRole('dialog', { name: '工作区面板' })
-  for (const label of ['账户摘要', '下单面板', '持仓与复盘', '回放控制', '底部状态']) await settings.getByLabel(label, { exact: true }).uncheck()
+  for (const label of ['账户摘要', '下单面板', '持仓与复盘']) await settings.getByLabel(label, { exact: true }).uncheck()
   await settings.getByRole('button', { name: '关闭工作区面板' }).click()
   await expect(page.getByRole('region', { name: '行情图表' })).toBeVisible()
   await expect(page.getByRole('button', { name: '工作区', exact: true })).toBeVisible()
-  await expect(page.getByTestId('replay-controls')).toBeHidden()
+  await expect(page.getByTestId('replay-controls')).toBeVisible()
   await expect(page.getByRole('complementary', { name: '模拟下单面板' })).toBeHidden()
+  await revealHeaderActions(page)
   await page.getByRole('button', { name: '工作区', exact: true }).click()
   await settings.getByRole('button', { name: '显示全部面板' }).click()
   await settings.getByRole('button', { name: '关闭工作区面板' }).click()
+  await revealHeaderActions(page)
   await page.getByRole('button', { name: '图表尺寸', exact: true }).click()
   const sizes = page.getByRole('dialog', { name: '图表尺寸设置' })
   await sizes.getByLabel('图表区域高度', { exact: true }).fill('620')
@@ -409,6 +432,7 @@ test('organizes the workspace, hides every extra panel and restores chart sizing
   await page.getByRole('button', { name: /^持仓/ }).last().click()
   await expect(page.getByRole('region', { name: '持仓与复盘面板' })).toBeVisible()
   await page.getByRole('button', { name: '收起持仓面板' }).click()
+  await revealHeaderActions(page)
   await page.getByRole('button', { name: '图表尺寸', exact: true }).click()
   await sizes.getByLabel('图表区域高度', { exact: true }).fill('480')
   await sizes.getByRole('button', { name: '关闭图表尺寸设置' }).click()
@@ -460,7 +484,7 @@ test('uses the redesigned desktop and touch workspace without losing chart or tr
   await expect(page.getByRole('dialog', { name: '模拟账户详情' })).toContainText('累计手续费')
   await page.getByRole('button', { name: '关闭模拟账户详情' }).click()
   await order.getByLabel('保证金金额', { exact: true }).fill('157')
-  for (const label of ['账户摘要', '下单面板', '持仓面板', '回放控制', '底部状态']) {
+  for (const label of ['账户摘要', '下单面板', '持仓面板']) {
     await page.getByRole('button', { name: `收起${label}`, exact: true }).click()
     const expand = page.getByRole('button', { name: `展开${label}`, exact: true })
     await expect(expand).toHaveAttribute('aria-expanded', 'false')
@@ -471,7 +495,6 @@ test('uses the redesigned desktop and touch workspace without losing chart or tr
   await expect(long).toContainText('70000 / 50000')
   await expect(short).toContainText('— / —')
   await order.getByLabel('保证金金额', { exact: true }).fill('100')
-  await page.getByRole('button', { name: '收起底部状态', exact: true }).click()
   await page.getByRole('button', { name: '收起下单面板', exact: true }).click()
   await page.clock.runFor(100)
   await waitForChartRender(page)
@@ -481,7 +504,6 @@ test('uses the redesigned desktop and touch workspace without losing chart or tr
   await expect(order).toBeHidden()
   await expect(page.getByRole('button', { name: '展开底部状态', exact: true })).toBeHidden()
   await page.getByRole('button', { name: '退出专注', exact: true }).click()
-  await page.getByRole('button', { name: '展开底部状态', exact: true }).click()
   await expect(order.getByLabel('保证金金额', { exact: true })).toHaveValue('100')
   await page.screenshot({ path: test.info().outputPath('desktop-workspace.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
@@ -505,6 +527,7 @@ test('uses the redesigned desktop and touch workspace without losing chart or tr
   await expect(short).toHaveCount(0)
   await expect(long).toContainText('70000 / 50000')
   await page.getByRole('button', { name: '收起持仓面板' }).click()
+  await revealHeaderActions(page)
   await page.getByRole('button', { name: '图表尺寸', exact: true }).click()
   const dimensions = page.getByRole('dialog', { name: '图表尺寸设置' })
   const paneSlider = dimensions.locator('input[type=range]').nth(1)
@@ -570,6 +593,7 @@ async function showTradingPanel(page: import('@playwright/test').Page, panel: 'o
 }
 
 async function setWorkspacePanel(page: import('@playwright/test').Page, label: string, visible: boolean) {
+  await revealHeaderActions(page)
   await page.getByRole('button', { name: '工作区', exact: true }).click()
   const settings = page.getByRole('dialog', { name: '工作区面板', exact: true })
   await settings.getByLabel(label, { exact: true }).setChecked(visible)
@@ -902,6 +926,119 @@ async function expectCanvasContent(page: import('@playwright/test').Page) {
 test.describe('mobile workstation', () => {
   test.use({ isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
 
+  test('pins permanent status and mobile replay controls above the bottom menu through scrolling and drawers', { tag: '@release' }, async ({ page }) => {
+    await mockBinance(page, true)
+    await mockGitHub(page, true)
+    await page.addInitScript(() => {
+      if (localStorage.getItem('workspace.layout.v1')) return
+      localStorage.setItem('workspace.layout.v1', JSON.stringify({ schemaVersion: 1, panels: { account: false, order: true, dock: false, replay: false, status: false }, chartHeight: 1000, mobileChartHeight: 1100, dockHeight: 220 }))
+    })
+    await page.goto('./')
+    await expectCanvasContent(page)
+    const footer = page.locator('.status-footer')
+    const replay = page.locator('.replay-region')
+    const menu = page.getByRole('navigation', { name: '工作台快捷操作' })
+    const assertBottom = async (mobile: boolean, height: number) => {
+      await expect(footer).toBeVisible()
+      await expect(replay).toBeVisible()
+      expect((await footer.boundingBox())!.y + (await footer.boundingBox())!.height).toBeCloseTo(height, 0)
+      await expect(page.getByRole('button', { name: /(?:展开|收起)(?:回放控制|底部状态)/ })).toHaveCount(0)
+      if (mobile) {
+        await expect.poll(async () => Math.round((await menu.boundingBox())!.y + (await menu.boundingBox())!.height - (await footer.boundingBox())!.y)).toBe(0)
+        await expect.poll(async () => Math.round((await replay.boundingBox())!.y + (await replay.boundingBox())!.height - (await menu.boundingBox())!.y)).toBe(0)
+      }
+    }
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport)
+      await page.clock.runFor(300)
+      const mobile = viewport.width < 1024
+      await assertBottom(mobile, viewport.height)
+      await page.evaluate(() => scrollTo(0, 450))
+      await assertBottom(mobile, viewport.height)
+      if (mobile) {
+        await menu.getByRole('button', { name: '下单', exact: true }).click()
+        const drawer = page.locator('.order-region')
+        await expect(drawer).toBeVisible()
+        expect((await drawer.boundingBox())!.y + (await drawer.boundingBox())!.height).toBeLessThanOrEqual((await replay.boundingBox())!.y + 1)
+        await assertBottom(true, viewport.height)
+        await page.getByRole('button', { name: '收起下单面板' }).click()
+      }
+      await page.screenshot({ path: test.info().outputPath(`permanent-bottom-${viewport.width}.png`), fullPage: false })
+    }
+    await page.setViewportSize({ width: 390, height: 844 })
+    await jumpChart(page, '2026-07-22T00:00')
+    await setReplayEnd(page, '2026-07-22T05:00')
+    await page.getByTestId('replay-controls').getByRole('button', { name: '创建回放' }).click()
+    await expect(page.getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
+    await assertBottom(true, 844)
+    await page.getByRole('button', { name: '下一根', exact: true }).click()
+    await assertBottom(true, 844)
+    const old = await page.evaluate(() => JSON.parse(localStorage.getItem('workspace.layout.v1')!).panels)
+    expect(old).toMatchObject({ replay: false, status: false })
+    await page.reload()
+    await expectCanvasContent(page)
+    await assertBottom(true, 844)
+    await revealHeaderActions(page)
+    await page.getByRole('button', { name: '专注看图', exact: true }).click()
+    await assertBottom(true, 844)
+    await page.getByRole('button', { name: '退出专注', exact: true }).click()
+    await page.getByRole('button', { name: '实时行情', exact: true }).click()
+    await assertBottom(true, 844)
+  })
+
+  test('prioritizes the mobile candle pane and keeps subpanes stable while resizing the chart', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockBinance(page, true)
+    await mockGitHub(page, true)
+    await page.addInitScript(() => {
+      if (localStorage.getItem('chart.indicators.v1')) return
+      localStorage.setItem('chart.indicators.v1', JSON.stringify({ schemaVersion: 1,
+        main: [{ name: 'MA', calcParams: [5, 10, 30], visible: true, styles: null }],
+        sub: ['TTM_SQUEEZE', 'TTM_WAVE_C', 'RSI'].map(name => ({ height: 100, indicators: [{ name, calcParams: name === 'RSI' ? [6, 12, 24] : name === 'TTM_WAVE_C' ? [8, 233, 377] : [20, 2, 1.5], visible: true, styles: null }] })) }))
+    })
+    await page.goto('./')
+    await expectCanvasContent(page)
+    const syncStatus = page.getByTestId('config-sync-status')
+    await expect(syncStatus).toContainText('已与云端同步')
+    await expect(syncStatus).toBeHidden()
+    const header = page.locator('.app-header')
+    expect((await header.boundingBox())!.height).toBeLessThanOrEqual(42)
+    await expect(page.getByRole('button', { name: '图表尺寸', exact: true })).toBeHidden()
+    await revealHeaderActions(page)
+    await expect(page.getByRole('button', { name: '图表尺寸', exact: true })).toBeVisible()
+    await expect(syncStatus).toBeVisible()
+    await page.getByRole('button', { name: '收起工具 ⌃', exact: true }).click()
+    const panes = page.locator('[k-line-chart-id] > div > div').filter({ has: page.locator('canvas') })
+    const heights = () => panes.evaluateAll(elements => elements.map(element => Math.round(element.getBoundingClientRect().height)))
+    await expect(panes).toHaveCount(5)
+    await expect.poll(async () => (await heights())[0]).toBeGreaterThan(300)
+    const before = await heights()
+    expect(before.slice(1, -1).every(height => height >= 60 && height <= 85)).toBe(true)
+    const axis = page.locator('[k-line-chart-id] > div > div').first().locator(':scope > div').nth(1)
+    expect((await axis.boundingBox())!.width).toBeLessThanOrEqual(64)
+    const toggle = page.getByRole('button', { name: '显示主图指标信息', exact: true })
+    const toolbar = page.locator('.klinecharts-pro-period-bar')
+    expect((await toggle.boundingBox())!.y).toBeLessThan((await toolbar.boundingBox())!.y + 35)
+    await page.screenshot({ path: test.info().outputPath('mobile-chart-compact.png'), fullPage: true })
+    await revealHeaderActions(page)
+    await page.getByRole('button', { name: '图表尺寸', exact: true }).click()
+    const sizes = page.getByRole('dialog', { name: '图表尺寸设置' })
+    await sizes.getByLabel('图表区域高度', { exact: true }).fill('1000')
+    await sizes.getByRole('button', { name: '关闭图表尺寸设置' }).click()
+    await expect.poll(async () => (await heights())[0]).toBeGreaterThan(before[0] + 200)
+    expect((await heights()).slice(1, -1)).toEqual(before.slice(1, -1))
+    const handle = page.getByRole('separator', { name: '图表高度', exact: true })
+    await handle.focus()
+    await handle.press('ArrowDown')
+    await expect(page.getByRole('region', { name: '行情图表' })).toHaveCSS('height', '1020px')
+    expect((await heights()).slice(1, -1)).toEqual(before.slice(1, -1))
+    await page.reload()
+    await expectCanvasContent(page)
+    await expect(page.getByRole('region', { name: '行情图表' })).toHaveCSS('height', '1020px')
+    expect((await heights()).slice(1, -1)).toEqual(before.slice(1, -1))
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!).sub.map((pane: { height: number }) => pane.height))).toEqual([100, 100, 100])
+  })
+
   test('fits the mobile chart viewport and adjusts indicator heights without archiving responsive shrinkage', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await mockBinance(page, true)
@@ -938,6 +1075,7 @@ test.describe('mobile workstation', () => {
     expect((await host.boundingBox())!.height).toBe(beforeAdd)
     expect((await heights())[0]).toBeGreaterThanOrEqual(180)
     expect((await heights()).slice(1, -1).every(height => height > 0)).toBe(true)
+    await revealHeaderActions(page)
     await page.getByRole('button', { name: '图表尺寸', exact: true }).tap()
     const sizes = page.getByRole('dialog', { name: '图表尺寸设置' })
     await sizes.getByLabel('VOL 高度', { exact: true }).fill('140')
@@ -964,6 +1102,7 @@ test.describe('mobile workstation', () => {
     await mockBinance(page, true)
     await page.goto('./')
     await expectCanvasContent(page)
+    await revealHeaderActions(page)
     await page.getByRole('button', { name: '图表尺寸', exact: true }).tap()
     const sizes = page.getByRole('dialog', { name: '图表尺寸设置' })
     await sizes.getByLabel('图表区域高度', { exact: true }).fill('1600')
@@ -978,6 +1117,7 @@ test.describe('mobile workstation', () => {
       expect(bounds.y + bounds.height).toBeLessThanOrEqual(844)
     }
     await expectInViewport(navigation)
+    await revealHeaderActions(page)
     await expectInViewport(page.getByRole('button', { name: '工作区', exact: true }))
     await navigation.getByRole('button', { name: '下单', exact: true }).tap()
     await expect(page.getByRole('complementary', { name: '模拟下单面板' })).toBeVisible()
@@ -1041,6 +1181,7 @@ test.describe('mobile workstation', () => {
         await page.locator('.klinecharts-pro-modal .close-icon').tap()
       }
 
+      await revealHeaderActions(page)
       await page.getByTestId('open-data-manager').tap()
       const drawer = page.getByTestId('data-manager')
       await assertFits(drawer)
@@ -1104,6 +1245,7 @@ test.describe('mobile workstation', () => {
       if (viewport.width < 1024) await page.getByRole('button', { name: '收起持仓面板' }).tap()
     }
     expect(await originalHost!.evaluate((node) => node === document.querySelector('[data-testid="chart-host"]'))).toBe(true)
+    await revealHeaderActions(page)
     await page.getByRole('button', { name: '专注看图' }).tap()
     await expect(page.getByRole('complementary', { name: '模拟下单面板' })).toBeHidden()
     await page.getByRole('button', { name: '退出专注' }).tap()
@@ -1147,11 +1289,12 @@ test.describe('mobile workstation', () => {
     await page.goto('./')
     const host = page.getByTestId('chart-host')
     const originalHost = await host.elementHandle()
+    await revealHeaderActions(page)
     await page.getByRole('button', { name: '工作区', exact: true }).tap()
     const settings = page.getByRole('dialog', { name: '工作区面板' })
-    await settings.getByLabel('回放控制', { exact: true }).uncheck()
+    await expect(settings.getByLabel('回放控制', { exact: true })).toHaveCount(0)
     await settings.getByRole('button', { name: '关闭工作区面板' }).tap()
-    await expect(page.getByTestId('replay-controls')).toBeHidden()
+    await expect(page.getByTestId('replay-controls')).toBeVisible()
     await expect(page.getByTestId('open-data-manager')).toBeVisible()
     await page.getByRole('button', { name: '历史模拟', exact: true }).tap()
     const strip = page.getByRole('group', { name: '快捷周期' })
@@ -1170,6 +1313,92 @@ test.describe('mobile workstation', () => {
     expect(await originalHost!.evaluate((node) => node === document.querySelector('[data-testid="chart-host"]'))).toBe(true)
   })
 
+  test('pans the mobile candle plot only in manual mode and overlays a transparent right-aligned price axis', { tag: '@release' }, async ({ page, context }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockBinance(page, true)
+    await mockGitHub(page, true)
+    await installViewportProbe(page)
+    const { axis } = await trackPriceAxis(page)
+    await page.goto('./')
+    await expectCanvasContent(page)
+    await revealHeaderActions(page)
+    await page.getByRole('button', { name: '图表尺寸', exact: true }).click()
+    const sizes = page.getByRole('dialog', { name: '图表尺寸设置' })
+    await sizes.getByLabel('图表区域高度', { exact: true }).fill('1100')
+    await sizes.getByRole('button', { name: '关闭图表尺寸设置' }).click()
+    await page.getByRole('button', { name: '收起工具 ⌃', exact: true }).click()
+    await page.clock.runFor(1500)
+    await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+    await page.evaluate(() => scrollTo(0, 120))
+    await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(50)
+    const initialScroll = await page.evaluate(() => scrollY)
+    const plot = axis.locator('..').locator(':scope > div').first()
+    const plotBox = (await plot.boundingBox())!
+    const axisBox = (await axis.boundingBox())!
+    expect(plotBox.x + plotBox.width).toBeCloseTo(390, 0)
+    expect(axisBox.x + axisBox.width).toBeCloseTo(390, 0)
+    await expect(axis).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    const ticks = await axis.locator('canvas').first().evaluate(canvas =>
+      (window as unknown as { chartAxisTestLabels: Map<HTMLCanvasElement, { text: string; x: number; width: number }[]> }).chartAxisTestLabels.get(canvas)?.filter(label => /^[\d,]+\.\d+$/.test(label.text)) ?? [])
+    expect(ticks.length).toBeGreaterThan(1)
+    expect(ticks.every(tick => tick.x + tick.width > 55 && tick.x + tick.width <= 64)).toBe(true)
+    const snapshot = () => page.evaluate(() => {
+      const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+      const height = core.getSize('candle_pane')!.height
+      const points = core.convertFromPixel([{ y: 0 }, { y: height }], { paneId: 'candle_pane' }) as { value: number }[]
+      const marker = core.convertToPixel({ value: 60000 }, { paneId: 'candle_pane' }) as { y: number }
+      return { span: points[0].value - points[1].value, top: points[0].value, y: marker.y, auto: core.getPriceRangeAuto() }
+    })
+    const client = await context.newCDPSession(page)
+    const swipe = async (delta: number, cancel = false) => {
+      const y = 360
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 160, y, id: 0 }] })
+      for (let step = 1; step <= 6; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 160, y: y + delta * step / 6, id: 0 }] })
+      await client.send('Input.dispatchTouchEvent', { type: cancel ? 'touchCancel' : 'touchEnd', touchPoints: [] })
+      await page.clock.runFor(100)
+    }
+    await setPriceRangeMode(page, false, true)
+    await page.evaluate(top => scrollTo(0, top), initialScroll)
+    const before = await snapshot()
+    // A prior tap must not leave a crosshair that captures the next manual pan.
+    await page.touchscreen.tap(160, 360)
+    await swipe(60)
+    const moved = await snapshot()
+    expect(moved.y - before.y).toBeCloseTo(60, 0)
+    expect(moved.span).toBeCloseTo(before.span, 7)
+    expect(moved.auto).toBe(false)
+    expect(await page.evaluate(() => scrollY)).toBe(initialScroll)
+    await swipe(-40, true)
+    const cancelled = await snapshot()
+    expect(cancelled.y - moved.y).toBeCloseTo(-40, 0)
+    await swipe(30)
+    expect((await snapshot()).y - cancelled.y).toBeCloseTo(30, 0)
+    expect(await page.evaluate(() => scrollY)).toBe(initialScroll)
+    await setPriceRangeMode(page, true, true)
+    await page.evaluate(top => scrollTo(0, top), initialScroll)
+    const automatic = await snapshot()
+    await swipe(-60)
+    expect(await snapshot()).toEqual(automatic)
+    await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(initialScroll + 20)
+    await page.evaluate(top => scrollTo(0, top), initialScroll)
+    // The transparent strip at the far right still owns vertical zoom, even
+    // while automatic plot gestures are allowed to scroll the page.
+    const edge = (await axis.boundingBox())!.x + (await axis.boundingBox())!.width - 5
+    const beforeAxis = await snapshot()
+    await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: edge, y: 360, id: 0 }] })
+    for (let step = 1; step <= 6; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: edge, y: 360 + step * 10, id: 0 }] })
+    await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await page.clock.runFor(150)
+    expect((await snapshot()).span).toBeGreaterThan(beforeAxis.span * 1.1)
+    expect((await snapshot()).auto).toBe(false)
+    await expect(page.getByRole('button', { name: '自动价格范围', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    expect(await page.evaluate(() => scrollY)).toBe(initialScroll)
+    await page.evaluate(() => scrollTo(0, 0))
+    await page.screenshot({ path: test.info().outputPath('mobile-inside-price-axis.png'), fullPage: true })
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.getStyles().yAxis.inside)).toBe(false)
+  })
+
   test('handles real axis swipes, pinch and cancellation while keeping the fixed mobile viewport stable', async ({ page, context }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await mockBinance(page)
@@ -1177,7 +1406,7 @@ test.describe('mobile workstation', () => {
     await page.goto('./')
     await expectCanvasContent(page)
     await expect.poll(pricePerPixel).toBeGreaterThan(0)
-    await page.getByRole('button', { name: '自动', exact: true }).tap()
+    await setPriceRangeMode(page, true, true)
     await page.evaluate(() => scrollTo(0, 0))
     await waitForChartRender(page)
     const client = await context.newCDPSession(page)
@@ -1196,7 +1425,7 @@ test.describe('mobile workstation', () => {
     }
     await touch('touchEnd', [])
     await expect.poll(pricePerPixel).toBeGreaterThan(initial * 1.1)
-    await expect(page.getByRole('button', { name: '手动', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('button', { name: '自动价格范围', exact: true })).toHaveAttribute('aria-pressed', 'false')
     expect(await page.evaluate(() => scrollY)).toBe(initialScroll)
     expect(await readTimeTicks()).toEqual(times)
 
@@ -1218,9 +1447,9 @@ test.describe('mobile workstation', () => {
     await expect.poll(pricePerPixel).toBeLessThan(beforeNextDrag * 0.9)
     await page.touchscreen.tap(x, y)
     await page.touchscreen.tap(x, y)
-    await expect(page.getByRole('button', { name: '自动', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('button', { name: '自动价格范围', exact: true })).toHaveAttribute('aria-pressed', 'true')
     await expect.poll(pricePerPixel).toBeCloseTo(initial, 4)
-    await page.getByRole('button', { name: '自动', exact: true }).tap()
+    await setPriceRangeMode(page, true, true)
     await expect.poll(pricePerPixel).toBeCloseTo(initial, 4)
     // Reset the scroll position before checking plot gestures independently.
     await page.evaluate((top) => scrollTo(0, top), initialScroll)
@@ -1263,6 +1492,7 @@ test('round-trips pinned periods through JSON archives and cloud configuration',
   await menu.getByRole('button', { name: '固定周期 1d', exact: true }).click()
   await menu.getByRole('button', { name: '取消固定周期 5m', exact: true }).click()
   await page.keyboard.press('Escape')
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const panel = page.getByTestId('backup-sync-panel')
   const downloadEvent = page.waitForEvent('download')
@@ -1282,6 +1512,7 @@ test('round-trips pinned periods through JSON archives and cloud configuration',
   const shortcuts = page.getByRole('group', { name: '快捷周期' })
   await expect(shortcuts.getByRole('button')).toHaveCount(0)
 
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   await panel.getByTestId('github-owner').fill('alice')
   await panel.getByTestId('github-repository').fill('trading-backup')
@@ -1298,6 +1529,7 @@ test('round-trips pinned periods through JSON archives and cloud configuration',
   await menu.getByRole('button', { name: '固定周期 1d', exact: true }).click()
   await page.keyboard.press('Escape')
   await expect(shortcuts.getByRole('button')).toHaveText(['1d'])
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   // Closing the drawer discards in-memory credentials; re-enter them for this visit.
   await panel.getByTestId('github-owner').fill('alice')
@@ -1654,6 +1886,7 @@ test('exercises Pro chart interactions and the production path', { tag: ['@integ
   expect(afterCommit.equals(beforeCommit)).toBe(false)
   await expectCanvasContent(page)
 
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const dataManager = page.getByTestId('data-manager')
   await expect(dataManager).toBeVisible()
@@ -1884,6 +2117,7 @@ test('exercises Pro chart interactions and the production path', { tag: ['@integ
   )
   await expectCanvasContent(page)
 
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const backupManager = page.getByTestId('data-manager')
   const backupPanel = backupManager.getByTestId('backup-sync-panel')
@@ -1970,7 +2204,7 @@ test('exercises Pro chart interactions and the production path', { tag: ['@integ
 
 async function trackPriceAxis(page: import('@playwright/test').Page) {
   await page.addInitScript(() => {
-    const labels = new Map<HTMLCanvasElement, { text: string; x: number; y: number }[]>()
+    const labels = new Map<HTMLCanvasElement, { text: string; x: number; y: number; width: number }[]>()
     Object.assign(window, { chartAxisTestLabels: labels })
     const fillText = CanvasRenderingContext2D.prototype.fillText
     const clearRect = CanvasRenderingContext2D.prototype.clearRect
@@ -1980,7 +2214,7 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
     }
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
       const entries = labels.get(this.canvas) ?? []
-      entries.push({ text, x, y })
+      entries.push({ text, x, y, width: this.measureText(text).width })
       labels.set(this.canvas, entries)
       return Reflect.apply(fillText, this, [text, x, y, ...args])
     }
@@ -2149,19 +2383,105 @@ test('fits candles with balanced padding and toggles indicator information witho
   await page.screenshot({ path: test.info().outputPath('main-indicator-hidden-mobile.png') })
 })
 
+test('keeps price mode buttons at the candle axis bottom above every subpane on desktop and mobile', async ({ page }) => {
+  await mockBinance(page, true)
+  await mockGitHub(page, true)
+  await installViewportProbe(page)
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const mode = page.getByRole('group', { name: '价格范围模式' })
+  await expect(mode.getByRole('button')).toHaveCount(1)
+  const axis = page.locator('[k-line-chart-id] > div > div:first-child > div:last-child')
+  const panes = page.locator('[k-line-chart-id] > div > div').filter({ has: page.locator('canvas') })
+  const assertPosition = async () => {
+    await expect(mode).toBeVisible()
+    await expect.poll(async () => {
+      const controls = (await mode.boundingBox())!
+      const priceAxis = (await axis.boundingBox())!
+      return Math.round(priceAxis.y + priceAxis.height - controls.y - controls.height)
+    }).toBe(2)
+    const controls = (await mode.boundingBox())!
+    const priceAxis = (await axis.boundingBox())!
+    expect(controls.x).toBeGreaterThanOrEqual(priceAxis.x)
+    expect(controls.x + controls.width).toBeLessThanOrEqual(priceAxis.x + priceAxis.width)
+    if (await panes.count() > 2) expect(controls.y + controls.height).toBeLessThanOrEqual((await panes.nth(1).boundingBox())!.y)
+  }
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport)
+    await page.clock.runFor(300)
+    await assertPosition()
+    const initial = (await axis.boundingBox())!.height
+    await page.getByRole('separator', { name: '图表高度', exact: true }).focus()
+    await page.getByRole('separator', { name: '图表高度', exact: true }).press('ArrowDown')
+    await page.clock.runFor(300)
+    await assertPosition()
+    expect((await axis.boundingBox())!.height).toBeGreaterThan(initial)
+    await setPriceRangeMode(page, false)
+    await expect(mode.getByRole('button', { name: '自动价格范围', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    await setPriceRangeMode(page, true)
+    await expect(mode.getByRole('button', { name: '自动价格范围', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await page.screenshot({ path: test.info().outputPath(`price-mode-main-axis-${viewport.width}.png`), fullPage: true })
+  }
+  await page.setViewportSize({ width: 390, height: 844 })
+  const paneId = await page.evaluate(() => (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.createIndicator('RSI', false))
+  expect(paneId).toBeTruthy()
+  await page.clock.runFor(300)
+  await assertPosition()
+  await page.evaluate(id => (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.removeIndicator(id!), paneId)
+  await page.clock.runFor(300)
+  await assertPosition()
+  await page.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    for (const id of core.getIndicatorByPaneId().keys()) if (id !== 'candle_pane') core.removeIndicator(id)
+  })
+  await page.clock.runFor(300)
+  await expect(panes).toHaveCount(2)
+  await assertPosition()
+})
+
+test('moves the desktop candle plot in manual mode without changing its scale', { tag: '@release' }, async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await mockBinance(page, true)
+  await installViewportProbe(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await setPriceRangeMode(page, false)
+  const snapshot = () => page.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    const height = core.getSize('candle_pane')!.height
+    const points = core.convertFromPixel([{ y: 0 }, { y: height }], { paneId: 'candle_pane' }) as { value: number }[]
+    const marker = core.convertToPixel({ value: 60000 }, { paneId: 'candle_pane' }) as { y: number }
+    return { span: points[0].value - points[1].value, y: marker.y }
+  })
+  const before = await snapshot()
+  const plot = page.locator('[k-line-chart-id] > div > div:first-child > div:first-child')
+  const bounds = (await plot.boundingBox())!
+  const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y + 50, { steps: 6 })
+  await page.mouse.up()
+  await page.clock.runFor(100)
+  const moved = await snapshot()
+  expect(moved.y - before.y).toBeCloseTo(50, 0)
+  expect(moved.span).toBeCloseTo(before.span, 7)
+  await expect(page.getByRole('button', { name: '自动价格范围', exact: true })).toHaveAttribute('aria-pressed', 'false')
+})
+
 test('zooms the price range with the wheel over the price axis while preserving the time scale', async ({ page }) => {
   await mockBinance(page)
   const { axis, pricePerPixel, readTimeTicks } = await trackPriceAxis(page)
   await page.goto('./')
   await expectCanvasContent(page)
   const mode = page.getByRole('group', { name: '价格范围模式' })
-  const auto = mode.getByRole('button', { name: '自动', exact: true })
-  const manual = mode.getByRole('button', { name: '手动', exact: true })
+  const auto = mode.getByRole('button', { name: '自动价格范围', exact: true })
+  const manual = mode.getByRole('button', { name: '自动价格范围', exact: true })
   await expect(auto).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(pricePerPixel).toBeGreaterThan(0)
   // Normalize the automatic range after initial data and pane setup, before
   // comparing wheel zoom and reset against the same interactive fit operation.
-  await auto.click()
+  await setPriceRangeMode(page, true)
   await waitForChartRender(page)
   const initial = await pricePerPixel()
   await expect.poll(async () => (await readTimeTicks()).length).toBeGreaterThan(1)
@@ -2169,7 +2489,7 @@ test('zooms the price range with the wheel over the price axis while preserving 
   await axis.hover()
   await page.mouse.wheel(0, -100)
   await expect.poll(pricePerPixel).toBeLessThan(initial * 0.95)
-  await expect(manual).toHaveAttribute('aria-pressed', 'true')
+  await expect(manual).toHaveAttribute('aria-pressed', 'false')
   // Compare the rendered labels and coordinates, independent of PNG encoding/rasterization.
   await expect.poll(readTimeTicks).toEqual(initialTimeTicks)
   await page.mouse.wheel(0, 100)
@@ -2179,13 +2499,13 @@ test('zooms the price range with the wheel over the price axis while preserving 
   await axis.dblclick()
   await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
   await expect(auto).toHaveAttribute('aria-pressed', 'true')
-  await manual.click()
-  await expect(manual).toHaveAttribute('aria-pressed', 'true')
+  await setPriceRangeMode(page, false)
+  await expect(manual).toHaveAttribute('aria-pressed', 'false')
   await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
   await axis.hover()
   await page.mouse.wheel(0, 100)
   await expect.poll(pricePerPixel).toBeGreaterThan(initial * 1.05)
-  await auto.click()
+  await setPriceRangeMode(page, true)
   await expect.poll(pricePerPixel).toBeCloseTo(initial, 5)
   await expect(auto).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(readTimeTicks).toEqual(initialTimeTicks)
@@ -2202,8 +2522,8 @@ test('resets the manual price range when switching between differently priced in
     return ticks.reduce((sum, tick) => sum + tick.value, 0) / ticks.length
   }
   const mode = page.getByRole('group', { name: '价格范围模式' })
-  const auto = mode.getByRole('button', { name: '自动', exact: true })
-  const manual = mode.getByRole('button', { name: '手动', exact: true })
+  const auto = mode.getByRole('button', { name: '自动价格范围', exact: true })
+  const manual = mode.getByRole('button', { name: '自动价格范围', exact: true })
   await expect.poll(meanPrice).toBeGreaterThan(70_000)
   const axisBox = (await axis.boundingBox())!
   await page.mouse.move(axisBox.x + axisBox.width / 2, axisBox.y + axisBox.height / 2)
@@ -2211,7 +2531,7 @@ test('resets the manual price range when switching between differently priced in
   await page.mouse.move(axisBox.x + axisBox.width / 2, axisBox.y + axisBox.height / 2 + 50, { steps: 5 })
   await page.mouse.up()
   await page.clock.runFor(150)
-  await expect(manual).toHaveAttribute('aria-pressed', 'true')
+  await expect(manual).toHaveAttribute('aria-pressed', 'false')
 
   const selectSymbol = async (symbol: string) => {
     await page.locator('.klinecharts-pro-period-bar .symbol').click()
@@ -2225,7 +2545,7 @@ test('resets the manual price range when switching between differently priced in
   await selectSymbol('ETHUSDT')
   await expect.poll(meanPrice).toBeGreaterThan(20)
   await expect.poll(meanPrice).toBeLessThan(30)
-  await manual.click()
+  await setPriceRangeMode(page, false)
   await selectSymbol('BTCUSDT')
   await expect.poll(meanPrice).toBeGreaterThan(70_000)
   await expect.poll(meanPrice).toBeLessThan(80_000)
@@ -2485,6 +2805,7 @@ test('renders KC and TTM Squeeze, edits parameters, and restores archived config
   await expectCanvasContent(page)
   await expect.poll(readPreferences).toEqual(saved)
   await expect.poll(inspect).toMatchObject({ kc: true, ttm: true })
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const panel = page.getByTestId('backup-sync-panel')
   const downloadEvent = page.waitForEvent('download')
@@ -2509,6 +2830,7 @@ test('renders KC and TTM Squeeze, edits parameters, and restores archived config
   await expect(row('KC(肯特纳通道)').locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
   await expect(row('TTM Squeeze(挤压指标)').locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
   await closeModal()
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const configureCloud = async () => {
     await panel.getByTestId('github-owner').fill('alice')
@@ -2529,6 +2851,7 @@ test('renders KC and TTM Squeeze, edits parameters, and restores archived config
   await page.reload()
   await expectCanvasContent(page)
   await expect.poll(readPreferences).toEqual(empty.data.preferences.chartIndicators)
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   await configureCloud()
   page.once('dialog', dialog => dialog.accept())
@@ -2653,6 +2976,7 @@ test('adds independent TTM Wave ABC panes and round-trips parameters and colors 
   await rows.filter({ hasText: 'TTM Wave B(中期波)' }).click({ position: { x: 5, y: 20 } })
   await closeModal()
   await expect.poll(async () => (await plots()).map(i => i.name)).toEqual(['TTM_WAVE_A', 'TTM_WAVE_C'])
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const panel = page.getByTestId('backup-sync-panel')
   // Restore an exported archive from before B was removed.
@@ -2677,6 +3001,7 @@ test('adds independent TTM Wave ABC panes and round-trips parameters and colors 
     await panel.getByRole('checkbox', { name: '会话与交易', exact: true }).uncheck()
     await panel.getByRole('checkbox', { name: '历史行情', exact: true }).uncheck()
   }
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   await configureCloud()
   await panel.getByTestId('github-upload').click()
@@ -2688,6 +3013,7 @@ test('adds independent TTM Wave ABC panes and round-trips parameters and colors 
   await expect(panel.getByTestId('backup-status')).toContainText('导入完成')
   await page.reload()
   await expectCanvasContent(page)
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   await configureCloud()
   page.once('dialog', dialog => dialog.accept())
@@ -2907,6 +3233,7 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
   expect((await readPivots()).calcParams.slice(0, 3)).toEqual(['Camarilla', 'Weekly', 2])
   const saved = await readPivots()
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const panel = page.getByTestId('backup-sync-panel')
   const configureCloud = async () => {
@@ -2934,6 +3261,7 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   await expectCanvasContent(page)
   await expect.poll(async () => (await readPivots()).calcParams[33]).toBe(false)
   await expect.poll(hasPrevious).toBe(false)
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   await configureCloud()
   page.once('dialog', dialog => dialog.accept())
@@ -2976,6 +3304,7 @@ test('stops remote requests after HTTP 418 and keeps cached chart data usable', 
     await expect(page.locator('.status-footer')).toContainText(`BTCUSDT · ${timeframe}`)
   }
   await expectCanvasContent(page)
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   await expect(page.getByTestId('data-manager').getByRole('alert')).toContainText('HTTP 418')
   expect(banRequests).toBe(1)
@@ -2994,6 +3323,7 @@ test('stops remote requests after HTTP 418 and keeps cached chart data usable', 
   expect(banRequests).toBe(1)
   await otherPage.close()
 
+  await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
   const protection = page.getByRole('region', { name: '行情请求保护' })
   const resume = protection.getByRole('button', { name: '手动恢复远程请求' })

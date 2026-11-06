@@ -8,6 +8,7 @@ export interface WorkspacePreferences {
     account: boolean
     order: boolean
     dock: boolean
+    /** Legacy archive fields; replay and status are always visible in the UI. */
     replay: boolean
     status: boolean
   }

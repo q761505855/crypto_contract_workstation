@@ -116,21 +116,23 @@ export function ChartWorkspace({
     }
     const host = hostRef.current
     setPeriodToolbar(host.querySelector('.klinecharts-pro-period-bar'))
+    const priceAxis = adapter?.getPriceAxisContainer?.() ?? null
+    const synchronizePriceControl = () => {
+      if (priceAxis === null) return
+      const bottom = priceAxis.getBoundingClientRect().bottom - host.getBoundingClientRect().top
+      host.parentElement?.style.setProperty('--price-axis-bottom', `${bottom}px`)
+    }
     const synchronizeLayout = (resized = false) => {
       // Core dimensions are refreshed synchronously by resize; pane sizing
       // must use those dimensions in this observer notification.
       if (resized) adapter?.resize?.()
-      const narrow = window.matchMedia?.('(max-width: 1023px)').matches ?? false
-      const subPaneHeight = adapter?.layoutSubPanes?.(narrow ? 80 : 0)
-      if (narrow && subPaneHeight !== undefined) {
-        const style = host.parentElement?.style
-        const next = `${subPaneHeight}px`
-        if (style?.getPropertyValue('--chart-subpanes-height') !== next) {
-          style?.setProperty('--chart-subpanes-height', next)
-          adapter?.resize?.()
-          adapter?.layoutSubPanes?.(80)
-        }
-      }
+      const narrow = window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches ?? false
+      adapter?.setCompactLayout?.(narrow)
+      // Keep secondary panes near a quarter of the phone's screen even when
+      // the user enlarges the chart. Archive only explicit size changes.
+      const budget = narrow ? Math.round(window.innerHeight * 0.22) : undefined
+      adapter?.layoutSubPanes?.(narrow ? 60 : 0, budget)
+      synchronizePriceControl()
     }
     synchronizeLayoutRef.current = synchronizeLayout
     synchronizeLayout()
@@ -138,6 +140,9 @@ export function ChartWorkspace({
       ? null
       : new ResizeObserver(() => synchronizeLayout(true))
     resizeObserver?.observe(host)
+    const axisResizeObserver = priceAxis !== null && typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(synchronizePriceControl) : null
+    if (priceAxis !== null) axisResizeObserver?.observe(priceAxis)
     const openSymbolPicker = (event: MouseEvent) => {
       const target = event.target
       if (
@@ -152,6 +157,7 @@ export function ChartWorkspace({
     host.addEventListener('click', openSymbolPicker, true)
     return () => {
       resizeObserver?.disconnect()
+      axisResizeObserver?.disconnect()
       synchronizeLayoutRef.current = null
       host.removeEventListener('click', openSymbolPicker, true)
       adapter?.dispose?.()
@@ -405,36 +411,49 @@ export function ChartWorkspace({
     adapter?.resize?.()
   }
 
+  const indicatorInfoToggle = (
+    <button
+      aria-label={indicatorInfoVisible ? '隐藏主图指标信息' : '显示主图指标信息'}
+      aria-expanded={indicatorInfoVisible}
+      className="indicator-info-toggle"
+      onClick={toggleIndicatorInfo}
+      title={indicatorInfoVisible ? '隐藏主图指标信息' : '显示主图指标信息'}
+      type="button"
+    >
+      <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12">
+        <path d={indicatorInfoVisible ? 'M2 8 L6 4 L10 8' : 'M2 4 L6 8 L10 4'} />
+      </svg>
+    </button>
+  )
+
+  // Keep controls outside the native gesture surface; measure the candle axis boundary.
+  const priceRangeMode = (
+    <div
+      className="price-range-mode"
+      role="group"
+      aria-label="价格范围模式"
+      onMouseDown={event => event.stopPropagation()}
+      onTouchStart={event => event.stopPropagation()}
+      onClick={event => event.stopPropagation()}
+      onDoubleClick={event => event.stopPropagation()}
+      onWheel={event => event.stopPropagation()}
+    >
+      <button
+        aria-label="自动价格范围"
+        aria-pressed={priceRangeAuto}
+        onClick={() => changePriceRangeMode(!(adapterRef.current?.getPriceRangeAuto?.() ?? priceRangeAuto))}
+        title={priceRangeAuto ? '自动适配已开启 · 点击切换手动' : '手动模式 · 点击恢复自动适配'}
+        type="button"
+      ><span aria-hidden="true">A</span></button>
+    </div>
+  )
+
   return (
-    <section className="chart-workspace" aria-label="行情图表">
+    <section className="chart-workspace" aria-label="行情图表" data-price-range-auto={priceRangeAuto}>
       <div className="chart-host" data-testid="chart-host" ref={hostRef} />
       {candleType === 'heikin_ashi' ? <div className="heikin-ashi-note" role="note">平均 K 线 · 提示框、指标、最新价及交易使用真实行情</div> : null}
-      <button
-        aria-label={indicatorInfoVisible ? '隐藏主图指标信息' : '显示主图指标信息'}
-        aria-expanded={indicatorInfoVisible}
-        className="indicator-info-toggle"
-        onClick={toggleIndicatorInfo}
-        title={indicatorInfoVisible ? '隐藏主图指标信息' : '显示主图指标信息'}
-        type="button"
-      >
-        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12">
-          <path d={indicatorInfoVisible ? 'M2 8 L6 4 L10 8' : 'M2 4 L6 8 L10 4'} />
-        </svg>
-      </button>
-      <div className="price-range-mode" role="group" aria-label="价格范围模式">
-        <button
-          aria-pressed={priceRangeAuto}
-          onClick={() => changePriceRangeMode(true)}
-          title="自动锁定价格范围"
-          type="button"
-        >自动</button>
-        <button
-          aria-pressed={!priceRangeAuto}
-          onClick={() => changePriceRangeMode(false)}
-          title="手动缩放价格范围"
-          type="button"
-        >手动</button>
-      </div>
+      {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
+      {priceRangeMode}
       {periodToolbar === null
         ? <PeriodSelector value={period.text} onChange={selectCompactPeriod} />
         : createPortal(<PeriodSelector value={period.text} onChange={selectCompactPeriod} />, periodToolbar)}
@@ -497,7 +516,7 @@ export function ChartWorkspace({
                 <input aria-label="图表区域高度" disabled={onChartHeightChange === undefined} max={1600} min={280} onChange={(event) => changeChartHeight(Number(event.target.value))} step={1} type="range" value={Math.round(currentChartHeight())} />
               </label>
               <button disabled={onChartHeightChange === undefined} onClick={() => onChartHeightChange?.(null)} type="button">自动适配</button>
-              <p>拖动图表底边也可调整高度。副图尺寸与指标设置一起保存；空间不足时自动缩小显示，可增加图表区域高度查看完整副图。</p>
+              <p>拖动图表底边也可调整高度。副图尺寸与指标设置一起保存；手机端副图紧凑显示，拉高图表主要增加主图空间；各副图可单独调节，空间不足时按比例缩小显示。</p>
               {paneSizes.length === 0 ? <p>当前没有副图指标。</p> : paneSizes.map((pane) => (
                 <label key={pane.id}>
                   <span>{pane.label}<output>{pane.height} px</output></span>

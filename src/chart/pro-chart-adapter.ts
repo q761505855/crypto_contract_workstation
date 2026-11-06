@@ -6,6 +6,7 @@ import {
   type Period,
   type SymbolInfo,
 } from '@klinecharts/pro'
+import { DomPosition, YAxisPosition } from 'klinecharts'
 import type {
   ActionType,
   Chart,
@@ -72,11 +73,13 @@ export interface ChartAdapterPort {
   setSymbol(symbol: SymbolInfo): void
   reloadData(): Promise<void>
   resize?(): void
-  layoutSubPanes?(minimumHeight: number): number
+  layoutSubPanes?(minimumHeight: number, compactBudget?: number): number
+  setCompactLayout?(compact: boolean): void
   getIndicatorPaneSizes?(): { id: string; label: string; height: number }[]
   setIndicatorPaneHeight?(paneId: string, height: number): void
   setPriceRangeAuto?(auto: boolean): void
   getPriceRangeAuto?(): boolean
+  getPriceAxisContainer?(): HTMLElement | null
   setIndicatorInfoVisible?(visible: boolean): void
   setTheme(theme: string): void
   setTimezone(timezone: string): void
@@ -141,6 +144,8 @@ export class ProChartAdapter implements ChartAdapterPort {
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
   private subPaneMinimumHeight = 0
+  private subPaneBudget: number | undefined
+  private compactLayout: boolean | undefined
 
   constructor(private readonly factory: ChartProFactory = createProChart) {}
 
@@ -186,7 +191,7 @@ export class ProChartAdapter implements ChartAdapterPort {
           changed = true
         }
       }
-      if (changed) this.layoutSubPanes(this.subPaneMinimumHeight)
+      if (changed) this.layoutSubPanes(this.subPaneMinimumHeight, this.subPaneBudget)
     })
   }
 
@@ -198,8 +203,9 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.coreChart?.resize()
   }
 
-  layoutSubPanes(minimumHeight: number): number {
+  layoutSubPanes(minimumHeight: number, compactBudget?: number): number {
     this.subPaneMinimumHeight = minimumHeight
+    this.subPaneBudget = compactBudget
     const chart = this.requireCoreChart()
     const panes = chart.getIndicatorByPaneId()
     if (!(panes instanceof Map)) return 0
@@ -224,7 +230,10 @@ export class ProChartAdapter implements ChartAdapterPort {
     const axisHeight = chart.getSize('x_axis_pane')?.height ?? 30
     const desiredTotal = subPanes.reduce((sum, pane) => sum + pane.desired, 0)
     const available = viewportHeight > 0 ? Math.max(0, viewportHeight - axisHeight - 180 - subPanes.length * 2) : desiredTotal
-    const scale = desiredTotal > available ? available / desiredTotal : 1
+    // A phone-sized indicator budget follows the screen, not the resizable
+    // chart. Growing the chart therefore adds room to the candle pane.
+    const budget = compactBudget === undefined ? available : Math.min(available, compactBudget)
+    const scale = desiredTotal > budget ? budget / desiredTotal : 1
     for (const pane of subPanes) {
       // A zero minHeight lets constrained displays preserve the candle pane;
       // sliders and archives still hold the user's full desired height.
@@ -258,6 +267,26 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.responsivePaneHeights.set(paneId, height)
     this.responsiveDisplayHeights.set(paneId, height)
     this.requireCoreChart().setPaneOptions({ id: paneId, height })
+  }
+
+  setCompactLayout(compact: boolean): void {
+    if (this.compactLayout === compact) return
+    this.compactLayout = compact
+    this.requireCoreChart().setStyles({
+      yAxis: { inside: compact, position: YAxisPosition.Right, size: compact ? 64 : 'auto', tickText: { size: compact ? 10 : 12, marginStart: compact ? 3 : 4, marginEnd: compact ? 3 : 4 } },
+      xAxis: { tickText: { size: compact ? 10 : 12 } },
+      candle: {
+        touchVerticalDrag: compact,
+        tooltip: { offsetLeft: compact ? 4 : 24, text: { size: compact ? 10 : 12, marginLeft: compact ? 0 : 8, marginRight: compact ? 6 : 8, marginTop: compact ? 2 : 4, marginBottom: compact ? 2 : 4 } },
+        priceMark: { last: { text: { size: compact ? 10 : 12, paddingLeft: compact ? 3 : 4, paddingRight: compact ? 3 : 4 } } },
+      },
+      indicator: { tooltip: { offsetLeft: compact ? 4 : 24, text: { size: compact ? 10 : 12, marginLeft: compact ? 0 : 8, marginRight: compact ? 6 : 8, marginTop: compact ? 2 : 4, marginBottom: compact ? 2 : 4 } } },
+      crosshair: { horizontal: { text: { size: compact ? 10 : 12, paddingLeft: compact ? 3 : 4, paddingRight: compact ? 3 : 4 } } },
+    })
+  }
+
+  getPriceAxisContainer(): HTMLElement | null {
+    return this.requireCoreChart().getDom('candle_pane', DomPosition.YAxis)
   }
 
   setPriceRangeAuto(auto: boolean): void {

@@ -177,6 +177,28 @@ describe('ProChartAdapter', () => {
     expect(adapter.layoutSubPanes(200)).toBe(524)
   })
 
+  it('keeps compact subpanes stable when chart height grows and preserves archived sizes', () => {
+    let viewportHeight = 600
+    const heights = new Map([['vol', 100], ['macd', 180], ['rsi', 100]])
+    const panes = new Map([['candle_pane', new Map()], ...[...heights.keys()].map(id => [id, new Map([[id, { name: id.toUpperCase(), calcParams: [], visible: true, styles: null }]])] as const)])
+    const core = {
+      getIndicatorByPaneId: () => panes,
+      getSize: (id?: string) => ({ height: id === undefined ? viewportHeight : id === 'x_axis_pane' ? 24 : heights.get(id) ?? 180 }),
+      setPaneOptions: ({ id, height }: { id: string; height: number }) => { heights.set(id, height) },
+    } as unknown as Chart
+    const adapter = new ProChartAdapter(() => fakeChart(core))
+    adapter.mount({ container: document.createElement('div'), symbol: { ticker: 'BTCUSDT' }, period: { multiplier: 15, timespan: 'minute', text: '15m' }, datafeed: { searchSymbols: async () => [], getHistoryKLineData: async () => [], subscribe() {}, unsubscribe() {} } })
+    const total = adapter.layoutSubPanes(60, 200)
+    const compactHeights = [...heights.values()]
+    expect(total).toBeLessThanOrEqual(206)
+    viewportHeight = 1200
+    expect(adapter.layoutSubPanes(60, 200)).toBe(total)
+    expect([...heights.values()]).toEqual(compactHeights)
+    expect(adapter.getIndicatorPreferences().sub.map(pane => pane.height)).toEqual([100, 180, 100])
+    adapter.layoutSubPanes(0)
+    expect([...heights.values()]).toEqual([100, 180, 100])
+  })
+
   it('only toggles main indicator legends while preserving candle and subpane tooltips', () => {
     const setStyles = vi.fn()
     const core = { setStyles } as unknown as Chart

@@ -93,10 +93,12 @@ function simulationPriceText(price: number, precision: number): string {
 
 export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [mode, setMode] = useState<WorkstationMode>('history')
+  const shellRef = useRef<HTMLElement | null>(null)
   const [layout, setLayout] = useState(loadWorkspacePreferences)
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
   const [chartSizeOpen, setChartSizeOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(false)
+  const [headerExpanded, setHeaderExpanded] = useState(false)
   const [mobile, setMobile] = useState(() => (window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)')?.matches ?? false))
   const [mobilePanel, setMobilePanel] = useState<'order' | 'dock' | null>(null)
   const [dockTab, setDockTab] = useState<TradingTab>('positions')
@@ -112,7 +114,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     try { saveWorkspacePreferences(next); setLayoutError('') }
     catch (error) { setLayoutError(`保存工作区失败：${error instanceof Error ? error.message : String(error)}`) }
   }
-  function setPanel(panel: keyof WorkspacePreferences['panels'], visible: boolean) {
+  function setPanel(panel: 'account' | 'order' | 'dock', visible: boolean) {
     setFocusMode(false)
     updateLayout(current => ({ ...current, panels: { ...current.panels, [panel]: visible } }))
   }
@@ -385,14 +387,38 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     setMarketSelection(next)
   }
 
+  useLayoutEffect(() => {
+    const shell = shellRef.current
+    if (shell === null) return
+    const regions = [
+      ['.status-footer', '--workspace-status-height'],
+      ['.mobile-workspace-nav', '--workspace-nav-height'],
+      ['.replay-region', '--workspace-replay-height'],
+    ] as const
+    const measure = () => {
+      for (const [selector, property] of regions) {
+        const height = shell.querySelector<HTMLElement>(selector)?.getBoundingClientRect().height ?? 0
+        if (height > 0) shell.style.setProperty(property, `${Math.ceil(height)}px`)
+      }
+    }
+    measure()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    for (const [selector] of regions) {
+      const region = shell.querySelector(selector)
+      if (region) observer?.observe(region)
+    }
+    return () => observer?.disconnect()
+  }, [])
+
   const chartHeight = mobile ? layout.mobileChartHeight : layout.chartHeight
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
   return (
-    <main className={`app-shell workspace-shell${chartHeight === null ? '' : ' fixed-chart-height'}`}>
+    <main ref={shellRef} className={`app-shell workspace-shell${headerExpanded ? ' header-expanded' : ''}${chartHeight === null ? '' : ' fixed-chart-height'}`}>
       <header className="app-header">
         <h1><span className="desktop-brand">加密货币合约回放工作站</span><span className="mobile-brand">合约工作站</span></h1>
         <ModeSwitch mode={mode} onChange={changeMode} />
-        <div className="workspace-nav">
+        <button type="button" className="mobile-header-toggle" aria-expanded={headerExpanded} aria-controls="workspace-header-actions" onClick={() => setHeaderExpanded(current => !current)}>{headerExpanded ? '收起工具 ⌃' : '工具 ⌄'}</button>
+        <div id="workspace-header-actions" className="workspace-nav">
           <button type="button" data-testid="open-data-manager" onClick={() => setDataManagerOpen(true)}>数据管理</button>
           <button type="button" aria-expanded={chartSizeOpen} onClick={() => setChartSizeOpen(true)}>图表尺寸</button>
           <button type="button" aria-expanded={workspaceMenu} onClick={() => setWorkspaceMenu(true)}>工作区</button>
@@ -428,12 +454,10 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
             chartHeight={chartHeight}
             onChartHeightChange={height => updateLayout(current => ({ ...current, [mobile ? 'mobileChartHeight' : 'chartHeight']: height }))}
           />
-          <div className="replay-region" hidden={focusMode}>
-            <div id="workspace-replay-content" className="replay-content" hidden={!visible('replay')}>
-              <PanelToggle label="回放控制" expanded controls="workspace-replay-content" direction="down" onToggle={() => setPanel('replay', false)} className="replay-close" />
+          <div className="replay-region">
+            <div id="workspace-replay-content" className="replay-content">
               {mode === 'history' ? <ReplayControls chartStartTime={chartRightmostCandleTime} interactionLocked={simulation.busy} onJumpToTime={jumpChartToTime} onLocateLatest={locateLatestChartTime} replay={replay} selection={marketSelection} /> : <section className="replay-controls live-time-controls"><TimeJumpControl compact onJump={jumpChartToTime} onLocateLatest={locateLatestChartTime} /></section>}
             </div>
-            {!visible('replay') && <PanelToggle label="回放控制" expanded={false} controls="workspace-replay-content" direction="down" showLabel onToggle={() => setPanel('replay', true)} className="collapsed-panel-handle" />}
           </div>
         </div>
         <div className="order-expander" hidden={mobile || focusMode || visible('order')}>
@@ -455,9 +479,9 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         </div>
       </div>
       {mobile && mobilePanel && <div className="mobile-panel-backdrop" onClick={closeMobilePanel} aria-hidden="true" />}
-      <footer className="status-footer" hidden={focusMode}>
-        <span id="workspace-status-content" hidden={!visible('status')}>{marketSelection.symbol.ticker} · {marketSelection.period.text}{replay.session !== null ? ` · 回放 ${replay.session.currentIndex + 1}/${replay.session.candleCount}` : ''}{marketWarning.length > 0 ? ` · ${marketWarning}` : ''}<HistoryUploadStatus service={marketRuntime.service} onOpen={() => setDataManagerOpen(true)} /></span>
-        <span hidden={!visible('status')}>{mode === 'history' ? '历史训练模拟' : '实时只读'}</span><PanelToggle label="底部状态" expanded={visible('status')} controls="workspace-status-content" direction="down" showLabel={!visible('status')} onToggle={() => setPanel('status', !visible('status'))} className="panel-close" />
+      <footer className="status-footer">
+        <span id="workspace-status-content">{marketSelection.symbol.ticker} · {marketSelection.period.text}{replay.session !== null ? ` · 回放 ${replay.session.currentIndex + 1}/${replay.session.candleCount}` : ''}{marketWarning.length > 0 ? ` · ${marketWarning}` : ''}<HistoryUploadStatus service={marketRuntime.service} onOpen={() => setDataManagerOpen(true)} /></span>
+        <span>{mode === 'history' ? '历史训练模拟' : '实时只读'}</span>
       </footer>
       <nav className="mobile-workspace-nav" aria-label="工作台快捷操作">
         <button type="button" aria-pressed={mobilePanel === null} onClick={closeMobilePanel}>看图</button>
@@ -466,10 +490,10 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         <button type="button" onClick={() => setWorkspaceMenu(true)}>更多</button>
       </nav>
       <WorkspaceDialog open={workspaceMenu} title="工作区面板" onClose={() => setWorkspaceMenu(false)}>
-        <p className="muted-text">用面板上的箭头展开或收起，收起后原位保留展开入口；桌面和手机分别保存图表高度。</p>
-        <div className="workspace-panel-toggles">{([['account', '账户摘要'], ['order', '下单面板'], ['dock', '持仓与复盘'], ['replay', '回放控制'], ['status', '底部状态']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={layout.panels[key]} onChange={event => setPanel(key, event.target.checked)} />{label}</label>)}</div>
+        <p className="muted-text">账户、下单和持仓面板可展开或收起；回放控制和底部状态常驻。桌面和手机分别保存图表高度。</p>
+        <div className="workspace-panel-toggles">{([['account', '账户摘要'], ['order', '下单面板'], ['dock', '持仓与复盘']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={layout.panels[key]} onChange={event => setPanel(key, event.target.checked)} />{label}</label>)}</div>
         <label className="panel-field">持仓面板高度 · {layout.dockHeight}px<input type="range" min={160} max={480} step={10} aria-label="持仓面板高度" value={layout.dockHeight} onChange={event => updateLayout(current => ({ ...current, dockHeight: Number(event.target.value) }))} /></label>
-        <div className="button-row"><button type="button" onClick={() => { setFocusMode(false); updateLayout(current => ({ ...current, panels: { account: true, order: true, dock: true, replay: true, status: true } })) }}>显示全部面板</button><button type="button" onClick={() => { setFocusMode(false); updateLayout(() => structuredClone(DEFAULT_WORKSPACE_PREFERENCES)) }}>恢复默认布局</button></div>
+        <div className="button-row"><button type="button" onClick={() => { setFocusMode(false); updateLayout(current => ({ ...current, panels: { ...current.panels, account: true, order: true, dock: true } })) }}>显示全部面板</button><button type="button" onClick={() => { setFocusMode(false); updateLayout(() => structuredClone(DEFAULT_WORKSPACE_PREFERENCES)) }}>恢复默认布局</button></div>
         <button type="button" className="dialog-done" onClick={() => { setWorkspaceMenu(false); setChartSizeOpen(true) }}>调整图表与指标高度</button>
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
       </WorkspaceDialog>

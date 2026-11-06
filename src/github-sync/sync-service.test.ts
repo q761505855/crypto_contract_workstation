@@ -72,7 +72,7 @@ function backup(): BackupEnvelope {
     pinnedPeriods: ['1m', '1d'],
     workspace: {
       schemaVersion: 1,
-      panels: { account: false, order: true, dock: false, replay: false, status: true },
+      panels: { account: false, order: true, dock: false, replay: false, status: false },
       chartHeight: 820, mobileChartHeight: null, dockHeight: 260,
     },
     selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },

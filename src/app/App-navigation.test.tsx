@@ -89,7 +89,7 @@ describe('App locate latest navigation', () => {
 
 describe('workspace panel collapse controls', () => {
   it.each([
-    ['下单面板', 'order'], ['持仓面板', 'dock'], ['回放控制', 'replay'], ['底部状态', 'status'],
+    ['下单面板', 'order'], ['持仓面板', 'dock'],
   ] as const)('retains an inline expand control after collapsing %s', (label, key) => {
     localStorage.clear()
     render(<App />)
@@ -103,6 +103,24 @@ describe('workspace panel collapse controls', () => {
     fireEvent.click(expand)
     expect(screen.getByRole('button', { name: `收起${label}` })).toHaveAttribute('aria-expanded', 'true')
     expect(JSON.parse(localStorage.getItem('workspace.layout.v1')!).panels[key]).toBe(true)
+  })
+
+  it.each(['history', 'live'] as const)('keeps replay and status visible in %s while preserving legacy archive flags', mode => {
+    const layout = { schemaVersion: 1, panels: { account: false, order: true, dock: false, replay: false, status: false }, chartHeight: null, mobileChartHeight: null, dockHeight: 220 }
+    localStorage.setItem('workspace.layout.v1', JSON.stringify(layout))
+    render(<App />)
+    if (mode === 'live') fireEvent.click(screen.getByRole('button', { name: '实时行情' }))
+    expect(screen.getByRole('button', { name: '定位最新' })).toBeVisible()
+    expect(screen.getByRole('contentinfo')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /(?:展开|收起)(?:回放控制|底部状态)/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '工作区' }))
+    expect(screen.queryByRole('checkbox', { name: '回放控制' })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: '底部状态' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '关闭工作区面板' }))
+    fireEvent.click(screen.getByRole('button', { name: '专注看图' }))
+    expect(screen.getByRole('button', { name: '定位最新' })).toBeVisible()
+    expect(screen.getByRole('contentinfo')).toBeVisible()
+    expect(JSON.parse(localStorage.getItem('workspace.layout.v1')!)).toEqual(layout)
   })
 
   it('expands the account summary again without opening workspace settings', () => {
