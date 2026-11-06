@@ -28,6 +28,34 @@ function fixture() {
 }
 
 describe('history storage UI', () => {
+  it('refreshes restored preferences without losing an in-flight cloud operation or its selections', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { runtime, service } = fixture()
+    let finishPull!: (result: { files: number; bytes: number }) => void
+    Object.assign(runtime.githubSync, { pull: vi.fn(() => new Promise(resolve => { finishPull = resolve })) })
+    const props = { open: true, runtime, selection: { symbol: toSymbolInfo(symbol), period: { text: '5m', multiplier: 5, timespan: 'minute' as const } }, onApplySelection: () => undefined, onClose: () => undefined }
+    const { rerender } = render(<DataManager {...props} />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /^历史行情$/ }))
+    fireEvent.click(screen.getByTestId('github-pull'))
+    expect(screen.getByTestId('github-pull')).toBeDisabled()
+    vi.spyOn(service, 'getBaseUrl').mockReturnValue('https://restored.example.test')
+    const previousFavorites = localStorage.getItem('marketData.favoriteSymbols')
+    try {
+      localStorage.setItem('marketData.favoriteSymbols', '["BTCUSDT"]')
+      rerender(<DataManager {...props} configurationRevision={1} />)
+      expect(screen.getByRole('button', { name: /^取消收藏$/ })).toBeVisible()
+      expect(screen.getByDisplayValue('https://restored.example.test')).toBeVisible()
+      expect(screen.getByRole('checkbox', { name: /^历史行情$/ })).not.toBeChecked()
+      expect(screen.getByTestId('github-pull')).toBeDisabled()
+      await act(async () => finishPull({ files: 2, bytes: 494 }))
+      await waitFor(() => expect(screen.getByTestId('backup-status')).toHaveTextContent('云端恢复完成：2 个文件'))
+      expect(screen.getByTestId('github-pull')).toBeEnabled()
+    } finally {
+      if (previousFavorites === null) localStorage.removeItem('marketData.favoriteSymbols')
+      else localStorage.setItem('marketData.favoriteSymbols', previousFavorites)
+    }
+  })
+
   it('keeps pending cloud uploads visible outside the drawer until successful retry', () => {
     vi.useFakeTimers()
     let pending = 0

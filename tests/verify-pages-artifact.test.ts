@@ -44,11 +44,16 @@ async function createArtifact(
   return rootDirectory
 }
 
-function runVerifier(rootDirectory: string, embeddedToken = '') {
-  return execFile(process.execPath, [verifierPath], { cwd: rootDirectory, env: {...process.env, VITE_GITHUB_TOKEN:embeddedToken} })
+function runVerifier(rootDirectory: string, embeddedToken = '', testProbe = false) {
+  return execFile(process.execPath, [verifierPath], { cwd: rootDirectory, env: {...process.env, VITE_GITHUB_TOKEN:embeddedToken, E2E_CHART_PROBE:testProbe ? '1' : ''} })
 }
 
 describe('verify:pages', () => {
+  it('permits instrumentation only in the isolated smoke-test artifact', async () => {
+    const root = await createArtifact('<script src="/crypto_contract_workstation/assets/index.js"></script>', 'window.__viewportTestAdapter = {}')
+    await expect(runVerifier(root)).rejects.toThrow(/Browser-test instrumentation/)
+    await expect(runVerifier(root, '', true)).resolves.toBeDefined()
+  })
   it('allows only the explicitly configured embedded cloud token and rejects other secret values', async () => {
     const allowed = 'ghp_test_cloud_credential_123456789'
     const root = await createArtifact('<script src="/crypto_contract_workstation/assets/index.js"></script>', `const auth="${allowed}"`)

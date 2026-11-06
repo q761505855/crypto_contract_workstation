@@ -24,6 +24,7 @@ import { BackupSyncPanel } from './BackupSyncPanel'
 import { RequestProtection } from './RequestProtection'
 
 interface DataManagerProps {
+  configurationRevision?: number
   open: boolean
   runtime: MarketDataRuntime
   selection: MarketSelection
@@ -80,6 +81,7 @@ function CacheSummary({
 }
 
 export function DataManager({
+  configurationRevision = 0,
   open,
   runtime,
   selection,
@@ -149,6 +151,7 @@ export function DataManager({
     setSymbolText(selection.symbol.ticker)
     setTimeframe(selection.period.text)
     setFavorites(readFavoriteSymbols())
+    setBaseUrl(runtime.service.getBaseUrl())
     setError('')
     void runtime.service
       .getSymbols()
@@ -159,7 +162,7 @@ export function DataManager({
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : String(reason))
       })
-  }, [open, runtime, selection.period.text, selection.symbol.ticker])
+  }, [open, runtime, selection.period.text, selection.symbol.ticker, configurationRevision])
 
   useEffect(() => {
     if (!open) return

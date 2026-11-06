@@ -180,8 +180,10 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       const symbol = readSelectedSymbol()
       if (replaySessionRef.current !== null) deferredCloudSymbolRef.current = symbol
       else setMarketSelection(current => ({ ...current, symbol: symbol ?? current.symbol }))
-      void marketRuntime.backups.exportPreferences().then(value => marketRuntime.service.setBaseUrl(value.data.preferences!.binanceRestBaseUrl))
-      setConfigEpoch(current => current + 1)
+      void marketRuntime.backups.exportPreferences().then(value => {
+        marketRuntime.service.setBaseUrl(value.data.preferences!.binanceRestBaseUrl)
+        setConfigEpoch(current => current + 1)
+      })
     }
     window.addEventListener(PREFERENCES_RESTORED, restored)
     return () => window.removeEventListener(PREFERENCES_RESTORED, restored)
@@ -471,7 +473,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         <button type="button" className="dialog-done" onClick={() => { setWorkspaceMenu(false); setChartSizeOpen(true) }}>调整图表与指标高度</button>
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
       </WorkspaceDialog>
-      <DataManager key={configEpoch} onApplySelection={applyMarketSelection} onClose={() => setDataManagerOpen(false)} open={dataManagerOpen} runtime={marketRuntime} selection={marketSelection} />
+      <DataManager configurationRevision={configEpoch} onApplySelection={applyMarketSelection} onClose={() => setDataManagerOpen(false)} open={dataManagerOpen} runtime={marketRuntime} selection={marketSelection} />
     </main>
   )
 }

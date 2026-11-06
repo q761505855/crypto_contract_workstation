@@ -499,6 +499,17 @@ async function jumpChart(page: import('@playwright/test').Page, value: string) {
   const dialog = page.getByRole('dialog', { name: '图表时间定位', exact: true })
   await dialog.getByLabel('图表跳转时间').fill(value)
   await dialog.getByRole('button', { name: '跳转', exact: true }).click()
+  // Cold jumps commit a complete minute month. The persistent viewport time is
+  // the completion signal; background upload warnings can replace footer text.
+  const start = page.locator('.replay-start-time')
+  if (await start.count()) {
+    const period = (await page.getByRole('button', { name: '图表周期', exact: true }).innerText()).trim().split(/\s/)[0]
+    const timestamp = await page.evaluate(value => new Date(value).getTime(), value)
+    const expected = await page.evaluate(time => new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium', hour12: false }).format(time), alignOpenTime(timestamp, period, 'floor'))
+    await expect(start).toHaveText(`起点：${expected}`, { timeout: 60_000 })
+  } else {
+    await expect(page.locator('.status-footer')).toContainText('图表已跳转到', { timeout: 60_000 })
+  }
 }
 
 async function setReplayEnd(page: import('@playwright/test').Page, value: string) {
@@ -829,7 +840,7 @@ async function expectCanvasContent(page: import('@playwright/test').Page) {
   const canvases = page.getByTestId('chart-host').locator('canvas')
   await expect.poll(() => canvases.count()).toBeGreaterThan(0)
   // Grid pixels appear before archive validation and IndexedDB writes finish.
-  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden({ timeout: 60_000 })
   await expect
     .poll(() =>
       canvases.evaluateAll((elements) =>
@@ -1296,7 +1307,9 @@ test('preserves the inspected time across periods and locates the latest live ca
 })
 
 test('prepares only next month when creating and restoring a long replay and rolls the buffer forward', async ({ page }) => {
-  test.setTimeout(180_000)
+  // This case commits several complete minute months through native IndexedDB.
+  // Keep the request-window assertions strict while budgeting for disk I/O.
+  test.setTimeout(300_000)
   const now = Date.UTC(2026, 10, 1, 0, 15)
   await page.clock.install({ time: now })
   const { archiveRequests } = await mockBinance(page, false, {}, { now })
@@ -1304,7 +1317,7 @@ test('prepares only next month when creating and restoring a long replay and rol
   await page.goto('./')
   await expectCanvasContent(page)
   await selectChartPeriod(page, '1d')
-  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden({ timeout: 60_000 })
   const controls = page.getByTestId('replay-controls')
   await jumpChart(page, '2026-01-31T12:00')
   const start = Date.UTC(2026, 0, 31)
@@ -1312,7 +1325,7 @@ test('prepares only next month when creating and restoring a long replay and rol
   const beforeCreate = archiveRequests.length
   await expect(controls.getByText(/起点：/)).toContainText('2026/1/31')
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
-  await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled({ timeout: 60_000 }).catch(async error => {
+  await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled({ timeout: 120_000 }).catch(async error => {
     console.log(JSON.stringify({ probe: await inspect(), requests: archiveRequests, controls: await controls.innerText() }))
     throw error
   })
@@ -1329,14 +1342,14 @@ test('prepares only next month when creating and restoring a long replay and rol
 
   const beforeStep = archiveRequests.length
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
-  await expect(controls).toContainText('2/274', { timeout: 60_000 })
+  await expect(controls).toContainText('2/274', { timeout: 120_000 })
   const stepRequests = archiveRequests.slice(beforeStep).filter(url => url.endsWith('.zip'))
   expect(stepRequests.some(url => url.includes('2026-03.zip'))).toBe(true)
   expect(laterThan(stepRequests, 202603)).toEqual([])
   await expect.poll(async () => (await inspect()).last?.timestamp).toBe(Date.UTC(2026, 1, 1))
   const beforeReload = archiveRequests.length
   await page.reload()
-  await expect(controls).toContainText('2/274', { timeout: 60_000 })
+  await expect(controls).toContainText('2/274', { timeout: 120_000 })
   await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
   expect(archiveRequests.slice(beforeReload).filter(url => url.endsWith('.zip'))).toEqual([])
   await expect(controls.getByRole('alert')).toHaveCount(0)

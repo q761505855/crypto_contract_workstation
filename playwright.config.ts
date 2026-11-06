@@ -19,8 +19,9 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173',
     port: 4173,
-    reuseExistingServer: !process.env.CI,
+    // Reusing an ordinary dev server would omit the test-only instrumentation.
+    reuseExistingServer: false,
     // Browser tests must never use a real deployment credential.
-    env: { VITE_GITHUB_TOKEN: 'e2e-mock-storage-token' },
+    env: { VITE_GITHUB_TOKEN: 'e2e-mock-storage-token', E2E_CHART_PROBE: '1' },
   },
 })

@@ -205,7 +205,7 @@ export function findLocalAssetUrls(indexHtml) {
   )
 }
 
-export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedCloudToken = '' } = {}) {
+export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedCloudToken = '', allowTestProbe = false } = {}) {
   const artifactDirectory = resolve(distDirectory)
   let files
 
@@ -226,6 +226,9 @@ export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedClou
   }
   for (const file of files) {
     const content = await readFile(file, 'utf8')
+    if (!allowTestProbe && /__enableViewportProbe|__viewportTestAdapter/.test(content)) {
+      problems.push(`Browser-test instrumentation found in ${relative(artifactDirectory, file)}`)
+    }
     // This personal application explicitly embeds its configured cloud token.
     // Exempt that exact value only; continue detecting every unrelated secret.
     const checkedContent = embeddedCloudToken.length >= 20 ? content.replaceAll(embeddedCloudToken, '') : content
@@ -305,8 +308,8 @@ export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedClou
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const env = loadEnv('production', process.cwd(), 'VITE_')
-  verifyPagesArtifact('dist', {embeddedCloudToken:env.VITE_GITHUB_TOKEN ?? ''}).then(
+  const env = loadEnv('production', process.cwd(), '')
+  verifyPagesArtifact('dist', {embeddedCloudToken:env.VITE_GITHUB_TOKEN ?? '', allowTestProbe:env.E2E_CHART_PROBE === '1'}).then(
     () => {
       console.log('GitHub Pages artifact verification passed.')
     },

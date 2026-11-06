@@ -19,8 +19,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command:
-      'npm run preview -- --host 127.0.0.1 --port 4174 --base /crypto_contract_workstation/',
+    command: 'node scripts/preview-pages-e2e.mjs',
     url: pagesUrl,
     reuseExistingServer: false,
   },
