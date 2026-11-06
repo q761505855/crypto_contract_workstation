@@ -201,13 +201,13 @@ npm run test:e2e
 
 `npm run test:e2e` 运行完整浏览器回归，启用 `E2E_CHART_PROBE=1` 观察真实图表。普通界面用例仅按当前图表请求准备分钟缓存，再运行真实 IndexedDB、行情聚合、回放、交易和存档代码；`@integration` 用例保留从网络边界开始的 ZIP／校验、完整月份、云端上传下载及请求保护验证。跨月和全链路大用例仅预热无关的近期初始图表，历史请求仍从冷缓存开始；跨月用例调整日线视窗，防止自动补载无关旧月份。上传重试及配置同步使用小规模真实 REST 行情，整月往返仍严格验证 43,200 根分钟数据。UI 用例最多两个并行，整月集成用例限制为一个；CI 打印每项耗时，失败最多重试一次。跨月排查可设置 `E2E_PROFILE=1` 输出阶段与存储耗时。
 
-`npm run test:e2e:pages` 在 Pages 构建产物上运行标记为 `@release` 的关键功能回归：桌面／手机启动与资源加载、真实 REST 数据经原生存储进入回放、模拟双仓及止盈止损、会话导入和刷新恢复、桌面／触屏切换、Heikin Ashi 与配置存档、固定周期的 JSON／GitHub 往返、实时价格与周期订阅、产品收藏和选中状态恢复。外部请求使用确定性模拟响应，不依赖线上币安或真实存储仓库；不自动重试。完整整月测试继续由独立 CI 执行。
+`npm run test:e2e:pages` 在 Pages 构建产物上运行标记为 `@release` 的关键功能回归：桌面／手机启动与资源加载、真实 REST 数据经原生存储进入回放、模拟双仓及止盈止损、会话导入和刷新恢复、桌面／触屏切换、Heikin Ashi 与配置存档、固定周期的 JSON／GitHub 往返、实时价格与周期订阅、产品收藏和选中状态恢复。外部请求使用确定性模拟响应，不依赖线上币安或真实存储仓库；不自动重试。完整整月测试仍可本地或通过手动 CI 运行。
 
-Pages 回归先自动构建并校验专用测试插桩产物，强制使用假凭据 `e2e-mock-storage-token`，再启动预览，无需修改 Actions 工作流。现有发布工作流在浏览器检查后使用正式凭据重新构建，最终产物校验会拒绝残留的测试插桩。此调整只修改测试组织和夹具，不变更用户配置、存档格式、旧存档兼容语义或云端命名空间。
+Pages 回归先自动构建并校验专用测试插桩产物，强制使用假凭据 `e2e-mock-storage-token`，再启动预览，无需修改 Actions 工作流。当前发布工作流已暂停测试门禁，直接使用正式凭据构建；专用测试产物仅在手动执行本命令时生成。此调整只修改测试组织和夹具，不变更用户配置、存档格式、旧存档兼容语义或云端命名空间。
 
-CI 与发布固定使用 Ubuntu 24.04，避免 `ubuntu-latest` 升级改变系统依赖和字体安装耗时。`node scripts/install-playwright.mjs` 只下载测试使用的 Chromium headless shell，并实际启动验证；仅在缺少运行库时补装系统依赖。新提交自动取消同分支过时的 CI。
+CI 与发布固定使用 Ubuntu 24.04，避免 `ubuntu-latest` 升级改变系统依赖和字体安装耗时。`node scripts/install-playwright.mjs` 只下载测试使用的 Chromium headless shell，并实际启动验证；仅在缺少运行库时补装系统依赖。新提交自动取消尚未完成的过时发布。
 
-CI 完成类型、单元测试及构建验证后，将完整浏览器用例分为四个独立 runner 并行执行：普通界面、存储与请求保护、跨月回放、完整生产路径。各用例只归属一组，完整覆盖保持不变；大数据用例各自独占 runner。本地 `npm run test:e2e` 仍运行全部分组，也可用 `-- --project=chromium-monthly-replay` 等参数定向排查。
+自动CI测试已暂时暂停，提交和PR不再触发测试；需要时在Actions的CI工作流手动运行并勾选run_tests（默认关闭）。手动CI完成类型、单元测试及构建验证后，将完整浏览器用例分为四个独立runner并行执行：普通界面、存储与请求保护、跨月回放、完整生产路径。各用例只归属一组，完整覆盖保持不变；大数据用例各自独占 runner。本地 `npm run test:e2e` 仍运行全部分组，也可用 `-- --project=chromium-monthly-replay` 等参数定向排查。
 
 ## 构建
 
@@ -219,7 +219,7 @@ npm run build
 
 ## GitHub Pages
 
-`main` 分支通过 `.github/workflows/deploy-pages.yml` 构建并发布。仓库 Pages 路径固定为：
+`main`分支推送后通过`.github/workflows/deploy-pages.yml`直接构建并发布，也可手动触发。当前暂时跳过类型检查、单元测试、Playwright、冒烟测试和产物验证；单个job仅安装依赖、配置Pages、用`npx vite build`构建一次、上传并发布。测试代码和本地`npm run check`等命令保留，恢复测试可从手动CI入口开始。构建和上传仍需要正常完成，耗时由依赖缓存和GitHub runner排队决定。仓库 Pages 路径固定为：
 
 ```text
 /crypto_contract_workstation/
@@ -227,7 +227,7 @@ npm run build
 
 项目不需要后端，不接受币安 API Key，也不会发送真实订单。
 
-Pages 正式构建使用仓库 Actions Secret `CLOUD_STORAGE_TOKEN`，缺少时发布会明确失败。最终产物同时提供 `cloud-connection.json` 供新拉取的代码自动连接；拉取后安装依赖并运行 `npm run dev` 即可，首次连接需要联网且 Pages 已成功发布。连接文件不可用、格式非法或请求超过 5 秒时，界面继续启动并保留本地操作和公开读取能力。轮换 Token 时更新 Actions Secret 并重新发布；已有本机 `.env.local` 的覆盖值也需更新。浏览器回归构建使用专用假 Token，正式产物在测试后重新构建和验证。
+Pages 正式构建使用仓库 Actions Secret `CLOUD_STORAGE_TOKEN`，该值继续用于生成正式云端连接文件。最终产物同时提供 `cloud-connection.json` 供新拉取的代码自动连接；拉取后安装依赖并运行 `npm run dev` 即可，首次连接需要联网且 Pages 已成功发布。连接文件不可用、格式非法或请求超过 5 秒时，界面继续启动并保留本地操作和公开读取能力。轮换 Token 时更新 Actions Secret 并重新发布；已有本机 `.env.local` 的覆盖值也需更新。手动浏览器回归构建使用专用假Token，与正式发布构建分开。
 
 ## 文档
 

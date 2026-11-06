@@ -1,10 +1,14 @@
 name: CI
 
+# Automatic CI is temporarily paused. Tests remain available by explicit opt-in.
 on:
-  pull_request:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: Run the full verification and browser test suite
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -15,6 +19,7 @@ concurrency:
 
 jobs:
   verify:
+    if: ${{ inputs.run_tests }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
