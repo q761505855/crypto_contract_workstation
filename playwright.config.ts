@@ -3,6 +3,8 @@ import { defineConfig, devices } from '@playwright/test'
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
+  // Month-sized native IndexedDB fixtures should not compete on a CI runner.
+  workers: process.env.CI ? 1 : undefined,
   expect: { timeout: 20_000 },
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'list',

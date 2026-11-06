@@ -375,7 +375,7 @@ test('organizes the workspace, hides every extra panel and restores chart sizing
 })
 
 test('uses the redesigned desktop and touch workspace without losing chart or trade state', async ({ page }) => {
-  test.setTimeout(120_000)
+  test.setTimeout(180_000)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.setViewportSize({ width: 1440, height: 1000 })
@@ -384,10 +384,7 @@ test('uses the redesigned desktop and touch workspace without losing chart or tr
   await expectCanvasContent(page)
   const originalChart = await page.getByTestId('chart-host').elementHandle()
   const controls = page.getByTestId('replay-controls')
-  await controls.getByRole('button', { name: '时间定位', exact: true }).click()
-  const time = page.getByRole('dialog', { name: '图表时间定位' })
-  await time.getByLabel('图表跳转时间').fill('2026-07-22T00:00')
-  await time.getByRole('button', { name: '跳转', exact: true }).click()
+  await jumpChart(page, '2026-07-22T00:00')
   await expect(controls.getByText(/起点：/)).toContainText('2026/7/22')
   await controls.getByRole('button', { name: '回放设置', exact: true }).click()
   const setup = page.getByRole('dialog', { name: '回放会话设置' })
