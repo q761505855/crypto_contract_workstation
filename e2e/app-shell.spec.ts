@@ -5,9 +5,10 @@ import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
 import { fixtureMinutePrices, installArchiveFixtures } from './archive-fixtures'
 import { traceNativeRestoreWrites } from './storage-diagnostics'
 import { installViewportProbe } from './viewport-probe'
+import { installCachedMarketFixture, seedSymbolListing } from './market-fixtures'
 
-test('keeps hedged positions and their risk orders isolated through reload and session import', async ({ page }) => {
-  test.setTimeout(120_000)
+test('keeps hedged positions and their risk orders isolated through reload and session import', { tag: '@release' }, async ({ page }) => {
+  test.setTimeout(60_000)
   await mockBinance(page, true)
   await page.goto('./')
   await expectCanvasContent(page)
@@ -79,6 +80,47 @@ test.beforeEach(async ({ context }) => {
   await context.route('https://api.github.com/**', (route) =>
     route.fulfill({ status: 404, json: { message: 'Not Found' } }),
   )
+})
+
+test.describe('recent-market integration', () => {
+  test.use({ timezoneId: 'UTC' })
+
+  test('loads API candles into native storage and replays trades without a cached fixture', { tag: ['@release', '@integration'] }, async ({ page }) => {
+    const now = Date.UTC(2026, 10, 1, 0, 15)
+    await page.clock.install({ time: now })
+    const { archiveRequests } = await mockBinance(page, false, {}, { now, integration: true, onboardDate: now - 15 * 60_000 })
+    const inspect = await installViewportProbe(page)
+    const rest: string[] = []
+    page.on('request', request => {
+      if (request.url().includes('/fapi/v1/klines')) rest.push(request.url())
+    })
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    // A cached listing date keeps this integration focused on recent REST
+    // candles. No candle data is seeded; the production database upgrade runs.
+    await seedSymbolListing(page, now - 15 * 60_000)
+    await page.goto('./')
+    await expectCanvasContent(page)
+    expect(rest.length).toBeGreaterThan(0)
+    expect(rest.every(url => new URL(url).searchParams.get('interval') === '1m')).toBe(true)
+    expect(archiveRequests).toEqual([])
+    await selectChartPeriod(page, '1m')
+    await jumpChart(page, '2026-11-01T00:05')
+    await setReplayEnd(page, '2026-11-01T00:07')
+    const controls = page.getByTestId('replay-controls')
+    await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+    await expect(controls).toContainText('1/3')
+    await expect.poll(async () => (await inspect()).last?.timestamp).toBe(now - 10 * 60_000)
+    await page.getByTestId('simulation-panel').getByRole('button', { name: '开多', exact: true }).click()
+    await expect(page.getByTestId('position-long')).toBeVisible()
+    await controls.getByRole('button', { name: '下一根', exact: true }).click()
+    await expect(controls).toContainText('2/3')
+    await expect.poll(async () => (await inspect()).last?.timestamp).toBe(now - 9 * 60_000)
+    await page.reload()
+    await expect(controls).toContainText('2/3')
+    await expect(page.getByTestId('position-long')).toBeVisible()
+    expect(errors).toEqual([])
+  })
 })
 
 test('updates another open tab after configuration sync and preserves its next layout edit', async ({ page, context }) => {
@@ -220,8 +262,8 @@ test('automatically archives RSI levels and alpha colors and restores cloud conf
   await page.screenshot({ path: test.info().outputPath('automatic-cloud-restore-mobile.png'), fullPage: true })
 })
 
-test('selects Heikin Ashi from settings, retains real prices and restores the selection from a config archive', async ({ page }) => {
-  test.setTimeout(120_000)
+test('selects Heikin Ashi from settings, retains real prices and restores the selection from a config archive', { tag: '@release' }, async ({ page }) => {
+  test.setTimeout(60_000)
   await mockBinance(page, true)
   await installViewportProbe(page)
   await page.goto('./')
@@ -374,8 +416,8 @@ test('organizes the workspace, hides every extra panel and restores chart sizing
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
 })
 
-test('uses the redesigned desktop and touch workspace without losing chart or trade state', async ({ page }) => {
-  test.setTimeout(180_000)
+test('uses the redesigned desktop and touch workspace without losing chart or trade state', { tag: '@release' }, async ({ page }) => {
+  test.setTimeout(60_000)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.setViewportSize({ width: 1440, height: 1000 })
@@ -570,8 +612,9 @@ const intervalMilliseconds: Record<string, number> = {
   '1M': 30 * 86_400_000,
 }
 
-async function mockBinance(page: import('@playwright/test').Page, pacedClock = false, symbolPrices: Record<string, number> = {}, options: { trend?: boolean; now?: number } = {}) {
+async function mockBinance(page: import('@playwright/test').Page, pacedClock = false, symbolPrices: Record<string, number> = {}, options: { trend?: boolean; now?: number; integration?: boolean; onboardDate?: number } = {}) {
   if (pacedClock) await page.clock.install()
+  if (!options.integration) await installCachedMarketFixture(page, symbolPrices, options.trend)
   const archives = await installArchiveFixtures(page, symbolPrices, options)
   const liveSockets: Array<{ sendPrice(price: string, eventAt?: number): void; streams: Set<string> }> = []
   await page.routeWebSocket('wss://fstream.binance.com/**', (socket) => {
@@ -625,7 +668,7 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
               quoteAsset: 'USDT',
               contractType: 'PERPETUAL',
               status: 'TRADING',
-              onboardDate: 1_569_974_400_000,
+              onboardDate: options.onboardDate ?? 1_569_974_400_000,
               pricePrecision: 2,
               quantityPrecision: 3,
             },
@@ -635,7 +678,7 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
               quoteAsset: 'USDT',
               contractType: 'PERPETUAL',
               status: 'TRADING',
-              onboardDate: 1_569_974_400_000,
+              onboardDate: options.onboardDate ?? 1_569_974_400_000,
               pricePrecision: 2,
               quantityPrecision: 3,
             },
@@ -1210,7 +1253,7 @@ test.describe('mobile workstation', () => {
   })
 })
 
-test('round-trips pinned periods through JSON archives and cloud configuration', async ({ page }) => {
+test('round-trips pinned periods through JSON archives and cloud configuration', { tag: '@release' }, async ({ page }) => {
   await mockBinance(page, true)
   const github = await mockGitHub(page)
   await page.goto('./')
@@ -1303,22 +1346,38 @@ test('preserves the inspected time across periods and locates the latest live ca
   await page.screenshot({ path: 'test-results/viewport-live-latest.png' })
 })
 
-test('prepares only next month when creating and restoring a long replay and rolls the buffer forward', async ({ page }) => {
+test('prepares only next month when creating and restoring a long replay and rolls the buffer forward', { tag: '@integration' }, async ({ page }) => {
+  const started = Date.now()
+  const profile = async (phase: string) => {
+    if (!process.env.E2E_PROFILE) return
+    console.log(JSON.stringify({ phase, elapsedMs: Date.now() - started, storage: await page.evaluate(() =>
+      (window as unknown as { __viewportEvents: Array<{ type: string; ms?: number }> }).__viewportEvents.filter(event => event.ms !== undefined),
+    ) }))
+  }
   // This case commits several complete minute months through native IndexedDB.
   // Keep the request-window assertions strict while budgeting for disk I/O.
   test.setTimeout(300_000)
   const now = Date.UTC(2026, 10, 1, 0, 15)
   await page.clock.install({ time: now })
-  const { archiveRequests } = await mockBinance(page, false, {}, { now })
+  const { archiveRequests } = await mockBinance(page, false, {}, { now, integration: true })
+  // Warm only the unrelated initial chart; January-to-March requests stay cold.
+  await installCachedMarketFixture(page, {}, false, true)
   const inspect = await installViewportProbe(page)
+  // A wide candle spacing prevents chart auto-pagination from downloading
+  // unrelated older months merely to fill the daily chart's initial viewport.
+  await page.addInitScript(() => {
+    Object.assign(window, { __prepareChartFixture: (chart: { setBarSpace(value: number): void }) => chart.setBarSpace(50) })
+  })
   await page.goto('./')
   await expectCanvasContent(page)
-  await selectChartPeriod(page, '1d')
-  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden({ timeout: 60_000 })
+  await profile('initial chart')
   const controls = page.getByTestId('replay-controls')
   await jumpChart(page, '2026-01-31T12:00')
+  await selectChartPeriod(page, '1d')
   const start = Date.UTC(2026, 0, 31)
   await expect.poll(async () => (await inspect()).rightmost).toBe(start)
+  await profile('historical chart')
+  expect(archiveRequests.filter(url => url.endsWith('.zip')).every(url => url.includes('-2026-01.zip'))).toBe(true)
   const beforeCreate = archiveRequests.length
   await expect(controls.getByText(/起点：/)).toContainText('2026/1/31')
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
@@ -1327,6 +1386,7 @@ test('prepares only next month when creating and restoring a long replay and rol
     throw error
   })
   await expect(controls).toContainText('1/274')
+  await profile('created session')
   const createdRequests = archiveRequests.slice(beforeCreate).filter(url => url.endsWith('.zip'))
   expect(createdRequests.some(url => url.includes('2026-02.zip'))).toBe(true)
   const laterThan = (urls: string[], lastMonth: number) => urls.filter(url => {
@@ -1340,6 +1400,7 @@ test('prepares only next month when creating and restoring a long replay and rol
   const beforeStep = archiveRequests.length
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
   await expect(controls).toContainText('2/274', { timeout: 120_000 })
+  await profile('advanced month')
   const stepRequests = archiveRequests.slice(beforeStep).filter(url => url.endsWith('.zip'))
   expect(stepRequests.some(url => url.includes('2026-03.zip'))).toBe(true)
   expect(laterThan(stepRequests, 202603)).toEqual([])
@@ -1350,6 +1411,7 @@ test('prepares only next month when creating and restoring a long replay and rol
   await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
   expect(archiveRequests.slice(beforeReload).filter(url => url.endsWith('.zip'))).toEqual([])
   await expect(controls.getByRole('alert')).toHaveCount(0)
+  await profile('restored session')
 })
 
 test('observes replay across periods without future bars and locates its revealed latest minute', async ({ page }) => {
@@ -1390,7 +1452,7 @@ test('observes replay across periods without future bars and locates its reveale
   await page.screenshot({ path: 'test-results/viewport-replay-no-future.png' })
 })
 
-test('keeps the latest trade price updating through rapid live period changes', async ({ page }) => {
+test('keeps the latest trade price updating through rapid live period changes', { tag: '@release' }, async ({ page }) => {
   await page.setViewportSize({ width: 1146, height: 900 })
   const { liveSockets } = await mockBinance(page, true)
   await page.addInitScript(() => {
@@ -1434,9 +1496,11 @@ test('keeps the latest trade price updating through rapid live period changes', 
   await expect(page.locator('.status-footer')).not.toContainText('切换过于频繁')
 })
 
-test('exercises Pro chart interactions and the production path', async ({ page }) => {
+test('exercises Pro chart interactions and the production path', { tag: '@integration' }, async ({ page }) => {
   test.setTimeout(360_000)
-  const { archiveRequests } = await mockBinance(page, true)
+  const { archiveRequests } = await mockBinance(page, true, {}, { integration: true })
+  // The historical download/import checks below still use real archive paths.
+  await installCachedMarketFixture(page, {}, false, true)
   const github = await mockGitHub(page)
   const notFoundResponses: string[] = []
   const runtimeErrors: string[] = []
@@ -1946,7 +2010,7 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
   return { axis, readTicks, pricePerPixel, readTimeTicks }
 }
 
-test('restores product favorites and the selected product after reload', async ({ page }) => {
+test('restores product favorites and the selected product after reload', { tag: '@release' }, async ({ page }) => {
   await mockBinance(page, true)
   await page.goto('./')
   await expectCanvasContent(page)
@@ -1977,7 +2041,7 @@ test('restores product favorites and the selected product after reload', async (
 test('fits candles with balanced padding and toggles indicator information without hiding plots', async ({ page }) => {
   // Keep enough chart pixels for the tick-label estimate of the exact 8% padding.
   await page.setViewportSize({ width: 1440, height: 1000 })
-  await mockBinance(page)
+  await mockBinance(page, false, {}, { integration: true })
   await installArchiveFixtures(page, {}, { flat: true })
   const { axis, pricePerPixel } = await trackPriceAxis(page)
   await page.addInitScript(() => {
@@ -2847,10 +2911,10 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   expect(errors).toEqual([])
 })
 
-test('stops remote requests after HTTP 418 and keeps cached chart data usable', async ({ page }) => {
+test('stops remote requests after HTTP 418 and keeps cached chart data usable', { tag: '@integration' }, async ({ page }) => {
   await page.clock.install()
   await page.setViewportSize({ width: 1146, height: 900 })
-  await mockBinance(page)
+  await mockBinance(page, false, {}, { integration: true })
   const runtimeErrors: string[] = []
   page.on('pageerror', (error) => runtimeErrors.push(error.message))
   await page.goto('./')
@@ -2908,8 +2972,8 @@ test('stops remote requests after HTTP 418 and keeps cached chart data usable', 
   expect(runtimeErrors).toEqual([])
 })
 
-test('prevents parallel requests from another page while one page holds the request lock', async ({ page }) => {
-  await mockBinance(page)
+test('prevents parallel requests from another page while one page holds the request lock', { tag: '@integration' }, async ({ page }) => {
+  await mockBinance(page, false, {}, { integration: true })
   let release!: () => void
   let started!: () => void
   const gate = new Promise<void>((resolve) => { release = resolve })

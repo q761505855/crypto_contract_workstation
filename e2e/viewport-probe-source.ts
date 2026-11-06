@@ -12,8 +12,10 @@ if (window.__enableViewportProbe) {
   };
   ProChartAdapter.prototype.mount = function(options) {
     window.__viewportEvents = [];
+    window.__prepareMarketFixture?.(options.datafeed.service);
     probeMount.call(this, options); window.__viewportTestAdapter = this;
     const core = this.coreChart, adapter = this, events = window.__viewportEvents;
+    window.__prepareChartFixture?.(core);
     for (const [owner, name] of [[this.datafeed.service,'loadCachedCandles'],[this.datafeed.service,'loadReplayCandles'],[this.datafeed.service?.store,'getCandles'],[this.datafeed.service?.store,'putCandles']]) {
       if (!owner || typeof owner[name] !== 'function') continue;
       const original=owner[name]; owner[name]=async function(...args){const started=performance.now();events.push({type:name+'-start',seq:adapter.reloadSequence,period:args[2],from:args[3],to:args[4]});try{const result=await original.apply(this,args);events.push({type:name+'-end',seq:adapter.reloadSequence,count:result?.length,ms:Math.round(performance.now()-started)});return result;}catch(error){events.push({type:name+'-error',error:String(error)});throw error;}};

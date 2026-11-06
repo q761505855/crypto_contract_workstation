@@ -4,7 +4,7 @@ import { verifyPagesArtifact } from './verify-pages-artifact.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const vite = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url))
-const env = { ...process.env, E2E_CHART_PROBE: '0', VITE_BASE_PATH: '/crypto_contract_workstation/', VITE_GITHUB_TOKEN: 'e2e-mock-storage-token' }
+const env = { ...process.env, E2E_CHART_PROBE: '1', VITE_BASE_PATH: '/crypto_contract_workstation/', VITE_GITHUB_TOKEN: 'e2e-mock-storage-token' }
 
 async function runVite(args) {
   const child = spawn(process.execPath, [vite, ...args], { cwd: root, env, stdio: 'inherit' })
@@ -32,5 +32,5 @@ async function runVite(args) {
 // Build a credential-isolated test artifact without requiring workflow changes.
 // The existing deployment workflow rebuilds the production artifact after tests.
 await runVite(['build'])
-await verifyPagesArtifact(fileURLToPath(new URL('../dist/', import.meta.url)))
+await verifyPagesArtifact(fileURLToPath(new URL('../dist/', import.meta.url)), { allowTestProbe: true })
 await runVite(['preview', '--host', '127.0.0.1', '--port', '4174', '--base', env.VITE_BASE_PATH, '--strictPort'])

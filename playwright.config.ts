@@ -2,12 +2,11 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: false,
-  // Month-sized native IndexedDB fixtures should not compete on a CI runner.
-  workers: process.env.CI ? 1 : undefined,
+  workers: 2,
   expect: { timeout: 20_000 },
-  retries: process.env.CI ? 2 : 0,
-  reporter: process.env.CI ? 'github' : 'list',
+  retries: process.env.CI ? 1 : 0,
+  // Keep individual durations visible so regressions are identifiable in CI.
+  reporter: process.env.CI ? [['github'], ['list']] : 'list',
   use: {
     baseURL: 'http://127.0.0.1:4173',
     trace: 'on-first-retry',
@@ -15,6 +14,15 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      grepInvert: /@integration/,
+      fullyParallel: true,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'chromium-integration',
+      grep: /@integration/,
+      fullyParallel: false,
+      workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

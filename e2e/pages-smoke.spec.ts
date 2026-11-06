@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-  test(`boots the published site and opens its controls at ${viewport.width}px`, async ({ page, baseURL }) => {
+  test(`boots the published site and opens its controls at ${viewport.width}px`, { tag: '@release' }, async ({ page, baseURL }) => {
     await page.setViewportSize(viewport)
     const errors: string[] = []
     const failedAssets: string[] = []

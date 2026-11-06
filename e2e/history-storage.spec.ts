@@ -4,6 +4,7 @@ import { gunzipSync } from 'node:zlib'
 import { installArchiveFixtures } from './archive-fixtures'
 import { traceNativeRestoreWrites } from './storage-diagnostics'
 import { writeFile } from 'node:fs/promises'
+import { installCachedMarketFixture, seedSymbolListing } from './market-fixtures'
 
 const project = 'projects/crypto-contract-workstation'
 const repoApi = '/repos/q761505855/personal-cloud-storage'
@@ -112,7 +113,7 @@ async function mockCloud(page: Page, failWrites = false) {
   return {current,writes,requests,foreignPath,foreignBytes,setWriteFailure:(failed:boolean)=>{failWrites=failed}}
 }
 
-async function start(page: Page, failWrites = false) {
+async function start(page: Page, failWrites = false, fullMonth = false) {
   await page.clock.install({time:clockTime})
   const archives = await installArchiveFixtures(page, {}, {now:clockTime})
   const cloud = await mockCloud(page, failWrites)
@@ -121,7 +122,7 @@ async function start(page: Page, failWrites = false) {
     const url = new URL(route.request().url())
     await page.clock.fastForward(7_000)
     if (url.pathname.endsWith('/exchangeInfo')) {
-      await route.fulfill({json:{symbols:[{symbol:'BTCUSDT',baseAsset:'BTC',quoteAsset:'USDT',contractType:'PERPETUAL',status:'TRADING',onboardDate:Date.UTC(2019,9,2),pricePrecision:2,quantityPrecision:3}]}}); return
+      await route.fulfill({json:{symbols:[{symbol:'BTCUSDT',baseAsset:'BTC',quoteAsset:'USDT',contractType:'PERPETUAL',status:'TRADING',onboardDate:fullMonth?Date.UTC(2019,9,2):Date.UTC(2025,10,1),pricePrecision:2,quantityPrecision:3}]}}); return
     }
     restRequests.push(url.toString())
     const from = Number(url.searchParams.get('startTime'))
@@ -133,29 +134,37 @@ async function start(page: Page, failWrites = false) {
     await route.fulfill({json:rows})
   })
   await page.routeWebSocket('wss://fstream.binance.com/**', () => {})
+  if (fullMonth) {
+    // Only warm the unrelated current chart. September remains a complete,
+    // cold archive upload/download and native IndexedDB round-trip below.
+    await installCachedMarketFixture(page, {}, false, true)
+  } else {
+    // Upload retry/configuration cases need a real upload, not a 43k-row month.
+    await seedSymbolListing(page, Date.UTC(2025, 10, 1))
+  }
   await page.goto('./')
   await expect(page.getByRole('button', {name:'创建回放',exact:true})).toBeEnabled({timeout:30_000})
   return {archives,cloud,restRequests}
 }
 
-test('keeps failed background uploads visible outside data management and retries them', async ({page}) => {
+test('keeps failed background uploads visible outside data management and retries them', { tag: '@integration' }, async ({page}) => {
   const {cloud} = await start(page, true)
   const status = page.getByTestId('history-upload-status')
   await expect(status).toContainText('已缓存，云端待上传：')
   await expect(page.getByTestId('data-manager')).not.toBeVisible()
-  expect(cloud.current().has(`${project}/data/market-history/BTCUSDT/1m/2025/10.json.gz`)).toBe(false)
+  expect(cloud.current().has(`${project}/data/market-history/BTCUSDT/1m/2025/11.json.gz`)).toBe(false)
   await status.click()
   const drawer = page.getByTestId('data-manager')
   await expect(drawer).toBeVisible()
   cloud.setWriteFailure(false)
   await drawer.getByRole('button',{name:'重试待上传',exact:true}).click()
   await expect(status).not.toBeVisible({timeout:30_000})
-  expect(cloud.current().has(`${project}/data/market-history/BTCUSDT/1m/2025/10.json.gz`)).toBe(true)
+  expect(cloud.current().has(`${project}/data/market-history/BTCUSDT/1m/2025/11.json.gz`)).toBe(true)
   expect(cloud.current().get(cloud.foreignPath)!.bytes.equals(cloud.foreignBytes)).toBe(true)
 })
 
-test('prepares full minute months, automatically uploads and reads cloud without touching other projects', async ({page}) => {
-  const {archives,cloud,restRequests} = await start(page)
+test('prepares full minute months, automatically uploads and reads cloud without touching other projects', { tag: '@integration' }, async ({page}) => {
+  const {archives,cloud,restRequests} = await start(page, false, true)
   page.on('dialog', dialog => dialog.accept())
   await page.getByRole('button',{name:'图表周期',exact:true}).click()
   await page.getByRole('button',{name:'选择周期 5m',exact:true}).click()
@@ -226,7 +235,7 @@ test('prepares full minute months, automatically uploads and reads cloud without
   expect(restRequests.length).toBe(beforeCreateRest)
 })
 
-test('round-trips user configuration using the default connection without entering git information', async ({page}) => {
+test('round-trips user configuration using the default connection without entering git information', { tag: '@integration' }, async ({page}) => {
   const {cloud} = await start(page)
   page.on('dialog', dialog => dialog.accept())
   await page.getByTestId('open-data-manager').click()
@@ -234,7 +243,7 @@ test('round-trips user configuration using the default connection without enteri
   await drawer.getByRole('button',{name:'收藏',exact:true}).click()
   await drawer.getByLabel('会话与交易',{exact:true}).uncheck()
   await drawer.getByLabel('历史行情',{exact:true}).uncheck()
-  await expect.poll(() => cloud.current().has(`${project}/data/market-history/BTCUSDT/1m/2025/10.json.gz`)).toBe(true)
+  await expect.poll(() => cloud.current().has(`${project}/data/market-history/BTCUSDT/1m/2025/11.json.gz`)).toBe(true)
   await drawer.getByTestId('github-upload').click()
   await expect(drawer.getByText(/上传完成：/)).toBeVisible({timeout:30_000})
   const config = cloud.current().get(`${project}/config/preferences.json`)
