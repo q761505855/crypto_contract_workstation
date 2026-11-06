@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
+import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
 import {
   CHART_INDICATORS_PREFERENCE,
   type ChartIndicatorPreferences,
@@ -124,6 +125,8 @@ function indicatorPreferences(): ChartIndicatorPreferences {
         visible: true,
         styles: { lines: [{ color: '#f00' }] },
       },
+      { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
+      { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
     ],
     sub: [
       {
@@ -135,6 +138,10 @@ function indicatorPreferences(): ChartIndicatorPreferences {
             visible: true,
             styles: null,
           },
+          { name: 'TTM_SQUEEZE', calcParams: [14, 2.5, 1.25], visible: true, styles: { bars: [{ noChangeColor: '#abcdef', borderSize: 0 }] } },
+          { name: 'TTM_WAVE_A', calcParams: [5, 21, 34], visible: false, styles: { bars: [{ noChangeColor: '#123456', positiveColor: '#12ab34', negativeColor: '#ed1234', borderSize: 0 }, { positiveColor: '#34ab56', negativeColor: '#ed5678' }] } },
+          { name: 'TTM_WAVE_B', calcParams: [5, 55, 89], visible: true, styles: null },
+          { name: 'TTM_WAVE_C', calcParams: [5, 144, 233], visible: true, styles: null },
         ],
       },
     ],
@@ -142,6 +149,45 @@ function indicatorPreferences(): ChartIndicatorPreferences {
 }
 
 describe('WorkstationBackupService', () => {
+  it('round-trips indicator configuration-only archives and preserves legacy missing versus explicit empty', async () => {
+    const sourceStorage = new MemoryPreferences()
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(indicatorPreferences()))
+    const source = new WorkstationBackupService(`indicator-source-${crypto.randomUUID()}`, sourceStorage)
+    const targetStorage = new MemoryPreferences()
+    const target = new WorkstationBackupService(`indicator-target-${crypto.randomUUID()}`, targetStorage)
+    const archive = await source.exportPreferences()
+    await target.import(archive)
+    expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
+    delete archive.data.preferences!.chartIndicators
+    await target.import(archive)
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicatorPreferences())
+    archive.data.preferences!.chartIndicators = indicatorPreferences()
+    archive.data.preferences!.chartIndicators.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
+    await target.import(archive)
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'PIVOTS')!.calcParams.slice(30))
+      .toEqual(['#fb8c00', '#ef5350', '#26a69a', true, '#445566', '#aa7777', '#77aa77'])
+    archive.data.preferences!.chartIndicators = { schemaVersion: 1, main: [], sub: [] }
+    await target.import(archive)
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
+  })
+
+  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
+    const storage = new MemoryPreferences()
+    storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
+    const databaseName = `bad-indicator-${crypto.randomUUID()}`
+    const service = new WorkstationBackupService(databaseName, storage)
+    const archive = await service.exportAll()
+    archive.data.symbols = [symbol()]
+    archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    archive.data.preferences!.chartIndicators = {
+      schemaVersion: 1, main: [{ name, calcParams: [0, 2, 14], visible: true, styles: null }], sub: [],
+    }
+    await expect(service.import(archive)).rejects.toThrow(/calcParams/)
+    expect(storage.getItem('marketData.binanceBaseUrl')).toBe('https://original.test')
+    expect(storage.getItem(CHART_INDICATORS_PREFERENCE)).toBeNull()
+    expect(await new IndexedDbMarketDataStore(databaseName).getSymbols()).toEqual([])
+  })
+
   it('round-trips all local data into a different browser database', async () => {
     const sourceName = `backup-source-${crypto.randomUUID()}`
     const targetName = `backup-target-${crypto.randomUUID()}`

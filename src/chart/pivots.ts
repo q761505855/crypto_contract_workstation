@@ -11,10 +11,17 @@ export type PivotType = typeof PIVOT_TYPES[number]
 export type PivotAnchor = Exclude<typeof PIVOT_ANCHORS[number], 'Auto'>
 export type PivotLevel = typeof PIVOT_LEVELS[number]
 export type PivotLevels = Partial<Record<PivotLevel, number>>
+export type PivotColors = Record<'P' | 'R' | 'S', string>
+export const PIVOT_COLORS: PivotColors = { P: '#fb8c00', R: '#ef5350', S: '#26a69a' }
+export const PREVIOUS_PIVOT_COLORS: PivotColors = { P: '#a78bfa', R: '#f59e0b', S: '#38bdf8' }
+
+export function pivotGroup(level: PivotLevel): keyof PivotColors { return level[0] as keyof PivotColors }
 
 export const PIVOTS_DEFAULT_PARAMS = [
   'Traditional', 'Auto', 15, true, true, true, 'Left', 1,
   ...PIVOT_LEVELS.flatMap(() => [true, '#fb8c00']),
+  PIVOT_COLORS.P, PIVOT_COLORS.R, PIVOT_COLORS.S, false,
+  PREVIOUS_PIVOT_COLORS.P, PREVIOUS_PIVOT_COLORS.R, PREVIOUS_PIVOT_COLORS.S,
 ]
 
 export interface PivotSettings {
@@ -26,7 +33,30 @@ export interface PivotSettings {
   prices: boolean
   labelPosition: 'Left' | 'Right'
   width: number
+  showPrevious: boolean
+  previousColors: PivotColors
   levels: Record<PivotLevel, { visible: boolean; color: string }>
+}
+
+/** Preserve legacy switches and hidden colors; collapse legacy colors via P/R1/S1. */
+export function validatePivotParams(params: unknown[], previous?: unknown[]): (string | number | boolean)[] {
+  const fail = () => { throw new Error('PIVOTS.calcParams 无效') }
+  const color = (value: unknown) => typeof value === 'string' && /^#[\da-f]{6}$/i.test(value)
+  if (params.length !== 30 && params.length !== 37) fail()
+  if (!PIVOT_TYPES.includes(params[0] as PivotType) || !PIVOT_ANCHORS.includes(params[1] as PivotSettings['anchor']) ||
+      !Number.isInteger(params[2]) || Number(params[2]) < 1 || Number(params[2]) > 200 ||
+      !Number.isInteger(params[7]) || Number(params[7]) < 1 || Number(params[7]) > 100 ||
+      !['Left', 'Right'].includes(params[6] as string) || [3, 4, 5].some(i => typeof params[i] !== 'boolean') ||
+      PIVOT_LEVELS.some((_, i) => typeof params[8 + i * 2] !== 'boolean' || !color(params[9 + i * 2]))) fail()
+  if (params.length === 37 && (typeof params[33] !== 'boolean' || [30, 31, 32, 34, 35, 36].some(i => !color(params[i])))) fail()
+  const result = [...params] as (string | number | boolean)[]
+  if (result.length === 30) {
+    result.push(...(['P', 'R', 'S'] as const).map((group, i) =>
+      params[9 + i * 2] === '#fb8c00' ? PIVOT_COLORS[group] : params[9 + i * 2] as string),
+    ...(previous?.length === 37 ? validatePivotParams(previous).slice(33) :
+      [false, PREVIOUS_PIVOT_COLORS.P, PREVIOUS_PIVOT_COLORS.R, PREVIOUS_PIVOT_COLORS.S]))
+  }
+  return result
 }
 
 function boundedInteger(value: unknown, fallback: number, max: number): number {
@@ -43,11 +73,17 @@ export function pivotSettings(params: unknown[] = PIVOTS_DEFAULT_PARAMS): PivotS
     prices: params[5] !== false,
     labelPosition: params[6] === 'Right' ? 'Right' : 'Left',
     width: boundedInteger(params[7], 1, 100),
+    showPrevious: params[33] === true,
+    previousColors: Object.fromEntries((['P', 'R', 'S'] as const).map((group, i) => [group,
+      typeof params[34 + i] === 'string' && /^#[\da-f]{6}$/i.test(params[34 + i] as string) ? params[34 + i] : PREVIOUS_PIVOT_COLORS[group],
+    ])) as PivotColors,
     levels: Object.fromEntries(PIVOT_LEVELS.map((level, index) => {
-      const color = params[9 + index * 2]
+      const group = pivotGroup(level)
+      const groupIndex = ['P', 'R', 'S'].indexOf(group)
+      const color = params[30 + groupIndex] ?? params[9 + groupIndex * 2]
       return [level, {
         visible: params[8 + index * 2] !== false,
-        color: typeof color === 'string' && /^#[\da-f]{6}$/i.test(color) ? color : '#fb8c00',
+        color: typeof color === 'string' && /^#[\da-f]{6}$/i.test(color) ? color : PIVOT_COLORS[group],
       }]
     })) as PivotSettings['levels'],
   }
@@ -125,8 +161,9 @@ export interface PivotSegment {
   start: number
   end: number
   levels: PivotLevels
+  previous?: PivotLevels
 }
-export type PivotValue = PivotLevels & {
+export type PivotValue = PivotLevels & Partial<Record<`previous${PivotLevel}`, number>> & {
   segment?: PivotSegment
   projection?: PivotSegment
   message?: string
@@ -198,16 +235,34 @@ export function calculatePivots(
   if (settings.type !== 'Woodie' && completed?.complete && lastEnd <= confirmedUntil && lastEnd === shiftPivotPeriod(lastStart, anchor, 1)) {
     projection = { start: lastEnd, end: shiftPivotPeriod(lastEnd, anchor, 1), levels: filterLevels(calculatePivotLevels(settings.type, completed, 0)) }
   }
+  // Extend only the immediately preceding period's already-known levels into the
+  // current period. These use one more completed source bucket, never current HLC.
+  if (settings.showPrevious) {
+    const target = projection ?? segments.get(lastStart)
+    if (target) {
+      const older = grouped.get(shiftPivotPeriod(target.start, anchor, -2))
+      const previousOpen = grouped.get(shiftPivotPeriod(target.start, anchor, -1))
+      if (older?.complete && (settings.type !== 'Woodie' || previousOpen)) {
+        target.previous = filterLevels(calculatePivotLevels(settings.type, older, previousOpen?.open ?? 0))
+      }
+    }
+  }
   const levelCount = Math.max(1, Object.keys(calculatePivotLevels(settings.type, { open: 1, high: 2, low: 1, close: 1.5 }, 1)).filter((key) => settings.levels[key as PivotLevel].visible).length)
-  const limit = Math.min(settings.history, Math.floor(500 / levelCount))
+  const limit = Math.min(settings.history, Math.floor(500 / levelCount) - (settings.showPrevious ? 1 : 0))
   const retainCount = Math.max(0, limit - (projection ? 1 : 0))
   const retained = new Set(retainCount > 0 ? [...segments.keys()].slice(-retainCount) : [])
   const result: PivotValue[] = candles.map((candle) => {
     const start = pivotPeriodStart(candle.timestamp, anchor)
     const segment = segments.get(start)
-    return segment && retained.has(start) ? { ...segment.levels, segment } : {}
+    return segment && retained.has(start) ? {
+      ...segment.levels, segment,
+      ...Object.fromEntries(Object.entries(segment.previous ?? {}).map(([key, value]) => [`previous${key}`, value])),
+    } : {}
   })
-  if (projection) result.at(-1)!.projection = projection
+  if (projection) {
+    result.at(-1)!.projection = projection
+    Object.assign(result.at(-1)!, Object.fromEntries(Object.entries(projection.previous ?? {}).map(([key, value]) => [`previous${key}`, value])))
+  }
   if (segments.size === 0 && !projection) result.at(-1)!.message = '历史不足或有缺口：需上一完整枢轴周期的数据'
   return result
 }

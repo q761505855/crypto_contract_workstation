@@ -1700,8 +1700,328 @@ test('adds Supertrend to the main chart and restores its parameters after reload
   expect(errors).toEqual([])
 })
 
-test('renders standard pivot levels and persists type, timeframe, labels and level settings', async ({ page }) => {
+test('renders KC and TTM Squeeze, edits parameters, and restores archived configuration', async ({ page }) => {
+  test.setTimeout(120_000)
   await mockBinance(page, true)
+  const github = await mockGitHub(page)
+  await page.addInitScript(() => {
+    const gears: Record<string, { x: number; y: number }> = {}
+    const colors: string[] = []
+    Object.assign(window, { volatilityGears: gears, volatilityColors: colors })
+    let title = ''
+    const originalText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
+      if (/^(KC|TTM Squeeze)/.test(text)) title = text.startsWith('KC') ? 'KC' : 'TTM_SQUEEZE'
+      else if (/^(MA|VOL|MACD)\(/.test(text)) title = ''
+      if (text === '\ue902' && title) {
+        const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        gears[title] = { x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio }
+      }
+      return Reflect.apply(originalText, this, [text, x, y, ...args])
+    }
+    const originalFill = CanvasRenderingContext2D.prototype.fill
+    CanvasRenderingContext2D.prototype.fill = function (...args: unknown[]) {
+      if (['#00bcd4', '#2962ff', '#ef5350', '#ffca28', '#26a69a', '#00cc88'].includes(String(this.fillStyle))) {
+        if (!colors.includes(String(this.fillStyle))) colors.push(String(this.fillStyle))
+      }
+      return Reflect.apply(originalFill, this, args)
+    }
+  })
+  await installViewportProbe(page)
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const row = (label: string) => page.locator('.klinecharts-pro-indicator-modal-list li.row').filter({ hasText: label })
+  const closeModal = () => page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await page.getByText('指标', { exact: true }).click()
+  await expect(row('KC(肯特纳通道)')).toHaveCount(1)
+  await row('KC(肯特纳通道)').click({ position: { x: 5, y: 20 } })
+  await row('TTM Squeeze(挤压指标)').click({ position: { x: 5, y: 20 } })
+  await closeModal()
+  const readPreferences = () => page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1') ?? 'null'))
+  await expect.poll(readPreferences).toMatchObject({
+    main: expect.arrayContaining([expect.objectContaining({ name: 'KC', calcParams: [20, 1.5, 20] })]),
+    sub: expect.arrayContaining([expect.objectContaining({ indicators: [expect.objectContaining({ name: 'TTM_SQUEEZE', calcParams: [20, 2, 1.5] })] })]),
+  })
+  // Inspect actual chart results and figure styles, not just saved selection names.
+  const inspect = () => page.evaluate(() => {
+    type Value = { middle?: number; momentum?: number; dot?: number; squeeze?: boolean }
+    type Plot = { result: Value[]; styles?: { lines?: { color?: string }[] }; figures: { key: string; styles?: (data: unknown, indicator: unknown) => { color?: string } }[] }
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: { getIndicatorByPaneId(): Map<string, Map<string, Plot>> } } }).__viewportTestAdapter.coreChart
+    const plots = [...core.getIndicatorByPaneId().values()].flatMap(pane => [...pane.entries()])
+    const kc = plots.find(([name]) => name === 'KC')?.[1]
+    const ttm = plots.find(([name]) => name === 'TTM_SQUEEZE')?.[1]
+    const colors = new Set<string>()
+    ttm?.result.forEach((value, index) => {
+      for (const figure of ttm.figures) {
+        if (Number.isFinite(value[figure.key as keyof Value])) {
+          colors.add(figure.styles!({ prev: { indicatorData: ttm.result[index - 1] }, current: { indicatorData: value } }, ttm).color!)
+        }
+      }
+    })
+    const legacy = plots.filter(([name]) => name === 'VOL' || name === 'MACD')
+    return { kc: kc?.result.some(value => Number.isFinite(value.middle)), kcColor: kc?.styles?.lines?.[0]?.color, ttm: ttm?.result.some(value => Number.isFinite(value.momentum)), legacyReady: legacy.length === 2 && legacy.every(([, plot]) => plot.result.some(value => Object.values(value).some(Number.isFinite))), colors: [...colors] }
+  })
+  await expect.poll(inspect).toMatchObject({ kc: true, ttm: true, colors: expect.arrayContaining(['#00bcd4', '#ef5350']) })
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  for (const [name, params, labels] of [
+    ['KC', ['10', '2.25', '7'], ['EMA 周期', 'ATR 倍数', 'ATR 周期']],
+    ['TTM_SQUEEZE', ['12', '2.5', '1.25'], ['周期', '布林带标准差倍数', 'KC ATR 倍数']],
+  ] as const) {
+    // The chart suppresses a second click until its 500 ms double-click timer expires.
+    // Advance the mocked clock between chart interactions rather than sleeping.
+    await page.clock.runFor(600)
+    await expect.poll(() => page.evaluate(name => (window as unknown as { volatilityGears: Record<string, unknown> }).volatilityGears[name] !== undefined, name)).toBe(true)
+    await waitForChartRender(page)
+    const gear = await page.evaluate(name => (window as unknown as { volatilityGears: Record<string, { x: number; y: number }> }).volatilityGears[name], name)
+    await page.mouse.click(gear.x + 7, gear.y + 7)
+    for (const label of labels) await expect(settings.getByText(label, { exact: true })).toBeVisible()
+    for (let i = 0; i < params.length; i++) {
+      await settings.locator('input').nth(i).fill(params[i])
+      await settings.locator('input').nth(i).blur()
+    }
+    const color = name === 'KC' ? '#aa00ff' : '#00cc88'
+    await settings.locator('input[type="color"]').first().fill(color)
+    await page.getByText('确定', { exact: true }).click()
+  }
+  await expect.poll(readPreferences).toMatchObject({
+    main: expect.arrayContaining([expect.objectContaining({ name: 'KC', calcParams: [10, 2.25, 7], styles: expect.objectContaining({ lines: expect.arrayContaining([expect.objectContaining({ color: '#aa00ff' })]) }) })]),
+    sub: expect.arrayContaining([expect.objectContaining({ indicators: [expect.objectContaining({ name: 'TTM_SQUEEZE', calcParams: [12, 2.5, 1.25], styles: expect.objectContaining({ bars: expect.arrayContaining([expect.objectContaining({ noChangeColor: '#00cc88' })]) }) })] })]),
+  })
+  const saved = await readPreferences()
+  await expect.poll(inspect).toMatchObject({ kcColor: '#aa00ff', colors: expect.arrayContaining(['#00cc88']) })
+  await expect.poll(() => page.evaluate(() => (window as unknown as { volatilityColors: string[] }).volatilityColors))
+    .toEqual(expect.arrayContaining(['#00cc88', '#ef5350']))
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(readPreferences).toEqual(saved)
+  await expect.poll(inspect).toMatchObject({ kc: true, ttm: true })
+  await page.getByTestId('open-data-manager').click()
+  const panel = page.getByTestId('backup-sync-panel')
+  const downloadEvent = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const download = await downloadEvent
+  const stream = await download.createReadStream()
+  let json = ''
+  for await (const chunk of stream) json += chunk.toString()
+  const archive = JSON.parse(json)
+  expect(archive.data.preferences.chartIndicators).toEqual(saved)
+  // Import an edited archive, then refresh so stale chart state cannot overwrite it.
+  archive.data.preferences.chartIndicators.main.find((value: { name: string }) => value.name === 'KC').calcParams = [8, 1.75, 5]
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles({ name: 'indicators.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)) })
+  await expect(panel.getByTestId('backup-status')).toContainText('导入完成')
+  await expect(panel.getByTestId('backup-status')).toContainText('刷新')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(readPreferences).toEqual(archive.data.preferences.chartIndicators)
+  await expect.poll(inspect).toMatchObject({ kc: true, kcColor: '#aa00ff', ttm: true, colors: expect.arrayContaining(['#00cc88']) })
+  await page.getByText('指标', { exact: true }).click()
+  await expect(row('KC(肯特纳通道)').locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
+  await expect(row('TTM Squeeze(挤压指标)').locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
+  await closeModal()
+  await page.getByTestId('open-data-manager').click()
+  const configureCloud = async () => {
+    await panel.getByTestId('github-owner').fill('alice')
+    await panel.getByTestId('github-repository').fill('trading-backup')
+    await panel.getByTestId('github-token').fill('github_pat_e2e_secret')
+    await panel.getByRole('checkbox', { name: '会话与交易', exact: true }).uncheck()
+    await panel.getByRole('checkbox', { name: '历史行情', exact: true }).uncheck()
+  }
+  await configureCloud()
+  await panel.getByTestId('github-upload').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('上传完成')
+  expect(JSON.parse(github.files.get('config/preferences.json')!.bytes.toString()).chartIndicators).toEqual(archive.data.preferences.chartIndicators)
+  const empty = structuredClone(archive)
+  empty.data.preferences.chartIndicators = { schemaVersion: 1, main: [], sub: [] }
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles({ name: 'empty.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(empty)) })
+  await expect(panel.getByTestId('backup-status')).toContainText('导入完成')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(readPreferences).toEqual(empty.data.preferences.chartIndicators)
+  await page.getByTestId('open-data-manager').click()
+  await configureCloud()
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('github-pull').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('云端恢复完成')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(readPreferences).toEqual(archive.data.preferences.chartIndicators)
+  await expect.poll(inspect).toMatchObject({ kc: true, ttm: true, legacyReady: true })
+  await page.evaluate(() => document.fonts.ready.then(() => undefined))
+  // A late icon font load does not invalidate an already-painted canvas bitmap.
+  await page.evaluate(() => (window as unknown as { __viewportTestAdapter: { resize(): void } }).__viewportTestAdapter.resize())
+  await waitForChartRender(page)
+  await page.screenshot({ path: 'test-results/ttm-squeeze-keltner.png' })
+  expect(errors).toEqual([])
+})
+
+test('adds independent TTM Wave ABC panes and round-trips parameters and colors through JSON and cloud', async ({ page }) => {
+  test.setTimeout(90_000)
+  await page.setViewportSize({ width: 1440, height: 1080 })
+  await mockBinance(page, true)
+  const github = await mockGitHub(page)
+  await installViewportProbe(page)
+  await page.addInitScript(() => {
+    if (localStorage.getItem('chart.indicators.v1') === null) localStorage.setItem('chart.indicators.v1', JSON.stringify({
+      schemaVersion: 1, main: [{ name: 'KC', calcParams: [20, 1.5, 20], visible: true, styles: null }],
+      sub: [{ indicators: [{ name: 'TTM_SQUEEZE', calcParams: [20, 2, 1.5], visible: true, styles: null }] }],
+    }))
+    const gears: Record<string, { x: number; y: number }> = {}
+    const titles = new WeakMap<HTMLCanvasElement, string>()
+    Object.assign(window, { waveGears: gears })
+    const original = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...args) {
+      const match = /^TTM Wave ([ABC])/.exec(text)
+      if (match) titles.set(this.canvas, match[1])
+      const wave = titles.get(this.canvas)
+      if (text === '\ue902' && wave) {
+        const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        gears[wave] = { x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio }
+      }
+      return Reflect.apply(original, this, [text, x, y, ...args])
+    }
+  })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const rows = page.locator('.klinecharts-pro-indicator-modal-list li.row')
+  const closeModal = () => page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await page.getByText('指标', { exact: true }).click()
+  for (const label of ['TTM Wave A(短期波)', 'TTM Wave B(中期波)', 'TTM Wave C(长期波)']) {
+    await rows.filter({ hasText: label }).click({ position: { x: 5, y: 20 } })
+  }
+  await closeModal()
+  const preferences = () => page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!))
+  const plots = () => page.evaluate(() => {
+    type Value = { wave1?: number; wave2?: number }
+    type Plot = { name: string; calcParams: number[]; result: Value[]; styles?: { bars?: { positiveColor?: string; negativeColor?: string }[] }; figures: { styles?: (data: unknown, indicator: unknown) => { color: string } }[] }
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: { getIndicatorByPaneId(): Map<string, Map<string, Plot>> } } }).__viewportTestAdapter.coreChart
+    return [...core.getIndicatorByPaneId()].flatMap(([pane, indicators]) => [...indicators.values()]
+      .filter(i => i.name.startsWith('TTM_WAVE_')).map(i => {
+        const positive = new Set<string>(), negative = new Set<string>()
+        for (const value of i.result) for (const [index, key] of (['wave1', 'wave2'] as const).entries()) {
+          if (Number.isFinite(value[key])) (value[key]! >= 0 ? positive : negative).add(i.figures[index].styles!({ current: { indicatorData: value } }, i).color)
+        }
+        return { pane, name: i.name, params: i.calcParams,
+        color: i.styles?.bars?.[0]?.positiveColor, negativeColor: i.styles?.bars?.[0]?.negativeColor,
+        positive: [...positive], negative: [...negative],
+        ready: i.result.some(v => Number.isFinite(v.wave1) && Number.isFinite(v.wave2) && v.wave1 !== 0),
+      }}))
+  })
+  await expect.poll(plots).toEqual([
+    expect.objectContaining({ name: 'TTM_WAVE_A', params: [8, 34, 55], ready: true }),
+    expect.objectContaining({ name: 'TTM_WAVE_B', params: [8, 89, 144], ready: true }),
+    expect.objectContaining({ name: 'TTM_WAVE_C', params: [8, 233, 377], ready: true }),
+  ])
+  expect(new Set((await plots()).map(p => p.pane)).size).toBe(3)
+  for (const plot of await plots()) {
+    const palettes: Record<string, { positive: string[]; negative: string[] }> = {
+      TTM_WAVE_A: { positive: ['#168c72', '#9aefca'], negative: ['#d93654', '#ffadba'] },
+      TTM_WAVE_B: { positive: ['#168a80', '#9ae9db'], negative: ['#dc4940', '#ffc0aa'] },
+      TTM_WAVE_C: { positive: ['#1b966e', '#a7f2c8'], negative: ['#d33e62', '#ffb3ce'] },
+    }
+    expect(plot.positive).toEqual(expect.arrayContaining(palettes[plot.name].positive))
+    expect(plot.negative).toEqual(expect.arrayContaining(palettes[plot.name].negative))
+  }
+  for (const [wave, params, color, negative] of [
+    ['A', ['3', '13', '21'], '#12ab34', '#ed1234'], ['B', ['5', '34', '55'], '#34ab56', '#ed3456'], ['C', ['5', '89', '144'], '#56ab78', '#ed5678'],
+  ] as const) {
+    await page.clock.runFor(600)
+    await expect.poll(() => page.evaluate(wave => (window as unknown as { waveGears: Record<string, unknown> }).waveGears[wave] !== undefined, wave)).toBe(true)
+    const gear = await page.evaluate(wave => (window as unknown as { waveGears: Record<string, { x: number; y: number }> }).waveGears[wave], wave)
+    await page.mouse.click(gear.x + 7, gear.y + 7)
+    const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+    for (const label of ['快线周期', '慢线一周期', '慢线二周期']) await expect(settings.getByText(label, { exact: true })).toBeVisible()
+    for (let index = 0; index < 3; index++) {
+      await settings.locator('input').nth(index).fill(params[index])
+      await settings.locator('input').nth(index).blur()
+    }
+    await expect(settings.locator('input[type="color"]')).toHaveCount(4)
+    await settings.getByLabel('波形一零线上方颜色').fill(color)
+    await settings.getByLabel('波形一零线下方颜色').fill(negative)
+    await page.getByText('确定', { exact: true }).click()
+  }
+  await expect.poll(plots).toEqual([
+    expect.objectContaining({ name: 'TTM_WAVE_A', params: [3, 13, 21], color: '#12ab34', negativeColor: '#ed1234', negative: expect.arrayContaining(['#ed1234']), ready: true }),
+    expect.objectContaining({ name: 'TTM_WAVE_B', params: [5, 34, 55], color: '#34ab56', negativeColor: '#ed3456', negative: expect.arrayContaining(['#ed3456']), ready: true }),
+    expect.objectContaining({ name: 'TTM_WAVE_C', params: [5, 89, 144], color: '#56ab78', negativeColor: '#ed5678', negative: expect.arrayContaining(['#ed5678']), ready: true }),
+  ])
+  await expect.poll(preferences).toMatchObject({ sub: expect.arrayContaining([
+    expect.objectContaining({ indicators: [expect.objectContaining({ name: 'TTM_WAVE_A', calcParams: [3, 13, 21], styles: expect.objectContaining({ bars: expect.arrayContaining([expect.objectContaining({ positiveColor: '#12ab34', negativeColor: '#ed1234' })]) }) })] }),
+    expect.objectContaining({ indicators: [expect.objectContaining({ name: 'TTM_WAVE_B', calcParams: [5, 34, 55], styles: expect.objectContaining({ bars: expect.arrayContaining([expect.objectContaining({ positiveColor: '#34ab56', negativeColor: '#ed3456' })]) }) })] }),
+    expect.objectContaining({ indicators: [expect.objectContaining({ name: 'TTM_WAVE_C', calcParams: [5, 89, 144], styles: expect.objectContaining({ bars: expect.arrayContaining([expect.objectContaining({ positiveColor: '#56ab78', negativeColor: '#ed5678' })]) }) })] }),
+  ]) })
+  const saved = await preferences()
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(preferences).toEqual(saved)
+  // Removing B must leave A/C and their parameters untouched.
+  await page.getByText('指标', { exact: true }).click()
+  await rows.filter({ hasText: 'TTM Wave B(中期波)' }).click({ position: { x: 5, y: 20 } })
+  await closeModal()
+  await expect.poll(async () => (await plots()).map(i => i.name)).toEqual(['TTM_WAVE_A', 'TTM_WAVE_C'])
+  await page.getByTestId('open-data-manager').click()
+  const panel = page.getByTestId('backup-sync-panel')
+  // Restore an exported archive from before B was removed.
+  const downloadEvent = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const stream = await (await downloadEvent).createReadStream()
+  let json = ''
+  for await (const chunk of stream) json += chunk.toString()
+  const archive = JSON.parse(json)
+  archive.data.preferences.chartIndicators = saved
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles({ name: 'waves.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)) })
+  await expect(panel.getByTestId('backup-status')).toContainText('导入完成')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(preferences).toEqual(saved)
+  await expect.poll(async () => (await plots()).filter(i => i.ready).length).toBe(3)
+  const configureCloud = async () => {
+    await panel.getByTestId('github-owner').fill('alice')
+    await panel.getByTestId('github-repository').fill('trading-backup')
+    await panel.getByTestId('github-token').fill('github_pat_e2e_secret')
+    await panel.getByRole('checkbox', { name: '会话与交易', exact: true }).uncheck()
+    await panel.getByRole('checkbox', { name: '历史行情', exact: true }).uncheck()
+  }
+  await page.getByTestId('open-data-manager').click()
+  await configureCloud()
+  await panel.getByTestId('github-upload').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('上传完成')
+  expect(JSON.parse(github.files.get('config/preferences.json')!.bytes.toString()).chartIndicators).toEqual(saved)
+  archive.data.preferences.chartIndicators = { schemaVersion: 1, main: [], sub: [] }
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles({ name: 'empty.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)) })
+  await expect(panel.getByTestId('backup-status')).toContainText('导入完成')
+  await page.reload()
+  await expectCanvasContent(page)
+  await page.getByTestId('open-data-manager').click()
+  await configureCloud()
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('github-pull').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('云端恢复完成')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(preferences).toEqual(saved)
+  await expect.poll(async () => (await plots()).filter(i => i.ready).length).toBe(3)
+  await page.evaluate(() => document.fonts.ready.then(() => undefined))
+  await page.evaluate(() => (window as unknown as { __viewportTestAdapter: { resize(): void } }).__viewportTestAdapter.resize())
+  await waitForChartRender(page)
+  await page.screenshot({ path: 'test-results/ttm-wave-abc.png' })
+  expect(errors).toEqual([])
+})
+
+test('renders standard pivot levels and persists type, timeframe, labels and level settings', async ({ page }) => {
+  test.setTimeout(120_000)
+  await mockBinance(page, true)
+  const github = await mockGitHub(page)
+  await installViewportProbe(page)
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   await page.addInitScript((defaults) => {
@@ -1716,7 +2036,13 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
     const drawn: string[] = []
     const titles: string[] = []
     const settings: { x: number; y: number }[] = []
-    Object.assign(window, { pivotTestLabels: drawn, pivotTestTitles: titles, pivotTestSettings: settings })
+    const strokes = new Set<string>()
+    Object.assign(window, { pivotTestLabels: drawn, pivotTestTitles: titles, pivotTestSettings: settings, pivotStrokes: strokes })
+    const stroke = CanvasRenderingContext2D.prototype.stroke
+    CanvasRenderingContext2D.prototype.stroke = function (...args: unknown[]) {
+      strokes.add(`${this.strokeStyle}:${this.getLineDash().length ? 'dashed' : 'solid'}`)
+      return Reflect.apply(stroke, this, args)
+    }
     const original = CanvasRenderingContext2D.prototype.fillText
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
       if (/^(P|[RS][1-5]) \(/.test(text)) drawn.push(text)
@@ -1747,6 +2073,12 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   await page.mouse.click(gear!.x + 3, gear!.y + 3)
   const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
   await expect(settings.getByLabel('枢轴类型')).toHaveValue('Traditional')
+  await expect(settings.locator('input[type="color"]')).toHaveCount(6)
+  await expect(settings.getByLabel('R1 颜色', { exact: true })).toHaveCount(0)
+  await expect(settings.getByLabel('上期 R 颜色', { exact: true })).toBeDisabled()
+  await settings.getByLabel('当前周期显示上期线', { exact: true }).check()
+  await expect(settings.getByLabel('上期 R 颜色', { exact: true })).toBeEnabled()
+  await settings.getByLabel('上期 R 颜色', { exact: true }).fill('#ab12cd')
   await settings.getByLabel('枢轴类型').selectOption('DM')
   await expect(settings.getByLabel('R2 显示', { exact: true })).toBeDisabled()
   await settings.getByLabel('枢轴类型').selectOption('Camarilla')
@@ -1759,19 +2091,65 @@ test('renders standard pivot levels and persists type, timeframe, labels and lev
   await settings.locator('.klinecharts-pro-input input').nth(1).fill('2')
   await settings.locator('.klinecharts-pro-input input').nth(1).blur()
   await settings.getByLabel('P 显示', { exact: true }).uncheck()
-  await settings.getByLabel('R1 颜色', { exact: true }).fill('#12abcd')
+  await settings.getByLabel('R 颜色', { exact: true }).fill('#12abcd')
   await page.getByText('确定', { exact: true }).click()
   await expect.poll(async () => (await readPivots()).calcParams.slice(0, 10))
     .toEqual(['Camarilla', 'Weekly', 2, true, false, true, 'Right', 2, false, '#fb8c00'])
   await page.reload()
   await expectCanvasContent(page)
-  await expect.poll(async () => (await readPivots()).calcParams[11]).toBe('#12abcd')
+  await expect.poll(async () => (await readPivots()).calcParams.slice(30)).toEqual(['#fb8c00', '#12abcd', '#26a69a', true, '#a78bfa', '#ab12cd', '#38bdf8'])
+  const hasPrevious = () => page.evaluate(() => {
+    type Value = { segment?: { previous?: unknown }; projection?: { previous?: unknown } }
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: { getIndicatorByPaneId(pane: string, name: string): { result: Value[] } } } }).__viewportTestAdapter.coreChart
+    return core.getIndicatorByPaneId('candle_pane', 'PIVOTS').result.some(value => value.segment?.previous || value.projection?.previous)
+  })
+  await expect.poll(hasPrevious).toBe(true)
+  await expect.poll(() => page.evaluate(() => [...(window as unknown as { pivotStrokes: Set<string> }).pivotStrokes]))
+    .toEqual(expect.arrayContaining(['#12abcd:solid', '#ab12cd:dashed']))
   await expect(page.locator('.klinecharts-pro-period-bar .period.selected')).toHaveText('15m')
   await page.getByText('指标', { exact: true }).click()
   const row = page.locator('.klinecharts-pro-indicator-modal-list li.row').filter({ hasText: 'Pivots(标准枢轴点)' })
   await expect(row.locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
   expect((await readPivots()).calcParams.slice(0, 3)).toEqual(['Camarilla', 'Weekly', 2])
+  const saved = await readPivots()
+  await page.getByTestId('open-data-manager').click()
+  const panel = page.getByTestId('backup-sync-panel')
+  const configureCloud = async () => {
+    await panel.getByTestId('github-owner').fill('alice')
+    await panel.getByTestId('github-repository').fill('trading-backup')
+    await panel.getByTestId('github-token').fill('github_pat_e2e_secret')
+    await panel.getByRole('checkbox', { name: '会话与交易', exact: true }).uncheck()
+    await panel.getByRole('checkbox', { name: '历史行情', exact: true }).uncheck()
+  }
+  await configureCloud()
+  await panel.getByTestId('github-upload').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('上传完成')
+  expect(JSON.parse(github.files.get('config/preferences.json')!.bytes.toString()).chartIndicators.main[0]).toEqual(saved)
+  const downloadEvent = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const stream = await (await downloadEvent).createReadStream()
+  let json = ''
+  for await (const chunk of stream) json += chunk.toString()
+  const archive = JSON.parse(json)
+  archive.data.preferences.chartIndicators.main[0].calcParams[33] = false
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles({ name: 'pivots.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)) })
+  await expect(panel.getByTestId('backup-status')).toContainText('导入完成')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(async () => (await readPivots()).calcParams[33]).toBe(false)
+  await expect.poll(hasPrevious).toBe(false)
+  await page.getByTestId('open-data-manager').click()
+  await configureCloud()
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('github-pull').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('云端恢复完成')
+  await page.reload()
+  await expectCanvasContent(page)
+  await expect.poll(readPivots).toEqual(saved)
+  await expect.poll(hasPrevious).toBe(true)
+  await page.screenshot({ path: 'test-results/pivots-groups-previous.png' })
   expect(errors).toEqual([])
 })
 

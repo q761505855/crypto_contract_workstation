@@ -15,7 +15,7 @@
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局 | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
@@ -54,7 +54,15 @@ Token 等凭据不得进入用户配置存档。手动 Token 只保留在页面�
 
 当前恢复配置后需要刷新页面，使指标、当前产品、固定周期等组件从已恢复的存储重新加载。界面会提示刷新，不自动重载以免中断用户操作。若后续改成即时生效，需要同步所有相关组件，避免后台持有的旧状态反向写回。
 
+KC 与 TTM Squeeze 不增加顶层配置字段或版本。`KC.calcParams` 依次为 EMA 周期、ATR 倍数、ATR 周期（默认 `[20, 1.5, 20]`），`TTM_SQUEEZE.calcParams` 依次为共同周期、BB 标准差倍数、KC ATR 倍数（默认 `[20, 2, 1.5]`）。两者必须恰有三个有限正数，周期还须为整数；错误类型、缺少参数、0 或负倍数在本地保存及任何存档恢复写入前拒绝，不影响其他旧指标的参数兼容性。指标可见性 `false`、合法样式数值 `0` 和主／副图空列表仍原样保留。KC 的三轨颜色保存于 `styles.lines`；TTM 四色柱与两种状态点颜色保存于 `styles.bars`、`styles.circles`，选择、参数、颜色与副图高度一并参与 JSON 和 GitHub 配置往返。旧存档无这两个指标时不自动加入；缺少整个 `chartIndicators` 时保留目标浏览器原值，无本地配置时继续使用现有默认指标。
+
 窄屏下的主图／副图最小显示高度属于自适应布局计算，不是新增用户配置。`ProChartAdapter.layoutSubPanes()` 临时放大副图，`getIndicatorPreferences()` 仍返回原始存档高度，避免切换设备后把手机显示尺寸写回桌面布局。只有用户主动拖动分隔线时更新相关副图的存档高度，继续通过 `chartIndicators.sub[].height` 导出、上传和恢复，不另建存储键。
+
+TTM Wave 使用三个独立名称 `TTM_WAVE_A`、`TTM_WAVE_B`、`TTM_WAVE_C`。各自 calcParams 是三个严格递增的正整数周期（快线、慢线一、慢线二）；默认分别为 `[8, 34, 55]`、`[8, 89, 144]`、`[8, 233, 377]`。周期数量、类型、取值或顺序非法均在存档写入前拒绝。两组波形零线上方／下方颜色分别存在 `styles.bars[].positiveColor`／`negativeColor`，只接受六位十六进制颜色；非法值在写入前拒绝。旧单色 `noChangeColor` 保留并作为缺少 positiveColor 时的上方回退色；缺少 negativeColor 时使用对应波形的默认红／橙红色，不擅自填字段覆盖旧存档。零轴样式存在 `styles.lines`，其余可见性、布局和兼容语义沿用 chartIndicators。配置／完整 JSON 和 GitHub 应用配置覆盖全部三个指标及四种颜色；缺字段保留、空列表清空、false 与样式 0 原样恢复，恢复后需刷新。不新增顶层字段、存储键或版本，不改动设备保护或凭据。
+
+Wave 配色升级：A/B/C 共享绿／红的零轴方向含义，仅有轻微色调差异；两组波形使用深浅与宽窄区分。统一配置校验入口会在克隆后的样式中，将各版本已发布默认色（最初 ABC 固定配色及后续统一的 `#26a69a/#66bb6a`、`#ef5350/#ff8a65`）映射为各指标当前默认色；其他自定义色、false、样式 0 和缺失字段不变，不修改传入存档对象。迁移可重复执行，适用于本地读取、JSON 配置／完整存档和云端解析恢复，无需提高 schemaVersion；刷新后图表生效。宽窄比例为绘制规则，不是新增用户设置。
+
+Pivots 配置保持 `PIVOTS` 名称，沿用 calcParams 前 30 项以兼容旧版开关与存档；旧版每线颜色保留在隐藏位置，绘图改用新增的 P/R/S 分组颜色（索引 30–32）。索引 33 是“当前周期显示上期线”布尔开关，34–36 是上期 P/R/S 颜色。旧 30 项存档经统一校验后迁移为 37 项：P/R1/S1 作为三组颜色来源，旧默认橙色分别使用当前 P 橙、R 红、S 绿，恢复时缺少的上期线开关及三种颜色保留目标浏览器已有值，无已有设置时才使用 false 与默认颜色；其余字段和各级开关原样保留，不修改输入对象。37 项的新开关、分组颜色、原有类型、周期、线宽及各级开关全部严格校验；不接受部分新增字段、null、数字代替布尔值或非法颜色。配置／完整 JSON 与 GitHub 应用配置包含完整 37 项；false 必须原样恢复，缺少 chartIndicators 时仍保留本地设置，恢复后刷新生效。不新增顶层字段或存储键。
 
 ## 验收与回归
 

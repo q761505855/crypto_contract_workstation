@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Indicator, KLineData } from 'klinecharts'
+import type { Indicator, IndicatorDrawParams, KLineData } from 'klinecharts'
 import type { Datafeed } from '@klinecharts/pro'
-import { createPivotCalculator, latestPivotCalculation } from './pivots-indicator'
-import type { PivotValue } from './pivots'
+import { createPivotCalculator, latestPivotCalculation, drawPivots } from './pivots-indicator'
+import { PIVOTS_DEFAULT_PARAMS, type PivotValue } from './pivots'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from './chart-config'
 
 const day = 86_400_000
@@ -19,6 +19,36 @@ function fixture() {
 }
 
 describe('pivot higher-timeframe reads', () => {
+  it('reads the extra completed period needed for carry-over with history one', async () => {
+    const { calculate, getHistoryKLineData } = fixture()
+    const params = [...PIVOTS_DEFAULT_PARAMS]
+    params[1] = 'Daily'; params[2] = 1; params[33] = true
+    expect((await calculate([daily[2]], params))[0].previousP).toBe(105)
+    expect(getHistoryKLineData).toHaveBeenCalledWith(DEFAULT_SYMBOL, expect.objectContaining({ text: '1d' }), start, start + 2 * day, false)
+  })
+
+  it('draws prior levels dashed in independent group colors while honoring switches', () => {
+    const params = [...PIVOTS_DEFAULT_PARAMS]
+    params[4] = false; params[5] = false; params[10] = false; params[33] = true
+    let dash: number[] = []
+    const strokes: { color: string; dash: number[] }[] = []
+    const ctx = {
+      save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, moveTo() {}, lineTo() {},
+      setLineDash(value: number[]) { dash = value }, strokeStyle: '',
+      stroke() { strokes.push({ color: this.strokeStyle, dash }) },
+    }
+    const result: PivotValue[] = [{ segment: {
+      start, end: start + day, levels: { P: 100, R1: 110, S1: 90 }, previous: { P: 95, R1: 105, S1: 85 },
+    } }]
+    drawPivots({ ctx, indicator: { calcParams: params, result }, kLineDataList: daily,
+      bounding: { width: 500, height: 200 }, xAxis: { convertToPixel: (i: number) => i * 100 },
+      yAxis: { convertToPixel: (value: number) => value },
+    } as unknown as IndicatorDrawParams<PivotValue>, '1d')
+    expect(strokes).toEqual([
+      { color: '#a78bfa', dash: [5, 4] }, { color: '#38bdf8', dash: [5, 4] },
+      { color: '#fb8c00', dash: [] }, { color: '#26a69a', dash: [] },
+    ])
+  })
   it('prevents a slow older calculation from replacing newer parameters or another symbol', async () => {
     const { context } = fixture()
     let resolveOld: (value: PivotValue[]) => void = () => {}

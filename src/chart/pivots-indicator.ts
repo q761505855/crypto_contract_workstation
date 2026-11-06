@@ -13,6 +13,7 @@ import { SUPPORTED_PERIODS } from './chart-config'
 import {
   calculatePivots, PIVOT_LEVELS, PIVOTS_DEFAULT_PARAMS, pivotSettings,
   pivotPeriodStart, pivotSourceTimeframe, resolvePivotAnchor, shiftPivotPeriod,
+  pivotGroup,
   type PivotSegment, type PivotValue,
 } from './pivots'
 
@@ -35,7 +36,7 @@ export function createPivotCalculator(feed: Datafeed, getContext: () => PivotCha
     const sourceTimeframe = pivotSourceTimeframe(anchor)
     const sourcePeriod = SUPPORTED_PERIODS.find((period) => period.text === sourceTimeframe)!
     const lastStart = pivotPeriodStart(candles.at(-1)!.timestamp, anchor)
-    const from = Math.max(0, shiftPivotPeriod(lastStart, anchor, -settings.history))
+    const from = Math.max(0, shiftPivotPeriod(lastStart, anchor, -settings.history - (settings.showPrevious ? 1 : 0)))
     const to = alignOpenTime(candles.at(-1)!.timestamp, sourceTimeframe, 'floor')
     const sourceComplete = nextOpenTime(to, sourceTimeframe) <= context.confirmedUntil
     const key = JSON.stringify([context.symbol.ticker, sourceTimeframe, from, to, sourceComplete, context.sessionKey])
@@ -116,21 +117,24 @@ export function drawPivots({ ctx, indicator, kLineDataList, xAxis, yAxis, boundi
     const start = xAxis.convertToPixel(fractionalIndex(segment.start, kLineDataList, timeframe))
     const end = xAxis.convertToPixel(fractionalIndex(segment.end, kLineDataList, timeframe))
     if (end < 0 || start > bounding.width) continue
-    for (const key of PIVOT_LEVELS) {
-      const price = segment.levels[key]
-      if (price === undefined || !settings.levels[key].visible) continue
-      const y = yAxis.convertToPixel(price)
-      ctx.strokeStyle = settings.levels[key].color
-      ctx.fillStyle = settings.levels[key].color
-      ctx.beginPath()
-      ctx.moveTo(Math.max(0, start), y)
-      ctx.lineTo(Math.min(bounding.width, end), y)
-      ctx.stroke()
-      if (settings.labels || settings.prices) {
-        const right = settings.labelPosition === 'Right'
-        const label = [settings.labels ? key : '', settings.prices ? `(${price.toFixed(indicator.precision)})` : ''].filter(Boolean).join(' ')
-        ctx.textAlign = right ? 'right' : 'left'
-        ctx.fillText(label, right ? Math.min(bounding.width - 3, end - 3) : Math.max(3, start + 3), y - 3)
+    for (const previous of (segment.previous ? [true, false] : [false])) {
+      ctx.setLineDash(previous ? [5, 4] : [])
+      for (const key of PIVOT_LEVELS) {
+        const price = (previous ? segment.previous : segment.levels)?.[key]
+        if (price === undefined || !settings.levels[key].visible) continue
+        const y = yAxis.convertToPixel(price)
+        ctx.strokeStyle = previous ? settings.previousColors[pivotGroup(key)] : settings.levels[key].color
+        ctx.fillStyle = ctx.strokeStyle
+        ctx.beginPath()
+        ctx.moveTo(Math.max(0, start), y)
+        ctx.lineTo(Math.min(bounding.width, end), y)
+        ctx.stroke()
+        if (settings.labels || settings.prices) {
+          const right = settings.labelPosition === 'Right'
+          const label = [previous ? '上期' : '', settings.labels ? key : '', settings.prices ? `(${price.toFixed(indicator.precision)})` : ''].filter(Boolean).join(' ')
+          ctx.textAlign = right ? 'right' : 'left'
+          ctx.fillText(label, right ? Math.min(bounding.width - 3, end - 3) : Math.max(3, start + 3), y - 3)
+        }
       }
     }
   }
@@ -143,7 +147,10 @@ export function registerPivotsIndicator(feed: Datafeed, getContext: () => PivotC
   const template: IndicatorTemplate<PivotValue> = {
     name: 'PIVOTS', shortName: 'Pivots', series: 'price' as IndicatorSeries,
     calcParams: [...PIVOTS_DEFAULT_PARAMS],
-    figures: PIVOT_LEVELS.map((key) => ({ key, title: `${key}: `, type: 'line' })),
+    figures: PIVOT_LEVELS.flatMap((key) => [
+      { key, title: `${key}: `, type: 'line' },
+      { key: `previous${key}`, title: `上期 ${key}: `, type: 'line' },
+    ]),
     calc: latestPivotCalculation(calculate, getContext),
     draw: (params) => drawPivots(params, getContext().period.text),
     createTooltipDataSource: ({ indicator, crosshair, defaultStyles }) => {

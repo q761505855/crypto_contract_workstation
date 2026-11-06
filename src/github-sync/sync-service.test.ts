@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PINNED_PERIODS_KEY } from '../chart/period-preferences'
+import { CHART_INDICATORS_PREFERENCE } from '../chart/indicator-preferences'
+import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
 import {
   BACKUP_FILE_TYPE,
@@ -65,8 +67,17 @@ function backup(): BackupEnvelope {
     selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },
     chartIndicators: {
       schemaVersion: 1,
-      main: [{ name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null }],
-      sub: [],
+      main: [
+        { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
+        { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
+        { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
+      ],
+      sub: [{ height: 210, indicators: [
+        { name: 'TTM_SQUEEZE', calcParams: [14, 2.5, 1.25], visible: true, styles: { bars: [{ noChangeColor: '#abcdef', borderSize: 0 }] } },
+      ] },
+      { height: 180, indicators: [{ name: 'TTM_WAVE_A', calcParams: [5, 21, 34], visible: false, styles: { bars: [{ noChangeColor: '#123456', positiveColor: '#12ab34', negativeColor: '#ed1234', borderSize: 0 }, { positiveColor: '#34ab56', negativeColor: '#ed5678' }] } }] },
+      { height: 190, indicators: [{ name: 'TTM_WAVE_B', calcParams: [5, 55, 89], visible: true, styles: null }] },
+      { height: 200, indicators: [{ name: 'TTM_WAVE_C', calcParams: [5, 144, 233], visible: true, styles: null }] }],
     },
   }
   return {
@@ -409,6 +420,103 @@ describe('GitHubSyncService', () => {
     await rewriteRemotePreferences({ ...preferences, binanceRestBaseUrl: 'https://changed.test', pinnedPeriods: ['bogus'] })
     await expect(target.pull(client(remote))).rejects.toThrow(/pinnedPeriods/)
     expect((await targetBackups.exportAll()).data).toEqual(before.data)
+  })
+
+  it('round-trips KC, TTM Squeeze and Wave ABC through config-only cloud sync, including empty, missing and invalid settings', async () => {
+    const storage = () => {
+      const values = new Map<string, string>()
+      return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
+    }
+    const sourceStorage = storage()
+    const targetStorage = storage()
+    const indicators = backup().data.preferences!.chartIndicators!
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(indicators))
+    const sourceBackups = new WorkstationBackupService(`kc-cloud-source-${crypto.randomUUID()}`, sourceStorage)
+    const targetBackups = new WorkstationBackupService(`kc-cloud-target-${crypto.randomUUID()}`, targetStorage)
+    const source = new GitHubSyncService(sourceBackups)
+    const target = new GitHubSyncService(targetBackups)
+    const remote = new MemoryGitHubClient()
+    const selection = { config: true, sessions: false, marketData: false }
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
+
+    const pivotChanged = structuredClone(indicators)
+    const pivotParams = pivotChanged.main.find(i => i.name === 'PIVOTS')!.calcParams
+    pivotParams[33] = false
+    pivotParams[35] = '#aabbcc'
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(pivotChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(pivotChanged)
+
+    const changed = structuredClone(indicators)
+    changed.sub[1].indicators[0].calcParams = [3, 5, 8]
+    changed.sub[1].indicators[0].styles = { bars: [{ positiveColor: '#123456', negativeColor: '#654321' }] }
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(changed))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(changed)
+
+    const empty = { schemaVersion: 1, main: [], sub: [] }
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(empty))
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(empty)
+
+    const remotePreferences = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
+    const rewrite = async (value: unknown) => {
+      const file = remote.files.get('config/preferences.json')!
+      file.bytes = encoder.encode(JSON.stringify(value))
+      const manifestFile = remote.files.get('manifest.json')!
+      const manifest = JSON.parse(decoder.decode(manifestFile.bytes))
+      const entry = manifest.files.find((entry: { path: string }) => entry.path === 'config/preferences.json')
+      entry.size = file.bytes.length
+      entry.checksum = await sha256(file.bytes)
+      manifestFile.bytes = encoder.encode(JSON.stringify(manifest))
+    }
+    delete remotePreferences.chartIndicators
+    await rewrite(remotePreferences)
+    targetStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(indicators))
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicators)
+    const legacyDefaults = structuredClone(indicators)
+    legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
+    legacyDefaults.sub[1].indicators[0].styles = { bars: [{ positiveColor: '#26a69a', negativeColor: '#ef5350', borderSize: 0 }] }
+    await rewrite({ ...remotePreferences, chartIndicators: legacyDefaults })
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).sub[1].indicators[0].styles)
+      .toEqual({ bars: [{ positiveColor: '#168c72', negativeColor: '#d93654', borderSize: 0 }] })
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).main.find((i: { name: string }) => i.name === 'PIVOTS').calcParams.slice(30))
+      .toEqual(['#fb8c00', '#ef5350', '#26a69a', true, '#445566', '#aa7777', '#77aa77'])
+    const before = (await targetBackups.exportAll()).data
+    for (const [index, value] of [[33, 'true'], [35, null]] as const) {
+      const invalidPivot = structuredClone(indicators)
+      invalidPivot.main.find(i => i.name === 'PIVOTS')!.calcParams[index] = value
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidPivot })
+      await expect(target.pull(client(remote))).rejects.toThrow(/PIVOTS/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    const invalid = structuredClone(indicators)
+    invalid.sub[0].indicators[0].calcParams = [20, 0, 1.5]
+    await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalid })
+    await expect(target.pull(client(remote))).rejects.toThrow(/calcParams/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
+    for (const name of ['TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C']) {
+      const invalidWave = structuredClone(indicators)
+      invalidWave.sub.find(pane => pane.indicators[0].name === name)!.indicators[0].calcParams = [8, 55, 34]
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidWave })
+      await expect(target.pull(client(remote))).rejects.toThrow(/calcParams/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+      invalidWave.sub.find(pane => pane.indicators[0].name === name)!.indicators[0] = {
+        name, calcParams: [8, 34, 55], visible: true, styles: { bars: [{ negativeColor: false }] },
+      }
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidWave })
+      await expect(target.pull(client(remote))).rejects.toThrow(/negativeColor/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
   })
 
   it('prepares config files and gzip-compressed monthly market chunks', async () => {

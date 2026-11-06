@@ -686,7 +686,7 @@ export class GitHubSyncService {
           quantityPrecision: symbol.volumePrecision ?? 8,
         })),
     ]
-    await this.backups.import(validateBackupEnvelope(backup), onProgress)
+    await this.backups.import(validateBackupEnvelope(backup, current.data.preferences?.chartIndicators), onProgress)
     return {
       files: remote.files.length,
       bytes,

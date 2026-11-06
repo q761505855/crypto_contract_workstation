@@ -1,3 +1,6 @@
+import { TTM_WAVE_PALETTES, type TtmWave } from './ttm-wave-colors'
+import { validatePivotParams } from './pivots'
+
 export const CHART_INDICATORS_PREFERENCE = 'chart.indicators.v1'
 
 export type JsonValue =
@@ -63,6 +66,7 @@ function jsonValue(value: unknown, field: string): JsonValue {
 function indicator(
   value: unknown,
   field: string,
+  previous: ChartIndicatorSetting[] = [],
 ): ChartIndicatorSetting {
   const item = record(value, field)
   if (typeof item.name !== 'string' || item.name.length === 0) {
@@ -71,21 +75,61 @@ function indicator(
   if (!Array.isArray(item.calcParams)) {
     throw new Error(`${field}.calcParams 必须是数组`)
   }
+  if (item.name === 'KC' || item.name === 'TTM_SQUEEZE') {
+    const params = item.calcParams
+    if (params.length !== 3 || params.some(entry => typeof entry !== 'number' || !Number.isFinite(entry) || entry <= 0) ||
+        !Number.isInteger(params[0]) || (item.name === 'KC' && !Number.isInteger(params[2]))) {
+      throw new Error(`${field}.calcParams 无效：周期必须为正整数，倍数必须为有限正数，且必须包含三个参数`)
+    }
+  }
+  if (['TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C'].includes(item.name)) {
+    const params = item.calcParams
+    if (params.length !== 3 || params.some(p => typeof p !== 'number' || !Number.isInteger(p) || p <= 0) ||
+        params[0] >= params[1] || params[1] >= params[2]) {
+      throw new Error(`${field}.calcParams 无效：必须包含三个正整数周期，且快线 < 慢线一 < 慢线二`)
+    }
+    const styles = item.styles as { bars?: unknown } | null | undefined
+    if (styles?.bars !== undefined) {
+      if (!Array.isArray(styles.bars)) throw new Error(`${field}.styles.bars 必须是数组`)
+      styles.bars.forEach((value, index) => {
+        const bar = record(value, `${field}.styles.bars[${index}]`)
+        for (const key of ['positiveColor', 'negativeColor']) {
+          if (bar[key] !== undefined && (typeof bar[key] !== 'string' || !/^#[0-9a-f]{6}$/i.test(bar[key] as string))) {
+            throw new Error(`${field}.styles.bars[${index}].${key} 必须是六位十六进制颜色`)
+          }
+        }
+      })
+    }
+  }
   if (typeof item.visible !== 'boolean') {
     throw new Error(`${field}.visible 必须是布尔值`)
   }
+  const validatedStyles = jsonValue(item.styles ?? null, `${field}.styles`)
+  if (['TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C'].includes(item.name) &&
+      validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles)) {
+    const palette = TTM_WAVE_PALETTES[item.name.slice(-1) as TtmWave]
+    const original = { A: ['#008000', '#daa520'], B: ['#ff00ff', '#0000ff'], C: ['#ff0000', '#ff8c00'] }[item.name.slice(-1) as TtmWave]
+    if (Array.isArray(validatedStyles.bars)) validatedStyles.bars.forEach((bar, index) => {
+      if (index > 1 || bar === null || typeof bar !== 'object' || Array.isArray(bar)) return
+      for (const key of ['noChangeColor', 'positiveColor', 'upColor', 'downColor']) {
+        if (bar[key] === ['#26a69a', '#66bb6a'][index] || bar[key] === original[index]) bar[key] = palette.positive[index]
+      }
+      if (bar.negativeColor === ['#ef5350', '#ff8a65'][index]) bar.negativeColor = palette.negative[index]
+    })
+  }
   return {
     name: item.name,
-    calcParams: item.calcParams.map((entry, index) =>
+    calcParams: (item.name === 'PIVOTS' ? validatePivotParams(item.calcParams, previous.find(setting => setting.name === item.name)?.calcParams) : item.calcParams).map((entry, index) =>
       jsonValue(entry, `${field}.calcParams[${index}]`),
     ),
     visible: item.visible,
-    styles: jsonValue(item.styles ?? null, `${field}.styles`),
+    styles: validatedStyles,
   }
 }
 
 export function validateChartIndicatorPreferences(
   value: unknown,
+  previous?: ChartIndicatorPreferences | null,
 ): ChartIndicatorPreferences {
   const item = record(value, 'chartIndicators')
   if (item.schemaVersion !== 1) {
@@ -94,8 +138,9 @@ export function validateChartIndicatorPreferences(
   if (!Array.isArray(item.main) || !Array.isArray(item.sub)) {
     throw new Error('chartIndicators 主图或副图配置无效')
   }
+  const previousSettings = [...(previous?.main ?? []), ...(previous?.sub ?? []).flatMap(pane => pane.indicators)]
   const main = item.main.map((entry, index) =>
-    indicator(entry, `chartIndicators.main[${index}]`),
+    indicator(entry, `chartIndicators.main[${index}]`, previousSettings),
   )
   const sub = item.sub.map((entry, index) => {
     const pane = record(entry, `chartIndicators.sub[${index}]`)
@@ -119,6 +164,7 @@ export function validateChartIndicatorPreferences(
         indicator(
           setting,
           `chartIndicators.sub[${index}].indicators[${settingIndex}]`,
+          previousSettings,
         ),
       ),
     }

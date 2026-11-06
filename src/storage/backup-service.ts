@@ -159,7 +159,7 @@ function assertHttpUrl(value: string, field: string): void {
   }
 }
 
-function validatePreferences(value: unknown): BackupPreferences {
+function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorPreferences | null): BackupPreferences {
   const item = record(value, 'preferences')
   const binanceRestBaseUrl = stringValue(
     item.binanceRestBaseUrl,
@@ -192,6 +192,7 @@ function validatePreferences(value: unknown): BackupPreferences {
       : {
           chartIndicators: validateChartIndicatorPreferences(
             item.chartIndicators,
+            currentIndicators,
           ),
         }),
   }
@@ -652,7 +653,7 @@ function validateSimulation(
   })
 }
 
-export function validateBackupEnvelope(value: unknown): BackupEnvelope {
+export function validateBackupEnvelope(value: unknown, currentIndicators?: ChartIndicatorPreferences | null): BackupEnvelope {
   const root = record(value, '备份文件')
   if (root.fileType !== BACKUP_FILE_TYPE) {
     throw new Error('文件类型不是本应用备份')
@@ -671,7 +672,7 @@ export function validateBackupEnvelope(value: unknown): BackupEnvelope {
   const source = record(root.data, 'data')
   const data: BackupData = {}
   if (source.preferences !== undefined) {
-    data.preferences = validatePreferences(source.preferences)
+    data.preferences = validatePreferences(source.preferences, currentIndicators)
   }
   if (source.symbols !== undefined) {
     const symbols = arrayValue(source.symbols, 'symbols').map(validateSymbol)
@@ -845,7 +846,7 @@ export class WorkstationBackupService {
 
   async import(value: unknown, onProgress?: (message: string) => void): Promise<BackupImportReport> {
     onProgress?.('正在校验备份数据…')
-    const envelope = validateBackupEnvelope(value)
+    const envelope = validateBackupEnvelope(value, loadChartIndicatorPreferences(this.storage))
     const candleCount = envelope.data.tradeCandles?.length ?? 0
     onProgress?.(`正在恢复行情：${candleCount.toLocaleString()} 根…`)
     const database = await openWorkstationDatabase(this.databaseName)

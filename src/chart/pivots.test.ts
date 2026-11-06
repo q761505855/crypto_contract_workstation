@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { KLineData } from 'klinecharts'
 import {
   calculatePivotLevels, calculatePivots, PIVOT_TYPES, PIVOT_LEVELS,
-  PIVOTS_DEFAULT_PARAMS, pivotSettings, pivotPeriodStart, resolvePivotAnchor, shiftPivotPeriod,
+  PIVOTS_DEFAULT_PARAMS, pivotSettings, pivotPeriodStart, resolvePivotAnchor, shiftPivotPeriod, validatePivotParams,
 } from './pivots'
 
 const day = 86_400_000
@@ -111,7 +111,72 @@ describe('pivot periods and history', () => {
     const settings = pivotSettings(['unknown', 'unknown', -1, false, false, false, 'Right', 101, false, 'invalid'])
     expect(settings).toMatchObject({ type: 'Traditional', anchor: 'Auto', history: 15, dailyBased: false, labels: false, prices: false, labelPosition: 'Right', width: 1 })
     expect(settings.levels.P).toEqual({ visible: false, color: '#fb8c00' })
-    expect(PIVOTS_DEFAULT_PARAMS).toHaveLength(30)
+    expect(PIVOTS_DEFAULT_PARAMS).toHaveLength(37)
     expect(PIVOT_TYPES.map((type) => Object.keys(calculatePivotLevels(type, previous, 110)).length)).toEqual([11, 7, 9, 9, 3, 11])
+  })
+
+  it('groups P/R/S colors, preserves per-level switches, and migrates legacy colors once', () => {
+    const legacy = [...PIVOTS_DEFAULT_PARAMS.slice(0, 30)]
+    legacy[11] = '#112233'
+    legacy[13] = '#445566'
+    legacy[10] = false
+    const migrated = validatePivotParams(legacy)
+    expect(migrated.slice(30)).toEqual(['#fb8c00', '#112233', '#445566', false, '#a78bfa', '#f59e0b', '#38bdf8'])
+    expect(validatePivotParams(migrated)).toEqual(migrated)
+    expect(legacy).toHaveLength(30)
+    const settings = pivotSettings(migrated)
+    expect(settings.levels.R1).toEqual({ visible: false, color: '#112233' })
+    expect(settings.levels.R5.color).toBe('#112233')
+    expect(settings.levels.S3.color).toBe('#445566')
+    expect(settings.showPrevious).toBe(false)
+  })
+
+  it('carries the preceding period levels into only the current period even with history one', () => {
+    const source = [bar(jan), bar(jan + day, { open: 110, high: 150, low: 100, close: 140 }), bar(jan + 2 * day)]
+    const params = [...PIVOTS_DEFAULT_PARAMS]
+    params[1] = 'Daily'; params[2] = 1; params[33] = true
+    const settings = pivotSettings(params)
+    const result = calculatePivots([bar(jan + 2 * day + 3_600_000)], '1h', settings, source, '1d')
+    expect(result[0].P).toBe(130)
+    expect(result[0].previousP).toBe(105)
+    expect(result[0].segment?.previous?.R1).toBe(120)
+    const live = structuredClone(source)
+    live[2].high = 9999
+    live[2].close = 9998
+    expect(calculatePivots([bar(jan + 2 * day + 3_600_000)], '1h', settings, live, '1d')).toEqual(result)
+    settings.type = 'Woodie'
+    const woodie = calculatePivots([bar(jan + 2 * day)], '1h', settings, source, '1d')
+    expect(woodie[0].previousP).toBe(107.5)
+    settings.showPrevious = false
+    expect(calculatePivots([bar(jan + 2 * day)], '1h', settings, source, '1d')[0].previousP).toBeUndefined()
+    settings.showPrevious = true
+    expect(calculatePivots([bar(jan + 2 * day)], '1h', settings, source.slice(1), '1d')[0].previousP).toBeUndefined()
+  })
+
+  it('carries levels into a confirmed projection and respects gaps and the drawing limit', () => {
+    const params = [...PIVOTS_DEFAULT_PARAMS]
+    params[1] = 'Daily'; params[2] = 1; params[33] = true
+    const settings = pivotSettings(params)
+    const input = hours(2)
+    const projected = calculatePivots(input, '1h', settings, input, '1h', jan + 2 * day)
+    expect(projected.at(-1)?.projection?.previous?.P).toBe(105)
+    expect(projected.at(-1)?.previousP).toBe(105)
+    const gap = input.filter((_, index) => index !== 12)
+    expect(calculatePivots(gap, '1h', settings, gap, '1h', jan + 2 * day).at(-1)?.projection?.previous).toBeUndefined()
+    settings.history = 200
+    const daily = Array.from({ length: 100 }, (_, i) => bar(jan + i * day))
+    const result = calculatePivots(daily, '1d', settings)
+    const segments = result.flatMap(v => v.segment ? [v.segment] : [])
+    expect(segments.filter(s => s.previous)).toHaveLength(1)
+    expect(segments.reduce((sum, s) => sum + Object.keys(s.levels).length + Object.keys(s.previous ?? {}).length, 0)).toBeLessThanOrEqual(500)
+  })
+
+  it('rejects bad toggle, group colors and partial new settings before persistence', () => {
+    for (const [index, value] of [[33, 0], [30, null], [31, '#nope'], [36, false], [2, 0]] as const) {
+      const params: unknown[] = [...PIVOTS_DEFAULT_PARAMS]
+      params[index] = value
+      expect(() => validatePivotParams(params)).toThrow(/PIVOTS/)
+    }
+    expect(() => validatePivotParams(PIVOTS_DEFAULT_PARAMS.slice(0, 31))).toThrow()
   })
 })

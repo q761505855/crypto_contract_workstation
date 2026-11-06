@@ -26,6 +26,9 @@ import {
   shiftOpenTime,
 } from '../market-data/intervals'
 import { registerSupertrendIndicator } from './supertrend'
+import { registerKeltnerIndicator } from './keltner'
+import { registerTtmSqueezeIndicator } from './ttm-squeeze'
+import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { readChartHistory } from '../market-data/indicator-history'
 
@@ -89,6 +92,9 @@ const pivotHistoryReset = new WeakMap<ChartPro, () => void>()
 
 const createProChart: ChartProFactory = (options) => {
   registerSupertrendIndicator()
+  registerKeltnerIndicator()
+  registerTtmSqueezeIndicator()
+  registerTtmWaveIndicators()
   let chart: ChartPro | undefined
   const resetPivotHistory = registerPivotsIndicator(options.datafeed, () => {
     const replay = (options.datafeed as Datafeed & {
