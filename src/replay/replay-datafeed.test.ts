@@ -26,6 +26,7 @@ function fixture(candles = Array.from({ length: 60 }, (_, index) => candle(index
     subscribe: vi.fn(), unsubscribe: vi.fn(),
   }
   const service = {
+    getSymbolOnboardDate: vi.fn(async (): Promise<number | undefined> => undefined),
     loadCandles: vi.fn(async () => { throw new Error('unexpected remote candle request') }),
     loadReplayCandles: vi.fn(async () => []),
     loadCachedCandles: vi.fn(async (
@@ -38,6 +39,94 @@ function fixture(candles = Array.from({ length: 60 }, (_, index) => candle(index
 }
 
 describe('ReplayDatafeed', () => {
+  it('bounds daily minute history to one year even on jumps and older pages', async () => {
+    const previousDay = Date.UTC(2023, 11, 29)
+    const firstAllowedDay = Date.UTC(2023, 11, 30)
+    const rows = Array.from({ length: 2 * 1440 }, (_, index) => candle(previousDay + index * minute))
+    const { feed, service } = fixture(rows)
+    Object.assign(service, { usesMinuteHistory: () => true })
+    vi.mocked(service.getSymbolOnboardDate).mockResolvedValue(Date.UTC(2020, 0, 1))
+    const status = vi.fn()
+    feed.setHistoryStatusListener(status)
+    feed.setReplayContext({ ...context, currentTime: Date.UTC(2024, 11, 30) })
+
+    const bars = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1d'), previousDay, firstAllowedDay)
+    expect(bars.map(row => row.timestamp)).toEqual([firstAllowedDay])
+    const outside = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1d'), previousDay, previousDay)
+    expect(outside).toEqual([])
+    await expect(feed.getOlderHistory(DEFAULT_SYMBOL, period('1d'), firstAllowedDay))
+      .resolves.toEqual({ candles: [], hasMore: false })
+    expect(status).toHaveBeenLastCalledWith('已到回放历史上限（1 年）')
+  })
+
+  it.each([
+    ['3d', Date.UTC(2023, 11, 29)],
+    ['1w', Date.UTC(2023, 11, 25)],
+    ['1M', Date.UTC(2023, 11, 1)],
+  ])('shows native %s history older than a year on jumps and older pages', async (timeframe, firstOpen) => {
+    const { feed, service } = fixture([candle(firstOpen, timeframe)])
+    Object.assign(service, { usesMinuteHistory: () => true })
+    vi.mocked(service.getSymbolOnboardDate).mockResolvedValue(firstOpen)
+    const status = vi.fn()
+    feed.setHistoryStatusListener(status)
+    feed.setReplayContext({ ...context, currentTime: Date.UTC(2024, 11, 30) })
+
+    const bars = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period(timeframe), firstOpen, firstOpen)
+    expect(bars.map(row => row.timestamp)).toEqual([firstOpen])
+    await expect(feed.getOlderHistory(DEFAULT_SYMBOL, period(timeframe), Date.UTC(2024, 0, 1)))
+      .resolves.toEqual({ candles: [expect.objectContaining({ timestamp: firstOpen })], hasMore: false })
+    expect(status).toHaveBeenLastCalledWith('已到最早历史数据')
+    expect(service.loadCachedCandles).not.toHaveBeenCalledWith('trade', 'BTCUSDT', '1m', expect.anything(), expect.anything())
+  })
+
+  it('pages daily minute archives backwards across multiple months to the listing boundary', async () => {
+    const first = Date.UTC(2024, 6, 1)
+    const before = Date.UTC(2024, 10, 4)
+    const rows = Array.from({ length: (before - first) / minute }, (_, index) => candle(first + index * minute))
+    const { feed, service } = fixture(rows)
+    Object.assign(service, { usesMinuteHistory: () => true })
+    vi.mocked(service.getSymbolOnboardDate).mockResolvedValue(first)
+    const status = vi.fn()
+    feed.setHistoryStatusListener(status)
+    feed.setReplayContext({ ...context, currentTime: Date.UTC(2024, 11, 30) })
+
+    const recent = await feed.getOlderHistory(DEFAULT_SYMBOL, period('1d'), before)
+    expect(recent?.candles.at(0)?.timestamp).toBe(Date.UTC(2024, 9, 1))
+    expect(recent?.candles.at(-1)?.timestamp).toBe(Date.UTC(2024, 10, 3))
+    expect(recent?.hasMore).toBe(true)
+    const earlier = await feed.getOlderHistory(DEFAULT_SYMBOL, period('1d'), recent!.candles[0].timestamp)
+    expect(earlier?.candles.at(0)?.timestamp).toBe(Date.UTC(2024, 7, 1))
+    expect(earlier?.hasMore).toBe(true)
+    const earliest = await feed.getOlderHistory(DEFAULT_SYMBOL, period('1d'), earlier!.candles[0].timestamp)
+    expect(earliest?.candles.at(0)?.timestamp).toBe(first)
+    expect(earliest?.hasMore).toBe(false)
+    expect(status).toHaveBeenLastCalledWith('已到最早历史数据')
+    expect(service.loadCandles).not.toHaveBeenCalled()
+  })
+
+  it('leaves an empty failed page retryable and keeps its warning separate from the history boundary', async () => {
+    const monday = Date.UTC(2024, 9, 28)
+    const nextMonday = Date.UTC(2024, 10, 4)
+    const rows: MarketCandle[] = []
+    const { feed, service } = fixture(rows)
+    Object.assign(service, { usesMinuteHistory: () => true })
+    vi.mocked(service.getSymbolOnboardDate).mockResolvedValue(monday)
+    vi.mocked(service.loadCandles).mockRejectedValueOnce(new Error('API temporarily unavailable'))
+      .mockImplementationOnce(async () => {
+        rows.push(candle(monday, '1w'))
+        return []
+      })
+    const status = vi.fn()
+    feed.setHistoryStatusListener(status)
+    feed.setReplayContext({ ...context, currentTime: nextMonday })
+
+    await expect(feed.getOlderHistory(DEFAULT_SYMBOL, period('1w'), nextMonday))
+      .resolves.toEqual({ candles: [], hasMore: true })
+    expect(status).toHaveBeenLastCalledWith(expect.stringContaining('可重试'))
+    await expect(feed.getOlderHistory(DEFAULT_SYMBOL, period('1w'), nextMonday))
+      .resolves.toEqual({ candles: [expect.objectContaining({ timestamp: monday })], hasMore: false })
+    expect(status).toHaveBeenLastCalledWith('已到最早历史数据')
+  })
   it('does not restore an old chart period when an in-flight request restarts after replay exits', async () => {
     const { feed, service, base } = fixture()
     const selection = vi.fn()
@@ -450,7 +539,10 @@ describe('ReplayDatafeed', () => {
   it('reuses revealed canonical minutes across hour, day, week, month and minute navigation', async () => {
     const start = Date.UTC(2025, 8, 1), shorter = Date.UTC(2025, 8, 10)
     const currentTime = Date.UTC(2025, 8, 15, 4, 15), boundary = currentTime + 15 * minute
-    const { feed, service } = fixture(Array.from({ length: (boundary - start) / minute + 10 }, (_, index) => candle(start + index * minute)))
+    const { feed, service } = fixture([
+      ...Array.from({ length: (boundary - start) / minute + 10 }, (_, index) => candle(start + index * minute)),
+      candle(start, '1w'), candle(Date.UTC(2025, 8, 8), '1w'),
+    ])
     Object.assign(service, { usesMinuteHistory: () => true })
     feed.setReplayContext({ ...context, timeframe: '15m', currentTime })
     await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1h'), shorter, boundary)
@@ -460,7 +552,7 @@ describe('ReplayDatafeed', () => {
     const minutes = await feed.getHistoryKLineData(DEFAULT_SYMBOL, period('1m'), currentTime, boundary)
     expect(month.at(-1)).toMatchObject({ timestamp: start, volume: 40_860, high: 12 })
     expect(minutes).toHaveLength(15)
-    expect(vi.mocked(service.loadCachedCandles).mock.calls.map((call) => call.slice(2))).toEqual([
+    expect(vi.mocked(service.loadCachedCandles).mock.calls.filter(call => call[2] === '1m').map(call => call.slice(2))).toEqual([
       ['1m', shorter, boundary - minute], ['1m', start, shorter - minute],
     ])
     expect(service.loadReplayCandles).not.toHaveBeenCalled()

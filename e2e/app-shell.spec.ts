@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { readFile, writeFile } from 'node:fs/promises'
-import { alignOpenTime, nextOpenTime } from '../src/market-data/intervals'
+import { alignOpenTime, klineCloseBoundary, nextOpenTime } from '../src/market-data/intervals'
 import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
 import { fixtureMinutePrices, installArchiveFixtures } from './archive-fixtures'
 import { traceNativeRestoreWrites } from './storage-diagnostics'
@@ -100,6 +100,43 @@ test.beforeEach(async ({ context }) => {
 
 test.describe('recent-market integration', () => {
   test.use({ timezoneId: 'UTC' })
+
+  test('loads replay weeks beyond one year through REST to the Binance listing boundary', async ({ page }) => {
+    test.setTimeout(90_000)
+    const firstWeek = Date.UTC(2023, 10, 6)
+    const replayWeek = Date.UTC(2025, 0, 6)
+    const now = replayWeek + 15 * 60_000
+    await page.clock.install({ time: now })
+    const { archiveRequests } = await mockBinance(page, false, {}, { now, onboardDate: firstWeek })
+    const inspect = await installViewportProbe(page)
+    await seedSymbolListing(page, firstWeek)
+    await page.goto('./')
+    await expectCanvasContent(page)
+    await selectChartPeriod(page, '1m')
+    await jumpChart(page, '2025-01-06T00:05')
+    await setReplayEnd(page, '2025-01-06T00:07')
+    const controls = page.getByTestId('replay-controls')
+    await controls.getByRole('button', { name: '创建回放' }).click()
+    await expect(controls).toContainText('1/3')
+
+    const priorArchiveRequests = [...archiveRequests]
+    const weeklyRequests: URL[] = []
+    page.on('request', request => {
+      const url = new URL(request.url())
+      if (url.pathname === '/fapi/v1/klines' && url.searchParams.get('interval') === '1w') weeklyRequests.push(url)
+    })
+    await selectChartPeriod(page, '1w')
+    await expect(page.locator('.status-footer')).toContainText('已到最早历史数据', { timeout: 60_000 })
+    const week = 7 * 86_400_000
+    const weeks = Array.from({ length: (replayWeek - firstWeek) / week + 1 }, (_, index) => firstWeek + index * week)
+    expect((await inspect()).timestamps).toEqual(weeks)
+    expect((await inspect()).last).toMatchObject({ timestamp: replayWeek, volume: 6 * 100.5 })
+    expect(weeklyRequests).toHaveLength(1)
+    expect(weeklyRequests[0].searchParams.get('startTime')).toBe(String(firstWeek))
+    expect(weeklyRequests[0].searchParams.get('endTime')).toBe(String(Date.UTC(2024, 11, 30)))
+    expect(archiveRequests).toEqual(priorArchiveRequests)
+    await expect(controls).toContainText('1/3')
+  })
 
   test('loads API candles into native storage and replays trades without a cached fixture', { tag: ['@release', '@integration'] }, async ({ page }) => {
     const now = Date.UTC(2026, 10, 1, 0, 15)
@@ -762,7 +799,7 @@ async function mockBinance(page: import('@playwright/test').Page, pacedClock = f
           openTime,
           ...prices,
           '100.5',
-          nextOpenTime(openTime, timeframe) - 1,
+          klineCloseBoundary(openTime, timeframe) - 1,
           '6030000',
           100,
           '0',
@@ -1726,12 +1763,17 @@ test('observes replay across periods without future bars and locates its reveale
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
   await expect(controls).toContainText('1/3')
   const boundary = start + 15 * 60_000
-  for (const text of ['1h', '1d', '1w', '1M', '1m']) {
+  for (const text of ['1h', '1d', '3d', '1w', '1M', '1m']) {
     await selectChartPeriod(page, text)
     await expect.poll(async () => (await inspect()).debug.restore).toBeNull().catch(async error => { const state = await inspect(); console.log(JSON.stringify({ ...state, timestamps: undefined })); throw error })
     await expect.poll(async () => (await inspect()).rightmost).toBe(alignOpenTime(start, text, 'floor')).catch(async error => { const state = await inspect(); console.log(JSON.stringify({ ...state, timestamps: undefined, footer: await page.locator('.status-footer').innerText() })); throw error })
     const state = await inspect()
     const last = alignOpenTime(boundary - 1, text, 'floor')
+    if (text === '1h' || text === '1d' || text === '1m') {
+      const previousYear = new Date(start)
+      previousYear.setUTCFullYear(previousYear.getUTCFullYear() - 1)
+      expect(state.timestamps.every(time => time >= previousYear.getTime())).toBe(true)
+    }
     expect(state.timestamps.every(time => time <= last)).toBe(true)
     expect(state.last?.timestamp).toBe(last)
     expect(state.last?.volume).toBeCloseTo((boundary - last) / 60_000 * 100.5, 5)

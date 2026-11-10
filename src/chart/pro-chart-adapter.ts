@@ -22,8 +22,10 @@ import type {
 } from './indicator-preferences'
 import {
   alignOpenTime,
+  klineCloseBoundary,
   nextOpenTime,
   shiftOpenTime,
+  usesNativeKlines,
 } from '../market-data/intervals'
 import { registerSupertrendIndicator } from './supertrend'
 import { registerKeltnerIndicator } from './keltner'
@@ -31,6 +33,7 @@ import { registerTtmSqueezeIndicator } from './ttm-squeeze'
 import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { readChartHistory } from '../market-data/indicator-history'
+import type { ReplayDatafeed } from '../replay/replay-datafeed'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
 import { registerSimulationPriceLine, SIMULATION_PRICE_LINE } from './simulation-price-line'
 
@@ -171,6 +174,13 @@ export class ProChartAdapter implements ChartAdapterPort {
     const datafeed = new Proxy(options.datafeed, {
       get: (target, property) => {
         if (property === 'getHistoryKLineData') return this.loadChartHistory.bind(this)
+        if (property === 'getOlderHistory') {
+          const loadOlder = (target as Datafeed & Partial<Pick<ReplayDatafeed, 'getOlderHistory'>>).getOlderHistory
+          return loadOlder
+            ? (symbol: SymbolInfo, period: Period, before: number) =>
+              loadOlder.call(target, symbol, period, before, this.historyAbort.signal)
+            : undefined
+        }
         if (property === 'subscribe') return this.subscribeChart.bind(this)
         const value = Reflect.get(target, property, target) as unknown
         return typeof value === 'function' ? value.bind(target) : value
@@ -362,20 +372,23 @@ export class ProChartAdapter implements ChartAdapterPort {
     })
   }
 
-  private latestVisibleTime(): number {
+  private replayHistoryEnd(): number | undefined {
     const context = (this.datafeed as Datafeed & {
       getReplayContext?: () => { currentTime: number; timeframe: string } | null
     } | null)?.getReplayContext?.()
-    return context ? nextOpenTime(context.currentTime, context.timeframe) - 1 : Date.now()
+    return context ? klineCloseBoundary(context.currentTime, context.timeframe) - 1 : undefined
   }
 
   private timeWindow(timestamp: number, period: Period): { target: number; from: number; to: number } {
-    const latest = this.latestVisibleTime()
+    const replayEnd = this.replayHistoryEnd()
+    const latest = replayEnd ?? Date.now()
     const target = alignOpenTime(Math.min(timestamp, latest), period.text, 'floor')
+    const monthStart = alignOpenTime(target, '1M', 'floor')
+    const chartStart = shiftOpenTime(target, period.text, -249)
     return {
       target,
-      from: Math.max(0, alignOpenTime(target, '1M', 'floor'), shiftOpenTime(target, period.text, -249)),
-      to: Math.min(shiftOpenTime(target, period.text, 249), nextOpenTime(alignOpenTime(target, '1M', 'floor'), '1M') - 1, latest),
+      from: Math.max(0, chartStart, replayEnd !== undefined && usesNativeKlines(period.text) ? 0 : monthStart),
+      to: Math.min(shiftOpenTime(target, period.text, 249), nextOpenTime(monthStart, '1M') - 1, latest),
     }
   }
 

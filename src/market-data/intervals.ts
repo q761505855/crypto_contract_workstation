@@ -1,5 +1,12 @@
 import type { Period } from '@klinecharts/pro'
 
+const THREE_DAYS = 3 * 86_400_000
+// Binance's USD-M 3d series changed its UTC open grid in August 2023.
+// The last old bar and the first new bar overlap by one day.
+const LAST_OLD_THREE_DAY_OPEN = Date.UTC(2023, 7, 14)
+const FIRST_NEW_THREE_DAY_OPEN = Date.UTC(2023, 7, 16)
+export const LEGACY_THREE_DAY_TIMEFRAME = '3d-legacy'
+
 const FIXED_INTERVALS: Readonly<Record<string, number>> = Object.freeze({
   '1m': 60_000,
   '3m': 3 * 60_000,
@@ -13,7 +20,7 @@ const FIXED_INTERVALS: Readonly<Record<string, number>> = Object.freeze({
   '8h': 8 * 3_600_000,
   '12h': 12 * 3_600_000,
   '1d': 86_400_000,
-  '3d': 3 * 86_400_000,
+  '3d': THREE_DAYS,
 })
 
 const WEEK_INTERVAL = 7 * 86_400_000
@@ -32,7 +39,13 @@ export function periodToTimeframe(period: Period): string {
   return period.text
 }
 
+export function usesNativeKlines(timeframe: string): boolean {
+  return timeframe === '3d' || timeframe === '1w' || timeframe === '1M'
+}
+
 export function nextOpenTime(openTime: number, timeframe: string): number {
+  if (timeframe === '3d' && openTime === LAST_OLD_THREE_DAY_OPEN) return FIRST_NEW_THREE_DAY_OPEN
+  if (timeframe === LEGACY_THREE_DAY_TIMEFRAME) return openTime + THREE_DAYS
   if (timeframe === '1M') {
     const date = new Date(openTime)
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1)
@@ -48,6 +61,8 @@ export function nextOpenTime(openTime: number, timeframe: string): number {
 }
 
 export function previousOpenTime(openTime: number, timeframe: string): number {
+  if (timeframe === '3d' && openTime === FIRST_NEW_THREE_DAY_OPEN) return LAST_OLD_THREE_DAY_OPEN
+  if (timeframe === LEGACY_THREE_DAY_TIMEFRAME) return openTime - THREE_DAYS
   if (timeframe === '1M') {
     const date = new Date(openTime)
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 1, 1)
@@ -76,8 +91,11 @@ export function alignOpenTime(
       Math.floor((timestamp - MONDAY_UTC_ANCHOR) / WEEK_INTERVAL) *
         WEEK_INTERVAL +
       MONDAY_UTC_ANCHOR
+  } else if (timeframe === '3d') {
+    const anchor = timestamp < FIRST_NEW_THREE_DAY_OPEN ? LAST_OLD_THREE_DAY_OPEN : FIRST_NEW_THREE_DAY_OPEN
+    floor = Math.floor((timestamp - anchor) / THREE_DAYS) * THREE_DAYS + anchor
   } else {
-    const interval = FIXED_INTERVALS[timeframe]
+    const interval = timeframe === LEGACY_THREE_DAY_TIMEFRAME ? THREE_DAYS : FIXED_INTERVALS[timeframe]
     if (interval === undefined) {
       throw new Error(`不支持的周期：${timeframe}`)
     }
@@ -87,6 +105,17 @@ export function alignOpenTime(
     return floor
   }
   return nextOpenTime(floor, timeframe)
+}
+
+/** Exclusive end of prices in the bar, even when consecutive opens overlap. */
+export function klineCloseBoundary(openTime: number, timeframe: string): number {
+  return timeframe === '3d' ? openTime + THREE_DAYS : nextOpenTime(openTime, timeframe)
+}
+
+export function lastClosedOpenTime(visibleUntil: number, timeframe: string): number {
+  let open = alignOpenTime(visibleUntil - 1, timeframe, 'floor')
+  while (klineCloseBoundary(open, timeframe) > visibleUntil) open = previousOpenTime(open, timeframe)
+  return open
 }
 
 export function shiftOpenTime(

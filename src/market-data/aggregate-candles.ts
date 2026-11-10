@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js'
-import { alignOpenTime, nextOpenTime, SUPPORTED_TIMEFRAMES } from './intervals'
+import { alignOpenTime, klineCloseBoundary, LEGACY_THREE_DAY_TIMEFRAME, SUPPORTED_TIMEFRAMES } from './intervals'
 import type { MarketCandle } from './models'
 
 const MINUTE = 60_000
@@ -35,7 +35,7 @@ export function aggregateMinuteCandles(
   timeframe: string,
   visibleUntil = Infinity,
 ): MarketCandle[] {
-  if (!SUPPORTED_TIMEFRAMES.includes(timeframe)) {
+  if (!SUPPORTED_TIMEFRAMES.includes(timeframe) && timeframe !== LEGACY_THREE_DAY_TIMEFRAME) {
     throw new Error(`不支持的周期：${timeframe}`)
   }
   if (visibleUntil !== Infinity && (!Number.isFinite(visibleUntil) || visibleUntil < 0)) {
@@ -92,7 +92,7 @@ export function aggregateMinuteCandles(
 
   const result: MarketCandle[] = []
   for (const [start, rows] of groups) {
-    const end = nextOpenTime(start, timeframe)
+    const end = klineCloseBoundary(start, timeframe)
     const visibleEnd = Math.min(end, Math.floor(visibleUntil / MINUTE) * MINUTE)
     const count = (visibleEnd - start) / MINUTE
     if (

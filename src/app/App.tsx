@@ -156,6 +156,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   }))
   const selectionInitialized = useRef(false)
   const [marketWarning, setMarketWarning] = useState('')
+  const [replayHistoryStatus, setReplayHistoryStatus] = useState('')
   const [liveStatus, setLiveStatus] = useState<LiveMarketStatus>({
     ...INITIAL_LIVE_STATUS,
   })
@@ -305,9 +306,11 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   useEffect(() => {
     marketRuntime.replayDatafeed.setSelectionListener(syncMarketSelection)
     marketRuntime.replayDatafeed.setWarningListener(setMarketWarning)
+    marketRuntime.replayDatafeed.setHistoryStatusListener(setReplayHistoryStatus)
     return () => {
       marketRuntime.replayDatafeed.setSelectionListener()
       marketRuntime.replayDatafeed.setWarningListener()
+      marketRuntime.replayDatafeed.setHistoryStatusListener()
     }
   }, [marketRuntime, syncMarketSelection])
 
@@ -480,7 +483,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       </div>
       {mobile && mobilePanel && <div className="mobile-panel-backdrop" onClick={closeMobilePanel} aria-hidden="true" />}
       <footer className="status-footer">
-        <span id="workspace-status-content">{marketSelection.symbol.ticker} · {marketSelection.period.text}{replay.session !== null ? ` · 回放 ${replay.session.currentIndex + 1}/${replay.session.candleCount}` : ''}{marketWarning.length > 0 ? ` · ${marketWarning}` : ''}<HistoryUploadStatus service={marketRuntime.service} onOpen={() => setDataManagerOpen(true)} /></span>
+        <span id="workspace-status-content">{marketSelection.symbol.ticker} · {marketSelection.period.text}{replay.session !== null ? ` · 回放 ${replay.session.currentIndex + 1}/${replay.session.candleCount}` : ''}<span role="status">{replayHistoryStatus ? ` · ${replayHistoryStatus}` : ''}</span>{marketWarning.length > 0 ? ` · ${marketWarning}` : ''}<HistoryUploadStatus service={marketRuntime.service} onOpen={() => setDataManagerOpen(true)} /></span>
         <span>{mode === 'history' ? '历史训练模拟' : '实时只读'}</span>
       </footer>
       <nav className="mobile-workspace-nav" aria-label="工作台快捷操作">

@@ -160,9 +160,25 @@ describe('canonical minute history', () => {
     const replay = new ReplayDatafeed({} as Datafeed, service)
     const currentTime = Date.UTC(2025,8,15)
     replay.setReplayContext({sessionId:'bounded-replay',symbol:'BTCUSDT',timeframe:'1m',currentTime,endTime:end})
-    await replay.getHistoryKLineData({ticker:'BTCUSDT'},{text:'1w',multiplier:1,timespan:'week'},Date.UTC(2019,0,1),currentTime)
+    await replay.getHistoryKLineData({ticker:'BTCUSDT'},{text:'1d',multiplier:1,timespan:'day'},Date.UTC(2019,0,1),currentTime)
     expect(archives.loadMonth.mock.calls.length).toBeGreaterThan(0)
     expect(archives.loadMonth.mock.calls.every(call=>Date.UTC(call[2],call[3]-1)>=Date.UTC(2025,7,1))).toBe(true)
+  })
+
+  it.each([
+    ['3d', Date.UTC(2025, 8, 1), Date.UTC(2025, 8, 4)],
+    ['1w', Date.UTC(2025, 8, 1), Date.UTC(2025, 8, 8)],
+    ['1M', Date.UTC(2025, 8, 1), Date.UTC(2025, 9, 1)],
+  ])('loads and reuses native %s bars without reading or uploading minute archives', async (timeframe, from, end) => {
+    const { service, rest, archives, cloud } = setup(null)
+    const row = { ...candles(from, from)[0], timeframe, closeTime: end - 1 }
+    rest.downloadRange.mockResolvedValue([row])
+    await expect(service.loadReplayCandles('trade', 'BTCUSDT', timeframe, from, from)).resolves.toEqual([row])
+    await expect(service.loadCandles('trade', 'BTCUSDT', timeframe, from, from)).resolves.toEqual([row])
+    expect(rest.downloadRange).toHaveBeenCalledExactlyOnceWith('trade', 'BTCUSDT', timeframe, from, from, expect.any(Object))
+    expect(archives.loadMonth).not.toHaveBeenCalled()
+    expect(cloud.loadMonth).not.toHaveBeenCalled()
+    expect(cloud.saveMonth).not.toHaveBeenCalled()
   })
   it('only writes missing ordinary minutes when cloud data overlaps the local cache', async () => {
     const {service,store,cloud} = setup()

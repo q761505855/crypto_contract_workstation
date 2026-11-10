@@ -7,8 +7,12 @@ import type {
 import type { KLineData } from 'klinecharts'
 import {
   alignOpenTime,
+  klineCloseBoundary,
+  lastClosedOpenTime,
   nextOpenTime,
+  previousOpenTime,
   shiftOpenTime,
+  usesNativeKlines,
 } from '../market-data/intervals'
 import { findMissingRanges } from '../market-data/gaps'
 import type { MarketDataService } from '../market-data/market-data-service'
@@ -17,6 +21,26 @@ import type { ReplayContext } from './models'
 import { readChartHistory } from '../market-data/indicator-history'
 
 const MAX_REPLAY_MINUTES = 100_000
+const HISTORY_LIMIT_MESSAGE = '已到回放历史上限（1 年）'
+
+function replayHistoryStart(currentTime: number, timeframe: string): number {
+  // Native candles can page back to listing without fetching minute archives.
+  if (usesNativeKlines(timeframe)) return 0
+  const date = new Date(currentTime)
+  const month = date.getUTCMonth()
+  date.setUTCFullYear(date.getUTCFullYear() - 1)
+  if (date.getUTCMonth() !== month) date.setUTCDate(0) // February 29 maps to February 28.
+  return alignOpenTime(Math.max(0, date.getTime()), timeframe, 'ceil')
+}
+
+function historyWindowStart(from: number, to: number, timeframe: string, minuteHistory: boolean): number {
+  const candleLimit = shiftOpenTime(alignOpenTime(to, timeframe, 'floor'), timeframe, -498)
+  if (!minuteHistory) return Math.max(from, candleLimit)
+  // Keep each read bounded, including the candle that straddles the month
+  // boundary. The next page starts immediately before this page's first bar.
+  const month = previousOpenTime(alignOpenTime(to, '1M', 'floor'), '1M')
+  return Math.max(from, candleLimit, alignOpenTime(month, timeframe, 'floor'))
+}
 
 function toKLineData(candle: MarketCandle): KLineData {
   return {
@@ -57,6 +81,7 @@ export class ReplayDatafeed implements Datafeed {
   private sessionData: { id: string; candles: readonly MarketCandle[] } | null = null
   private onSelectionChange?: (selection: MarketSelection) => void
   private onWarning?: (message: string) => void
+  private onHistoryStatus?: (message: string) => void
   private replayGeneration = 0
   private minutePool = new Map<number, MarketCandle>()
 
@@ -80,6 +105,10 @@ export class ReplayDatafeed implements Datafeed {
     this.onWarning = listener
   }
 
+  setHistoryStatusListener(listener?: (message: string) => void): void {
+    this.onHistoryStatus = listener
+  }
+
   getReplayContext(): ReplayContext | null {
     return this.context === null ? null : { ...this.context }
   }
@@ -91,6 +120,7 @@ export class ReplayDatafeed implements Datafeed {
   setReplayContext(context: ReplayContext | null): void {
     const previous = this.context
     if (requiresRestart(previous, context)) {
+      this.onHistoryStatus?.('')
       this.historyContexts.clear()
       this.replayGeneration += 1
       this.minutePool.clear()
@@ -135,7 +165,10 @@ export class ReplayDatafeed implements Datafeed {
       this.onWarning?.('回放会话进行中，不能切换交易对。')
       return []
     }
-    if (notifySelection) this.onSelectionChange?.({ symbol, period })
+    if (notifySelection) {
+      this.onHistoryStatus?.('')
+      this.onSelectionChange?.({ symbol, period })
+    }
     const context = this.context
     const generation = this.replayGeneration
     if (context === null) {
@@ -161,11 +194,15 @@ export class ReplayDatafeed implements Datafeed {
     }
     // A replay step reveals a whole source candle. Other chart periods share
     // that same exclusive time boundary, regardless of their bucket size.
-    const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
+    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
     const visibleTo = Math.min(
       to,
       alignOpenTime(visibleUntil - 1, period.text, 'floor'),
     )
+    if (visibleTo < replayHistoryStart(context.currentTime, period.text)) {
+      if (notifySelection) this.onHistoryStatus?.(HISTORY_LIMIT_MESSAGE)
+      return []
+    }
     const visibleFrom =
       from > visibleTo
         ? shiftOpenTime(visibleTo, period.text, -498)
@@ -191,6 +228,53 @@ export class ReplayDatafeed implements Datafeed {
     return candles
   }
 
+  async getOlderHistory(symbol: SymbolInfo, period: Period, before: number, signal?: AbortSignal) {
+    const context = this.context
+    if (context === null || !this.service.usesMinuteHistory?.()) return null
+    const generation = this.replayGeneration
+    const retry = { candles: [], hasMore: true }
+    if (symbol.ticker.toUpperCase() !== context.symbol) return retry
+    signal?.throwIfAborted()
+    const onboard = await this.service.getSymbolOnboardDate(context.symbol, signal)
+    signal?.throwIfAborted()
+    if (!this.isCurrentContext(context, generation)) return retry
+
+    const timeframe = period.text
+    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
+    const to = Math.min(
+      previousOpenTime(alignOpenTime(before, timeframe, 'floor'), timeframe),
+      lastClosedOpenTime(visibleUntil, timeframe),
+    )
+    const native = usesNativeKlines(timeframe)
+    const windowStart = replayHistoryStart(context.currentTime, timeframe)
+    const listingStart = onboard === undefined ? 0 : alignOpenTime(onboard, timeframe, native ? 'floor' : 'ceil')
+    const firstOpen = Math.max(windowStart, listingStart)
+    const endMessage = native || (onboard !== undefined && listingStart >= windowStart)
+      ? '已到最早历史数据' : HISTORY_LIMIT_MESSAGE
+    if (to < firstOpen) {
+      this.onHistoryStatus?.(endMessage)
+      return { candles: [], hasMore: false }
+    }
+    const from = historyWindowStart(firstOpen, to, timeframe, !native)
+    const rows = await this.loadVisibleCandles(context, symbol, period, from, to, true, signal, true)
+    signal?.throwIfAborted()
+    if (!this.isCurrentContext(context, generation)) return retry
+
+    // Keep the cursor at a gap so the next drag can retry that interval,
+    // even if some older candles in this page were already cached.
+    let cursor = to
+    let index = rows.length
+    while (index > 0 && rows[index - 1].timestamp === cursor) {
+      index -= 1
+      cursor = previousOpenTime(cursor, timeframe)
+    }
+    const candles = rows.slice(index)
+    const hasMore = cursor >= firstOpen
+    this.onHistoryStatus?.(!hasMore ? endMessage
+      : cursor >= from ? '更早历史暂未加载，拖动图表可重试。' : '')
+    return { candles, hasMore }
+  }
+
   subscribe(
     symbol: SymbolInfo,
     period: Period,
@@ -205,7 +289,7 @@ export class ReplayDatafeed implements Datafeed {
       visibleUntil:
         visibleContext === null
           ? undefined
-          : nextOpenTime(visibleContext.currentTime, visibleContext.timeframe),
+          : klineCloseBoundary(visibleContext.currentTime, visibleContext.timeframe),
     }
     if (this.context === null) {
       this.base.subscribe(symbol, period, callback)
@@ -237,14 +321,15 @@ export class ReplayDatafeed implements Datafeed {
       return
     }
     try {
-      const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
+      const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
       const from = alignOpenTime(
         Math.min(subscription.visibleUntil ?? visibleUntil, visibleUntil) - 1,
         subscription.period.text,
         'floor',
       )
       const candles =
-        subscription.period.text === context.timeframe
+        subscription.period.text === context.timeframe &&
+          alignOpenTime(context.currentTime, context.timeframe, 'floor') === context.currentTime
           ? (await this.loadLocalCandles(
               context,
               context.timeframe,
@@ -293,30 +378,24 @@ export class ReplayDatafeed implements Datafeed {
     to: number,
     allowFill = true,
     signal?: AbortSignal,
+    historyPage = false,
   ): Promise<KLineData[]> {
     signal?.throwIfAborted()
     const generation = this.replayGeneration
     if (!this.isCurrentContext(context, generation)) return []
-    const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
+    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
     const lastOpen = alignOpenTime(visibleUntil - 1, period.text, 'floor')
     to = Math.min(to, lastOpen)
-    from = Math.max(from, shiftOpenTime(alignOpenTime(to, period.text, 'floor'), period.text, -498))
     const minuteHistory = this.service.usesMinuteHistory?.() ?? false
-    if (minuteHistory) {
-      // Library period switches can ask for hundreds of weeks. Prepare chart
-      // history in calendar chunks; session buffering has its own month limit.
-      from = Math.max(from, shiftOpenTime(alignOpenTime(to, '1M', 'floor'), '1M', -1))
-    }
+    const native = minuteHistory && usesNativeKlines(period.text)
+    from = historyWindowStart(Math.max(from, replayHistoryStart(context.currentTime, period.text)), to, period.text, minuteHistory && !native)
     if (from > to) return []
-    const lastComplete = nextOpenTime(lastOpen, period.text) <= visibleUntil
-      ? lastOpen
-      : shiftOpenTime(lastOpen, period.text, -1)
+    const lastComplete = lastClosedOpenTime(visibleUntil, period.text)
     const completeTo = Math.min(to, lastComplete)
     // The cache service expands a higher-period open to the end of its bucket.
     // Never ask it for an unfinished bucket; build that bucket from visible source bars.
-    const cached = (from > completeTo || (minuteHistory && period.text !== '1m')
+    const cached = (from > completeTo || (minuteHistory && !native && period.text !== '1m')
       ? [] : await this.loadLocalCandles(context, period.text, from, completeTo, signal))
-      .filter((candle) => nextOpenTime(candle.openTime, period.text) <= visibleUntil)
     signal?.throwIfAborted()
     if (!this.isCurrentContext(context, generation)) return []
     const visible = new Map(cached.map((candle) => [candle.openTime, toKLineData(candle)]))
@@ -332,10 +411,11 @@ export class ReplayDatafeed implements Datafeed {
         ? context.timeframe
         : '1m'
     const completeGaps = findMissingRanges(cached, period.text, from, Math.min(to, lastComplete))
-    const needsPartial = lastOpen <= to && nextOpenTime(lastOpen, period.text) > visibleUntil
-    if (sourceTimeframe !== period.text && (completeGaps.length > 0 || needsPartial)) {
-      const sourceFrom = completeGaps.length > 0 ? completeGaps[0].from : lastOpen
-      const sourceTo = Math.min(nextOpenTime(alignOpenTime(to, period.text, 'floor'), period.text), visibleUntil) - 1
+    const needsPartial = lastOpen <= to && klineCloseBoundary(lastOpen, period.text) > visibleUntil
+    const aggregateComplete = !native && completeGaps.length > 0
+    if (sourceTimeframe !== period.text && (aggregateComplete || needsPartial)) {
+      const sourceFrom = aggregateComplete ? completeGaps[0].from : lastOpen
+      const sourceTo = Math.min(klineCloseBoundary(alignOpenTime(to, period.text, 'floor'), period.text), visibleUntil) - 1
       const source = (await this.loadLocalCandles(context, sourceTimeframe, sourceFrom, sourceTo, signal))
         .filter((candle) => nextOpenTime(candle.openTime, sourceTimeframe) <= visibleUntil)
       signal?.throwIfAborted()
@@ -349,7 +429,7 @@ export class ReplayDatafeed implements Datafeed {
         groups.set(open, group)
       }
       for (const [open, group] of groups) {
-        const end = Math.min(nextOpenTime(open, period.text), visibleUntil) - 1
+        const end = Math.min(klineCloseBoundary(open, period.text), visibleUntil) - 1
         if (findMissingRanges(group, sourceTimeframe, open, end).length > 0) continue
         const aggregate = { ...toKLineData(group[0]), timestamp: open }
         for (const candle of group.slice(1)) {
@@ -370,31 +450,34 @@ export class ReplayDatafeed implements Datafeed {
     const missingPartial = needsPartial && !visible.has(lastOpen)
     if (allowFill && (missingComplete.length > 0 || missingPartial)) {
       const prefetchTo = context.endTime === undefined ? undefined
-        : nextOpenTime(context.endTime, context.timeframe) - 1
+        : klineCloseBoundary(context.endTime, context.timeframe) - 1
       const options = { prefetchTo, ...(signal ? { signal } : {}), onWarning: (message: string) => {
         if (!signal?.aborted && this.isCurrentContext(context, generation)) this.onWarning?.(message)
       } }
+      // An older-page gesture may retry a failed archive read. Playback keeps
+      // using the shared failure cache so stepping never retries it per candle.
+      const load = historyPage ? this.service.loadCandles.bind(this.service)
+        : this.service.loadReplayCandles.bind(this.service)
       signal?.throwIfAborted()
-      if (missingComplete.length > 0) {
-        await this.service.loadReplayCandles(
-          'trade', context.symbol, period.text,
-          missingComplete[0].from, missingComplete.at(-1)!.to, options,
-        )
-        signal?.throwIfAborted()
-        if (!this.isCurrentContext(context, generation)) return []
+      try {
+        if (missingComplete.length > 0) {
+          await load('trade', context.symbol, period.text, missingComplete[0].from, missingComplete.at(-1)!.to, options)
+          signal?.throwIfAborted()
+          if (!this.isCurrentContext(context, generation)) return []
+        }
+        if (missingPartial) {
+          await load('trade', context.symbol, sourceTimeframe, lastOpen, visibleUntil - 1, options)
+        }
+      } catch (error) {
+        if (!historyPage) throw error
+        options.onWarning(error instanceof Error ? error.message : String(error))
       }
-      if (missingPartial) {
-        await this.service.loadReplayCandles(
-          'trade', context.symbol, sourceTimeframe,
-          lastOpen, visibleUntil - 1, options,
-        )
-        signal?.throwIfAborted()
-        if (!this.isCurrentContext(context, generation)) return []
-      }
-      return this.loadVisibleCandles(context, symbol, period, from, to, false, signal)
+      signal?.throwIfAborted()
+      if (!this.isCurrentContext(context, generation)) return []
+      return this.loadVisibleCandles(context, symbol, period, from, to, false, signal, historyPage)
     }
     signal?.throwIfAborted()
-    if (visible.size === 0 || missingPartial) this.warnMissingPeriod(period)
+    if (!historyPage && (visible.size === 0 || missingPartial)) this.warnMissingPeriod(period)
     return result
   }
 
@@ -406,12 +489,14 @@ export class ReplayDatafeed implements Datafeed {
     signal?: AbortSignal,
   ): Promise<MarketCandle[]> {
     signal?.throwIfAborted()
-    const visibleUntil = nextOpenTime(context.currentTime, context.timeframe)
+    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
     to = Math.min(to, visibleUntil - 1)
     if (from > to) return []
     const isVisible = (candle: MarketCandle) => candle.symbol === context.symbol && candle.timeframe === timeframe &&
-      candle.openTime >= from && candle.openTime <= to && candle.isClosed && nextOpenTime(candle.openTime, timeframe) <= visibleUntil
-    const session = this.sessionData?.id === context.sessionId && timeframe === context.timeframe
+      candle.openTime >= from && candle.openTime <= to && candle.isClosed &&
+      candle.closeTime < visibleUntil && klineCloseBoundary(candle.openTime, timeframe) <= visibleUntil
+    const session = this.sessionData?.id === context.sessionId && timeframe === context.timeframe &&
+      alignOpenTime(context.currentTime, timeframe, 'floor') === context.currentTime
       ? this.sessionData.candles
       : []
     if (timeframe === '1m' && this.service.usesMinuteHistory?.()) {

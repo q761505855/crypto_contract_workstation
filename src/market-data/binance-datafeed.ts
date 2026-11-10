@@ -9,6 +9,7 @@ import {
   alignOpenTime,
   periodToTimeframe,
   shiftOpenTime,
+  usesNativeKlines,
 } from './intervals'
 import type { MarketSelection } from './models'
 import { toSymbolInfo } from './models'
@@ -125,7 +126,7 @@ export class BinanceDatafeed implements Datafeed {
     // as the user scrolls instead of unexpectedly preparing years of minutes.
     const recentMonth = shiftOpenTime(alignOpenTime(alignedTo, '1M', 'floor'), '1M', -1)
     const requestedFrom = Math.max(0, from, cappedFrom)
-    const minuteHistory = this.service.usesMinuteHistory?.() ?? false
+    const minuteHistory = this.service.usesMinuteHistory?.() && !usesNativeKlines(timeframe)
     const effectiveFrom = Math.max(requestedFrom, minuteHistory ? recentMonth : 0)
     if (effectiveFrom > to) return []
     const sequence = notifySelection ? ++this.historySequence : this.historySequence

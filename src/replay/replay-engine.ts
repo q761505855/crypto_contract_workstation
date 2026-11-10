@@ -4,9 +4,9 @@ import type {
   ReplaySession,
   ReplaySpeed,
 } from './models'
-import { DEFAULT_TRADING_CONFIG } from './models'
+import { DEFAULT_TRADING_CONFIG, replaySourceTimeframe } from './models'
 import { findMissingRanges } from '../market-data/gaps'
-import { nextOpenTime } from '../market-data/intervals'
+import { klineCloseBoundary, nextOpenTime } from '../market-data/intervals'
 
 function candleCount(from: number, to: number, timeframe: string): number {
   if (timeframe === '1M') {
@@ -14,6 +14,7 @@ function candleCount(from: number, to: number, timeframe: string): number {
     const last = new Date(to)
     return (last.getUTCFullYear() - first.getUTCFullYear()) * 12 + last.getUTCMonth() - first.getUTCMonth() + 1
   }
+  if (timeframe === '3d') return Math.round((to - from) / (klineCloseBoundary(from, timeframe) - from)) + 1
   return Math.floor((to - from) / (nextOpenTime(from, timeframe) - from)) + 1
 }
 
@@ -138,10 +139,11 @@ export class ReplayEngine {
   bufferedCandles(): readonly MarketCandle[] { return this.candles }
 
   appendCandles(candles: readonly MarketCandle[]): void {
-    const from = nextOpenTime(this.candles.at(-1)!.openTime, this.session.period.text)
+    const timeframe = replaySourceTimeframe(this.session)
+    const from = nextOpenTime(this.candles.at(-1)!.openTime, timeframe)
     const prepared = normalizedCandles(candles, { ...this.session, startTime: from })
     if (prepared.length === 0) return
-    if (findMissingRanges(prepared, this.session.period.text, from, prepared.at(-1)!.openTime).length > 0) {
+    if (findMissingRanges(prepared, timeframe, from, prepared.at(-1)!.openTime).length > 0) {
       throw new Error('下一段回放数据仍有缺口')
     }
     // Append individually: a month of 1m rows can exceed JS argument limits.

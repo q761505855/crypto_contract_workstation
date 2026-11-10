@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { fixtureMinutePrices } from './archive-fixtures'
+import { usesNativeKlines } from '../src/market-data/intervals'
 
 /** Seed listing metadata, never candles, before the production DB upgrade. */
 export async function seedSymbolListing(page: Page, onboardDate: number) {
@@ -32,6 +33,7 @@ export async function installCachedMarketFixture(page: Page, symbolPrices: Recor
   await page.addInitScript({ content: `(() => {
     const MINUTE = 60000;
     const prices = ${fixtureMinutePrices.toString()};
+    const usesNativeKlines = ${usesNativeKlines.toString()};
     const symbolPrices = ${JSON.stringify(symbolPrices)};
     const trend = ${JSON.stringify(trend)};
     const recentOnly = ${JSON.stringify(recentOnly)};
@@ -43,6 +45,7 @@ export async function installCachedMarketFixture(page: Page, symbolPrices: Recor
       const intervals = { '1m':1, '3m':3, '5m':5, '15m':15, '30m':30, '1h':60, '2h':120, '4h':240, '6h':360, '8h':480, '12h':720, '1d':1440, '3d':4320, '1w':10080 };
       let pending = Promise.resolve();
       service.loadCandles = async (kind, symbol, timeframe, from, to, options = {}) => {
+        if (usesNativeKlines(timeframe)) return load(kind, symbol, timeframe, from, to, options);
         const now = new Date();
         if (recentOnly && from < Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)) return load(kind, symbol, timeframe, from, to, options);
         const seed = pending.catch(() => {}).then(async () => {

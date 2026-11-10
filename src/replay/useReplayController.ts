@@ -5,14 +5,14 @@ import {
   useState,
 } from 'react'
 import { findMissingRanges } from '../market-data/gaps'
-import { alignOpenTime, nextOpenTime, previousOpenTime } from '../market-data/intervals'
+import { alignOpenTime, lastClosedOpenTime, LEGACY_THREE_DAY_TIMEFRAME, nextOpenTime } from '../market-data/intervals'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import type {
   CreateReplaySessionInput,
   ReplaySession,
   ReplaySpeed,
 } from './models'
-import { DEFAULT_TRADING_CONFIG } from './models'
+import { DEFAULT_TRADING_CONFIG, replaySourceTimeframe } from './models'
 import { ReplayEngine } from './replay-engine'
 import type { MarketCandle } from '../market-data/models'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
@@ -30,7 +30,13 @@ export type ReplayCandleListener = (
 function preparationEnd(currentTime: number, timeframe: string, sessionEnd: number): number {
   const date = new Date(currentTime)
   const boundary = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 2, 1)
-  return Math.min(sessionEnd, previousOpenTime(alignOpenTime(boundary, timeframe, 'floor'), timeframe))
+  return Math.min(sessionEnd, lastClosedOpenTime(boundary, timeframe))
+}
+
+function restoreSourcePeriod(candles: MarketCandle[], timeframe: string): MarketCandle[] {
+  return timeframe === LEGACY_THREE_DAY_TIMEFRAME
+    ? candles.map(candle => ({ ...candle, timeframe: '3d' }))
+    : candles
 }
 
 export interface ReplayController {
@@ -112,18 +118,19 @@ export function useReplayController(
 
   const hydrate = useCallback(
     async (saved: ReplaySession): Promise<void> => {
-      const bufferedEnd = preparationEnd(saved.currentTime, saved.period.text, saved.endTime)
+      const timeframe = replaySourceTimeframe(saved)
+      const bufferedEnd = preparationEnd(saved.currentTime, timeframe, saved.endTime)
       const candles = await runtime.service.loadReplayCandles(
         'trade',
         saved.symbol.ticker,
-        saved.period.text,
+        timeframe,
         saved.startTime,
         bufferedEnd,
         { prefetchTo: bufferedEnd, onStatus: setPreparationStatus },
       )
       const gaps = findMissingRanges(
         candles,
-        saved.period.text,
+        timeframe,
         saved.startTime,
         bufferedEnd,
       )
@@ -134,12 +141,12 @@ export function useReplayController(
       }
       const engine = ReplayEngine.restore(
         { ...saved, active: true },
-        candles,
+        restoreSourcePeriod(candles, timeframe),
         Date.now,
         { buffered: true },
       )
       engineRef.current = engine
-      runtime.replayDatafeed.setSessionCandles(saved.id, candles)
+      runtime.replayDatafeed.setSessionCandles(saved.id, engine.bufferedCandles())
       publish(engine)
     },
     [publish, runtime],
@@ -206,7 +213,7 @@ export function useReplayController(
         const preparedAt = Date.now()
         const requestedEnd = Math.min(
           alignOpenTime(input.endTime ?? preparedAt,input.period.text,'floor'),
-          previousOpenTime(alignOpenTime(preparedAt,input.period.text,'floor'),input.period.text),
+          lastClosedOpenTime(preparedAt,input.period.text),
         )
         const bufferedEnd = preparationEnd(input.startTime, input.period.text, requestedEnd)
         const downloaded = await runtime.service.loadCandles(
@@ -302,22 +309,23 @@ export function useReplayController(
 
   const ensurePrepared = useCallback(async (engine: ReplayEngine, currentTime: number): Promise<boolean> => {
     const saved = engine.snapshot()
-    const to = preparationEnd(currentTime, saved.period.text, saved.endTime)
-    const from = nextOpenTime(engine.bufferedCandles().at(-1)!.openTime, saved.period.text)
+    const timeframe = replaySourceTimeframe(saved)
+    const to = preparationEnd(currentTime, timeframe, saved.endTime)
+    const from = nextOpenTime(engine.bufferedCandles().at(-1)!.openTime, timeframe)
     if (from > to) return engineRef.current === engine
     const controller = new AbortController()
     preparationRef.current = controller
     setBusy(true)
     setPreparationStatus('正在准备下个月的回放数据…')
     try {
-      const downloaded = await runtime.service.loadCandles('trade', saved.symbol.ticker, saved.period.text, from, to, {
+      const downloaded = await runtime.service.loadCandles('trade', saved.symbol.ticker, timeframe, from, to, {
         signal: controller.signal,
         onStatus: message => { if (preparationRef.current === controller) setPreparationStatus(message) },
       })
       if (engineRef.current !== engine) return false
       const candles = downloaded.filter(candle => candle.isClosed && candle.openTime >= from && candle.openTime <= to && candle.closeTime < Date.now())
-      if (findMissingRanges(candles, saved.period.text, from, to).length > 0) throw new Error('下一段回放数据仍有缺口，请重试')
-      engine.appendCandles(candles)
+      if (findMissingRanges(candles, timeframe, from, to).length > 0) throw new Error('下一段回放数据仍有缺口，请重试')
+      engine.appendCandles(restoreSourcePeriod(candles, timeframe))
       runtime.replayDatafeed.setSessionCandles(saved.id, engine.bufferedCandles())
       return true
     } finally {

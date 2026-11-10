@@ -22,11 +22,13 @@ describe('canonical minute aggregation', () => {
   it.each([
     ['1m', 1], ['3m', 3], ['5m', 5], ['15m', 15], ['30m', 30],
     ['1h', 60], ['2h', 120], ['4h', 240], ['6h', 360], ['8h', 480],
-    ['12h', 720], ['1d', 1440], ['3d', 4320],
-  ] as const)('aggregates complete %s buckets using UTC alignment', (timeframe, count) => {
-    const result = aggregateMinuteCandles(minutes(0, count * minute), timeframe)
+    ['12h', 720], ['1d', 1440], ['3d', 4320, Date.UTC(2025, 8, 1)],
+    ['3d-legacy', 4320, Date.UTC(2025, 8, 3)],
+  ] as const)('aggregates complete %s buckets using UTC alignment', (timeframe, count, start = 0) => {
+    const end = start + count * minute
+    const result = aggregateMinuteCandles(minutes(start, end), timeframe)
     expect(result).toEqual([{
-      ...candle(0), timeframe, closeTime: count * minute - 1,
+      ...candle(start), timeframe, closeTime: end - 1,
       volume: String(count / 10), quoteVolume: String(count / 5), tradeCount: count * 2,
     }])
   })

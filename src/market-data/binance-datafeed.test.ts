@@ -52,7 +52,7 @@ describe('BinanceDatafeed', () => {
     const service = { loadCandles, loadCachedCandles, usesMinuteHistory: () => true } as unknown as MarketDataService
     const feed = new BinanceDatafeed(service)
     const to = Date.UTC(2026, 10, 5)
-    await readIndicatorHistory(feed, DEFAULT_SYMBOL, {text:'1M',multiplier:1,timespan:'month'}, Date.UTC(2011,0,1), to)
+    await readIndicatorHistory(feed, DEFAULT_SYMBOL, {text:'1d',multiplier:1,timespan:'day'}, Date.UTC(2026,0,1), to)
     expect(loadCandles.mock.calls[0]?.[3]).toBeGreaterThanOrEqual(Date.UTC(2026,9,1))
     expect(loadCachedCandles).toHaveBeenCalled()
   })

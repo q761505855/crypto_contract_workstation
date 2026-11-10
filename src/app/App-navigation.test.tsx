@@ -14,7 +14,7 @@ const harness = vi.hoisted(() => ({
   simulation: { state: null, busy: false, error: '' },
   runtime: {
     datafeed: { setLiveEnabled: vi.fn(), setLiveStatusListener: vi.fn() },
-    replayDatafeed: { setSelectionListener: vi.fn(), setWarningListener: vi.fn(), setReplayContext: vi.fn() },
+    replayDatafeed: { setSelectionListener: vi.fn(), setWarningListener: vi.fn(), setHistoryStatusListener: vi.fn(), setReplayContext: vi.fn() },
   },
 }))
 

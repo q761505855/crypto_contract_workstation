@@ -1,4 +1,5 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
+import { alignOpenTime, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
 
 export type ReplaySpeed = 1 | 2 | 5 | 10
 export type ReplayStatus = 'paused' | 'completed'
@@ -55,4 +56,11 @@ export interface ReplayContext {
   timeframe: string
   currentTime: number
   endTime?: number
+}
+
+/** Keep older sessions on their original three-day grid so trades replay identically. */
+export function replaySourceTimeframe(session: Pick<ReplaySession, 'period' | 'startTime'>): string {
+  const timeframe = session.period.text
+  return timeframe === '3d' && alignOpenTime(session.startTime, timeframe, 'floor') !== session.startTime
+    ? LEGACY_THREE_DAY_TIMEFRAME : timeframe
 }

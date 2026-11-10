@@ -1,5 +1,5 @@
 import { findMissingRanges } from './gaps'
-import { alignOpenTime, nextOpenTime, previousOpenTime, shiftOpenTime } from './intervals'
+import { alignOpenTime, lastClosedOpenTime, nextOpenTime, shiftOpenTime, usesNativeKlines } from './intervals'
 import type {
   CandleKind,
   DownloadProgress,
@@ -26,6 +26,10 @@ interface ReplayBatch {
   from: number
   to: number
   ready: Promise<void>
+}
+
+function isOnNativeGrid(candle: MarketCandle): boolean {
+  return candle.timeframe !== '3d' || alignOpenTime(candle.openTime, '3d', 'floor') === candle.openTime
 }
 
 export class MarketDataService {
@@ -82,6 +86,22 @@ export class MarketDataService {
     }
   }
 
+  async getSymbolOnboardDate(symbol: string, signal?: AbortSignal): Promise<number | undefined> {
+    const ticker = symbol.toUpperCase()
+    const cached = this.symbols ?? await this.store.getSymbols()
+    signal?.throwIfAborted()
+    const onboard = (symbols: readonly MarketSymbol[]) =>
+      symbols.find(item => item.symbol === ticker && Number.isFinite(item.onboardDate) && item.onboardDate > 0)?.onboardDate
+    const date = onboard(cached)
+    if (date !== undefined || this.symbols !== null) return date
+    try {
+      return onboard(await this.getSymbols({ signal }))
+    } catch {
+      signal?.throwIfAborted()
+      return undefined
+    }
+  }
+
   private async loadSymbols(signal?: AbortSignal): Promise<MarketSymbol[]> {
     try {
       const remote = await this.client.getExchangeSymbols(signal)
@@ -107,7 +127,7 @@ export class MarketDataService {
     options: LoadCandlesOptions = {},
   ): Promise<MarketCandle[]> {
     if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
-    if (this.minuteHistory) return this.minuteHistory.load(kind, symbol, timeframe, from, to, options)
+    if (this.minuteHistory && !usesNativeKlines(timeframe)) return this.minuteHistory.load(kind, symbol, timeframe, from, to, options)
     const key = `${kind}:${symbol.toUpperCase()}:${timeframe}`
     return this.queueSeries(key, () => this.loadSeries(
       kind, symbol, timeframe, from, to, options,
@@ -122,7 +142,7 @@ export class MarketDataService {
     to: number,
   ): Promise<MarketCandle[]> {
     if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
-    if (this.minuteHistory) return this.minuteHistory.cached(kind, symbol, timeframe, from, to)
+    if (this.minuteHistory && !usesNativeKlines(timeframe)) return this.minuteHistory.cached(kind, symbol, timeframe, from, to)
     if (!Number.isFinite(from) || !Number.isFinite(to)) {
       throw new Error('本地行情读取时间必须为有效时间戳')
     }
@@ -130,7 +150,7 @@ export class MarketDataService {
     return (await this.store.getCandles(
       kind, symbol.toUpperCase(), timeframe, Math.max(0, from), to,
     ))
-      .filter((candle) => candle.isClosed)
+      .filter((candle) => candle.isClosed && isOnNativeGrid(candle))
       .sort((left, right) => left.openTime - right.openTime)
   }
 
@@ -150,7 +170,7 @@ export class MarketDataService {
     options.signal?.throwIfAborted()
     const cached = await this.loadCachedCandles(kind, symbol, timeframe, from, to)
     options.signal?.throwIfAborted()
-    const latestClosed = previousOpenTime(alignOpenTime(Date.now(), timeframe, 'floor'), timeframe)
+    const latestClosed = lastClosedOpenTime(Date.now(), timeframe)
     const requestedTo = Math.min(to, latestClosed)
     const gaps = findMissingRanges(cached, timeframe, Math.max(0, from), requestedTo)
     if (gaps.length === 0) return cached
@@ -161,8 +181,8 @@ export class MarketDataService {
       return cached
     }
     if (this.minuteHistory) {
-      // Canonical minutes already prepare Git/Binance data month by month.
-      // REST page-sized replay batches would repeatedly revisit the same month.
+      // Minute history already prepares archives by month. Native periods
+      // use the guarded REST path with the same replay preparation bounds.
       try {
         await this.loadCandles(kind,symbol,timeframe,from,Math.min(requestedTo,options.prefetchTo ?? Infinity), {
           ...options,
@@ -173,7 +193,7 @@ export class MarketDataService {
         })
       } catch (reason) {
         if (options.signal?.aborted || (reason instanceof DOMException && reason.name === 'AbortError')) throw reason
-        const message = `回放按月准备未完成：${reason instanceof Error ? reason.message : String(reason)}`
+        const message = `回放行情准备未完成：${reason instanceof Error ? reason.message : String(reason)}`
         this.replayFailures.set(key,message)
         options.onWarning?.(message)
       }
@@ -262,7 +282,7 @@ export class MarketDataService {
       to,
     )
     const missingRanges = findMissingRanges(
-      cached.filter((candle) => candle.isClosed),
+      cached.filter((candle) => candle.isClosed && isOnNativeGrid(candle)),
       timeframe,
       from,
       to,
@@ -280,9 +300,10 @@ export class MarketDataService {
           timeframe,
           range.from,
           range.to,
-          { ...options, onPage: (candles) => this.store.putCandles(kind, candles) },
+          { ...options, onPage: (candles) => this.store.putCandles(kind, candles, options.signal) },
         )
-        await this.store.putCandles(kind, downloaded)
+        options.signal?.throwIfAborted()
+        await this.store.putCandles(kind, downloaded, options.signal)
       }
     } catch (error) {
       if (options.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error
@@ -310,7 +331,7 @@ export class MarketDataService {
       from,
       to,
     )
-    return cached.sort((left, right) => left.openTime - right.openTime)
+    return cached.filter(isOnNativeGrid).sort((left, right) => left.openTime - right.openTime)
   }
 
   async refreshCandles(
@@ -322,7 +343,7 @@ export class MarketDataService {
   ): Promise<MarketCandle[]> {
     if (kind !== 'trade') throw new Error('仅支持普通价格 K 线')
     const normalizedSymbol = symbol.toUpperCase()
-    if (this.minuteHistory) return this.minuteHistory.load(kind, normalizedSymbol, timeframe, from, to)
+    if (this.minuteHistory && !usesNativeKlines(timeframe)) return this.minuteHistory.load(kind, normalizedSymbol, timeframe, from, to)
     return this.queueSeries(`${kind}:${normalizedSymbol}:${timeframe}`, async () => {
       const downloaded = await this.client.downloadRange(
         kind, normalizedSymbol, timeframe, Math.max(0, from), to,

@@ -123,6 +123,23 @@ describe('offline replay and simulation controllers', () => {
     expect(result.current.replay.session).toMatchObject({ currentTime: Date.UTC(2026, 1, 1), currentIndex: 1, endTime: Date.UTC(2026, 3, 2), candleCount: 62 })
   })
 
+  it('restores and advances a saved 3d replay on its original minute aggregation grid', async () => {
+    const startTime = Date.UTC(2025, 8, 3)
+    const nextTime = Date.UTC(2025, 8, 6)
+    const endTime = Date.UTC(2025, 8, 9)
+    const period = SUPPORTED_PERIODS.find(item => item.text === '3d')!
+    const source = sourceRows('3d', startTime, endTime)
+    const savedSession = ReplayEngine.create({ ...input, period, startTime, endTime }, source).snapshot()
+    const { result, runtime } = setup({ savedSession })
+    vi.mocked(runtime.service.loadReplayCandles).mockImplementation(async (_kind, _symbol, timeframe, from, to) => sourceRows(timeframe, from, to))
+
+    await waitFor(() => expect(result.current.replay.session?.currentTime).toBe(startTime))
+    expect(result.current.replay.session?.period.text).toBe('3d')
+    await act(async () => { await result.current.replay.next() })
+    expect(result.current.replay.session?.currentTime).toBe(nextTime)
+    expect(result.current.replay.getCurrentCandle()?.timeframe).toBe('3d')
+  })
+
   it('does not advance on an incomplete next month and can retry without duplicate trading events', async () => {
     const { result, runtime } = setup()
     await waitFor(() => expect(result.current.replay.busy).toBe(false))

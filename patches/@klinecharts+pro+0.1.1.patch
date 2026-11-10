@@ -720,7 +720,7 @@ index 6f78d0e..76f60bd 100644
          break;
        }
      }
-@@ -3475,10 +3963,18 @@ const Dl = (e) => {
+@@ -3475,10 +3963,28 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -736,9 +736,19 @@ index 6f78d0e..76f60bd 100644
 +      const sequence = dataRequestSequence, historySequence = historyRequestSequence;
 +      const f = data.timestamp, symbol = y(), period = L();
 +      (async () => {
-+        const [E] = D1(period, f, 1), [r1] = D1(period, E, 500), X = await e.datafeed.getHistoryKLineData(symbol, period, r1, E);
-+        if (sequence === dataRequestSequence && historySequence === historyRequestSequence) {
-+          callback(X, X.length > 0);
++        const current = () => sequence === dataRequestSequence && historySequence === historyRequestSequence;
++        try {
++          const page = await e.datafeed.getOlderHistory?.(symbol, period, f);
++          if (!current()) return;
++          if (page) {
++            callback(page.candles, page.hasMore);
++            return;
++          }
++          const [E] = D1(period, f, 1), [r1] = D1(period, E, 500);
++          const X = await e.datafeed.getHistoryKLineData(symbol, period, r1, E);
++          if (current()) callback(X, X.length > 0);
++        } catch {
++          if (current()) callback([], true);
 +        }
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
