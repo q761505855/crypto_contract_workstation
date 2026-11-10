@@ -9,7 +9,7 @@ export interface SimulationStateStore {
 const MIN_TIME = Number.MIN_SAFE_INTEGER
 const MAX_TIME = Number.MAX_SAFE_INTEGER
 
-function sessionRange(sessionId: string): IDBKeyRange {
+export function simulationSessionRange(sessionId: string): IDBKeyRange {
   return IDBKeyRange.bound(
     [sessionId, MIN_TIME],
     [sessionId, MAX_TIME],
@@ -24,15 +24,20 @@ export class IndexedDbSimulationStateStore
   async save(state: SimulationState): Promise<void> {
     const database = await openWorkstationDatabase(this.databaseName)
     const transaction = database.transaction(
-      ['simulationStates', 'simulationTrades', 'simulationLedger'],
+      ['replaySessions', 'simulationStates', 'simulationTrades', 'simulationLedger'],
       'readwrite',
     )
+    // Check in the same transaction as the write so a late autosave cannot leave orphan rows.
+    if (await transaction.objectStore('replaySessions').getKey(state.sessionId) === undefined) {
+      await transaction.done
+      return
+    }
     const tradesStore = transaction.objectStore('simulationTrades')
     const ledgerStore = transaction.objectStore('simulationLedger')
 
     let tradeCursor = await tradesStore
       .index('by-session-time')
-      .openCursor(sessionRange(state.sessionId))
+      .openCursor(simulationSessionRange(state.sessionId))
     while (tradeCursor !== null) {
       await tradeCursor.delete()
       tradeCursor = await tradeCursor.continue()
@@ -40,7 +45,7 @@ export class IndexedDbSimulationStateStore
 
     let ledgerCursor = await ledgerStore
       .index('by-session-time')
-      .openCursor(sessionRange(state.sessionId))
+      .openCursor(simulationSessionRange(state.sessionId))
     while (ledgerCursor !== null) {
       await ledgerCursor.delete()
       ledgerCursor = await ledgerCursor.continue()
@@ -64,21 +69,16 @@ export class IndexedDbSimulationStateStore
 
   async load(sessionId: string): Promise<SimulationState | undefined> {
     const database = await openWorkstationDatabase(this.databaseName)
-    const state = await database.get('simulationStates', sessionId)
+    const transaction = database.transaction(['simulationStates', 'simulationTrades', 'simulationLedger'])
+    const state = await transaction.objectStore('simulationStates').get(sessionId)
     if (state === undefined) {
       return undefined
     }
+    const range = simulationSessionRange(sessionId)
     const [trades, ledger] = await Promise.all([
-      database.getAllFromIndex(
-        'simulationTrades',
-        'by-session-time',
-        sessionRange(sessionId),
-      ),
-      database.getAllFromIndex(
-        'simulationLedger',
-        'by-session-time',
-        sessionRange(sessionId),
-      ),
+      transaction.objectStore('simulationTrades').index('by-session-time').getAll(range),
+      transaction.objectStore('simulationLedger').index('by-session-time').getAll(range),
+      transaction.done,
     ])
     const orderedTrades = trades
       .sort(

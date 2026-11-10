@@ -63,14 +63,7 @@ export function ReplayControls({
     DEFAULT_TRADING_CONFIG.liquidationFeeRate,
   )
 
-  useEffect(() => {
-    if (
-      selectedSessionId.length === 0 &&
-      replay.sessions.length > 0
-    ) {
-      setSelectedSessionId(replay.sessions[0].id)
-    }
-  }, [replay.sessions, selectedSessionId])
+  const selectedSession = replay.sessions.find((session) => session.id === selectedSessionId) ?? replay.sessions[0]
 
   useEffect(() => {
     if (replay.session === null) setToText('')
@@ -86,6 +79,12 @@ export function ReplayControls({
     setSettingsOpen(false)
   }
 
+  function deleteSelectedSession(session: ReplaySession): void {
+    if (window.confirm(`删除本机回放会话「${sessionName(session)}」及其模拟账户、持仓、成交和流水？`)) {
+      void replay.deleteSession(session.id)
+    }
+  }
+
   if (replay.session === null) {
     return <section className="replay-controls replay-setup" data-testid="replay-controls">
       <TimeJumpControl compact disabled={replay.busy} onJump={onJumpToTime} onLocateLatest={onLocateLatest} />
@@ -93,7 +92,7 @@ export function ReplayControls({
       <button type="button" onClick={() => setSettingsOpen(true)}>回放设置</button>
       <button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
       {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
-      {replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
+      {!settingsOpen && replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
         <p className="muted-text">{selection.symbol.ticker} · {selection.period.text} · 起点沿用当前图表视口</p>
         <label className="panel-field">
@@ -180,12 +179,13 @@ export function ReplayControls({
             </label>
           </div>
         </details>
-        {replay.sessions.length > 0 && (
+        {selectedSession && (
           <>
             <select
               aria-label="已有回放会话"
+              disabled={replay.busy}
               onChange={(event) => setSelectedSessionId(event.target.value)}
-              value={selectedSessionId}
+              value={selectedSession.id}
             >
               {replay.sessions.map((session) => (
                 <option key={session.id} value={session.id}>
@@ -193,16 +193,27 @@ export function ReplayControls({
                 </option>
               ))}
             </select>
-            <button
-              disabled={replay.busy || selectedSessionId.length === 0}
-              onClick={() => { void replay.loadSession(selectedSessionId); setSettingsOpen(false) }}
-              type="button"
-            >
-              加载会话
-            </button>
+            <div className="button-row">
+              <button
+                disabled={replay.busy}
+                onClick={() => { void replay.loadSession(selectedSession.id); setSettingsOpen(false) }}
+                type="button"
+              >
+                加载会话
+              </button>
+              <button
+                className="danger-button"
+                disabled={replay.busy}
+                onClick={() => deleteSelectedSession(selectedSession)}
+                type="button"
+              >
+                删除会话
+              </button>
+            </div>
           </>
         )}
 
+        {replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
         <div className="button-row"><button type="button" onClick={() => setSettingsOpen(false)}>应用设置</button><button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>开始历史回放</button></div>
       </WorkspaceDialog>
     </section>

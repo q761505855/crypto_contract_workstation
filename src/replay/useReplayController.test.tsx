@@ -37,6 +37,7 @@ function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: 
       list: vi.fn(async () => saved === undefined ? [] : [saved]),
       getLatestActive: vi.fn(async () => saved),
       get: vi.fn(async () => saved), put: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined),
     },
     simulationStates: { load: vi.fn(async () => undefined), save: vi.fn(async () => undefined) },
     replayDatafeed: { setSessionCandles: vi.fn() },

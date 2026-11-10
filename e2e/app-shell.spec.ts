@@ -91,6 +91,56 @@ test('keeps hedged positions and their risk orders isolated through reload and s
   await expect(shortRisk.getByRole('button', { name: '设置止损' })).toBeVisible()
 })
 
+test('deletes an ended replay after confirmation and removes it from local backups', async ({ page }) => {
+  test.setTimeout(60_000)
+  await mockBinance(page, true)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await jumpChart(page, '2026-07-22T00:00')
+  await setReplayEnd(page, '2026-07-22T05:00')
+
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  const panel = page.getByTestId('simulation-panel')
+  await panel.getByRole('button', { name: '开多', exact: true }).click()
+  await expect(panel.getByTestId('position-long')).toBeVisible()
+  await controls.getByRole('button', { name: '回放设置', exact: true }).click()
+  await page.getByRole('dialog', { name: '回放会话操作' }).getByRole('button', { name: '结束会话' }).click()
+
+  const openSettings = controls.getByRole('button', { name: '回放设置', exact: true })
+  await openSettings.click()
+  const settings = page.getByRole('dialog', { name: '回放会话设置' })
+  const sessions = settings.getByLabel('已有回放会话')
+  const deleteSession = settings.getByRole('button', { name: '删除会话', exact: true })
+  await expect(sessions.locator('option')).toHaveCount(1)
+  page.once('dialog', dialog => dialog.dismiss())
+  await deleteSession.click()
+  await expect(sessions.locator('option')).toHaveCount(1)
+  page.once('dialog', async dialog => {
+    expect(dialog.message()).toContain('BTCUSDT')
+    await dialog.accept()
+  })
+  await deleteSession.click()
+  await expect(sessions).toHaveCount(0)
+
+  await page.reload()
+  await expect(controls.getByRole('button', { name: '创建回放', exact: true })).toBeEnabled()
+  await openSettings.click()
+  await expect(sessions).toHaveCount(0)
+  await settings.getByRole('button', { name: '关闭回放会话设置' }).click()
+  await revealHeaderActions(page)
+  await page.getByTestId('open-data-manager').click()
+  const backups = page.getByTestId('backup-sync-panel')
+  await expect(backups.getByLabel('备份回放会话')).toHaveText('暂无会话')
+  await expect(backups.getByTestId('export-session-backup')).toBeDisabled()
+  const downloadEvent = page.waitForEvent('download')
+  await backups.getByRole('button', { name: '导出全部数据', exact: true }).click()
+  const path = await (await downloadEvent).path()
+  const { data } = JSON.parse(await readFile(path!, 'utf8'))
+  expect(data.sessions).toEqual([])
+  expect(data.simulations).toEqual([])
+})
+
 test.beforeEach(async ({ context }) => {
   // Cover every page in the context; individual manual cloud mocks override this.
   await context.route('https://api.github.com/**', (route) =>

@@ -48,6 +48,7 @@ export interface ReplayController {
   preparationStatus?: string
   createSession(input: CreateReplaySessionInput): Promise<void>
   loadSession(id: string): Promise<void>
+  deleteSession(id: string): Promise<void>
   endSession(): Promise<void>
   next(): Promise<void>
   previous(): void
@@ -77,15 +78,11 @@ export function useReplayController(
   const [error, setError] = useState('')
   const [preparationStatus, setPreparationStatus] = useState('')
 
-  const refreshSessions = useCallback(async () => {
-    setSessions(await runtime.replaySessions.list())
-  }, [runtime])
-
   const queueSave = useCallback(
     (next: ReplaySession) => {
       saveQueueRef.current = saveQueueRef.current
         .catch(() => undefined)
-        .then(() => runtime.replaySessions.put(next))
+        .then(() => runtime.replaySessions.update(next))
         .catch((reason: unknown) => {
           setError(
             `自动保存回放会话失败：${
@@ -93,19 +90,20 @@ export function useReplayController(
             }`,
           )
         })
+      return saveQueueRef.current
     },
     [runtime],
   )
 
   const publish = useCallback(
-    (engine: ReplayEngine) => {
+    (engine: ReplayEngine, save = true) => {
       const next = engine.snapshot()
       setSession(next)
       setSessions((current) => [
         next,
         ...current.filter((item) => item.id !== next.id),
       ])
-      queueSave(next)
+      if (save) queueSave(next)
     },
     [queueSave],
   )
@@ -245,9 +243,11 @@ export function useReplayController(
           candles,
           { buffered: true },
         )
+        // Persist the parent session before publishing it to the simulation controller.
+        await runtime.replaySessions.put(engine.snapshot())
         engineRef.current = engine
         runtime.replayDatafeed.setSessionCandles(engine.snapshot().id, candles)
-        publish(engine)
+        publish(engine, false)
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason))
       } finally {
@@ -299,13 +299,28 @@ export function useReplayController(
     if (engine !== null) {
       engine.setActive(false)
       const ended = engine.snapshot()
-      await runtime.replaySessions.put(ended)
+      const saved = queueSave(ended)
       setSessions((current) => [
         ended,
         ...current.filter((item) => item.id !== ended.id),
       ])
+      await saved
     }
-  }, [runtime])
+  }, [queueSave, runtime])
+
+  const deleteSession = useCallback(async (id: string) => {
+    if (busy || engineRef.current !== null) return
+    setBusy(true)
+    setError('')
+    try {
+      await runtime.replaySessions.delete(id)
+      setSessions((current) => current.filter((item) => item.id !== id))
+    } catch (reason) {
+      setError(`删除回放会话失败：${reason instanceof Error ? reason.message : String(reason)}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, runtime])
 
   const ensurePrepared = useCallback(async (engine: ReplayEngine, currentTime: number): Promise<boolean> => {
     const saved = engine.snapshot()
@@ -382,6 +397,7 @@ export function useReplayController(
     try {
       const candle = engine.reset()
       await notifyCandle({ type: 'reset', candle })
+      if (engineRef.current !== engine) return
       engine.setHasTrades(false)
       publish(engine)
     } catch (reason) {
@@ -489,6 +505,7 @@ export function useReplayController(
     preparationStatus,
     createSession,
     loadSession,
+    deleteSession,
     endSession,
     next,
     previous,

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import type { ReplaySession } from '../replay/models'
-import { DATABASE_VERSION } from './market-data-store'
-import { IndexedDbMarketDataStore } from './market-data-store'
+import { SimulationEngine } from '../simulation/simulation-engine'
+import { DATABASE_VERSION, IndexedDbMarketDataStore, openWorkstationDatabase } from './market-data-store'
 import { IndexedDbReplaySessionStore } from './replay-session-store'
+import { IndexedDbSimulationStateStore } from './simulation-state-store'
 
 function session(
   id: string,
@@ -38,6 +39,52 @@ function session(
 }
 
 describe('IndexedDbReplaySessionStore', () => {
+  it('deletes only the selected session and prevents late autosaves from restoring it', async () => {
+    const name = `replay-delete-${crypto.randomUUID()}`
+    const replay = new IndexedDbReplaySessionStore(name)
+    const simulations = new IndexedDbSimulationStateStore(name)
+    const database = await openWorkstationDatabase(name)
+    const candle = {
+      symbol: 'BTCUSDT', timeframe: '1m', openTime: 0, closeTime: 59_999,
+      open: '100', high: '100', low: '100', close: '100', volume: '1',
+      quoteVolume: '100', tradeCount: 1, isClosed: true, source: 'binance' as const,
+    }
+    const removed = session('removed', 1, false)
+    const kept = session('kept', 2, false)
+    for (const saved of [removed, kept]) {
+      await replay.put(saved)
+      const engine = SimulationEngine.create(saved)
+      engine.open('long', { quantity: '1' }, candle)
+      await simulations.save(engine.snapshot())
+    }
+    await database.put('tradeCandles', candle)
+    const removedState = (await simulations.load(removed.id))!
+    const keptState = await simulations.load(kept.id)
+
+    const [concurrentState] = await Promise.all([
+      simulations.load(removed.id),
+      replay.delete(removed.id),
+    ])
+    expect(concurrentState).toEqual(removedState)
+    await replay.delete(removed.id)
+    await Promise.all([
+      replay.update({ ...removed, active: true }),
+      simulations.save(removedState),
+    ])
+
+    await expect(replay.list()).resolves.toEqual([kept])
+    await expect(replay.getLatestActive()).resolves.toBeUndefined()
+    await expect(simulations.load(removed.id)).resolves.toBeUndefined()
+    await expect(simulations.load(kept.id)).resolves.toEqual(keptState)
+    await expect(database.getAll('simulationTrades')).resolves.toEqual([
+      expect.objectContaining({ sessionId: kept.id }),
+    ])
+    await expect(database.getAll('simulationLedger')).resolves.toEqual(
+      keptState!.ledger.map(() => expect.objectContaining({ sessionId: kept.id })),
+    )
+    await expect(database.getAll('tradeCandles')).resolves.toEqual([candle])
+  })
+
   it('uses schema version 3 and returns newest sessions first', async () => {
     expect(DATABASE_VERSION).toBe(3)
     const store = new IndexedDbReplaySessionStore(

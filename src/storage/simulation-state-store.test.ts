@@ -3,6 +3,7 @@ import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import type { MarketCandle } from '../market-data/models'
 import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
+import { IndexedDbReplaySessionStore } from './replay-session-store'
 import { IndexedDbSimulationStateStore } from './simulation-state-store'
 import { openWorkstationDatabase } from './market-data-store'
 
@@ -61,6 +62,7 @@ describe('IndexedDbSimulationStateStore', () => {
     engine.setStopLoss('short', '110', 0)
     const { positions, ...fields } = engine.snapshot()
     const database = await openWorkstationDatabase(name)
+    await new IndexedDbReplaySessionStore(name).put(replaySession())
     await database.put('simulationStates', { ...fields, schemaVersion: 1, position: positions[0] })
     const restored = await store.load(fields.sessionId)
     expect(restored).toMatchObject({ schemaVersion: 2, positions: [{ side: 'short', stopLossPrice: '110' }] })
@@ -70,9 +72,9 @@ describe('IndexedDbSimulationStateStore', () => {
   })
 
   it('persists account state, position, trades, and ledger separately', async () => {
-    const store = new IndexedDbSimulationStateStore(
-      `simulation-test-${crypto.randomUUID()}`,
-    )
+    const name = `simulation-test-${crypto.randomUUID()}`
+    const store = new IndexedDbSimulationStateStore(name)
+    await new IndexedDbReplaySessionStore(name).put(replaySession())
     const engine = SimulationEngine.create(replaySession())
     engine.open('long', { quantity: '1' }, candle())
     const state = engine.snapshot()
@@ -82,9 +84,9 @@ describe('IndexedDbSimulationStateStore', () => {
   })
 
   it('replaces stale trades and ledger entries during autosave', async () => {
-    const store = new IndexedDbSimulationStateStore(
-      `simulation-test-${crypto.randomUUID()}`,
-    )
+    const name = `simulation-test-${crypto.randomUUID()}`
+    const store = new IndexedDbSimulationStateStore(name)
+    await new IndexedDbReplaySessionStore(name).put(replaySession())
     const engine = SimulationEngine.create(replaySession())
     engine.open('long', { quantity: '1' }, candle())
     const original = engine.snapshot()
