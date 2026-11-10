@@ -1462,6 +1462,8 @@ button:disabled {
 @media (min-width: 1024px), (min-width: 768px) and (min-height: 521px) {
   .workspace-content.is-order-hidden { grid-template-columns: minmax(0, 1fr) 32px; grid-template-areas: 'account account' 'chart order' 'dock order'; }
   .workspace-content.is-focus-mode { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'account' 'chart' 'dock'; }
+  /* Let the page take over when a trading panel cannot scroll further. */
+  .order-region, .dock-body { overscroll-behavior-y: auto; }
 }
 @media (max-width: 767px), (max-width: 1023px) and (max-height: 520px) {
   .workspace-shell .collapsed-panel-handle { min-height: 40px; }

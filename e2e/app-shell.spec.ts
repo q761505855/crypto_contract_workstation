@@ -375,6 +375,32 @@ test('selects Heikin Ashi from settings, retains real prices and restores the se
   expect(result.raw[2].close).toBe(85)
 })
 
+test('scrolls a tall desktop workspace with the wheel over either trading panel', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 })
+  await mockBinance(page)
+  await mockGitHub(page, true)
+  await page.goto('./')
+
+  await page.getByRole('button', { name: '图表尺寸', exact: true }).click()
+  const dimensions = page.getByRole('dialog', { name: '图表尺寸设置' })
+  await dimensions.getByLabel('图表区域高度', { exact: true }).fill('1000')
+  await dimensions.getByRole('button', { name: '关闭图表尺寸设置' }).click()
+
+  const pageScroll = () => page.evaluate(() => window.scrollY)
+  const order = page.getByRole('complementary', { name: '模拟下单面板' })
+  await order.getByRole('heading', { name: '模拟下单' }).hover()
+  expect(await pageScroll()).toBe(0)
+  await page.mouse.wheel(0, 240)
+  await expect.soft.poll(pageScroll, { timeout: 2000, message: 'wheel over the order panel scrolls the page down' }).toBeGreaterThan(0)
+
+  const dock = page.getByRole('tabpanel', { name: '持仓 (0)' })
+  await dock.hover()
+  const atDock = await pageScroll()
+  expect(atDock).toBeGreaterThan(0)
+  await page.mouse.wheel(0, -240)
+  await expect.poll(pageScroll, { timeout: 2000, message: 'wheel over the positions panel scrolls the page up' }).toBeLessThan(atDock)
+})
+
 test('organizes the workspace, hides every extra panel and restores chart sizing on mobile', async ({ page }) => {
   test.setTimeout(120_000)
   await page.setViewportSize({ width: 1440, height: 1000 })
