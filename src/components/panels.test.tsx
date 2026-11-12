@@ -40,6 +40,19 @@ function Harness() {
 }
 
 describe('simulation position cards', () => {
+  it('shows isolated margin in the summary and position quantity in details', () => {
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: '开多' }))
+    const position = within(screen.getByTestId('position-long'))
+    const summary = within(position.getByTestId('position-summary'))
+    expect(summary.getByText('保证金', { exact: true }).nextElementSibling).toHaveTextContent('100.00 USDT')
+    expect(summary.queryByText('数量', { exact: true })).not.toBeInTheDocument()
+
+    fireEvent.click(position.getByRole('button', { name: '详情' }))
+    const details = within(screen.getByRole('dialog', { name: '多仓 · 仓位详情' }))
+    expect(details.getByText('数量', { exact: true }).nextElementSibling).toHaveTextContent('9.998')
+  })
+
   it('previews and saves a short stop loss entered as a percentage of entry price', () => {
     render(<Harness />)
     fireEvent.click(screen.getByRole('button', { name: /^空$/ }))

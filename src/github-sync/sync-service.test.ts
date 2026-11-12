@@ -71,6 +71,7 @@ function backup(): BackupEnvelope {
     favoriteSymbols: ['BTCUSDT'],
     pinnedPeriods: ['1m', '1d'],
     replayStepPeriod: '1M',
+    showTradeOverlays: false,
     workspace: {
       schemaVersion: 1,
       panels: { account: false, order: true, dock: false, replay: false, status: false },
@@ -279,6 +280,13 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual(complete)
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(complete.workspace)
 
+    sourceStorage.setItem('chart.showTradeOverlays.v1', 'true')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('true')
+    sourceStorage.setItem('chart.showTradeOverlays.v1', 'false')
+
     sourceStorage.setItem('replay.stepPeriod.v1', '"1m"')
     await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
     await source.upload(client(remote), 'stop', selection)
@@ -318,13 +326,20 @@ describe('GitHubSyncService', () => {
     delete legacy.workspace
     delete legacy.candleType
     delete legacy.replayStepPeriod
+    delete legacy.showTradeOverlays
     await rewrite(legacy)
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
     expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
     expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
+    expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('false')
 
     const before = (await targetBackups.exportAll()).data
+    for (const showTradeOverlays of [null, '', 0, 'false', [], {}]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', showTradeOverlays })
+      await expect(target.pull(client(remote))).rejects.toThrow(/showTradeOverlays/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const replayStepPeriod of [null, '', 0, false, [], {}, '1H']) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', replayStepPeriod })
       await expect(target.pull(client(remote))).rejects.toThrow(/replayStepPeriod/)

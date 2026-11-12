@@ -580,6 +580,11 @@ button:disabled {
   padding: 6px 12px;
 }
 
+.trade-overlays-toggle[aria-pressed="true"] {
+  color: #8dc5ff;
+  background: #22364f;
+}
+
 .time-jump-control,
 .time-jump-control label {
   display: flex;

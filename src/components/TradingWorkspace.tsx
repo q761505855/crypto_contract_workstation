@@ -169,7 +169,14 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
         {tab === 'positions' && (state.positions.length === 0 ? <p className="muted-text">当前无持仓</p> : <div className="position-rows">{state.positions.map(p => <article key={p.side} className="compact-position" data-testid={`position-${p.side}`}>
           <div className="position-summary" data-testid="position-summary">
             <div><span className={p.side === 'long' ? 'profit' : 'loss'}>{sideName(p.side)}</span><span className="muted-text">{p.symbol} · {p.leverage}×</span></div>
-            <dl className="position-values"><div><dt>数量</dt><dd>{p.quantity}</dd></div><div><dt>开仓均价</dt><dd>{p.entryPrice}</dd></div><div><dt>当前价格</dt><dd>{p.lastPrice}</dd></div><div><dt>浮动盈亏</dt><dd className={Number(p.unrealizedPnl) >= 0 ? 'profit' : 'loss'}>{displayAmount(p.unrealizedPnl)} USDT</dd></div><div><dt>持仓收益率</dt><dd>{rate(new Decimal(p.unrealizedPnl).div(new Decimal(p.isolatedMargin).isZero() ? 1 : p.isolatedMargin).toString())}</dd></div><div><dt>止盈 / 止损</dt><dd>{p.takeProfitPrice ?? '—'} / {p.stopLossPrice ?? '—'}</dd></div></dl>
+            <dl className="position-values">
+              <div><dt>保证金</dt><dd>{displayAmount(p.isolatedMargin)} USDT</dd></div>
+              <div><dt>开仓均价</dt><dd>{p.entryPrice}</dd></div>
+              <div><dt>当前价格</dt><dd>{p.lastPrice}</dd></div>
+              <div><dt>浮动盈亏</dt><dd className={Number(p.unrealizedPnl) >= 0 ? 'profit' : 'loss'}>{displayAmount(p.unrealizedPnl)} USDT</dd></div>
+              <div><dt>持仓收益率</dt><dd>{rate(new Decimal(p.unrealizedPnl).div(new Decimal(p.isolatedMargin).isZero() ? 1 : p.isolatedMargin).toString())}</dd></div>
+              <div><dt>止盈 / 止损</dt><dd>{p.takeProfitPrice ?? '—'} / {p.stopLossPrice ?? '—'}</dd></div>
+            </dl>
           </div>
           <div className="position-actions"><button type="button" onClick={() => edit(p.side, 'risk')}>止盈止损</button><button type="button" onClick={() => edit(p.side, 'reduce')}>减仓 / 平仓</button><button type="button" className="text-button" onClick={() => edit(p.side, 'details')}>详情</button></div>
         </article>)}</div>)}
@@ -180,14 +187,23 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
     </div>
     <WorkspaceDialog open={editing !== null && position !== undefined} title={editing ? `${sideName(editing.side)} · ${editing.kind === 'risk' ? '止盈止损' : editing.kind === 'reduce' ? '减仓和平仓' : '仓位详情'}` : ''} onClose={() => setEditing(null)}>
       {editing && position && state && <>
-        <p className="muted-text">{position.symbol} · {sideName(position.side)} · 剩余数量 {position.quantity}</p>
+        <p className="muted-text">
+          {position.symbol} · {sideName(position.side)}
+          {editing.kind !== 'details' && ` · 剩余数量 ${position.quantity}`}
+        </p>
         {editing.kind === 'risk' && <RiskEditor key={`${state.sessionId}:${position.side}`} position={position} simulation={simulation} feeRate={state.config.feeRate} precision={pricePrecision} />}
         {editing.kind === 'reduce' && <>
           <label className="panel-field">减仓数量<input aria-label="减仓数量" type="number" inputMode="decimal" value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
           <div className="compact-actions">{([25, 50, 75] as const).map(value => <button key={value} type="button" disabled={simulation.busy} onClick={() => void simulation.reducePercent(editing.side, value)}>减 {value}%</button>)}</div>
           <div className="button-row"><button type="button" disabled={simulation.busy || !quantity} onClick={() => void simulation.reduce(editing.side, quantity)}>按数量减仓</button><button type="button" className="danger-button" disabled={simulation.busy} onClick={() => void simulation.closeAll(editing.side)}>全部平仓</button></div>
         </>}
-        {editing.kind === 'details' && <dl className="detail-list">{[['逐仓保证金', position.isolatedMargin], ['预估强平价', position.liquidationPrice], ['名义价值', position.notional], ['开仓时间', tradeTime(position.openedAt)]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
+        {editing.kind === 'details' && <dl className="detail-list">{[
+          ['数量', position.quantity],
+          ['逐仓保证金', `${position.isolatedMargin} USDT`],
+          ['预估强平价', position.liquidationPrice],
+          ['名义价值', position.notional],
+          ['开仓时间', tradeTime(position.openedAt)],
+        ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
         {simulation.error && <p role="alert" className="panel-error">{simulation.error}</p>}
         <button type="button" className="dialog-done" onClick={() => setEditing(null)}>完成</button>
       </>}

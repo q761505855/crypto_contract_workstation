@@ -161,6 +161,36 @@ describe('WorkstationBackupService', () => {
     expect(storage.getItem('marketData.binanceBaseUrl')).toBeNull()
     expect((await service.exportAll()).data.tradeCandles).toEqual([])
   })
+  it('round-trips hidden trade overlays in both archive types and preserves them when old archives omit the setting', async () => {
+    const storage = new MemoryPreferences()
+    const source = new WorkstationBackupService(`overlays-${crypto.randomUUID()}`, storage)
+    expect((await source.exportPreferences()).data.preferences).toHaveProperty('showTradeOverlays', true)
+    storage.setItem('chart.showTradeOverlays.v1', 'false')
+    for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
+      expect(archive.data.preferences).toHaveProperty('showTradeOverlays', false)
+      const targetStorage = new MemoryPreferences()
+      const target = new WorkstationBackupService(`overlays-target-${crypto.randomUUID()}`, targetStorage)
+      await target.import(archive)
+      expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
+      const legacy = structuredClone(archive)
+      delete legacy.data.preferences!.showTradeOverlays
+      await target.import(legacy)
+      expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('false')
+    }
+  })
+
+  it.each([null, '', 0, 'false', [], {}].map(value => [value]))('rejects invalid trade overlay settings before writing (%j)', async showTradeOverlays => {
+    const storage = new MemoryPreferences()
+    const name = `invalid-overlays-${crypto.randomUUID()}`
+    const service = new WorkstationBackupService(name, storage)
+    const archive = await service.exportAll()
+    archive.data.symbols = [symbol()]
+    Object.assign(archive.data.preferences!, { showTradeOverlays })
+    await expect(service.import(archive)).rejects.toThrow(/showTradeOverlays/)
+    expect(storage.getItem('chart.showTradeOverlays.v1')).toBeNull()
+    expect(await new IndexedDbMarketDataStore(name).getSymbols()).toEqual([])
+  })
+
   it('round-trips replay step periods in config and full archives, preserving legacy absence', async () => {
     const sourceStorage = new MemoryPreferences()
     const source = new WorkstationBackupService(`replay-step-source-${crypto.randomUUID()}`, sourceStorage)

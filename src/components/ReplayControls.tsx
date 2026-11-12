@@ -17,6 +17,8 @@ interface ReplayControlsProps {
   replay: ReplayController
   stepPeriod: MarketTimeframe
   onStepPeriodChange: (period: MarketTimeframe) => void
+  showTradeOverlays: boolean
+  onTradeOverlaysChange: (visible: boolean) => void
   interactionLocked?: boolean
   chartStartTime: number | null
   onJumpToTime: (timestamp: number) => void
@@ -102,6 +104,8 @@ export function ReplayControls({
   replay,
   stepPeriod,
   onStepPeriodChange,
+  showTradeOverlays,
+  onTradeOverlaysChange,
   interactionLocked = false,
   chartStartTime,
   onJumpToTime,
@@ -341,6 +345,8 @@ export function ReplayControls({
           </option>
         ))}
       </select>
+      <button type="button" className="trade-overlays-toggle" aria-pressed={showTradeOverlays}
+        onClick={() => onTradeOverlaysChange(!showTradeOverlays)} title={showTradeOverlays ? '隐藏图表交易标记' : '显示图表交易标记'}>交易标记</button>
       <button type="button" className="replay-settings-actions" onClick={() => setActionsOpen(true)}>回放设置</button>
       <WorkspaceDialog open={actionsOpen} title="回放会话操作" onClose={() => setActionsOpen(false)}>
         <p className="muted-text">{session.symbol.ticker} · {displayTime(session.startTime)} 至 {displayTime(session.endTime)}</p>

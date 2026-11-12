@@ -12,6 +12,7 @@ import {
   SUPPORTED_PERIODS,
 } from '../chart/chart-config'
 import { ChartWorkspace } from '../chart/ChartWorkspace'
+import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import type {
   SimulationOverlayState,
   SimulationTradeOverlay,
@@ -171,6 +172,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   } | null>(null)
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
   const [stepPeriod, setStepPeriod] = useState(readReplayStepPeriod)
+  const [showTradeOverlays, setShowTradeOverlays] = useState(readShowTradeOverlays)
   const replay = useReplayController(marketRuntime, stepPeriod)
   const simulationController = useSimulationController(marketRuntime, replay)
   const simulation = { ...simulationController, busy: simulationController.busy || replay.busy }
@@ -180,6 +182,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   useEffect(() => {
     const restored = (event: Event) => {
       setStepPeriod(readReplayStepPeriod())
+      setShowTradeOverlays(readShowTradeOverlays())
       if ((event as CustomEvent<{ source: string }>).detail?.source !== 'cloud') return
       const nextLayout = loadWorkspacePreferences()
       layoutRef.current = nextLayout
@@ -197,10 +200,13 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     return () => window.removeEventListener(PREFERENCES_RESTORED, restored)
   }, [marketRuntime])
   const simulationOverlays = useMemo<SimulationOverlayState>(() => {
-    if (mode !== 'history') return { currentTime: null, positions: [], trades: [] }
+    const currentTime = mode === 'history' && replay.session
+      ? alignOpenTime(sessionVisibleUntil(replay.session) - 1, marketSelection.period.text, 'floor')
+      : null
+    if (mode !== 'history' || !showTradeOverlays) return { currentTime, positions: [], trades: [] }
     const precision = marketSelection.symbol.pricePrecision ?? 8
     return {
-      currentTime: replay.session ? alignOpenTime(sessionVisibleUntil(replay.session) - 1, marketSelection.period.text, 'floor') : null,
+      currentTime,
       positions: (simulation.state?.positions ?? []).map(position => {
         const onTakeProfitPriceDrag = simulation.busy ? undefined : (price: number) =>
           simulation.setTakeProfit(position.side, simulationPriceText(price, precision))
@@ -228,6 +234,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     marketSelection.period.text,
     mode,
     replay.session,
+    showTradeOverlays,
     simulation.busy,
     simulation.setStopLoss,
     simulation.setTakeProfit,
@@ -468,7 +475,18 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           />
           <div className="replay-region">
             <div id="workspace-replay-content" className="replay-content">
-              {mode === 'history' ? <ReplayControls chartStartTime={chartRightmostCandleTime} interactionLocked={simulation.busy} onJumpToTime={jumpChartToTime} onLocateLatest={locateLatestChartTime} replay={replay} selection={marketSelection} stepPeriod={stepPeriod} onStepPeriodChange={period => { saveReplayStepPeriod(period); setStepPeriod(period) }} /> : <section className="replay-controls live-time-controls"><TimeJumpControl compact onJump={jumpChartToTime} onLocateLatest={locateLatestChartTime} /></section>}
+              {mode === 'history' ? <ReplayControls
+                chartStartTime={chartRightmostCandleTime}
+                interactionLocked={simulation.busy}
+                onJumpToTime={jumpChartToTime}
+                onLocateLatest={locateLatestChartTime}
+                replay={replay}
+                selection={marketSelection}
+                stepPeriod={stepPeriod}
+                onStepPeriodChange={period => { saveReplayStepPeriod(period); setStepPeriod(period) }}
+                showTradeOverlays={showTradeOverlays}
+                onTradeOverlaysChange={visible => { saveShowTradeOverlays(visible); setShowTradeOverlays(visible) }}
+              /> : <section className="replay-controls live-time-controls"><TimeJumpControl compact onJump={jumpChartToTime} onLocateLatest={locateLatestChartTime} /></section>}
             </div>
           </div>
         </div>

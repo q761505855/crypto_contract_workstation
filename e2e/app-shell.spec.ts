@@ -70,11 +70,21 @@ test('keeps hedged positions and their risk orders isolated through reload and s
   await shortRisk.getByRole('button', { name: '完成' }).click()
   await expect(long.getByTestId('position-summary')).toContainText('70000 / 50000')
   await expect(short.getByTestId('position-summary')).toContainText('50000 / 70000')
-  const shortQuantity = await short.getByText('数量', { exact: true }).locator('..').locator('dd').textContent()
+  const shortSummary = short.getByTestId('position-summary')
+  await expect(shortSummary.getByText('保证金', { exact: true }).locator('..').locator('dd')).toContainText('USDT')
+  await expect(shortSummary.getByText('数量', { exact: true })).toHaveCount(0)
+  const readShortQuantity = async () => {
+    await short.getByRole('button', { name: '详情', exact: true }).click()
+    const details = page.getByRole('dialog', { name: '空仓 · 仓位详情' })
+    const quantity = await details.getByText('数量', { exact: true }).locator('..').locator('dd').innerText()
+    await details.getByRole('button', { name: '完成', exact: true }).click()
+    return quantity
+  }
+  const shortQuantity = await readShortQuantity()
   const longReduce = await openPositionEditor(page, 'long', 'reduce')
   await longReduce.getByRole('button', { name: '减 25%' }).click()
   await longReduce.getByRole('button', { name: '完成' }).click()
-  await expect(short.getByText('数量', { exact: true }).locator('..').locator('dd')).toHaveText(shortQuantity!)
+  expect(await readShortQuantity()).toBe(shortQuantity)
 
   await revealHeaderActions(page)
   await page.getByTestId('open-data-manager').click()
@@ -111,12 +121,68 @@ test('keeps hedged positions and their risk orders isolated through reload and s
   await expect(short).toContainText('20×')
   await expect(long.getByTestId('position-summary')).toContainText('70000 / 50000')
   await expect(short.getByTestId('position-summary')).toContainText('50000 / 70000')
-  await expect(short.getByText('数量', { exact: true }).locator('..').locator('dd')).toHaveText(shortQuantity!)
+  expect(await readShortQuantity()).toBe(shortQuantity)
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
   await showTradingPanel(page, 'dock')
   await short.getByRole('button', { name: '止盈止损' }).click()
   await expect(shortRisk.getByRole('button', { name: '设置止损' })).toBeVisible()
+})
+
+test('toggles all replay trade overlays and restores the hidden setting from cloud configuration', async ({ page }) => {
+  await mockBinance(page, true)
+  const github = await mockGitHub(page, true)
+  await installViewportProbe(page)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await jumpChart(page, '2026-07-22T00:00')
+  await setReplayEnd(page, '2026-07-22T05:00')
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByRole('button', { name: '创建回放' }).click()
+  const toggle = controls.getByRole('button', { name: '交易标记', exact: true })
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('button', { name: '开多', exact: true }).click()
+  const risk = await openPositionEditor(page, 'long', 'risk')
+  await risk.getByLabel('止盈价格').fill('70000')
+  await risk.getByRole('button', { name: '设置止盈' }).click()
+  await risk.getByLabel('止损价格').fill('50000')
+  await risk.getByRole('button', { name: '设置止损' }).click()
+  await risk.getByRole('button', { name: '完成' }).click()
+
+  const overlays = () => page.evaluate(() => {
+    type TestChart = { getChartStore(): { getOverlayStore(): { getInstances(paneId: string): { id: string; groupId: string }[] } } }
+    const chart = (window as unknown as { __viewportTestAdapter?: { coreChart: TestChart } }).__viewportTestAdapter?.coreChart
+    return chart?.getChartStore().getOverlayStore().getInstances('candle_pane')
+      .filter(overlay => overlay.groupId === 'simulation').map(overlay => overlay.id.replace(/^simulation-trade-.+$/, 'trade')).sort() ?? []
+  })
+  const shown = ['simulation-long-entry', 'simulation-long-liquidation', 'simulation-long-stop-loss', 'simulation-long-take-profit', 'simulation-replay-time', 'trade']
+  await expect.poll(overlays).toEqual(shown)
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(overlays).toEqual(['simulation-replay-time'])
+  await expect(page.getByTestId('position-long')).toContainText('70000 / 50000')
+  await page.getByRole('button', { name: '空', exact: true }).click()
+  await page.getByRole('button', { name: '开空', exact: true }).click()
+  await expect(page.getByTestId('position-short')).toBeVisible()
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect(controls.getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
+  await expect.poll(overlays).toEqual(['simulation-replay-time'])
+  await page.clock.runFor(1_500)
+  await expect.poll(() => {
+    const file = github.files.get('projects/crypto-contract-workstation/config/preferences.json')
+    return file && JSON.parse(file.bytes.toString()).showTradeOverlays
+  }).toBe(false)
+  await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+  await page.evaluate(() => {
+    localStorage.removeItem('chart.showTradeOverlays.v1')
+    localStorage.removeItem('github.configBaseline.v1')
+  })
+  await page.reload()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.getByTestId('position-long')).toContainText('70000 / 50000')
+  await expect.poll(overlays).toEqual(['simulation-replay-time'])
+  await toggle.click()
+  await expect.poll(overlays).toEqual([...shown, 'simulation-short-entry', 'simulation-short-liquidation', 'trade'].sort())
 })
 
 test('plays while the mouse holds the next candle button and stops on release outside it', async ({ page }) => {
