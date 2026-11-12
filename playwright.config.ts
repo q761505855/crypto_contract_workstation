@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
+  // Pages smoke tests require the separate production-artifact preview.
+  testIgnore: '**/pages-smoke.spec.ts',
   workers: 2,
   expect: { timeout: 20_000 },
   retries: process.env.CI ? 1 : 0,

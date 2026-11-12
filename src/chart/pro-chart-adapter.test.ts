@@ -476,14 +476,16 @@ describe('ProChartAdapter', () => {
 
     adapter.setSimulationOverlays({
       currentTime: 60_000,
-      positions: [{ side: 'long', entryPrice: 100, takeProfitPrice: 110, stopLossPrice: 90, liquidationPrice: 80 }],
+      positions: [{
+        side: 'long', entryPrice: 100, takeProfitPrice: 110, stopLossPrice: 90, liquidationPrice: 80,
+        unrealizedPnl: '5', estimateRiskPnl: price => price - 100,
+      }],
       trades: [
         {
           id: 'trade-1',
           timestamp: 60_000,
           price: 100,
-          label: '开多 1 @ 100',
-          tooltip: '时间 · 多仓 · 开仓 · 手续费 0.04',
+          label: '开多',
           color: '#00ff00',
         },
       ],
@@ -497,120 +499,16 @@ describe('ProChartAdapter', () => {
         expect.objectContaining({
           id: 'simulation-long-entry',
           name: 'simulationPriceLine',
-          extendData: '多仓开仓均价',
+          lock: true,
+          extendData: { color: '#4fd49f', active: false },
         }),
         expect.objectContaining({
           id: 'simulation-trade-trade-1',
-          name: 'simpleAnnotation',
+          name: 'simulationTradeLabel',
+          extendData: '开多',
         }),
       ]),
       'candle_pane',
     )
-    const createdOverlays = vi.mocked(coreChart.createOverlay).mock
-      .calls[0][0]
-    if (!Array.isArray(createdOverlays)) {
-      throw new Error('Expected an overlay array')
-    }
-    const tradeOverlay = createdOverlays.find(
-      (overlay) =>
-        typeof overlay !== 'string' &&
-        overlay.id === 'simulation-trade-trade-1',
-    )
-    if (typeof tradeOverlay === 'string' || tradeOverlay === undefined) {
-      throw new Error('Expected trade overlay')
-    }
-    tradeOverlay.onMouseEnter?.({
-      overlay: {} as never,
-      pageX: 100,
-      pageY: 100,
-    })
-    expect(document.querySelector('[role="tooltip"]')).toHaveTextContent(
-      '手续费 0.04',
-    )
-    tradeOverlay.onMouseLeave?.({ overlay: {} as never })
-    expect(document.querySelector('[role="tooltip"]')).not.toBeVisible()
-  })
-
-  it('turns position and risk lines into draggable price controls', () => {
-    const coreChart = {
-      createOverlay: vi.fn(),
-      removeOverlay: vi.fn(),
-    } as unknown as Chart
-    const adapter = new ProChartAdapter(() => fakeChart(coreChart))
-    adapter.mount({
-      container: document.createElement('div'),
-      datafeed: {
-        getHistoryKLineData: vi.fn(async () => []),
-        searchSymbols: vi.fn(async () => []),
-        subscribe: vi.fn(),
-        unsubscribe: vi.fn(),
-      },
-      period: { multiplier: 1, timespan: 'minute', text: '1m' },
-      symbol: { ticker: 'BTCUSDT' },
-    })
-    const onShortStopLossDrag = vi.fn()
-    const onEntryPriceDrag = vi.fn()
-    const onTakeProfitPriceDrag = vi.fn()
-    const onStopLossPriceDrag = vi.fn()
-
-    adapter.setSimulationOverlays({
-      currentTime: 60_000,
-      positions: [
-        { side: 'long', entryPrice: 100, takeProfitPrice: 110, stopLossPrice: 90, liquidationPrice: 80, onEntryPriceDrag, onTakeProfitPriceDrag, onStopLossPriceDrag },
-        { side: 'short', entryPrice: 100, takeProfitPrice: 85, stopLossPrice: 115, liquidationPrice: 125, onStopLossPriceDrag: onShortStopLossDrag },
-      ],
-      trades: [],
-    })
-
-    const overlays = vi.mocked(coreChart.createOverlay).mock.calls[0][0]
-    if (!Array.isArray(overlays)) throw new Error('Expected overlay array')
-    const entry = overlays.find(
-      (overlay) =>
-        typeof overlay !== 'string' && overlay.id === 'simulation-long-entry',
-    )
-    const takeProfit = overlays.find(
-      (overlay) =>
-        typeof overlay !== 'string' &&
-        overlay.id === 'simulation-long-take-profit',
-    )
-    const stopLoss = overlays.find(
-      (overlay) =>
-        typeof overlay !== 'string' &&
-        overlay.id === 'simulation-long-stop-loss',
-    )
-    if (
-      entry === undefined ||
-      takeProfit === undefined ||
-      stopLoss === undefined ||
-      typeof entry === 'string' ||
-      typeof takeProfit === 'string' ||
-      typeof stopLoss === 'string'
-    ) {
-      throw new Error('Expected draggable price overlays')
-    }
-    expect(entry.lock).toBe(false)
-    expect(takeProfit.lock).toBe(false)
-    expect(stopLoss.lock).toBe(false)
-
-    entry.onPressedMoveEnd?.({
-      overlay: { points: [{ value: 105 }] },
-    } as never)
-    takeProfit.onPressedMoveEnd?.({
-      overlay: { points: [{ value: 115 }] },
-    } as never)
-    stopLoss.onPressedMoveEnd?.({
-      overlay: { points: [{ value: 85 }] },
-    } as never)
-
-    expect(onEntryPriceDrag).toHaveBeenCalledWith(105)
-    expect(onTakeProfitPriceDrag).toHaveBeenCalledWith(115)
-    expect(onStopLossPriceDrag).toHaveBeenCalledWith(85)
-    const shortStop = overlays.find(overlay => typeof overlay !== 'string' && overlay.id === 'simulation-short-stop-loss')
-    if (typeof shortStop !== 'object' || shortStop === null) throw new Error('Expected short stop overlay')
-    shortStop.onPressedMoveEnd?.({ overlay: { points: [{ value: 116 }] } } as never)
-    expect(onShortStopLossDrag).toHaveBeenCalledWith(116)
-    expect(onStopLossPriceDrag).toHaveBeenCalledTimes(1)
-    expect(overlays).toHaveLength(9)
-    expect(new Set(overlays.map(overlay => typeof overlay === 'string' ? overlay : overlay.id)).size).toBe(9)
   })
 })

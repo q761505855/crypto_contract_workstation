@@ -35,7 +35,11 @@ import { readChartHistory } from '../market-data/indicator-history'
 import type { ReplayDatafeed } from '../replay/replay-datafeed'
 import { replayVisibleUntil, type ReplayContext } from '../replay/models'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
-import { registerSimulationPriceLine, SIMULATION_PRICE_LINE } from './simulation-price-line'
+import {
+  registerSimulationPriceLine, SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR,
+  SIMULATION_PRICE_LINE, SIMULATION_TRADE_LABEL,
+} from './simulation-price-line'
+import { SimulationPriceLabels, type PriceLabel, type PriceLabelText } from './simulation-price-labels'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -46,7 +50,6 @@ export interface SimulationTradeOverlay {
   timestamp: number
   price: number
   label: string
-  tooltip: string
   color: string
 }
 
@@ -56,6 +59,9 @@ export interface SimulationPositionOverlay {
   takeProfitPrice: number | null
   stopLossPrice: number | null
   liquidationPrice: number
+  unrealizedPnl: string
+  estimateRiskPnl: (price: number) => number
+  previewEntryRisk?: (price: number) => 'take-profit' | 'stop-loss' | null
   onEntryPriceDrag?: (price: number) => void
   onTakeProfitPriceDrag?: (price: number) => void
   onStopLossPriceDrag?: (price: number) => void
@@ -66,6 +72,12 @@ export interface SimulationOverlayState {
   positions: SimulationPositionOverlay[]
   trades: SimulationTradeOverlay[]
 }
+
+const formatPnl = new Intl.NumberFormat('zh-CN', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+  signDisplay: 'exceptZero',
+})
 
 export interface ChartAdapterPort {
   dispose?(): void
@@ -144,7 +156,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private cancelPosition: (() => void) | null = null
   private historyAbort = new AbortController()
   private readonly candleOwners = new WeakMap<object, string>()
-  private tooltipElement: HTMLDivElement | null = null
+  private priceLabels?: SimulationPriceLabels
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
   private subPaneMinimumHeight = 0
@@ -156,9 +168,8 @@ export class ProChartAdapter implements ChartAdapterPort {
   dispose(): void {
     this.cancelHistoryWork()
     this.clearPosition()
-    this.hideTradeTooltip()
-    this.tooltipElement?.remove()
-    this.tooltipElement = null
+    this.priceLabels?.dispose()
+    this.priceLabels = undefined
     this.chart?.dispose?.()
     this.chart = null
     this.coreChart = null
@@ -622,58 +633,60 @@ export class ProChartAdapter implements ChartAdapterPort {
     const chart = this.coreChart
     if (chart === null) return
     chart.removeOverlay({ groupId: 'simulation' })
+    this.priceLabels?.clear()
+    if (state.positions.length > 0 && !this.priceLabels) {
+      const pane = chart.getDom?.('candle_pane', DomPosition.Main)
+      if (pane) this.priceLabels = new SimulationPriceLabels(chart, pane)
+    }
     const overlays: OverlayCreate[] = []
-    const line = (
-      id: string,
-      value: number | null,
-      color: string,
-      label: string,
-      onDrag?: (price: number) => void,
-    ) => {
-      if (value === null || state.currentTime === null) return
+    const line = (label: PriceLabel) => {
+      if (!Number.isFinite(label.price)) return
       overlays.push({
-        id: `simulation-${id}`,
+        id: label.id,
         groupId: 'simulation',
         name: SIMULATION_PRICE_LINE,
-        extendData: label,
-        onMouseEnter: (event) => {
-          this.showTradeTooltip(`${label} · ${value}`, event.pageX ?? 0, event.pageY ?? 0)
-          return true
-        },
-        onMouseLeave: () => { this.hideTradeTooltip(); return true },
-        lock: onDrag === undefined,
-        points: [{ timestamp: state.currentTime, value }],
-        onPressedMoveEnd:
-          onDrag === undefined
-            ? undefined
-            : (event) => {
-                const price = event.overlay.points[0]?.value
-                if (
-                  typeof price === 'number' &&
-                  Number.isFinite(price) &&
-                  price > 0
-                ) {
-                  onDrag(price)
-                }
-                this.setSimulationOverlays(state)
-                return true
-              },
-        styles: {
-          line: { color, size: 1, style: DASHED_LINE },
-          text: { color },
-        },
+        extendData: this.priceLabels?.add(label) ?? { color: label.color, active: false },
+        lock: true,
+        points: [{ value: label.price }],
       })
-    }
-    this.hideTradeTooltip()
-    for (const position of state.positions) {
-      const label = position.side === 'long' ? '多仓' : '空仓'
-      line(`${position.side}-entry`, position.entryPrice, position.side === 'long' ? '#55b8ff' : '#c49bff', `${label}开仓均价`, position.onEntryPriceDrag)
-      line(`${position.side}-take-profit`, position.takeProfitPrice, '#4fd49f', `${label}止盈`, position.onTakeProfitPriceDrag)
-      line(`${position.side}-stop-loss`, position.stopLossPrice, '#ff7f79', `${label}止损`, position.onStopLossPriceDrag)
-      line(`${position.side}-liquidation`, position.liquidationPrice, '#f5a65b', `${label}预估强平价`)
     }
 
     if (state.currentTime !== null) {
+      for (const position of state.positions) {
+        const name = position.side === 'long' ? '多仓' : '空仓'
+        const id = `simulation-${position.side}`
+        const riskText = (target: 'take-profit' | 'stop-loss', price: number): PriceLabelText => {
+          const pnl = position.estimateRiskPnl(price)
+          return {
+            name: `${name}${target === 'take-profit' ? '止盈' : '止损'}`,
+            pnl: formatPnl.format(pnl),
+            color: pnl >= 0 ? SIMULATION_BUY_COLOR : SIMULATION_SELL_COLOR,
+          }
+        }
+        const entryText = {
+          name, pnl: formatPnl.format(Number(position.unrealizedPnl)),
+          color: position.side === 'long' ? SIMULATION_BUY_COLOR : SIMULATION_SELL_COLOR,
+        }
+        line({
+          ...entryText, id: `${id}-entry`, side: 'left', price: position.entryPrice,
+          preview: price => {
+            const target = position.previewEntryRisk?.(price)
+            return target ? riskText(target, price) : entryText
+          },
+          commit: position.onEntryPriceDrag,
+        })
+        for (const [target, price, commit] of [
+          ['take-profit', position.takeProfitPrice, position.onTakeProfitPriceDrag],
+          ['stop-loss', position.stopLossPrice, position.onStopLossPriceDrag],
+        ] as const) {
+          if (price === null) continue
+          line({
+            ...riskText(target, price), id: `${id}-${target}`, side: 'right', price, commit,
+            preview: value => riskText(target, value),
+          })
+        }
+        line({ id: `${id}-liquidation`, side: 'left', price: position.liquidationPrice, name: `${name}预估强平价`, color: '#f5a65b' })
+      }
       overlays.push({
         id: 'simulation-replay-time',
         groupId: 'simulation',
@@ -694,55 +707,15 @@ export class ProChartAdapter implements ChartAdapterPort {
       overlays.push({
         id: `simulation-trade-${trade.id}`,
         groupId: 'simulation',
-        name: 'simpleAnnotation',
+        name: SIMULATION_TRADE_LABEL,
         lock: true,
         points: [{ timestamp: trade.timestamp, value: trade.price }],
         extendData: trade.label,
-        onMouseEnter: (event) => {
-          this.showTradeTooltip(
-            trade.tooltip,
-            event.pageX ?? 0,
-            event.pageY ?? 0,
-          )
-          return true
-        },
-        onMouseLeave: () => {
-          this.hideTradeTooltip()
-          return true
-        },
-        styles: {
-          line: { color: trade.color, style: DASHED_LINE },
-          text: { color: trade.color },
-          polygon: { color: trade.color },
-        },
+        styles: { text: { color: trade.color } },
       })
     }
     if (overlays.length > 0) {
       chart.createOverlay(overlays, 'candle_pane')
-    }
-  }
-
-  private showTradeTooltip(
-    content: string,
-    pageX: number,
-    pageY: number,
-  ): void {
-    if (this.tooltipElement === null) {
-      const element = document.createElement('div')
-      element.className = 'simulation-chart-tooltip'
-      element.setAttribute('role', 'tooltip')
-      document.body.append(element)
-      this.tooltipElement = element
-    }
-    this.tooltipElement.textContent = content
-    this.tooltipElement.style.left = `${pageX - window.scrollX + 12}px`
-    this.tooltipElement.style.top = `${pageY - window.scrollY + 12}px`
-    this.tooltipElement.hidden = false
-  }
-
-  private hideTradeTooltip(): void {
-    if (this.tooltipElement !== null) {
-      this.tooltipElement.hidden = true
     }
   }
 

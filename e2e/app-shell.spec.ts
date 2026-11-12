@@ -157,6 +157,14 @@ test('toggles all replay trade overlays and restores the hidden setting from clo
   })
   const shown = ['simulation-long-entry', 'simulation-long-liquidation', 'simulation-long-stop-loss', 'simulation-long-take-profit', 'simulation-replay-time', 'trade']
   await expect.poll(overlays).toEqual(shown)
+  const tradeMarker = () => page.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    const chart = core as unknown as { getChartStore(): { getOverlayStore(): { getInstances(paneId: string): import('klinecharts').Overlay[] } } }
+    return chart.getChartStore().getOverlayStore().getInstances('candle_pane')
+      .filter(overlay => overlay.id.startsWith('simulation-trade-'))
+      .map(overlay => ({ label: overlay.extendData, color: overlay.styles?.text?.color }))
+  })
+  await expect.poll(tradeMarker).toEqual([{ label: '开多', color: '#4fd49f' }])
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-pressed', 'false')
   await expect.poll(overlays).toEqual(['simulation-replay-time'])
@@ -2600,7 +2608,7 @@ async function trackPriceAxis(page: import('@playwright/test').Page) {
   return { axis, readTicks, pricePerPixel, readTimeTicks }
 }
 
-test('shows position and risk names beside their chart price labels', async ({ page }) => {
+test('shows PnL in chart labels and highlights their prices on the axis', async ({ page }) => {
   await mockBinance(page, true)
   await installViewportProbe(page)
   await trackPriceAxis(page)
@@ -2618,22 +2626,131 @@ test('shows position and risk names beside their chart price labels', async ({ p
     adapter.setSimulationOverlays({
       currentTime: rows.at(-20)!.timestamp,
       positions: [
-        { side: 'long', entryPrice: price(3), takeProfitPrice: price(5), stopLossPrice: price(1), liquidationPrice: price(0) },
-        { side: 'short', entryPrice: price(4), takeProfitPrice: price(2), stopLossPrice: price(6), liquidationPrice: price(7) },
+        { side: 'long', entryPrice: price(3), takeProfitPrice: price(5), stopLossPrice: price(1), liquidationPrice: price(0), unrealizedPnl: '-12.5', estimateRiskPnl: value => (value - price(3)) / (price(5) - price(3)) * 20 },
+        { side: 'short', entryPrice: price(3), takeProfitPrice: price(2), stopLossPrice: price(6), liquidationPrice: price(7), unrealizedPnl: '12.5', estimateRiskPnl: value => (price(3) - value) / (price(6) - price(3)) * 30 },
       ],
       trades: [],
     })
-    return [
-      ['多仓开仓均价', price(3)], ['多仓止盈', price(5)], ['多仓止损', price(1)],
-      ['空仓开仓均价', price(4)], ['空仓止盈', price(2)], ['空仓止损', price(6)],
-    ].map(([name, value]) => `${name} · ${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+    return [1, 2, 3, 5, 6].map(step =>
+      price(step).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
   })
+  await expect(page.locator('#simulation-long-entry')).toHaveText('多仓-12.50')
+  await expect(page.locator('#simulation-short-entry')).toHaveText('空仓+12.50')
+  await expect(page.locator('#simulation-long-take-profit')).toHaveText('多仓止盈+20.00')
+  await expect(page.locator('#simulation-short-stop-loss')).toHaveText('空仓止损-30.00')
+  await expect(page.locator('#simulation-long-entry')).toHaveCSS('color', 'rgb(79, 212, 159)')
+  await expect(page.locator('#simulation-short-entry')).toHaveCSS('color', 'rgb(255, 127, 121)')
+  await expect(page.locator('#simulation-long-take-profit')).toHaveCSS('color', 'rgb(79, 212, 159)')
+  await expect(page.locator('#simulation-short-stop-loss')).toHaveCSS('color', 'rgb(255, 127, 121)')
   await expect.poll(() => page.evaluate(() =>
     [...(window as unknown as {
       chartAxisTestLabels: Map<HTMLCanvasElement, { text: string }[]>
     }).chartAxisTestLabels.values()].flat().map(label => label.text),
   )).toEqual(expect.arrayContaining(expected))
-  await page.screenshot({ path: test.info().outputPath('named-price-labels.png') })
+  await page.screenshot({ path: test.info().outputPath('pnl-price-labels.png') })
+})
+
+test('sets a replay risk order by selecting and dragging the position label with a mouse', { tag: '@release' }, async ({ page }) => {
+  await mockBinance(page, true)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await jumpChart(page, '2026-07-22T00:00')
+  await setReplayEnd(page, '2026-07-22T05:00')
+  await page.getByRole('button', { name: '创建回放' }).click()
+  await page.getByRole('button', { name: '开多', exact: true }).click()
+  const position = page.getByTestId('position-long')
+  const entry = page.getByRole('button', { name: '多仓', exact: true })
+  const takeProfit = page.getByRole('button', { name: '多仓止盈', exact: true })
+  await expect(position).toContainText('— / —')
+  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  await waitForChartRender(page)
+  const pnl = await entry.locator('.simulation-label-pnl').innerText()
+  await entry.click()
+  await expect(entry).toHaveAttribute('aria-pressed', 'true')
+  await page.keyboard.press('Escape')
+  await expect(entry).toHaveAttribute('aria-pressed', 'false')
+  await entry.click()
+  const box = (await entry.boundingBox())!
+  const x = box.x + box.width - 8, y = box.y + box.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y - 22, { steps: 4 })
+  await expect(entry.locator('.simulation-label-name')).toHaveText('多仓止盈')
+  await expect(position).toContainText('— / —')
+  await page.mouse.up()
+  await expect(takeProfit).toBeVisible()
+  await expect(entry).toHaveText(`多仓${pnl}`)
+  await expect(position).toContainText(/\d+(?:\.\d+)? \/ —/)
+  await page.reload()
+  await expect(takeProfit).toBeVisible()
+  await expect(takeProfit).toHaveAttribute('aria-pressed', 'false')
+})
+
+test.describe('touch chart labels', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } })
+
+  test('requires a tap, previews a drag from the label, and cancels an interrupted gesture', { tag: '@release' }, async ({ page }) => {
+    await mockBinance(page, true)
+    await installViewportProbe(page)
+    await page.goto('./')
+    await expectCanvasContent(page)
+    await page.evaluate(() => {
+      const state = window as unknown as {
+        __viewportTestAdapter: {
+          coreChart: import('klinecharts').Chart
+          setSimulationOverlays(state: import('../src/chart/pro-chart-adapter').SimulationOverlayState): void
+        }
+        testDraggedPrices: number[]
+      }
+      const adapter = state.__viewportTestAdapter
+      const rows = adapter.coreChart.getDataList().slice(-40)
+      const low = Math.min(...rows.map(row => row.low))
+      const high = Math.max(...rows.map(row => row.high))
+      const entry = low + (high - low) * 0.3
+      const target = low + (high - low) * 0.6
+      state.testDraggedPrices = []
+      adapter.setSimulationOverlays({
+        currentTime: rows.at(-20)!.timestamp,
+        positions: [{
+          side: 'long', entryPrice: entry, unrealizedPnl: '12', takeProfitPrice: target,
+          stopLossPrice: null, liquidationPrice: low,
+          estimateRiskPnl: value => (value - entry) * 2,
+          onTakeProfitPriceDrag: value => state.testDraggedPrices.push(value),
+        }],
+        trades: [],
+      })
+    })
+    const label = page.getByRole('button', { name: '多仓止盈', exact: true })
+    const handle = label.locator('.simulation-label-handle')
+    const pnl = label.locator('.simulation-label-pnl')
+    await expect(label).toBeVisible()
+    expect((await label.boundingBox())!.height).toBeGreaterThanOrEqual(44)
+    await expect(handle).toBeHidden()
+    const client = await page.context().newCDPSession(page)
+    const drag = async (finish: 'touchEnd' | 'touchCancel', checkPreview?: () => Promise<void>) => {
+      const box = (await label.boundingBox())!
+      const x = box.x + box.width - 12, y = box.y + box.height / 2
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - 28 }] })
+      await checkPreview?.()
+      await client.send('Input.dispatchTouchEvent', { type: finish, touchPoints: [] })
+    }
+    const committed = () => page.evaluate(() =>
+      (window as unknown as { testDraggedPrices: number[] }).testDraggedPrices)
+    const original = await pnl.innerText()
+    await drag('touchEnd')
+    expect(await committed()).toEqual([])
+    await expect(handle).toBeHidden()
+    await label.tap()
+    await expect(handle).toBeVisible()
+    await page.screenshot({ path: test.info().outputPath('selected-mobile-price-label.png') })
+    await drag('touchCancel', async () => { await expect(pnl).not.toHaveText(original) })
+    expect(await committed()).toEqual([])
+    await expect(pnl).toHaveText(original)
+    await drag('touchEnd', async () => { await expect(pnl).not.toHaveText(original) })
+    expect(await committed()).toHaveLength(1)
+    await expect(handle).toBeHidden()
+  })
 })
 
 test('restores product favorites and the selected product after reload', { tag: '@release' }, async ({ page }) => {

@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
 } from 'react'
+import Decimal from 'decimal.js'
 import {
   DEFAULT_SYMBOL,
   SUPPORTED_PERIODS,
@@ -17,6 +18,7 @@ import type {
   SimulationOverlayState,
   SimulationTradeOverlay,
 } from '../chart/pro-chart-adapter'
+import { SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR } from '../chart/simulation-price-line'
 import {
   ModeSwitch,
   type WorkstationMode,
@@ -44,49 +46,28 @@ import { alignOpenTime } from '../market-data/intervals'
 import { useReplayController } from '../replay/useReplayController'
 import { readReplayStepPeriod, saveReplayStepPeriod } from '../replay/step-preferences'
 import { replayChartNeedsReload } from '../replay/replay-datafeed'
-import { classifyRiskPrice } from '../simulation/risk-price'
+import { classifyRiskPrice, estimateRiskPnl } from '../simulation/risk-price'
 import { useSimulationController } from '../simulation/useSimulationController'
 import type { SimulationTrade } from '../simulation/models'
 import './app.css'
 
 function tradeOverlay(trade: SimulationTrade): SimulationTradeOverlay {
+  const direction = trade.positionSide === 'long' ? '多' : '空'
   const labels: Record<SimulationTrade['action'], string> = {
-    open: '开仓',
-    add: '加仓',
-    reduce: '减仓',
-    close: '平仓',
-    take_profit: '止盈',
-    stop_loss: '止损',
-    liquidation: '强平',
-  }
-  const colors: Record<SimulationTrade['action'], string> = {
-    open: trade.positionSide === 'long' ? '#4fd49f' : '#ff7f79',
-    add: trade.positionSide === 'long' ? '#4fd49f' : '#ff7f79',
-    reduce: '#55b8ff',
-    close: '#55b8ff',
-    take_profit: '#4fd49f',
-    stop_loss: '#ff7f79',
-    liquidation: '#f5a65b',
+    open: `开${direction}`,
+    add: `加${direction}`,
+    reduce: `减${direction}`,
+    close: `平${direction}`,
+    take_profit: `${direction}仓止盈`,
+    stop_loss: `${direction}仓止损`,
+    liquidation: `${direction}仓强平`,
   }
   return {
     id: trade.tradeId,
     timestamp: trade.timestamp,
     price: Number(trade.price),
-    label: `${labels[trade.action]} ${trade.quantity} @ ${trade.price}`,
-    tooltip: [
-      new Intl.DateTimeFormat('zh-CN', {
-        dateStyle: 'short',
-        timeStyle: 'medium',
-        hour12: false,
-      }).format(trade.timestamp),
-      trade.positionSide === 'long' ? '多仓' : '空仓',
-      labels[trade.action],
-      `${trade.quantity} @ ${trade.price}`,
-      `手续费 ${trade.fee}`,
-      `原因 ${trade.reason}`,
-      `已实现盈亏 ${trade.realizedPnl}`,
-    ].join(' · '),
-    color: colors[trade.action],
+    label: labels[trade.action],
+    color: trade.side === 'buy' ? SIMULATION_BUY_COLOR : SIMULATION_SELL_COLOR,
   }
 }
 
@@ -205,23 +186,30 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       : null
     if (mode !== 'history' || !showTradeOverlays) return { currentTime, positions: [], trades: [] }
     const precision = marketSelection.symbol.pricePrecision ?? 8
+    const feeRate = simulation.state?.config.feeRate ?? '0'
     return {
       currentTime,
       positions: (simulation.state?.positions ?? []).map(position => {
+        const priceText = (price: number) => simulationPriceText(price, precision)
+        const previewEntryRisk = (price: number) =>
+          classifyRiskPrice(position.side, Number(position.lastPrice), Number(priceText(price)))
         const onTakeProfitPriceDrag = simulation.busy ? undefined : (price: number) =>
-          simulation.setTakeProfit(position.side, simulationPriceText(price, precision))
+          simulation.setTakeProfit(position.side, priceText(price))
         const onStopLossPriceDrag = simulation.busy ? undefined : (price: number) =>
-          simulation.setStopLoss(position.side, simulationPriceText(price, precision))
+          simulation.setStopLoss(position.side, priceText(price))
         return {
           side: position.side,
           entryPrice: Number(position.entryPrice),
           takeProfitPrice: position.takeProfitPrice === null ? null : Number(position.takeProfitPrice),
           stopLossPrice: position.stopLossPrice === null ? null : Number(position.stopLossPrice),
           liquidationPrice: Number(position.liquidationPrice),
+          unrealizedPnl: position.unrealizedPnl,
+          estimateRiskPnl: (price: number) => estimateRiskPnl(position, new Decimal(priceText(price)), feeRate).toNumber(),
+          previewEntryRisk,
           onTakeProfitPriceDrag,
           onStopLossPriceDrag,
           onEntryPriceDrag: simulation.busy ? undefined : (price: number) => {
-            const target = classifyRiskPrice(position.side, Number(position.lastPrice), price)
+            const target = previewEntryRisk(price)
             if (target === 'take-profit') onTakeProfitPriceDrag?.(price)
             else if (target === 'stop-loss') onStopLossPriceDrag?.(price)
           },
