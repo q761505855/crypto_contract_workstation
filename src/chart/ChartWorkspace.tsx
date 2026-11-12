@@ -19,7 +19,7 @@ import {
 } from './pro-chart-adapter'
 import { SymbolPicker } from './SymbolPicker'
 import { PeriodSelector } from './PeriodSelector'
-import { readCandleType, saveCandleType, type ChartCandleType } from './candle-preferences'
+import { saveCandleType } from './candle-preferences'
 import './chart-size-controls.css'
 
 export interface ChartWorkspaceProps {
@@ -68,7 +68,6 @@ export function ChartWorkspace({
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
-  const [candleType, setCandleType] = useState<ChartCandleType>(readCandleType)
   const [indicatorInfoVisible, setIndicatorInfoVisible] = useState(() => !(window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches ?? false))
   const [paneSizes, setPaneSizes] = useState<{ id: string; label: string; height: number }[]>([])
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -343,13 +342,11 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     if (adapter?.getCandleType === undefined) return
     let previous = adapter.getCandleType()
-    setCandleType(previous)
     const synchronize = () => {
       const current = adapter.getCandleType?.()
       if (current === undefined || current === previous) return
       previous = current
       saveCandleType(current)
-      setCandleType(current)
     }
     const interval = window.setInterval(synchronize, 100)
     window.addEventListener('beforeunload', synchronize)
@@ -452,7 +449,6 @@ export function ChartWorkspace({
   return (
     <section className="chart-workspace" aria-label="行情图表" data-price-range-auto={priceRangeAuto}>
       <div className="chart-host" data-testid="chart-host" ref={hostRef} />
-      {candleType === 'heikin_ashi' ? <div className="heikin-ashi-note" role="note">平均 K 线 · 提示框、指标、最新价及交易使用真实行情</div> : null}
       {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
       {priceRangeMode}
       {periodToolbar === null

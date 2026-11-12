@@ -41,6 +41,8 @@ import { createMarketDataRuntime, type MarketDataRuntime } from '../market-data/
 import { replaySourceTimeframe, replayVisibleUntil, sessionVisibleUntil, type ReplayContext } from '../replay/models'
 import { alignOpenTime } from '../market-data/intervals'
 import { useReplayController } from '../replay/useReplayController'
+import { readReplayStepPeriod, saveReplayStepPeriod } from '../replay/step-preferences'
+import { replayChartNeedsReload } from '../replay/replay-datafeed'
 import { classifyRiskPrice } from '../simulation/risk-price'
 import { useSimulationController } from '../simulation/useSimulationController'
 import type { SimulationTrade } from '../simulation/models'
@@ -168,7 +170,8 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     timestamp: number
   } | null>(null)
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
-  const replay = useReplayController(marketRuntime, marketSelection.period.text)
+  const [stepPeriod, setStepPeriod] = useState(readReplayStepPeriod)
+  const replay = useReplayController(marketRuntime, stepPeriod)
   const simulationController = useSimulationController(marketRuntime, replay)
   const simulation = { ...simulationController, busy: simulationController.busy || replay.busy }
   const replaySessionRef = useRef(replay.session)
@@ -176,6 +179,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   replaySessionRef.current = replay.session
   useEffect(() => {
     const restored = (event: Event) => {
+      setStepPeriod(readReplayStepPeriod())
       if ((event as CustomEvent<{ source: string }>).detail?.source !== 'cloud') return
       const nextLayout = loadWorkspacePreferences()
       layoutRef.current = nextLayout
@@ -354,12 +358,14 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           }
         : null
     const previous = previousReplayContextRef.current
-    marketRuntime.replayDatafeed.setReplayContext(nextContext)
+    const reloadAfterStep = previous !== null && nextContext !== null &&
+      previous.sessionId === nextContext.sessionId && replayChartNeedsReload(previous, nextContext, marketSelection.period.text)
+    marketRuntime.replayDatafeed.setReplayContext(nextContext, reloadAfterStep)
     if (previous !== null && nextContext === null) {
       setMarketWarning('')
     }
     const needsReload =
-      (previous === null) !== (nextContext === null) ||
+      reloadAfterStep || (previous === null) !== (nextContext === null) ||
       (previous !== null &&
         nextContext !== null &&
         (previous.sessionId !== nextContext.sessionId ||
@@ -368,7 +374,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       setChartReloadKey((current) => current + 1)
     }
     previousReplayContextRef.current = nextContext
-  }, [marketRuntime, mode, replay.session])
+  }, [marketRuntime, marketSelection.period.text, mode, replay.session])
 
   function changeMode(nextMode: WorkstationMode): void {
     if (nextMode === 'live') {
@@ -462,7 +468,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           />
           <div className="replay-region">
             <div id="workspace-replay-content" className="replay-content">
-              {mode === 'history' ? <ReplayControls chartStartTime={chartRightmostCandleTime} interactionLocked={simulation.busy} onJumpToTime={jumpChartToTime} onLocateLatest={locateLatestChartTime} replay={replay} selection={marketSelection} /> : <section className="replay-controls live-time-controls"><TimeJumpControl compact onJump={jumpChartToTime} onLocateLatest={locateLatestChartTime} /></section>}
+              {mode === 'history' ? <ReplayControls chartStartTime={chartRightmostCandleTime} interactionLocked={simulation.busy} onJumpToTime={jumpChartToTime} onLocateLatest={locateLatestChartTime} replay={replay} selection={marketSelection} stepPeriod={stepPeriod} onStepPeriodChange={period => { saveReplayStepPeriod(period); setStepPeriod(period) }} /> : <section className="replay-controls live-time-controls"><TimeJumpControl compact onJump={jumpChartToTime} onLocateLatest={locateLatestChartTime} /></section>}
             </div>
           </div>
         </div>

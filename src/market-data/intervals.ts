@@ -7,7 +7,7 @@ const LAST_OLD_THREE_DAY_OPEN = Date.UTC(2023, 7, 14)
 const FIRST_NEW_THREE_DAY_OPEN = Date.UTC(2023, 7, 16)
 export const LEGACY_THREE_DAY_TIMEFRAME = '3d-legacy'
 
-const FIXED_INTERVALS: Readonly<Record<string, number>> = Object.freeze({
+const FIXED_INTERVALS = Object.freeze({
   '1m': 60_000,
   '3m': 3 * 60_000,
   '5m': 5 * 60_000,
@@ -22,6 +22,9 @@ const FIXED_INTERVALS: Readonly<Record<string, number>> = Object.freeze({
   '1d': 86_400_000,
   '3d': THREE_DAYS,
 })
+
+type FixedTimeframe = keyof typeof FIXED_INTERVALS
+export type MarketTimeframe = FixedTimeframe | '1w' | '1M'
 
 const WEEK_INTERVAL = 7 * 86_400_000
 const MONDAY_UTC_ANCHOR = Date.UTC(1970, 0, 5)
@@ -53,7 +56,7 @@ export function nextOpenTime(openTime: number, timeframe: string): number {
   if (timeframe === '1w') {
     return openTime + WEEK_INTERVAL
   }
-  const interval = FIXED_INTERVALS[timeframe]
+  const interval = FIXED_INTERVALS[timeframe as FixedTimeframe]
   if (interval === undefined) {
     throw new Error(`不支持的周期：${timeframe}`)
   }
@@ -70,7 +73,7 @@ export function previousOpenTime(openTime: number, timeframe: string): number {
   if (timeframe === '1w') {
     return openTime - WEEK_INTERVAL
   }
-  const interval = FIXED_INTERVALS[timeframe]
+  const interval = FIXED_INTERVALS[timeframe as FixedTimeframe]
   if (interval === undefined) {
     throw new Error(`不支持的周期：${timeframe}`)
   }
@@ -95,7 +98,7 @@ export function alignOpenTime(
     const anchor = timestamp < FIRST_NEW_THREE_DAY_OPEN ? LAST_OLD_THREE_DAY_OPEN : FIRST_NEW_THREE_DAY_OPEN
     floor = Math.floor((timestamp - anchor) / THREE_DAYS) * THREE_DAYS + anchor
   } else {
-    const interval = timeframe === LEGACY_THREE_DAY_TIMEFRAME ? THREE_DAYS : FIXED_INTERVALS[timeframe]
+    const interval = timeframe === LEGACY_THREE_DAY_TIMEFRAME ? THREE_DAYS : FIXED_INTERVALS[timeframe as FixedTimeframe]
     if (interval === undefined) {
       throw new Error(`不支持的周期：${timeframe}`)
     }
@@ -129,4 +132,17 @@ export function shiftOpenTime(
     result = move(result, timeframe)
   }
   return result
+}
+
+/** Shift an arbitrary cursor by one period, preserving its offset within the day. */
+export function shiftTimeByPeriod(timestamp: number, timeframe: MarketTimeframe, direction: 1 | -1): number {
+  if (timeframe !== '1M') {
+    return timestamp + direction * (timeframe === '1w' ? WEEK_INTERVAL : FIXED_INTERVALS[timeframe])
+  }
+  const date = new Date(timestamp)
+  const day = date.getUTCDate()
+  date.setUTCMonth(date.getUTCMonth() + direction, 1)
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate()
+  date.setUTCDate(Math.min(day, lastDay))
+  return date.getTime()
 }

@@ -57,6 +57,28 @@ function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: 
 }
 
 describe('offline replay and simulation controllers', () => {
+  it('adds and subtracts the full step length from an unaligned replay cursor', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await act(async () => { await result.current.replay.createSession({ ...input, period: SUPPORTED_PERIODS[2], endTime: 10 * minute }) })
+    await act(async () => { await result.current.replay.next('1m'); await result.current.replay.next('5m') })
+    expect(result.current.replay.session).toMatchObject({ currentTime: 5 * minute, visibleUntil: 11 * minute })
+    await act(async () => { await result.current.replay.previous('5m') })
+    expect(result.current.replay.session).toMatchObject({ currentTime: 0, visibleUntil: 6 * minute })
+  })
+
+  it('steps a calendar month from the last revealed minute and clamps to leap day', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await act(async () => { await result.current.replay.createSession({
+      ...dailyInput, startTime: Date.UTC(2024, 0, 30), endTime: Date.UTC(2024, 2, 5),
+    }) })
+    await act(async () => { await result.current.replay.next('1M') })
+    expect(result.current.replay.session).toMatchObject({ currentTime: Date.UTC(2024, 1, 29), currentIndex: 30 })
+  })
+
   it('publishes a new cursor only after the session write completes', async () => {
     const { result, runtime } = setup()
     await waitFor(() => expect(result.current.replay.busy).toBe(false))

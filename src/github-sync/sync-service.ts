@@ -298,7 +298,7 @@ export class GitHubSyncService {
       const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
       if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
       if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
-      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'pinnedPeriods', 'workspace', 'candleType']) {
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod']) {
         if (value[key] !== undefined) preferences[key] = value[key]
       }
     }
@@ -634,6 +634,7 @@ export class GitHubSyncService {
           pinnedPeriods?: unknown
           workspace?: unknown
           candleType?: unknown
+          replayStepPeriod?: unknown
         }
         if (
           value.schemaVersion !== 1 ||
@@ -644,6 +645,9 @@ export class GitHubSyncService {
         preferences.binanceRestBaseUrl = value.binanceRestBaseUrl
         if (value.candleType !== undefined) {
           preferences.candleType = value.candleType as BackupPreferences['candleType']
+        }
+        if (value.replayStepPeriod !== undefined) {
+          preferences.replayStepPeriod = value.replayStepPeriod as BackupPreferences['replayStepPeriod']
         }
         if (value.workspace !== undefined) {
           preferences.workspace = value.workspace as BackupPreferences['workspace']

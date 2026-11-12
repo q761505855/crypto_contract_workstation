@@ -5,7 +5,7 @@ import {
   useState,
 } from 'react'
 import { findMissingRanges } from '../market-data/gaps'
-import { alignOpenTime, klineCloseBoundary, lastClosedOpenTime, LEGACY_THREE_DAY_TIMEFRAME, nextOpenTime } from '../market-data/intervals'
+import { alignOpenTime, klineCloseBoundary, lastClosedOpenTime, LEGACY_THREE_DAY_TIMEFRAME, nextOpenTime, shiftTimeByPeriod, type MarketTimeframe } from '../market-data/intervals'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import type {
   CreateReplaySessionInput,
@@ -43,6 +43,11 @@ function restoreSourcePeriod(candles: MarketCandle[], timeframe: string): Market
 
 const MINUTE = 60_000
 
+function stepBoundary(visibleUntil: number, timeframe: MarketTimeframe, direction: 1 | -1): number {
+  // Use the last revealed minute, which is the timestamp shown in the replay bar.
+  return shiftTimeByPeriod(visibleUntil - MINUTE, timeframe, direction) + MINUTE
+}
+
 async function loadMinuteSlice(runtime: MarketDataRuntime, symbol: string, from: number, until: number, options: {
   signal?: AbortSignal
   onStatus?: (status: string) => void
@@ -66,8 +71,8 @@ export interface ReplayController {
   loadSession(id: string): Promise<void>
   deleteSession(id: string): Promise<void>
   endSession(): Promise<void>
-  next(timeframe?: string): Promise<void>
-  previous(timeframe?: string): void | Promise<void>
+  next(timeframe?: MarketTimeframe): Promise<void>
+  previous(timeframe?: MarketTimeframe): void | Promise<void>
   reset(): Promise<void>
   jumpToEnd(): Promise<void>
   play(): void
@@ -81,7 +86,7 @@ export interface ReplayController {
 
 export function useReplayController(
   runtime: MarketDataRuntime,
-  chartTimeframe?: string,
+  stepTimeframe?: MarketTimeframe,
 ): ReplayController {
   const engineRef = useRef<ReplayEngine | null>(null)
   const preparationRef = useRef<AbortController | null>(null)
@@ -423,7 +428,7 @@ export function useReplayController(
     }
   }, [ensurePrepared, notifyCandle, runtime])
 
-  const next = useCallback(async (selectedTimeframe = chartTimeframe) => {
+  const next = useCallback(async (selectedTimeframe = stepTimeframe) => {
     const engine = engineRef.current
     if (engine === null || processingRef.current) return
     const saved = engine.snapshot()
@@ -433,14 +438,18 @@ export function useReplayController(
     setError('')
     try {
       const source = replaySourceTimeframe(saved)
-      const timeframe = selectedTimeframe === undefined || selectedTimeframe === saved.period.text ? source : selectedTimeframe
-      if (timeframe === source && saved.visibleUntil === undefined) {
-        if (!await ensurePrepared(engine, nextOpenTime(saved.currentTime, source))) return
+      const nextSourceOpen = nextOpenTime(saved.currentTime, source)
+      const nextSourceClose = klineCloseBoundary(nextSourceOpen, source)
+      const target = selectedTimeframe === undefined ? nextSourceClose : Math.min(
+        stepBoundary(sessionVisibleUntil(saved), selectedTimeframe, 1),
+        klineCloseBoundary(saved.endTime, source),
+      )
+      if (target === nextSourceClose && saved.visibleUntil === undefined) {
+        if (!await ensurePrepared(engine, nextSourceOpen)) return
         const candle = engine.stepNext()
         if (candle !== null) await notifyCandle({ type: 'advance', candle })
       } else {
-        const open = nextOpenTime(lastClosedOpenTime(sessionVisibleUntil(saved), timeframe), timeframe)
-        await advanceVisible(engine, Math.min(klineCloseBoundary(open, timeframe), klineCloseBoundary(saved.endTime, source)))
+        await advanceVisible(engine, target)
       }
       if (engineRef.current !== engine) return
       await publishProgress(engine)
@@ -460,28 +469,31 @@ export function useReplayController(
       processingRef.current = false
       if (engineRef.current === engine) setBusy(false)
     }
-  }, [advanceVisible, chartTimeframe, ensurePrepared, notifyCandle, publishProgress])
+  }, [advanceVisible, stepTimeframe, ensurePrepared, notifyCandle, publishProgress])
 
-  const previous = useCallback(async (selectedTimeframe = chartTimeframe) => {
+  const previous = useCallback(async (selectedTimeframe = stepTimeframe) => {
     const engine = engineRef.current
     if (engine === null || processingRef.current) return
     const saved = engine.snapshot()
     if (saved.hasTrades || (saved.currentIndex === 0 && saved.visibleUntil === undefined)) return
     setIsPlaying(false)
     const source = replaySourceTimeframe(saved)
-    const timeframe = selectedTimeframe === undefined || selectedTimeframe === saved.period.text ? source : selectedTimeframe
     processingRef.current = true
     setBusy(true)
     setError('')
     const controller = new AbortController()
     preparationRef.current = controller
     try {
-      if (timeframe === source && saved.visibleUntil === undefined) {
+      if (selectedTimeframe === undefined && saved.visibleUntil === undefined) {
         if (engine.stepPrevious() !== null) await publishProgress(engine)
         return
       }
       const start = klineCloseBoundary(saved.startTime, source)
-      const target = Math.max(start, klineCloseBoundary(lastClosedOpenTime(sessionVisibleUntil(saved) - 1, timeframe), timeframe))
+      const visibleUntil = sessionVisibleUntil(saved)
+      const previousBoundary = selectedTimeframe === undefined
+        ? klineCloseBoundary(lastClosedOpenTime(visibleUntil - 1, source), source)
+        : stepBoundary(visibleUntil, selectedTimeframe, -1)
+      const target = Math.max(start, previousBoundary)
       const atSourceClose = klineCloseBoundary(lastClosedOpenTime(target, source), source) === target
       const candle = atSourceClose ? undefined : (await loadMinuteSlice(runtime, saved.symbol.ticker, target - MINUTE, target, { signal: controller.signal }))[0]
       if (engineRef.current !== engine) return
@@ -496,7 +508,7 @@ export function useReplayController(
         setBusy(false)
       }
     }
-  }, [chartTimeframe, publishProgress, runtime])
+  }, [stepTimeframe, publishProgress, runtime])
 
   const reset = useCallback(async () => {
     const engine = engineRef.current

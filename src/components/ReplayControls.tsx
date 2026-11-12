@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MarketSelection } from '../market-data/models'
+import { SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
 import type {
   ReplaySession,
   ReplaySpeed,
 } from '../replay/models'
 import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil } from '../replay/models'
 import type { ReplayController } from '../replay/useReplayController'
+import { validateReplayStepPeriod } from '../replay/step-preferences'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
 
 interface ReplayControlsProps {
   selection: MarketSelection
   replay: ReplayController
+  stepPeriod: MarketTimeframe
+  onStepPeriodChange: (period: MarketTimeframe) => void
   interactionLocked?: boolean
   chartStartTime: number | null
   onJumpToTime: (timestamp: number) => void
@@ -95,6 +99,8 @@ function NextCandleButton({ replay, disabled }: { replay: ReplayController; disa
 export function ReplayControls({
   selection,
   replay,
+  stepPeriod,
+  onStepPeriodChange,
   interactionLocked = false,
   chartStartTime,
   onJumpToTime,
@@ -288,9 +294,14 @@ export function ReplayControls({
         onLocateLatest={onLocateLatest}
       />
       <span className="replay-position">
-        {session.symbol.ticker} · 步进 {selection.period.text} · 当前：
+        {session.symbol.ticker} · 当前：
         {displayTime(sessionVisibleUntil(session) - 60_000)} · <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>
       </span>
+      <label className="replay-step-period">步进
+        <select aria-label="步进周期" disabled={interactionLocked} value={stepPeriod} onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
+          {SUPPORTED_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
+        </select>
+      </label>
       <button
         disabled={
           interactionLocked ||
@@ -330,7 +341,7 @@ export function ReplayControls({
       </select>
       <button type="button" className="replay-settings-actions" onClick={() => setActionsOpen(true)}>回放设置</button>
       <WorkspaceDialog open={actionsOpen} title="回放会话操作" onClose={() => setActionsOpen(false)}>
-        <p className="muted-text">{session.symbol.ticker} · 步进 {selection.period.text} · {displayTime(session.startTime)} 至 {displayTime(session.endTime)}</p>
+        <p className="muted-text">{session.symbol.ticker} · {displayTime(session.startTime)} 至 {displayTime(session.endTime)}</p>
         <div className="workspace-session-actions">
       <button
         disabled={interactionLocked || session.status === 'completed'}

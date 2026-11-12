@@ -20,13 +20,16 @@
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
+| 回放步进周期 | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
 | 工作区账户／下单／持仓展开／收起、旧回放／状态显隐兼容字段、桌面／手机图表高度、底部区高度 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |
 
 上述入口均位于 `src/`。新增配置必须更新本表，不得在组件中另建脱离存档的持久化键。配置读写和校验应放在可独立调用的模块中，备份服务不能依赖 React 组件。
 
 会话的交易参数、进度、持仓和交易记录由现有 IndexedDB 会话及模拟状态存储负责，走会话／全部数据存档和云端“会话与交易”类别，不能为了保存配置而破坏会话隔离。
 
-回放步进跟随当前图表周期。会话 Schema 2 的可选 `visibleUntil` 保存分钟切片后的已揭示时间边界，随本地会话、会话／全部数据 JSON 和 GitHub“会话与交易”恢复。旧会话缺少该字段时沿用当前原始 K 线的收盘边界。导入时在写入前拒绝非分钟边界或越过有效会话进度的值。止盈止损输入方式属于弹窗临时状态，按百分比提交后仍将触发价和生效时间保存到对应仓位。手动恢复后按提示刷新。
+回放步进周期独立于图表周期，支持现有 15 个周期，默认 `1m`，`1M` 表示一月。`replayStepPeriod` 随应用配置／全部数据 JSON 和 GitHub“应用配置”往返。旧存档缺少字段时保留目标浏览器的值，本地无值或损坏时用默认值。显式空串、`null` 和其他非法值在任何导入写入前拒绝。云端自动恢复会更新回放栏的选择，手动恢复后按界面提示刷新。
+
+会话 Schema 2 的可选 `visibleUntil` 保存分钟切片后的已揭示时间边界，随本地会话、会话／全部数据 JSON 和 GitHub“会话与交易”恢复。旧会话缺少该字段时沿用当前原始 K 线的收盘边界。导入时在写入前拒绝非分钟边界或越过有效会话进度的值。止盈止损输入方式属于弹窗临时状态，按百分比提交后仍将触发价和生效时间保存到对应仓位。手动恢复后按提示刷新。
 
 历史模拟双向持仓使用模拟状态 Schema 2 的 `positions` 列表，同方向最多一个仓位；止盈止损价格及各自的生效时间保存在对应仓位中。它们属于会话业务数据，不新增 `BackupPreferences` 或 localStorage 配置键。JSON 会话／全部数据与 GitHub“会话与交易”均包含完整双仓；旧 Schema 1 的 `position` 迁移为对应方向的一项，`position: null` 迁移为空列表，Schema 2 的显式 `positions: []` 保持空仓。缺失或非法列表、重复方向和不匹配的止盈止损生效时间均在导入写入前拒绝。刷新恢复会话直接生效；手动导入／云端恢复后需按提示刷新，避免活动界面的旧状态继续操作。详见 [模拟双向持仓](simulation-positions.md)。
 

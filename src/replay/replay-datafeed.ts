@@ -42,6 +42,15 @@ function historyWindowStart(from: number, to: number, timeframe: string, minuteH
   return Math.max(from, candleLimit, alignOpenTime(month, timeframe, 'floor'))
 }
 
+/** Reload the latest chart window when one step would skip bars in the subscription. */
+export function replayChartNeedsReload(before: ReplayContext, after: ReplayContext, timeframe: string): boolean {
+  const from = replayVisibleUntil(before) - 1
+  const to = replayVisibleUntil(after) - 1
+  if (to - from <= 498 * 60_000) return false
+  return alignOpenTime(from, timeframe, 'floor') <
+    historyWindowStart(0, alignOpenTime(to, timeframe, 'floor'), timeframe, !usesNativeKlines(timeframe))
+}
+
 function toKLineData(candle: MarketCandle): KLineData {
   return {
     timestamp: candle.openTime,
@@ -117,7 +126,7 @@ export class ReplayDatafeed implements Datafeed {
     this.sessionData = id === null ? null : { id, candles }
   }
 
-  setReplayContext(context: ReplayContext | null): void {
+  setReplayContext(context: ReplayContext | null, reloadChart = false): void {
     const previous = this.context
     if (requiresRestart(previous, context)) {
       this.onHistoryStatus?.('')
@@ -128,6 +137,7 @@ export class ReplayDatafeed implements Datafeed {
     this.context = context === null ? null : { ...context }
     const subscription = this.subscription
     if (subscription !== null) {
+      if (reloadChart && context !== null) subscription.visibleUntil = replayVisibleUntil(context)
       if (previous === null && context !== null) {
         this.base.unsubscribe(subscription.symbol, subscription.period)
       } else if (previous !== null && context === null) {
@@ -139,7 +149,7 @@ export class ReplayDatafeed implements Datafeed {
       }
     }
     if (
-      context !== null &&
+      !reloadChart && context !== null &&
       (previous === null ||
         previous.sessionId !== context.sessionId ||
         replayVisibleUntil(context) > replayVisibleUntil(previous))

@@ -53,16 +53,3 @@
   .chart-size-backdrop { align-items: end; padding: 0; }
   .chart-size-dialog { width: 100%; max-height: min(85dvh, calc(var(--workspace-viewport-height, 100dvh) - 12px)); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
 }
-.heikin-ashi-note {
-  position: absolute;
-  bottom: 38px;
-  left: 12px;
-  max-width: calc(100% - 90px);
-  padding: 3px 6px;
-  border-radius: 4px;
-  background: var(--surface, #131722);
-  color: var(--text-secondary, #9299ab);
-  font-size: 11px;
-  pointer-events: none;
-  z-index: 2;
-}

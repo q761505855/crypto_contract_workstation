@@ -613,6 +613,13 @@ button:disabled {
   -webkit-touch-callout: none;
 }
 
+.replay-step-period {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
 .replay-controls input,
 .replay-controls select {
   min-height: 30px;
@@ -1579,6 +1586,8 @@ button:disabled {
     z-index: 96; background: #111a27;
   }
   .workspace-shell .replay-controls { padding: 5px 6px; }
+  .workspace-shell .replay-step-period { gap: 2px; }
+  .workspace-shell .replay-step-period select { min-height: 32px; padding: 4px 3px; font-size: 12px; }
   .workspace-shell .order-region, .workspace-shell .dock-region {
     z-index: 100;
     bottom: calc(var(--workspace-bottom-offset) + var(--workspace-drawer-gap));

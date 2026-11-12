@@ -161,6 +161,38 @@ describe('WorkstationBackupService', () => {
     expect(storage.getItem('marketData.binanceBaseUrl')).toBeNull()
     expect((await service.exportAll()).data.tradeCandles).toEqual([])
   })
+  it('round-trips replay step periods in config and full archives, preserving legacy absence', async () => {
+    const sourceStorage = new MemoryPreferences()
+    const source = new WorkstationBackupService(`replay-step-source-${crypto.randomUUID()}`, sourceStorage)
+    expect((await source.exportPreferences()).data.preferences).toHaveProperty('replayStepPeriod', '1m')
+    sourceStorage.setItem('replay.stepPeriod.v1', '"invalid"')
+    expect((await source.exportPreferences()).data.preferences).toHaveProperty('replayStepPeriod', '1m')
+    sourceStorage.setItem('replay.stepPeriod.v1', '"1M"')
+    for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
+      expect(archive.data.preferences).toHaveProperty('replayStepPeriod', '1M')
+      const targetStorage = new MemoryPreferences()
+      const target = new WorkstationBackupService(`replay-step-target-${crypto.randomUUID()}`, targetStorage)
+      await target.import(archive)
+      expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
+      const legacy = structuredClone(archive)
+      delete legacy.data.preferences!.replayStepPeriod
+      await target.import(legacy)
+      expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
+    }
+  })
+
+  it.each([null, '', 0, false, [], {}, '1H'].map(value => [value]))('rejects invalid replay step periods before any writes (%j)', async replayStepPeriod => {
+    const storage = new MemoryPreferences()
+    const name = `replay-step-invalid-${crypto.randomUUID()}`
+    const service = new WorkstationBackupService(name, storage)
+    const archive = await service.exportAll()
+    archive.data.symbols = [symbol()]
+    Object.assign(archive.data.preferences!, { replayStepPeriod })
+    await expect(service.import(archive)).rejects.toThrow(/replayStepPeriod/)
+    expect(storage.getItem('replay.stepPeriod.v1')).toBeNull()
+    expect(await new IndexedDbMarketDataStore(name).getSymbols()).toEqual([])
+  })
+
   it('round-trips candle types in config and full archives, preserving legacy absence', async () => {
     const sourceStorage = new MemoryPreferences()
     sourceStorage.setItem('chart.candleType.v1', JSON.stringify('heikin_ashi'))

@@ -70,6 +70,7 @@ function backup(): BackupEnvelope {
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     pinnedPeriods: ['1m', '1d'],
+    replayStepPeriod: '1M',
     workspace: {
       schemaVersion: 1,
       panels: { account: false, order: true, dock: false, replay: false, status: false },
@@ -278,6 +279,13 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual(complete)
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(complete.workspace)
 
+    sourceStorage.setItem('replay.stepPeriod.v1', '"1m"')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1m"')
+    sourceStorage.setItem('replay.stepPeriod.v1', '"1M"')
+
     sourceStorage.setItem('chart.candleType.v1', '"candle_solid"')
     await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
     await source.upload(client(remote), 'stop', selection)
@@ -309,12 +317,19 @@ describe('GitHubSyncService', () => {
     const legacy = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     delete legacy.workspace
     delete legacy.candleType
+    delete legacy.replayStepPeriod
     await rewrite(legacy)
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
     expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+    expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
 
     const before = (await targetBackups.exportAll()).data
+    for (const replayStepPeriod of [null, '', 0, false, [], {}, '1H']) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', replayStepPeriod })
+      await expect(target.pull(client(remote))).rejects.toThrow(/replayStepPeriod/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const candleType of [null, '', false, 0, [], {}, 'unknown']) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', candleType })
       await expect(target.pull(client(remote))).rejects.toThrow(/candleType/)

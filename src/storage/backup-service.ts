@@ -1,7 +1,7 @@
 import Decimal from 'decimal.js'
 import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
 import { CONFIG_PENDING_KEY, preferencesRestored } from './preference-events'
-import { klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
+import { klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
 import {
   loadWorkspacePreferences,
@@ -31,6 +31,7 @@ import type {
   MarketSymbol,
 } from '../market-data/models'
 import { replaySourceTimeframe, type ReplaySession } from '../replay/models'
+import { REPLAY_STEP_PERIOD_KEY, readReplayStepPeriod, validateReplayStepPeriod } from '../replay/step-preferences'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
 import type {
   SimulationLedgerEntry,
@@ -63,6 +64,7 @@ export interface BackupPreferences {
   selectedSymbol?: SymbolInfo
   chartIndicators?: ChartIndicatorPreferences
   pinnedPeriods?: string[]
+  replayStepPeriod?: MarketTimeframe
   workspace?: WorkspacePreferences
 }
 
@@ -199,6 +201,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     favoriteSymbols,
     ...(item.candleType === undefined ? {} : { candleType: validateCandleType(item.candleType) }),
     ...(item.pinnedPeriods === undefined ? {} : { pinnedPeriods: validatePinnedPeriods(item.pinnedPeriods) }),
+    ...(item.replayStepPeriod === undefined ? {} : { replayStepPeriod: validateReplayStepPeriod(item.replayStepPeriod) }),
     ...(item.workspace === undefined ? {} : { workspace: validateWorkspacePreferences(item.workspace) }),
     ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
     ...(item.chartIndicators === undefined
@@ -804,6 +807,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
     favoriteSymbols,
     pinnedPeriods: readPinnedPeriods(storage),
+    replayStepPeriod: readReplayStepPeriod(storage),
     candleType: readCandleType(storage),
     workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
@@ -984,6 +988,7 @@ export class WorkstationBackupService {
       chartIndicators: CHART_INDICATORS_PREFERENCE,
       selectedSymbol: SELECTED_SYMBOL_STORAGE_KEY,
       pinnedPeriods: PINNED_PERIODS_KEY,
+      replayStepPeriod: REPLAY_STEP_PERIOD_KEY,
       workspace: WORKSPACE_PREFERENCES_KEY,
       candleType: CANDLE_TYPE_KEY,
     } as const
