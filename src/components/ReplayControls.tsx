@@ -4,7 +4,7 @@ import type {
   ReplaySession,
   ReplaySpeed,
 } from '../replay/models'
-import { DEFAULT_TRADING_CONFIG } from '../replay/models'
+import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil } from '../replay/models'
 import type { ReplayController } from '../replay/useReplayController'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
@@ -228,17 +228,16 @@ export function ReplayControls({
         onLocateLatest={onLocateLatest}
       />
       <span className="replay-position">
-        {session.symbol.ticker} · 步进 {session.period.text} · 当前：
-        {displayTime(session.currentTime)} · {session.currentIndex + 1}/
-        {session.candleCount}
+        {session.symbol.ticker} · 步进 {selection.period.text} · 当前：
+        {displayTime(sessionVisibleUntil(session) - 60_000)} · <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>
       </span>
       <button
         disabled={
           interactionLocked ||
-          session.currentIndex === 0 ||
+          (session.currentIndex === 0 && session.visibleUntil === undefined) ||
           session.hasTrades
         }
-        onClick={replay.previous}
+        onClick={() => void replay.previous()}
         type="button"
       >
         上一根
@@ -251,7 +250,7 @@ export function ReplayControls({
         下一根
       </button>
       <button
-        disabled={interactionLocked || session.status === 'completed'}
+        disabled={(!replay.isPlaying && interactionLocked) || session.status === 'completed'}
         onClick={replay.isPlaying ? replay.pause : replay.play}
         type="button"
       >
@@ -259,6 +258,7 @@ export function ReplayControls({
       </button>
       <select
         aria-label="回放速度"
+        disabled={interactionLocked}
         onChange={(event) =>
           replay.setSpeed(Number(event.target.value) as ReplaySpeed)
         }
@@ -272,7 +272,7 @@ export function ReplayControls({
       </select>
       <button type="button" className="replay-settings-actions" onClick={() => setActionsOpen(true)}>回放设置</button>
       <WorkspaceDialog open={actionsOpen} title="回放会话操作" onClose={() => setActionsOpen(false)}>
-        <p className="muted-text">{session.symbol.ticker} · 步进 {session.period.text} · {displayTime(session.startTime)} 至 {displayTime(session.endTime)}</p>
+        <p className="muted-text">{session.symbol.ticker} · 步进 {selection.period.text} · {displayTime(session.startTime)} 至 {displayTime(session.endTime)}</p>
         <div className="workspace-session-actions">
       <button
         disabled={interactionLocked || session.status === 'completed'}

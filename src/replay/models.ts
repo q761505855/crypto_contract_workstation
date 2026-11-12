@@ -1,5 +1,5 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
-import { alignOpenTime, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
+import { alignOpenTime, klineCloseBoundary, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
 
 export type ReplaySpeed = 1 | 2 | 5 | 10
 export type ReplayStatus = 'paused' | 'completed'
@@ -30,6 +30,8 @@ export interface ReplaySession {
   startTime: number
   endTime: number
   currentTime: number
+  /** Exclusive visibility boundary when the latest revealed candle is a minute slice. */
+  visibleUntil?: number
   currentIndex: number
   candleCount: number
   speed: ReplaySpeed
@@ -55,7 +57,16 @@ export interface ReplayContext {
   symbol: string
   timeframe: string
   currentTime: number
+  visibleUntil?: number
   endTime?: number
+}
+
+export function replayVisibleUntil(context: Pick<ReplayContext, 'currentTime' | 'timeframe' | 'visibleUntil'>): number {
+  return context.visibleUntil ?? klineCloseBoundary(context.currentTime, context.timeframe)
+}
+
+export function sessionVisibleUntil(session: ReplaySession): number {
+  return replayVisibleUntil({ ...session, timeframe: replaySourceTimeframe(session) })
 }
 
 /** Keep older sessions on their original three-day grid so trades replay identically. */

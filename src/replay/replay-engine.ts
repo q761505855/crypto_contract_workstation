@@ -42,6 +42,7 @@ function normalizedCandles(
 export class ReplayEngine {
   private readonly candles: MarketCandle[]
   private session: ReplaySession
+  private partialCandle?: MarketCandle
 
   private constructor(
     candles: readonly MarketCandle[],
@@ -133,10 +134,25 @@ export class ReplayEngine {
   }
 
   currentCandle(): MarketCandle {
-    return this.candles[this.session.currentIndex]
+    return this.partialCandle ?? this.candles[this.session.currentIndex]
   }
 
   bufferedCandles(): readonly MarketCandle[] { return this.candles }
+
+  seekVisible(visibleUntil: number, partialCandle?: MarketCandle): void {
+    const timeframe = replaySourceTimeframe(this.session)
+    const close = (index: number) => klineCloseBoundary(this.candles[index].openTime, timeframe)
+    let index = this.session.currentIndex
+    while (index > 0 && close(index) > visibleUntil) index -= 1
+    while (index < this.candles.length - 1 && close(index + 1) <= visibleUntil) index += 1
+    const currentTime = this.candles[index].openTime
+    this.partialCandle = partialCandle
+    this.update({
+      currentIndex: index, currentTime,
+      visibleUntil: partialCandle === undefined ? undefined : visibleUntil,
+      status: currentTime === this.session.endTime ? 'completed' : 'paused',
+    })
+  }
 
   appendCandles(candles: readonly MarketCandle[]): void {
     const timeframe = replaySourceTimeframe(this.session)
@@ -158,9 +174,11 @@ export class ReplayEngine {
     }
     const nextIndex = this.session.currentIndex + 1
     const candle = this.candles[nextIndex]
+    this.partialCandle = undefined
     this.update({
       currentIndex: nextIndex,
       currentTime: candle.openTime,
+      visibleUntil: undefined,
       status: candle.openTime === this.session.endTime ? 'completed' : 'paused',
     })
     return candle
@@ -182,9 +200,11 @@ export class ReplayEngine {
 
   reset(): MarketCandle {
     const candle = this.candles[0]
+    this.partialCandle = undefined
     this.update({
       currentIndex: 0,
       currentTime: candle.openTime,
+      visibleUntil: undefined,
       status: candle.openTime === this.session.endTime ? 'completed' : 'paused',
     })
     return candle

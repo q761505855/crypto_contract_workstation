@@ -1,7 +1,7 @@
 import Decimal from 'decimal.js'
 import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
 import { CONFIG_PENDING_KEY, preferencesRestored } from './preference-events'
-import { SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
+import { klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
 import {
   loadWorkspacePreferences,
@@ -30,7 +30,7 @@ import type {
   MarketCandle,
   MarketSymbol,
 } from '../market-data/models'
-import type { ReplaySession } from '../replay/models'
+import { replaySourceTimeframe, type ReplaySession } from '../replay/models'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
 import type {
   SimulationLedgerEntry,
@@ -352,6 +352,16 @@ function validateSession(value: unknown, index: number): ReplaySession {
     candleCount <= currentIndex
   ) {
     throw new Error(`${field} 的回放时间或索引无效`)
+  }
+  if (item.visibleUntil !== undefined) {
+    const visibleUntil = finiteNumber(item.visibleUntil, `${field}.visibleUntil`)
+    const source = replaySourceTimeframe({ period: { ...period, text: timeframe } as ReplaySession['period'], startTime })
+    const sourceClose = klineCloseBoundary(currentTime, source)
+    const nextClose = klineCloseBoundary(nextOpenTime(currentTime, source), source)
+    if (visibleUntil % 60_000 !== 0 || visibleUntil < sourceClose || visibleUntil >= nextClose ||
+      visibleUntil > klineCloseBoundary(endTime, source)) {
+      throw new Error(`${field}.visibleUntil 的回放进度无效`)
+    }
   }
   const tradingConfig = record(
     item.tradingConfig,

@@ -35,10 +35,24 @@ function Harness() {
     setTakeProfit(side, price) { engine.setTakeProfit(side, price, 0); publish() },
     setStopLoss(side, price) { engine.setStopLoss(side, price, 0); publish() },
   }
-  return <><SimulationOrder session={session} simulation={simulation} onClose={() => undefined} /><SimulationDock simulation={simulation} tab={tab} onTabChange={setTab} onClose={() => undefined} /></>
+  return <><SimulationOrder session={session} simulation={simulation} onClose={() => undefined} /><SimulationDock simulation={simulation} pricePrecision={session.symbol.pricePrecision} tab={tab} onTabChange={setTab} onClose={() => undefined} /></>
 }
 
 describe('simulation position cards', () => {
+  it('previews and saves a short stop loss entered as a percentage of entry price', () => {
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: /^空$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^开空$/ }))
+    fireEvent.click(screen.getByRole('button', { name: '止盈止损' }))
+    const dialog = within(screen.getByRole('dialog', { name: '空仓 · 止盈止损' }))
+    fireEvent.change(dialog.getByLabelText('设置方式'), { target: { value: 'percent' } })
+    fireEvent.change(dialog.getByLabelText('止损百分比'), { target: { value: '10' } })
+    expect(dialog.getByText(/预计止损盈亏/)).toHaveTextContent('-100.57 USDT')
+    expect(dialog.getByText(/预计止损盈亏/)).toHaveTextContent('109.98')
+    fireEvent.click(dialog.getByRole('button', { name: '设置止损' }))
+    expect(dialog.getByRole('status')).toHaveTextContent('止损 109.98')
+  })
+
   it('allows hedging and keeps risk inputs and close actions bound to their position', () => {
     render(<Harness />)
     fireEvent.click(screen.getByRole('button', { name: /^开多$/ }))

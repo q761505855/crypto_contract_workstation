@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import Decimal from 'decimal.js'
 import type { ReplaySession } from '../replay/models'
-import type { PositionSide, OrderPreview, SimulationState } from '../simulation/models'
+import type { PositionSide, OrderPreview, SimulationPosition, SimulationState } from '../simulation/models'
+import { estimateRiskPnl, riskPricePercent, riskTriggerPrice, type RiskInputMode, type RiskPriceTarget } from '../simulation/risk-price'
 import type { SimulationController } from '../simulation/useSimulationController'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { PanelToggle } from './PanelToggle'
@@ -66,21 +67,70 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
 
 export type TradingTab = 'positions' | 'trades' | 'stats' | 'ledger'
 
-export function SimulationDock({ simulation, onClose, tab, onTabChange }: {
+function RiskEditor({ position, simulation, feeRate, precision }: {
+  position: SimulationPosition
   simulation: SimulationController
+  feeRate: string
+  precision: number
+}) {
+  const [mode, setMode] = useState<RiskInputMode>('price')
+  const [values, setValues] = useState({
+    'take-profit': position.takeProfitPrice ?? '', 'stop-loss': position.stopLossPrice ?? '',
+  })
+  const targets = ['take-profit', 'stop-loss'] as const
+  const priceFor = (target: RiskPriceTarget) => riskTriggerPrice(values[target], mode, position, target, precision)
+
+  function changeMode(next: RiskInputMode) {
+    const convert = (target: RiskPriceTarget) => {
+      const price = priceFor(target)
+      if (price === null) return ''
+      return next === 'price' ? price.toString() : riskPricePercent(price, position, target)
+    }
+    setValues({ 'take-profit': convert('take-profit'), 'stop-loss': convert('stop-loss') })
+    setMode(next)
+  }
+
+  return <>
+    <label className="panel-field">设置方式<select aria-label="设置方式" value={mode} onChange={event => changeMode(event.target.value as RiskInputMode)}>
+      <option value="price">按价格</option><option value="percent">按百分比（相对开仓均价）</option>
+    </select></label>
+    {targets.map(target => {
+      const takeProfit = target === 'take-profit'
+      const label = takeProfit ? '止盈' : '止损'
+      const inputLabel = `${label}${mode === 'price' ? '价格' : '百分比'}`
+      const price = priceFor(target)
+      const pnl = price === null ? null : estimateRiskPnl(position, price, feeRate)
+      const save = takeProfit ? simulation.setTakeProfit : simulation.setStopLoss
+      return <div key={target}>
+        <label className="panel-field">{inputLabel}{mode === 'percent' && '（%）'}<input aria-label={inputLabel} type="number" inputMode="decimal" step="any" value={values[target]} onChange={event => setValues({ ...values, [target]: event.target.value })} /></label>
+        <p className="muted-text">预计{label}盈亏 {pnl === null ? '—' : <strong className={pnl.gte(0) ? 'profit' : 'loss'}>{pnl.gt(0) ? '+' : ''}{displayAmount(pnl.toString())} USDT</strong>}{mode === 'percent' && price !== null && ` · 触发价 ${price.toString()}`}</p>
+        <div className="compact-actions">
+          <button type="button" onClick={() => { if (price !== null) save(position.side, price.toString()) }} disabled={simulation.busy || price === null}>设置{label}</button>
+          <button type="button" onClick={() => { save(position.side, null); setValues({ ...values, [target]: '' }) }} disabled={simulation.busy}>取消{label}</button>
+        </div>
+      </div>
+    })}
+    <p className="muted-text" role="status">当前止盈 {position.takeProfitPrice ?? '未设置'} / 止损 {position.stopLossPrice ?? '未设置'}</p>
+    <p className="muted-text">按触发价估算剩余仓位盈亏，已扣预计平仓手续费。设置从下一根 K 线生效。</p>
+  </>
+}
+
+export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePrecision = 8 }: {
+  simulation: SimulationController
+  pricePrecision?: number
   onClose(): void
   tab: TradingTab
   onTabChange(tab: TradingTab): void
 }) {
   const [editing, setEditing] = useState<{ side: PositionSide; kind: 'risk' | 'reduce' | 'details' } | null>(null)
-  const [tp, setTp] = useState(''), [sl, setSl] = useState(''), [quantity, setQuantity] = useState('')
+  const [quantity, setQuantity] = useState('')
   const state = simulation.state
   const position = state?.positions.find(position => position.side === editing?.side)
   useEffect(() => { if (editing && !position) setEditing(null) }, [editing, position])
   function edit(side: PositionSide, kind: NonNullable<typeof editing>['kind']) {
     const current = state?.positions.find(position => position.side === side)
     if (!current) return
-    setTp(current.takeProfitPrice ?? ''); setSl(current.stopLossPrice ?? ''); setQuantity(current.quantity); simulation.clearError(); setEditing({ side, kind })
+    setQuantity(current.quantity); simulation.clearError(); setEditing({ side, kind })
   }
   const labels: [TradingTab, string][] = [['positions', `持仓 (${state?.positions.length ?? 0})`], ['trades', '成交记录'], ['stats', '复盘统计'], ['ledger', '账户流水']]
   return <section className="simulation-dock" aria-label="持仓与复盘面板">
@@ -100,16 +150,9 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange }: {
       </>}
     </div>
     <WorkspaceDialog open={editing !== null && position !== undefined} title={editing ? `${sideName(editing.side)} · ${editing.kind === 'risk' ? '止盈止损' : editing.kind === 'reduce' ? '减仓和平仓' : '仓位详情'}` : ''} onClose={() => setEditing(null)}>
-      {editing && position && <>
+      {editing && position && state && <>
         <p className="muted-text">{position.symbol} · {sideName(position.side)} · 剩余数量 {position.quantity}</p>
-        {editing.kind === 'risk' && <>
-          <label className="panel-field">止盈价格<input aria-label="止盈价格" type="number" inputMode="decimal" value={tp} onChange={event => setTp(event.target.value)} /></label>
-          <div className="compact-actions"><button type="button" onClick={() => simulation.setTakeProfit(editing.side, tp || null)} disabled={simulation.busy}>设置止盈</button><button type="button" onClick={() => { simulation.setTakeProfit(editing.side, null); setTp('') }} disabled={simulation.busy}>取消止盈</button></div>
-          <label className="panel-field">止损价格<input aria-label="止损价格" type="number" inputMode="decimal" value={sl} onChange={event => setSl(event.target.value)} /></label>
-          <div className="compact-actions"><button type="button" onClick={() => simulation.setStopLoss(editing.side, sl || null)} disabled={simulation.busy}>设置止损</button><button type="button" onClick={() => { simulation.setStopLoss(editing.side, null); setSl('') }} disabled={simulation.busy}>取消止损</button></div>
-          <p className="muted-text" role="status">当前止盈 {position.takeProfitPrice ?? '未设置'} / 止损 {position.stopLossPrice ?? '未设置'}</p>
-          <p className="muted-text">仅作用于当前{sideName(editing.side)}的全部剩余数量，从下一根 K 线生效。</p>
-        </>}
+        {editing.kind === 'risk' && <RiskEditor key={`${state.sessionId}:${position.side}`} position={position} simulation={simulation} feeRate={state.config.feeRate} precision={pricePrecision} />}
         {editing.kind === 'reduce' && <>
           <label className="panel-field">减仓数量<input aria-label="减仓数量" type="number" inputMode="decimal" value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
           <div className="compact-actions">{([25, 50, 75] as const).map(value => <button key={value} type="button" disabled={simulation.busy} onClick={() => void simulation.reducePercent(editing.side, value)}>减 {value}%</button>)}</div>

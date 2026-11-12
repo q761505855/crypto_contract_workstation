@@ -57,6 +57,49 @@ function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: 
 }
 
 describe('offline replay and simulation controllers', () => {
+  it('publishes a new cursor only after the session write completes', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    await act(async () => { await result.current.replay.createSession(input) })
+    let release!: () => void
+    vi.mocked(runtime.replaySessions.update).mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    let step!: Promise<void>
+    await act(async () => { step = result.current.replay.next() })
+    try {
+      expect(release).toBeTypeOf('function')
+      expect(result.current.replay.session?.currentIndex).toBe(0)
+    } finally {
+      await act(async () => { release(); await step })
+    }
+    expect(result.current.replay.session?.currentIndex).toBe(1)
+  })
+
+  it('steps to chart boundaries and restores a cursor inside a source candle', async () => {
+    const { result, runtime } = setup()
+    await waitFor(() => expect(result.current.replay.busy).toBe(false))
+    vi.mocked(runtime.service.loadCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    const period = SUPPORTED_PERIODS.find(item => item.text === '5m')!
+    await act(async () => { await result.current.replay.createSession({ ...input, period, endTime: 10 * minute }) })
+    const events: number[] = []
+    result.current.replay.subscribeCandle(event => { events.push(event.candle.openTime) })
+    await act(async () => { await result.current.replay.next('1m') })
+    expect(result.current.replay.session).toMatchObject({ currentTime: 0, visibleUntil: 6 * minute })
+    expect(result.current.replay.getCurrentCandle()?.openTime).toBe(5 * minute)
+    const saved = result.current.replay.session!
+    vi.mocked(runtime.replaySessions.get).mockResolvedValue(saved)
+    vi.mocked(runtime.service.loadReplayCandles).mockImplementation(async (_k, _s, tf, from, to) => sourceRows(tf, from, to))
+    await act(async () => { await result.current.replay.endSession(); await result.current.replay.loadSession(saved.id) })
+    expect(result.current.replay.getCurrentCandle()?.openTime).toBe(5 * minute)
+    await waitFor(() => expect(result.current.simulation.busy).toBe(false))
+    const savesBefore = vi.mocked(runtime.simulationStates.save).mock.calls.length
+    await act(async () => { await result.current.replay.next('15m') })
+    expect(events).toEqual([5, 6, 7, 8, 9, 10].map(index => index * minute))
+    expect(runtime.simulationStates.save).toHaveBeenCalledTimes(savesBefore + 1)
+    expect(result.current.replay.session).toMatchObject({ currentTime: 10 * minute, status: 'completed' })
+    await act(async () => { await result.current.replay.previous('3m') })
+    expect(result.current.replay.session).toMatchObject({ currentTime: 5 * minute, visibleUntil: 12 * minute })
+  })
+
   it('routes risk edits and reductions to the requested side without changing its hedge', async () => {
     const { result } = setup()
     await waitFor(() => expect(result.current.replay.busy).toBe(false))

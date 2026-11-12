@@ -22,7 +22,6 @@ import type {
 } from './indicator-preferences'
 import {
   alignOpenTime,
-  klineCloseBoundary,
   nextOpenTime,
   shiftOpenTime,
   usesNativeKlines,
@@ -34,6 +33,7 @@ import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { readChartHistory } from '../market-data/indicator-history'
 import type { ReplayDatafeed } from '../replay/replay-datafeed'
+import { replayVisibleUntil, type ReplayContext } from '../replay/models'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
 import { registerSimulationPriceLine, SIMULATION_PRICE_LINE } from './simulation-price-line'
 
@@ -115,12 +115,12 @@ const createProChart: ChartProFactory = (options) => {
   let chart: ChartPro | undefined
   const resetPivotHistory = registerPivotsIndicator(options.datafeed, () => {
     const replay = (options.datafeed as Datafeed & {
-      getReplayContext?: () => { sessionId: string; currentTime: number; timeframe: string } | null
+      getReplayContext?: () => ReplayContext | null
     }).getReplayContext?.()
     return {
       symbol: chart?.getSymbol() ?? options.symbol,
       period: chart?.getPeriod() ?? options.period,
-      confirmedUntil: replay ? shiftOpenTime(replay.currentTime, replay.timeframe, 1) : Date.now(),
+      confirmedUntil: replay ? replayVisibleUntil(replay) : Date.now(),
       sessionKey: replay?.sessionId ?? 'live',
     }
   })
@@ -374,9 +374,9 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   private replayHistoryEnd(): number | undefined {
     const context = (this.datafeed as Datafeed & {
-      getReplayContext?: () => { currentTime: number; timeframe: string } | null
+      getReplayContext?: () => ReplayContext | null
     } | null)?.getReplayContext?.()
-    return context ? klineCloseBoundary(context.currentTime, context.timeframe) - 1 : undefined
+    return context ? replayVisibleUntil(context) - 1 : undefined
   }
 
   private timeWindow(timestamp: number, period: Period): { target: number; from: number; to: number } {

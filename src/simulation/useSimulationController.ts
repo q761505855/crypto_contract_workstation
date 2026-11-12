@@ -59,6 +59,7 @@ export function useSimulationController(
             }`,
           )
         })
+      return saveQueueRef.current
     },
     [runtime],
   )
@@ -68,7 +69,7 @@ export function useSimulationController(
       const next = engine.snapshot()
       setState(next)
       replay.setHasTrades(next.trades.length > 0)
-      queueSave(next)
+      return queueSave(next)
     },
     [queueSave, replay.setHasTrades],
   )
@@ -120,13 +121,18 @@ export function useSimulationController(
       if (event.type === 'reset') {
         const engine = SimulationEngine.create(session)
         engineRef.current = engine
-        publish(engine)
+        await publish(engine)
         return
       }
       const engine = engineRef.current
       if (engine === null) return
-      engine.processCandle(event.candle)
-      publish(engine)
+      try {
+        engine.processCandle(event.candle)
+      } catch (reason) {
+        await publish(engine)
+        throw reason
+      }
+      if (!event.deferPublish) await publish(engine)
     },
     [publish],
   )
@@ -250,14 +256,14 @@ export function useSimulationController(
       const session = sessionRef.current
       if (engine === null || session === null) return
       try {
-        engine.setTakeProfit(side, price, session.currentTime)
+        engine.setTakeProfit(side, price, replay.getCurrentCandle()?.openTime ?? session.currentTime)
         setError('')
         publish(engine)
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason))
       }
     },
-    [publish],
+    [publish, replay.getCurrentCandle],
   )
 
   const setStopLoss = useCallback(
@@ -266,14 +272,14 @@ export function useSimulationController(
       const session = sessionRef.current
       if (engine === null || session === null) return
       try {
-        engine.setStopLoss(side, price, session.currentTime)
+        engine.setStopLoss(side, price, replay.getCurrentCandle()?.openTime ?? session.currentTime)
         setError('')
         publish(engine)
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason))
       }
     },
-    [publish],
+    [publish, replay.getCurrentCandle],
   )
 
   return {

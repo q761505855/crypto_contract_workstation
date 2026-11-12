@@ -236,6 +236,8 @@ describe('WorkstationBackupService', () => {
   it('round-trips both positions and their independent risk orders in session and full archives', async () => {
     const sourceName = `hedged-source-${crypto.randomUUID()}`
     await seed(sourceName, new MemoryPreferences())
+    const replay = { ...session(), period: SUPPORTED_PERIODS[2], endTime: 300_000, visibleUntil: 360_000 }
+    await new IndexedDbReplaySessionStore(sourceName).put(replay)
     const engine = SimulationEngine.create(session())
     engine.open('long', { quantity: '1' }, candle())
     engine.open('short', { quantity: '2' }, candle())
@@ -249,11 +251,22 @@ describe('WorkstationBackupService', () => {
       const target = new WorkstationBackupService(`hedged-target-${crypto.randomUUID()}`, new MemoryPreferences())
       await target.import(archive)
       expect((await target.exportAll()).data.simulations).toEqual(archive.data.simulations)
+      expect((await target.exportAll()).data.sessions).toEqual([replay])
       expect(archive.data.simulations![0].positions).toMatchObject([
         { side: 'long', takeProfitPrice: '120', stopLossPrice: '95' },
         { side: 'short', takeProfitPrice: '80', stopLossPrice: '105' },
       ])
     }
+  })
+
+  it.each([null, 0, 360_001, 600_000])('rejects an invalid replay visibility boundary (%s) before writing', async visibleUntil => {
+    const sourceName = `invalid-replay-${crypto.randomUUID()}`
+    await seed(sourceName, new MemoryPreferences())
+    const archive = await new WorkstationBackupService(sourceName, new MemoryPreferences()).exportAll()
+    Object.assign(archive.data.sessions![0], { period: SUPPORTED_PERIODS[2], endTime: 300_000, visibleUntil })
+    const target = new WorkstationBackupService(`invalid-replay-target-${crypto.randomUUID()}`, new MemoryPreferences())
+    await expect(target.import(archive)).rejects.toThrow(/visibleUntil/)
+    expect((await target.exportAll()).data.sessions).toEqual([])
   })
 
   it.each(['missing', 'null', 'duplicate', 'bad-side', 'zero-quantity', 'bad-risk', 'missing-activation'])('rejects invalid hedged positions (%s) before writing any data', async invalid => {

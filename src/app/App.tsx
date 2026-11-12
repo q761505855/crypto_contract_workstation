@@ -33,13 +33,13 @@ import { PanelToggle } from '../components/PanelToggle'
 import { loadWorkspacePreferences, saveWorkspacePreferences, DEFAULT_WORKSPACE_PREFERENCES, type WorkspacePreferences } from '../workspace/preferences'
 import type { MarketSelection } from '../market-data/models'
 import { readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
-import { nextOpenTime } from '../market-data/intervals'
 import {
   INITIAL_LIVE_STATUS,
   type LiveMarketStatus,
 } from '../market-data/live-models'
 import { createMarketDataRuntime, type MarketDataRuntime } from '../market-data/runtime'
-import type { ReplayContext } from '../replay/models'
+import { replaySourceTimeframe, replayVisibleUntil, sessionVisibleUntil, type ReplayContext } from '../replay/models'
+import { alignOpenTime } from '../market-data/intervals'
 import { useReplayController } from '../replay/useReplayController'
 import { classifyRiskPrice } from '../simulation/risk-price'
 import { useSimulationController } from '../simulation/useSimulationController'
@@ -168,8 +168,9 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     timestamp: number
   } | null>(null)
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
-  const replay = useReplayController(marketRuntime)
-  const simulation = useSimulationController(marketRuntime, replay)
+  const replay = useReplayController(marketRuntime, marketSelection.period.text)
+  const simulationController = useSimulationController(marketRuntime, replay)
+  const simulation = { ...simulationController, busy: simulationController.busy || replay.busy }
   const replaySessionRef = useRef(replay.session)
   const deferredCloudSymbolRef = useRef<MarketSelection['symbol'] | null>(null)
   replaySessionRef.current = replay.session
@@ -195,7 +196,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     if (mode !== 'history') return { currentTime: null, positions: [], trades: [] }
     const precision = marketSelection.symbol.pricePrecision ?? 8
     return {
-      currentTime: replay.session?.currentTime ?? null,
+      currentTime: replay.session ? alignOpenTime(sessionVisibleUntil(replay.session) - 1, marketSelection.period.text, 'floor') : null,
       positions: (simulation.state?.positions ?? []).map(position => {
         const onTakeProfitPriceDrag = simulation.busy ? undefined : (price: number) =>
           simulation.setTakeProfit(position.side, simulationPriceText(price, precision))
@@ -220,8 +221,9 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     }
   }, [
     marketSelection.symbol.pricePrecision,
+    marketSelection.period.text,
     mode,
-    replay.session?.currentTime,
+    replay.session,
     simulation.busy,
     simulation.setStopLoss,
     simulation.setTakeProfit,
@@ -257,7 +259,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const locateLatestChartTime = useCallback((): void => {
     const session = replaySessionRef.current
     const timestamp = mode === 'history' && session !== null
-      ? nextOpenTime(session.currentTime, session.period.text) - 1
+      ? sessionVisibleUntil(session) - 1
       : Date.now()
     jumpChartToTime(timestamp)
   }, [jumpChartToTime, mode])
@@ -345,8 +347,9 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         ? {
             sessionId: replay.session.id,
             symbol: replay.session.symbol.ticker.toUpperCase(),
-            timeframe: replay.session.period.text,
+            timeframe: replaySourceTimeframe(replay.session),
             currentTime: replay.session.currentTime,
+            visibleUntil: replay.session.visibleUntil,
             endTime: replay.session.endTime,
           }
         : null
@@ -360,7 +363,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       (previous !== null &&
         nextContext !== null &&
         (previous.sessionId !== nextContext.sessionId ||
-          nextContext.currentTime < previous.currentTime))
+          replayVisibleUntil(nextContext) < replayVisibleUntil(previous)))
     if (needsReload) {
       setChartReloadKey((current) => current + 1)
     }
@@ -475,7 +478,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
             onPointerMove={event => { const drag = dockDrag.current; if (drag) updateLayout(current => ({ ...current, dockHeight: Math.max(160, Math.min(480, Math.round(drag.height + drag.y - event.clientY))) })) }}
             onPointerUp={() => { dockDrag.current = null }} onPointerCancel={() => { dockDrag.current = null }}
             onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); updateLayout(current => ({ ...current, dockHeight: Math.max(160, Math.min(480, current.dockHeight + (event.key === 'ArrowUp' ? 20 : -20))) })) } }}><span /></div>
-          <SimulationDock simulation={simulation} tab={dockTab} onTabChange={setDockTab} onClose={() => mobile ? closeMobilePanel() : setPanel('dock', false)} />
+          <SimulationDock simulation={simulation} pricePrecision={replay.session?.symbol.pricePrecision} tab={dockTab} onTabChange={setDockTab} onClose={() => mobile ? closeMobilePanel() : setPanel('dock', false)} />
         </div>
         <div className="dock-expander" hidden={mobile || mode !== 'history' || focusMode || visible('dock')}>
           <PanelToggle label="持仓面板" expanded={false} controls="workspace-dock-content" direction="down" showLabel onToggle={() => setPanel('dock', true)} className="collapsed-panel-handle" />

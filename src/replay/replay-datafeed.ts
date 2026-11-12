@@ -17,7 +17,7 @@ import {
 import { findMissingRanges } from '../market-data/gaps'
 import type { MarketDataService } from '../market-data/market-data-service'
 import type { MarketCandle, MarketSelection } from '../market-data/models'
-import type { ReplayContext } from './models'
+import { replayVisibleUntil, type ReplayContext } from './models'
 import { readChartHistory } from '../market-data/indicator-history'
 
 const MAX_REPLAY_MINUTES = 100_000
@@ -70,7 +70,7 @@ function requiresRestart(
     before.sessionId !== after.sessionId ||
     before.symbol !== after.symbol ||
     before.timeframe !== after.timeframe ||
-    after.currentTime < before.currentTime
+    replayVisibleUntil(after) < replayVisibleUntil(before)
   )
 }
 
@@ -142,7 +142,7 @@ export class ReplayDatafeed implements Datafeed {
       context !== null &&
       (previous === null ||
         previous.sessionId !== context.sessionId ||
-        context.currentTime > previous.currentTime)
+        replayVisibleUntil(context) > replayVisibleUntil(previous))
     ) {
       void this.emitCurrentCandle(context)
     }
@@ -194,7 +194,7 @@ export class ReplayDatafeed implements Datafeed {
     }
     // A replay step reveals a whole source candle. Other chart periods share
     // that same exclusive time boundary, regardless of their bucket size.
-    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
+    const visibleUntil = replayVisibleUntil(context)
     const visibleTo = Math.min(
       to,
       alignOpenTime(visibleUntil - 1, period.text, 'floor'),
@@ -240,7 +240,7 @@ export class ReplayDatafeed implements Datafeed {
     if (!this.isCurrentContext(context, generation)) return retry
 
     const timeframe = period.text
-    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
+    const visibleUntil = replayVisibleUntil(context)
     const to = Math.min(
       previousOpenTime(alignOpenTime(before, timeframe, 'floor'), timeframe),
       lastClosedOpenTime(visibleUntil, timeframe),
@@ -289,11 +289,11 @@ export class ReplayDatafeed implements Datafeed {
       visibleUntil:
         visibleContext === null
           ? undefined
-          : klineCloseBoundary(visibleContext.currentTime, visibleContext.timeframe),
+          : replayVisibleUntil(visibleContext),
     }
     if (this.context === null) {
       this.base.subscribe(symbol, period, callback)
-    } else if (history !== undefined && history.currentTime < this.context.currentTime) {
+    } else if (history !== undefined && replayVisibleUntil(history) < replayVisibleUntil(this.context)) {
       // Playback may advance while the chart is loading its new period.
       void this.emitCurrentCandle(this.context)
     }
@@ -321,14 +321,14 @@ export class ReplayDatafeed implements Datafeed {
       return
     }
     try {
-      const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
+      const visibleUntil = replayVisibleUntil(context)
       const from = alignOpenTime(
         Math.min(subscription.visibleUntil ?? visibleUntil, visibleUntil) - 1,
         subscription.period.text,
         'floor',
       )
       const candles =
-        subscription.period.text === context.timeframe &&
+        context.visibleUntil === undefined && subscription.period.text === context.timeframe &&
           alignOpenTime(context.currentTime, context.timeframe, 'floor') === context.currentTime
           ? (await this.loadLocalCandles(
               context,
@@ -351,7 +351,7 @@ export class ReplayDatafeed implements Datafeed {
       if (
         !this.isCurrentContext(context, generation) ||
         this.context?.sessionId !== context.sessionId ||
-        this.context.currentTime !== context.currentTime ||
+        replayVisibleUntil(this.context) !== visibleUntil ||
         this.subscription !== subscription
       ) {
         return
@@ -383,7 +383,7 @@ export class ReplayDatafeed implements Datafeed {
     signal?.throwIfAborted()
     const generation = this.replayGeneration
     if (!this.isCurrentContext(context, generation)) return []
-    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
+    const visibleUntil = replayVisibleUntil(context)
     const lastOpen = alignOpenTime(visibleUntil - 1, period.text, 'floor')
     to = Math.min(to, lastOpen)
     const minuteHistory = this.service.usesMinuteHistory?.() ?? false
@@ -405,7 +405,7 @@ export class ReplayDatafeed implements Datafeed {
     // fill missing ranges through the shared batch loader without inventing
     // intrabar movement or retrying the same failed range on every step.
     const sourceTimeframe =
-      !minuteHistory && alignOpenTime(lastOpen, context.timeframe, 'floor') === lastOpen &&
+      context.visibleUntil === undefined && !minuteHistory && alignOpenTime(lastOpen, context.timeframe, 'floor') === lastOpen &&
       alignOpenTime(nextOpenTime(lastOpen, period.text), context.timeframe, 'floor') === nextOpenTime(lastOpen, period.text) &&
       nextOpenTime(lastOpen, context.timeframe) <= nextOpenTime(lastOpen, period.text)
         ? context.timeframe
@@ -489,7 +489,7 @@ export class ReplayDatafeed implements Datafeed {
     signal?: AbortSignal,
   ): Promise<MarketCandle[]> {
     signal?.throwIfAborted()
-    const visibleUntil = klineCloseBoundary(context.currentTime, context.timeframe)
+    const visibleUntil = replayVisibleUntil(context)
     to = Math.min(to, visibleUntil - 1)
     if (from > to) return []
     const isVisible = (candle: MarketCandle) => candle.symbol === context.symbol && candle.timeframe === timeframe &&
@@ -547,6 +547,6 @@ export class ReplayDatafeed implements Datafeed {
   private isCurrentContext(context: ReplayContext, generation: number): boolean {
     return generation === this.replayGeneration && this.context !== null &&
       this.context.sessionId === context.sessionId && this.context.symbol === context.symbol &&
-      this.context.timeframe === context.timeframe && this.context.currentTime >= context.currentTime
+      this.context.timeframe === context.timeframe && replayVisibleUntil(this.context) >= replayVisibleUntil(context)
   }
 }

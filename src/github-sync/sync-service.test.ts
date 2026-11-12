@@ -336,7 +336,9 @@ describe('GitHubSyncService', () => {
     const source = new GitHubSyncService(sourceBackups)
     const target = new GitHubSyncService(targetBackups)
     const row = candle(Date.UTC(2024, 0, 1))
-    const session = ReplayEngine.create({ symbol: DEFAULT_SYMBOL, period: SUPPORTED_PERIODS[0], startTime: row.openTime, endTime: row.openTime }, [row]).snapshot()
+    const period = SUPPORTED_PERIODS[2]
+    const engineSession = ReplayEngine.create({ symbol: DEFAULT_SYMBOL, period, startTime: row.openTime, endTime: row.openTime + 300_000 }, [{ ...row, timeframe: period.text, closeTime: row.openTime + 299_999 }], { buffered: true }).snapshot()
+    const session = { ...engineSession, visibleUntil: row.openTime + 360_000 }
     await new IndexedDbReplaySessionStore(sourceName).put(session)
     const states = new IndexedDbSimulationStateStore(sourceName)
     const engine = SimulationEngine.create(session)
@@ -352,6 +354,7 @@ describe('GitHubSyncService', () => {
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect((await targetBackups.exportAll()).data.simulations).toEqual([engine.snapshot()])
+    expect((await targetBackups.exportAll()).data.sessions).toEqual([session])
     const path = `trades/${session.id}.json`
     const rewrite = async (value: unknown) => {
       const file = remote.files.get(path)!

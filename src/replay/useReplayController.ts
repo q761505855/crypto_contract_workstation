@@ -5,14 +5,14 @@ import {
   useState,
 } from 'react'
 import { findMissingRanges } from '../market-data/gaps'
-import { alignOpenTime, lastClosedOpenTime, LEGACY_THREE_DAY_TIMEFRAME, nextOpenTime } from '../market-data/intervals'
+import { alignOpenTime, klineCloseBoundary, lastClosedOpenTime, LEGACY_THREE_DAY_TIMEFRAME, nextOpenTime } from '../market-data/intervals'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import type {
   CreateReplaySessionInput,
   ReplaySession,
   ReplaySpeed,
 } from './models'
-import { DEFAULT_TRADING_CONFIG, replaySourceTimeframe } from './models'
+import { DEFAULT_TRADING_CONFIG, replaySourceTimeframe, sessionVisibleUntil } from './models'
 import { ReplayEngine } from './replay-engine'
 import type { MarketCandle } from '../market-data/models'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
@@ -20,6 +20,8 @@ import { validateSimulationConfig } from '../simulation/simulation-engine'
 export interface ReplayCandleEvent {
   type: 'advance' | 'reset'
   candle: MarketCandle
+  /** A later candle in the same step will publish the accumulated state. */
+  deferPublish?: boolean
 }
 
 export type ReplayCandleListener = (
@@ -39,6 +41,20 @@ function restoreSourcePeriod(candles: MarketCandle[], timeframe: string): Market
     : candles
 }
 
+const MINUTE = 60_000
+
+async function loadMinuteSlice(runtime: MarketDataRuntime, symbol: string, from: number, until: number, options: {
+  signal?: AbortSignal
+  onStatus?: (status: string) => void
+} = {}): Promise<MarketCandle[]> {
+  const to = until - MINUTE
+  const rows = (await runtime.service.loadCandles('trade', symbol, '1m', from, to, options))
+    .filter(row => row.timeframe === '1m' && row.symbol === symbol && row.isClosed && row.openTime >= from && row.openTime <= to && row.closeTime < until)
+    .sort((left, right) => left.openTime - right.openTime)
+  if (findMissingRanges(rows, '1m', from, to).length > 0) throw new Error('步进区间的分钟行情仍有缺口，请重试')
+  return rows
+}
+
 export interface ReplayController {
   session: ReplaySession | null
   sessions: ReplaySession[]
@@ -50,8 +66,8 @@ export interface ReplayController {
   loadSession(id: string): Promise<void>
   deleteSession(id: string): Promise<void>
   endSession(): Promise<void>
-  next(): Promise<void>
-  previous(): void
+  next(timeframe?: string): Promise<void>
+  previous(timeframe?: string): void | Promise<void>
   reset(): Promise<void>
   jumpToEnd(): Promise<void>
   play(): void
@@ -65,6 +81,7 @@ export interface ReplayController {
 
 export function useReplayController(
   runtime: MarketDataRuntime,
+  chartTimeframe?: string,
 ): ReplayController {
   const engineRef = useRef<ReplayEngine | null>(null)
   const preparationRef = useRef<AbortController | null>(null)
@@ -108,6 +125,12 @@ export function useReplayController(
     [queueSave],
   )
 
+  const publishProgress = useCallback(async (engine: ReplayEngine) => {
+    if (engineRef.current !== engine) return
+    await queueSave(engine.snapshot())
+    if (engineRef.current === engine) publish(engine, false)
+  }, [publish, queueSave])
+
   const notifyCandle = useCallback(async (event: ReplayCandleEvent) => {
     for (const listener of candleListenersRef.current) {
       await listener(event)
@@ -143,6 +166,10 @@ export function useReplayController(
         Date.now,
         { buffered: true },
       )
+      if (saved.visibleUntil !== undefined) {
+        const rows = await loadMinuteSlice(runtime, saved.symbol.ticker, saved.visibleUntil - MINUTE, saved.visibleUntil)
+        engine.seekVisible(saved.visibleUntil, rows[0])
+      }
       engineRef.current = engine
       runtime.replayDatafeed.setSessionCandles(saved.id, engine.bufferedCandles())
       publish(engine)
@@ -330,7 +357,6 @@ export function useReplayController(
     if (from > to) return engineRef.current === engine
     const controller = new AbortController()
     preparationRef.current = controller
-    setBusy(true)
     setPreparationStatus('正在准备下个月的回放数据…')
     try {
       const downloaded = await runtime.service.loadCandles('trade', saved.symbol.ticker, timeframe, from, to, {
@@ -346,25 +372,78 @@ export function useReplayController(
     } finally {
       if (preparationRef.current === controller) {
         preparationRef.current = null
-        setBusy(false)
         setPreparationStatus('')
       }
     }
   }, [runtime])
 
-  const next = useCallback(async () => {
+  const advanceVisible = useCallback(async (engine: ReplayEngine, target: number) => {
+    const saved = engine.snapshot()
+    const timeframe = replaySourceTimeframe(saved)
+    if (!await ensurePrepared(engine, lastClosedOpenTime(target, timeframe))) return
+    const controller = new AbortController()
+    preparationRef.current = controller
+    const options = {
+      signal: controller.signal,
+      onStatus: (message: string) => { if (preparationRef.current === controller) setPreparationStatus(message) },
+    }
+    try {
+      let from = sessionVisibleUntil(saved)
+      const candles: MarketCandle[] = []
+      // Reuse complete source candles only when their entire price range is new.
+      // Fill the uncovered edges with minutes before applying any trade events.
+      const appendMinutes = async (until: number) => {
+        const rows = await loadMinuteSlice(runtime, saved.symbol.ticker, from, until, options)
+        for (const row of rows) candles.push(row)
+        from = until
+      }
+      const source = engine.bufferedCandles()
+      for (let index = saved.currentIndex + 1; index < source.length; index += 1) {
+        const candle = source[index]
+        const close = klineCloseBoundary(candle.openTime, timeframe)
+        if (close > target) break
+        if (candle.openTime < from) continue
+        if (candle.openTime > from) await appendMinutes(candle.openTime)
+        candles.push(candle)
+        from = close
+      }
+      if (from < target) await appendMinutes(target)
+      for (let index = 0; index < candles.length; index += 1) {
+        if (engineRef.current !== engine) return
+        const candle = candles[index]
+        const isMinuteSlice = candle.timeframe === '1m' && timeframe !== '1m'
+        engine.seekVisible(klineCloseBoundary(candle.openTime, isMinuteSlice ? '1m' : timeframe), isMinuteSlice ? candle : undefined)
+        await notifyCandle({ type: 'advance', candle, deferPublish: index < candles.length - 1 })
+      }
+    } finally {
+      if (preparationRef.current === controller) {
+        preparationRef.current = null
+        setPreparationStatus('')
+      }
+    }
+  }, [ensurePrepared, notifyCandle, runtime])
+
+  const next = useCallback(async (selectedTimeframe = chartTimeframe) => {
     const engine = engineRef.current
     if (engine === null || processingRef.current) return
+    const saved = engine.snapshot()
+    if (saved.status === 'completed') return
     processingRef.current = true
+    setBusy(true)
     setError('')
     try {
-      if (!await ensurePrepared(engine, Math.min(nextOpenTime(engine.snapshot().currentTime, engine.snapshot().period.text), engine.snapshot().endTime))) return
-      const candle = engine.stepNext()
-      if (candle !== null) {
-        await notifyCandle({ type: 'advance', candle })
+      const source = replaySourceTimeframe(saved)
+      const timeframe = selectedTimeframe === undefined || selectedTimeframe === saved.period.text ? source : selectedTimeframe
+      if (timeframe === source && saved.visibleUntil === undefined) {
+        if (!await ensurePrepared(engine, nextOpenTime(saved.currentTime, source))) return
+        const candle = engine.stepNext()
+        if (candle !== null) await notifyCandle({ type: 'advance', candle })
+      } else {
+        const open = nextOpenTime(lastClosedOpenTime(sessionVisibleUntil(saved), timeframe), timeframe)
+        await advanceVisible(engine, Math.min(klineCloseBoundary(open, timeframe), klineCloseBoundary(saved.endTime, source)))
       }
       if (engineRef.current !== engine) return
-      publish(engine)
+      await publishProgress(engine)
       if (engine.snapshot().status === 'completed') {
         setIsPlaying(false)
       }
@@ -376,30 +455,61 @@ export function useReplayController(
           reason instanceof Error ? reason.message : String(reason)
         }`,
       )
-      publish(engine)
+      await publishProgress(engine)
     } finally {
       processingRef.current = false
+      if (engineRef.current === engine) setBusy(false)
     }
-  }, [ensurePrepared, notifyCandle, publish])
+  }, [advanceVisible, chartTimeframe, ensurePrepared, notifyCandle, publishProgress])
 
-  const previous = useCallback(() => {
+  const previous = useCallback(async (selectedTimeframe = chartTimeframe) => {
     const engine = engineRef.current
-    if (engine === null || processingRef.current || engine.stepPrevious() === null) return
+    if (engine === null || processingRef.current) return
+    const saved = engine.snapshot()
+    if (saved.hasTrades || (saved.currentIndex === 0 && saved.visibleUntil === undefined)) return
     setIsPlaying(false)
-    publish(engine)
-  }, [publish])
+    const source = replaySourceTimeframe(saved)
+    const timeframe = selectedTimeframe === undefined || selectedTimeframe === saved.period.text ? source : selectedTimeframe
+    processingRef.current = true
+    setBusy(true)
+    setError('')
+    const controller = new AbortController()
+    preparationRef.current = controller
+    try {
+      if (timeframe === source && saved.visibleUntil === undefined) {
+        if (engine.stepPrevious() !== null) await publishProgress(engine)
+        return
+      }
+      const start = klineCloseBoundary(saved.startTime, source)
+      const target = Math.max(start, klineCloseBoundary(lastClosedOpenTime(sessionVisibleUntil(saved) - 1, timeframe), timeframe))
+      const atSourceClose = klineCloseBoundary(lastClosedOpenTime(target, source), source) === target
+      const candle = atSourceClose ? undefined : (await loadMinuteSlice(runtime, saved.symbol.ticker, target - MINUTE, target, { signal: controller.signal }))[0]
+      if (engineRef.current !== engine) return
+      engine.seekVisible(target, candle)
+      await publishProgress(engine)
+    } catch (reason) {
+      if (engineRef.current === engine) setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      processingRef.current = false
+      if (preparationRef.current === controller) {
+        preparationRef.current = null
+        setBusy(false)
+      }
+    }
+  }, [chartTimeframe, publishProgress, runtime])
 
   const reset = useCallback(async () => {
     const engine = engineRef.current
     if (engine === null || processingRef.current) return
     processingRef.current = true
+    setBusy(true)
     setIsPlaying(false)
     try {
       const candle = engine.reset()
       await notifyCandle({ type: 'reset', candle })
       if (engineRef.current !== engine) return
       engine.setHasTrades(false)
-      publish(engine)
+      await publishProgress(engine)
     } catch (reason) {
       setError(
         `重置回放失败：${
@@ -408,24 +518,31 @@ export function useReplayController(
       )
     } finally {
       processingRef.current = false
+      if (engineRef.current === engine) setBusy(false)
     }
-  }, [notifyCandle, publish])
+  }, [notifyCandle, publishProgress])
 
   const jumpToEnd = useCallback(async () => {
     const engine = engineRef.current
     if (engine === null || processingRef.current) return
     processingRef.current = true
+    setBusy(true)
     setIsPlaying(false)
     setError('')
     try {
+      const saved = engine.snapshot()
+      const timeframe = replaySourceTimeframe(saved)
+      if (saved.visibleUntil !== undefined && saved.currentTime < saved.endTime) {
+        await advanceVisible(engine, klineCloseBoundary(nextOpenTime(saved.currentTime, timeframe), timeframe))
+      }
       while (engine.snapshot().currentTime < engine.snapshot().endTime) {
-        if (!await ensurePrepared(engine, nextOpenTime(engine.snapshot().currentTime, engine.snapshot().period.text))) return
+        if (engineRef.current !== engine || !await ensurePrepared(engine, nextOpenTime(engine.snapshot().currentTime, timeframe))) return
         const candle = engine.stepNext()
         if (candle === null) break
         await notifyCandle({ type: 'advance', candle })
         if (engineRef.current !== engine) return
       }
-      publish(engine)
+      await publishProgress(engine)
     } catch (reason) {
       if (engineRef.current !== engine) return
       setError(
@@ -433,16 +550,17 @@ export function useReplayController(
           reason instanceof Error ? reason.message : String(reason)
         }`,
       )
-      publish(engine)
+      await publishProgress(engine)
     } finally {
       processingRef.current = false
+      if (engineRef.current === engine) setBusy(false)
     }
-  }, [ensurePrepared, notifyCandle, publish])
+  }, [advanceVisible, ensurePrepared, notifyCandle, publishProgress])
 
   const setSpeed = useCallback(
     (speed: ReplaySpeed) => {
       const engine = engineRef.current
-      if (engine === null) return
+      if (engine === null || processingRef.current) return
       engine.setSpeed(speed)
       publish(engine)
     },
@@ -472,7 +590,7 @@ export function useReplayController(
         return
       }
       engine.setHasTrades(hasTrades)
-      publish(engine)
+      if (!processingRef.current) publish(engine)
     },
     [publish],
   )
