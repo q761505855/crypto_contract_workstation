@@ -15,7 +15,7 @@ import type {
 import { DEFAULT_TRADING_CONFIG, replaySourceTimeframe, sessionVisibleUntil } from './models'
 import { ReplayEngine } from './replay-engine'
 import type { MarketCandle } from '../market-data/models'
-import { validateSimulationConfig } from '../simulation/simulation-engine'
+import { validateAdjustableLeverage, validateSimulationConfig } from '../simulation/simulation-engine'
 
 export interface ReplayCandleEvent {
   type: 'advance' | 'reset'
@@ -233,9 +233,9 @@ export function useReplayController(
       setPreparationStatus('正在按月准备回放数据…')
       try {
         runtime.service.resetReplayRequests()
-        validateSimulationConfig(
-          input.tradingConfig ?? DEFAULT_TRADING_CONFIG,
-        )
+        const tradingConfig = input.tradingConfig ?? DEFAULT_TRADING_CONFIG
+        validateAdjustableLeverage(tradingConfig.leverage)
+        validateSimulationConfig(tradingConfig)
         if (engineRef.current !== null) {
           engineRef.current.setActive(false)
           queueSave(engineRef.current.snapshot())

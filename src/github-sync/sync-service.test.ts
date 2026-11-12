@@ -359,6 +359,7 @@ describe('GitHubSyncService', () => {
     const engine = SimulationEngine.create(session)
     engine.open('long', { quantity: '1' }, row)
     engine.open('short', { quantity: '2' }, row)
+    engine.setLeverage(20)
     engine.setTakeProfit('long', '120', row.openTime)
     engine.setStopLoss('long', '95', row.openTime)
     engine.setTakeProfit('short', '80', row.openTime)
@@ -386,6 +387,11 @@ describe('GitHubSyncService', () => {
     await rewrite(corrupt)
     const before = (await targetBackups.exportAll()).data
     await expect(target.pull(client(remote))).rejects.toThrow(/positions/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
+    const invalidLeverage = engine.snapshot()
+    invalidLeverage.positions[0].leverage = 0
+    await rewrite(invalidLeverage)
+    await expect(target.pull(client(remote))).rejects.toThrow(/positions.*leverage/)
     expect((await targetBackups.exportAll()).data).toEqual(before)
 
     // Old cloud snapshots still restore their single position with its risk orders.

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Decimal from 'decimal.js'
 import type { ReplaySession } from '../replay/models'
 import type { PositionSide, OrderPreview, SimulationPosition, SimulationState } from '../simulation/models'
+import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage } from '../simulation/models'
 import { estimateRiskPnl, riskPricePercent, riskTriggerPrice, type RiskInputMode, type RiskPriceTarget } from '../simulation/risk-price'
 import type { SimulationController } from '../simulation/useSimulationController'
 import { WorkspaceDialog } from './WorkspaceDialog'
@@ -46,12 +47,40 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
   const [mode, setMode] = useState<'margin' | 'quantity'>('margin')
   const [value, setValue] = useState('100')
   const [preview, setPreview] = useState<OrderPreview | null>(null)
+  const [leverageDraft, setLeverageDraft] = useState<string | null>(null)
   useEffect(() => { if (requestedSide) { setDirection(requestedSide); setPreview(null) } }, [requestedSide])
+  useEffect(() => { setLeverageDraft(null); setPreview(null) }, [session?.id])
   const state = simulation.state
+  const leverage = Number(leverageDraft)
+  const minimumLeverage = state === null ? 1 : minimumContractLeverage(state)
+
+  async function applyLeverage(): Promise<void> {
+    if (await simulation.setLeverage(leverage)) {
+      setPreview(null)
+      setLeverageDraft(null)
+    }
+  }
+
   return <aside className="order-panel side-panel" aria-label="模拟下单面板">
     <header className="panel-heading"><h2>模拟下单</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={onClose} /></header>
     {session === null || state === null ? <p className="muted-text">{simulation.busy ? '正在准备模拟账户…' : '创建历史回放会话后即可进行模拟交易。'}</p> : <>
-      <div className="order-context"><span>{state.symbol}</span><span>逐仓 · {state.config.leverage}×</span></div>
+      <div className="order-context">
+        <span>{state.symbol}</span>
+        <button type="button" aria-label={`调整杠杆，当前 ${state.config.leverage} 倍`} disabled={simulation.busy} onClick={() => {
+          simulation.clearError()
+          setLeverageDraft(String(state.config.leverage))
+        }}>逐仓 · {state.config.leverage}×</button>
+      </div>
+      <WorkspaceDialog open={leverageDraft !== null} title="调整杠杆" onClose={() => setLeverageDraft(null)}>
+        <p className="muted-text">{state.symbol} 多空共用杠杆。{state.positions.length > 0 && `持仓期间最低可选 ${minimumLeverage}×。`}</p>
+        <label className="panel-field">杠杆倍率（×）
+          <input type="number" inputMode="numeric" min={minimumLeverage} max={MAX_ADJUSTABLE_LEVERAGE} step="1" value={leverageDraft ?? ''}
+            onChange={event => setLeverageDraft(event.target.value)} />
+        </label>
+        {simulation.error && <p className="panel-error" role="alert">{simulation.error}</p>}
+        <button type="button" className="dialog-done" disabled={simulation.busy || !isAdjustableLeverage(leverage) || leverage < minimumLeverage}
+          onClick={() => void applyLeverage()}>确认调整</button>
+      </WorkspaceDialog>
       <div className="segmented-control" aria-label="下单方向">{(['long', 'short'] as const).map(side => <button key={side} type="button" aria-pressed={direction === side} onClick={() => { setDirection(side); setPreview(null) }}>{side === 'long' ? '多' : '空'}</button>)}</div>
       <label className="panel-field">下单方式<select value={mode} onChange={event => { setMode(event.target.value as typeof mode); setPreview(null) }}><option value="margin">保证金金额</option><option value="quantity">仓位数量</option></select></label>
       <label className="panel-field">{mode === 'margin' ? '保证金（USDT）' : `数量（${state.symbol.replace(/USDT$/, '')}）`}<input aria-label={mode === 'margin' ? '保证金金额' : '仓位数量'} inputMode="decimal" type="number" min="0" value={value} onChange={event => { setValue(event.target.value); setPreview(null) }} /></label>
@@ -61,7 +90,7 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
       {preview && <dl className="order-preview detail-list">{[['预计数量', preview.quantity], ['预计成交价', preview.fillPrice], ['所需保证金', preview.requiredMargin], ['手续费', preview.fee], ['预估强平价', preview.estimatedLiquidationPrice]].map(([label, amount]) => <div key={label}><dt>{label}</dt><dd>{amount}</dd></div>)}</dl>}
       <p className="muted-text">在对应仓位设置止盈止损、减仓或平仓。</p>
     </>}
-    {simulation.error && <p className="panel-error" role="alert">{simulation.error}</p>}
+    {simulation.error && leverageDraft === null && <p className="panel-error" role="alert">{simulation.error}</p>}
   </aside>
 }
 

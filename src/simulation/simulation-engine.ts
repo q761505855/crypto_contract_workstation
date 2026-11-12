@@ -1,7 +1,7 @@
 import Decimal from 'decimal.js'
 import type { MarketCandle } from '../market-data/models'
 import type { ReplaySession, ReplayTradingConfig } from '../replay/models'
-import { normalizeSimulationStatePrices } from './models'
+import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage, normalizeSimulationStatePrices } from './models'
 import type {
   CandleProcessResult,
   LedgerEntryType,
@@ -89,6 +89,12 @@ export function validateSimulationConfig(
   )
   if (riskRates.greaterThanOrEqualTo(1)) {
     throw new Error('维持保证金率与强平费用率之和必须小于 1')
+  }
+}
+
+export function validateAdjustableLeverage(leverage: number): void {
+  if (!isAdjustableLeverage(leverage)) {
+    throw new Error(`杠杆必须是 1–${MAX_ADJUSTABLE_LEVERAGE} 的整数`)
   }
 }
 
@@ -181,6 +187,17 @@ export class SimulationEngine {
 
   snapshot(): SimulationState {
     return structuredClone(this.state)
+  }
+
+  setLeverage(leverage: number): void {
+    validateAdjustableLeverage(leverage)
+    if (leverage < minimumContractLeverage(this.state)) {
+      throw new Error('逐仓有持仓时不能降低杠杆')
+    }
+    this.state.config.leverage = leverage
+    // Both hedge sides share the contract setting; their allocated collateral is separate.
+    for (const position of this.state.positions) position.leverage = leverage
+    this.touch()
   }
 
   previewOpen(

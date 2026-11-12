@@ -74,6 +74,45 @@ function DecimalMin(left: string, right: string): string {
 }
 
 describe('SimulationEngine account and position operations', () => {
+  it('changes shared contract leverage and prices new orders with it while preserving allocated margin', () => {
+    const engine = SimulationEngine.create(session())
+    engine.setLeverage(5)
+    engine.open('long', { margin: '100' }, candle(0))
+    engine.open('short', { quantity: '1' }, candle(0))
+    const before = engine.snapshot()
+    engine.setLeverage(20)
+    const raised = engine.snapshot()
+    expect(raised.config.leverage).toBe(20)
+    expect(raised.positions).toEqual(before.positions.map(position => ({ ...position, leverage: 20 })))
+    expect(raised.account).toEqual(before.account)
+    expect(raised.trades).toEqual(before.trades)
+    expect(raised.ledger).toEqual(before.ledger)
+    expect(engine.previewOpen('long', { margin: '100' }, '100')).toMatchObject({ quantity: '20', requiredMargin: '100' })
+    engine.open('short', { quantity: '2' }, candle(0))
+    expect(engine.snapshot().positions[1]).toMatchObject({ leverage: 20, quantity: '3', isolatedMargin: '30' })
+    expect(SimulationEngine.restore(engine.snapshot(), session()).snapshot()).toMatchObject({ config: { leverage: 20 } })
+  })
+
+  it('blocks decreasing leverage while either isolated side remains open', () => {
+    const engine = SimulationEngine.create(session())
+    engine.open('long', { quantity: '1' }, candle(0))
+    engine.open('short', { quantity: '1' }, candle(0))
+    engine.closeAll('long', candle(0))
+    const before = engine.snapshot()
+    expect(() => engine.setLeverage(9)).toThrow(/持仓.*降低杠杆/)
+    expect(engine.snapshot()).toEqual(before)
+    engine.closeAll('short', candle(0))
+    engine.setLeverage(9)
+    expect(engine.snapshot().config.leverage).toBe(9)
+  })
+
+  it.each([0, -1, 1.5, 126, NaN, Infinity])('rejects invalid leverage adjustments (%s)', leverage => {
+    const engine = SimulationEngine.create(session())
+    const before = engine.snapshot()
+    expect(() => engine.setLeverage(leverage)).toThrow(/杠杆.*整数/)
+    expect(engine.snapshot()).toEqual(before)
+  })
+
   it('opens, adds, reduces, and fully closes a long position', () => {
     const engine = SimulationEngine.create(session())
     engine.open('long', { quantity: '1' }, candle(0, { close: '100' }))

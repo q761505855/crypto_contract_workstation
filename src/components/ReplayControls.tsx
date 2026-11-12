@@ -8,6 +8,7 @@ import type {
 import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil } from '../replay/models'
 import type { ReplayController } from '../replay/useReplayController'
 import { validateReplayStepPeriod } from '../replay/step-preferences'
+import { MAX_ADJUSTABLE_LEVERAGE } from '../simulation/models'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
 
@@ -182,10 +183,11 @@ export function ReplayControls({
           />
         </label>
         <label className="panel-field">
-          杠杆
+          初始杠杆
           <input
-            aria-label="杠杆"
+            aria-label="初始杠杆"
             min="1"
+            max={MAX_ADJUSTABLE_LEVERAGE}
             onChange={(event) => setLeverage(event.target.value)}
             step="1"
             type="number"

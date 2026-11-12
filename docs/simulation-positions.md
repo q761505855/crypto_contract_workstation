@@ -1,6 +1,8 @@
 # 历史模拟双向持仓
 
-同一会话、同一产品可以同时持有一个多仓和一个空仓。方向相同的订单按数量加权合并开仓均价；反方向订单独立开仓，不抵消现有仓位。沿用会话的杠杆、费率、滑点和逐仓强平近似模型。
+同一会话、同一产品可以同时持有一个多仓和一个空仓。方向相同的订单按数量加权合并开仓均价；反方向订单独立开仓，不抵消现有仓位。费率、滑点和强平采用会话的逐仓近似模型。
+
+模拟下单面板的倍率按钮用于调整当前合约的杠杆。多仓和空仓共用倍率，逐仓保证金各自保管。任一方向有仓位时只能沿用或提高当前倍率，两边都平仓后可调低。确认调整立即更新两边的倍率，新的下单预估、开仓和加仓使用新倍率。已分配的逐仓保证金、仓位数量和开仓均价继续保留，调整本身不产生模拟成交。模拟器支持 1–125 的整数倍率，使用会话配置的固定风险参数。币安实盘的杠杆还受合约和名义价值档位限制。 [币安逐仓规则](https://www.binance.com/az-AZ/support/faq/detail/360033162192) · [币安杠杆说明](https://www.binance.com/pt-BR/academy/articles/how-to-change-an-open-position-s-leverage-via-api)
 
 每个仓位卡片提供独立的减仓、全部平仓、止盈和止损控件。“全部平仓”关闭所在卡片的全部数量。开仓方向选择只控制新订单，不切换其他卡片的操作目标。
 
@@ -19,9 +21,9 @@
 
 ## 存档与兼容
 
-模拟状态使用 `schemaVersion: 2` 和 `positions: SimulationPosition[]`，每个方向最多一项。持仓对象保留独立的 `takeProfitPrice`、`stopLossPrice`、`takeProfitActiveAfterTime` 和 `stopLossActiveAfterTime`。会话本身与备份外层版本不变，不增加应用配置字段或设备运行状态。
+模拟状态使用 `schemaVersion: 2` 和 `positions: SimulationPosition[]`，每个方向最多一项。已有 `config.leverage` 保存当前合约倍率，确认后同步写入各仓位的 `leverage`。回放会话的 `tradingConfig.leverage` 保存初始倍率，创建或重置账户时使用。持仓对象保留独立的 `takeProfitPrice`、`stopLossPrice`、`takeProfitActiveAfterTime` 和 `stopLossActiveAfterTime`。会话和备份外层继续使用已有版本。
 
-本地 IndexedDB 自动保存、单会话／全部数据 JSON 导出导入及 GitHub“会话与交易”上传拉取均覆盖两边的完整仓位、风险价格、成交和流水。应用配置类别继续只保存应用偏好。云端文件沿用当前项目命名空间中的 `trades/{sessionId}.json`，沿用校验和、差异比较、冲突及原子提交机制。
+本地 IndexedDB 自动保存、单会话／全部数据 JSON 导出导入及 GitHub“会话与交易”上传拉取均覆盖当前倍率、两边的完整仓位、风险价格、成交和流水。旧会话沿用存档中的杠杆，包含旧版允许的 125× 以上倍率。新建会话和下单面板的调整值使用 1–125×。云端文件沿用当前项目命名空间中的 `trades/{sessionId}.json`，沿用校验和、差异比较、冲突及原子提交机制。
 
 旧模拟状态 Schema 1 的单个 `position` 按其方向迁移；`position: null` 对应空仓。旧 `markPrice` 仍只在缺少 `lastPrice` 时用于迁移，随后移除。Schema 2 的 `positions: []` 明确表示空仓，缺失、null、重复方向、无效价格或风险价格与生效时间不匹配均拒绝导入，且在任何数据写入前完成校验。新双仓存档需要本次升级后的应用读取。
 

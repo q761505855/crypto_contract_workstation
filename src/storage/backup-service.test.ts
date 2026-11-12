@@ -265,7 +265,7 @@ describe('WorkstationBackupService', () => {
     expect(await new IndexedDbMarketDataStore(databaseName).getSymbols()).toEqual([])
   })
 
-  it('round-trips both positions and their independent risk orders in session and full archives', async () => {
+  it('round-trips shared leverage and independent risk orders in session and full archives', async () => {
     const sourceName = `hedged-source-${crypto.randomUUID()}`
     await seed(sourceName, new MemoryPreferences())
     const replay = { ...session(), period: SUPPORTED_PERIODS[2], endTime: 300_000, visibleUntil: 360_000 }
@@ -273,6 +273,7 @@ describe('WorkstationBackupService', () => {
     const engine = SimulationEngine.create(session())
     engine.open('long', { quantity: '1' }, candle())
     engine.open('short', { quantity: '2' }, candle())
+    engine.setLeverage(20)
     engine.setTakeProfit('long', '120', 0)
     engine.setStopLoss('long', '95', 0)
     engine.setTakeProfit('short', '80', 0)
@@ -284,9 +285,10 @@ describe('WorkstationBackupService', () => {
       await target.import(archive)
       expect((await target.exportAll()).data.simulations).toEqual(archive.data.simulations)
       expect((await target.exportAll()).data.sessions).toEqual([replay])
+      expect(archive.data.simulations![0].config.leverage).toBe(20)
       expect(archive.data.simulations![0].positions).toMatchObject([
-        { side: 'long', takeProfitPrice: '120', stopLossPrice: '95' },
-        { side: 'short', takeProfitPrice: '80', stopLossPrice: '105' },
+        { side: 'long', leverage: 20, takeProfitPrice: '120', stopLossPrice: '95' },
+        { side: 'short', leverage: 20, takeProfitPrice: '80', stopLossPrice: '105' },
       ])
     }
   })
@@ -301,7 +303,7 @@ describe('WorkstationBackupService', () => {
     expect((await target.exportAll()).data.sessions).toEqual([])
   })
 
-  it.each(['missing', 'null', 'duplicate', 'bad-side', 'zero-quantity', 'bad-risk', 'missing-activation'])('rejects invalid hedged positions (%s) before writing any data', async invalid => {
+  it.each(['missing', 'null', 'duplicate', 'bad-side', 'zero-quantity', 'bad-risk', 'missing-activation', 'missing-leverage', 'null-leverage', 'zero-leverage', 'fractional-leverage'])('rejects invalid hedged positions (%s) before writing any data', async invalid => {
     const sourceName = `invalid-hedged-source-${crypto.randomUUID()}`
     await seed(sourceName, new MemoryPreferences())
     const archive = await new WorkstationBackupService(sourceName, new MemoryPreferences()).exportAll()
@@ -314,6 +316,10 @@ describe('WorkstationBackupService', () => {
     if (invalid === 'zero-quantity') positions[0].quantity = '0'
     if (invalid === 'bad-risk') positions.push({ ...positions[0], side: 'short', stopLossPrice: 'invalid' })
     if (invalid === 'missing-activation') positions[0].stopLossPrice = '95'
+    if (invalid === 'missing-leverage') delete positions[0].leverage
+    if (invalid === 'null-leverage') positions[0].leverage = null
+    if (invalid === 'zero-leverage') positions[0].leverage = 0
+    if (invalid === 'fractional-leverage') positions[0].leverage = 2.5
     const storage = new MemoryPreferences()
     const target = new WorkstationBackupService(`invalid-hedged-target-${crypto.randomUUID()}`, storage)
     await expect(target.import(archive)).rejects.toThrow(/positions/)

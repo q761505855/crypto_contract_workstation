@@ -27,6 +27,7 @@ export interface SimulationController {
     size: OrderSizeInput,
   ): Promise<OrderPreview | null>
   open(side: PositionSide, size: OrderSizeInput): Promise<void>
+  setLeverage(leverage: number): Promise<boolean>
   reduce(side: PositionSide, quantity: string): Promise<void>
   reducePercent(side: PositionSide, percent: 25 | 50 | 75): Promise<void>
   closeAll(side: PositionSide): Promise<void>
@@ -199,6 +200,23 @@ export function useSimulationController(
     [currentCandle, publish],
   )
 
+  const setLeverage = useCallback(async (leverage: number): Promise<boolean> => {
+    const engine = engineRef.current
+    if (engine === null) return false
+    setBusy(true)
+    try {
+      engine.setLeverage(leverage)
+      setError('')
+      await publish(engine)
+      return true
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }, [publish])
+
   const reduce = useCallback(
     async (side: PositionSide, quantity: string) => {
       const engine = engineRef.current
@@ -288,6 +306,7 @@ export function useSimulationController(
     error,
     preview,
     open,
+    setLeverage,
     reduce,
     reducePercent,
     closeAll,

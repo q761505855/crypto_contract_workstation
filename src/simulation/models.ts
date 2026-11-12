@@ -150,6 +150,16 @@ export interface OrderSizeInput {
   quantity?: string
 }
 
+export const MAX_ADJUSTABLE_LEVERAGE = 125
+
+export function isAdjustableLeverage(leverage: number): boolean {
+  return Number.isInteger(leverage) && leverage >= 1 && leverage <= MAX_ADJUSTABLE_LEVERAGE
+}
+
+export function minimumContractLeverage({ config, positions }: Pick<SimulationState, 'config' | 'positions'>): number {
+  return positions.length === 0 ? 1 : Math.max(config.leverage, ...positions.map(position => position.leverage))
+}
+
 export interface OrderPreview {
   quantity: string
   fillPrice: string

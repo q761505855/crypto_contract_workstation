@@ -26,6 +26,7 @@ function Harness() {
     state, busy: false, error: '', clearError() {},
     async preview(side, size) { return engine.previewOpen(side, size, candle.close) },
     async open(side, size) { engine.open(side, size, candle); publish() },
+    async setLeverage(leverage) { engine.setLeverage(leverage); publish(); return true },
     async reduce(side, quantity) { engine.reduce(side, quantity, candle); publish() },
     async reducePercent(side, percent) {
       const position = engine.snapshot().positions.find(position => position.side === side)!
