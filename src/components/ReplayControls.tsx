@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MarketSelection } from '../market-data/models'
 import type {
   ReplaySession,
@@ -30,6 +30,66 @@ function sessionName(session: ReplaySession): string {
   return `${session.symbol.ticker} ${session.period.text} · ${displayTime(
     session.startTime,
   )}`
+}
+
+const HOLD_TO_PLAY_MS = 450
+
+function NextCandleButton({ replay, disabled }: { replay: ReplayController; disabled: boolean }) {
+  const { next, play, pause } = replay
+  const [pressing, setPressing] = useState(false)
+  const press = useRef<{ pointerId: number; timer: number; playing: boolean } | null>(null)
+  const suppressClick = useRef(false)
+
+  const finishPress = useCallback((cancelClick: boolean, pointerId?: number) => {
+    const active = press.current
+    if (active === null || (pointerId !== undefined && active.pointerId !== pointerId)) return
+    press.current = null
+    window.clearTimeout(active.timer)
+    suppressClick.current = cancelClick || active.playing
+    if (active.playing) pause()
+    setPressing(false)
+  }, [pause])
+
+  useEffect(() => {
+    const cancel = () => finishPress(true)
+    window.addEventListener('blur', cancel)
+    return () => {
+      window.removeEventListener('blur', cancel)
+      cancel()
+    }
+  }, [finishPress])
+
+  return <button
+    className="replay-next-button"
+    disabled={disabled && !pressing}
+    title="长按播放，松开暂停"
+    type="button"
+    onPointerDown={event => {
+      if (disabled || !event.isPrimary || event.button !== 0 || press.current !== null) return
+      event.currentTarget.setPointerCapture(event.pointerId)
+      suppressClick.current = false
+      const active = { pointerId: event.pointerId, timer: 0, playing: false }
+      active.timer = window.setTimeout(() => {
+        active.playing = true
+        play()
+      }, HOLD_TO_PLAY_MS)
+      press.current = active
+      // Keep receiving the release while a playback step temporarily locks the controls.
+      setPressing(true)
+    }}
+    onPointerUp={event => {
+      const { left, right, top, bottom } = event.currentTarget.getBoundingClientRect()
+      const outside = event.clientX < left || event.clientX >= right || event.clientY < top || event.clientY >= bottom
+      finishPress(outside, event.pointerId)
+    }}
+    onPointerCancel={event => finishPress(true, event.pointerId)}
+    onLostPointerCapture={event => finishPress(true, event.pointerId)}
+    onContextMenu={event => { if (press.current !== null) event.preventDefault() }}
+    onClick={event => {
+      if (disabled || press.current !== null || (event.detail > 0 && suppressClick.current)) return
+      void next()
+    }}
+  >下一根</button>
 }
 
 export function ReplayControls({
@@ -242,13 +302,11 @@ export function ReplayControls({
       >
         上一根
       </button>
-      <button
+      <NextCandleButton
+        key={session.id}
+        replay={replay}
         disabled={interactionLocked || session.status === 'completed'}
-        onClick={() => void replay.next()}
-        type="button"
-      >
-        下一根
-      </button>
+      />
       <button
         disabled={(!replay.isPlaying && interactionLocked) || session.status === 'completed'}
         onClick={replay.isPlaying ? replay.pause : replay.play}
