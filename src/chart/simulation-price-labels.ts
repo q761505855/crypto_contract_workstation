@@ -150,15 +150,21 @@ export class SimulationPriceLabels {
       const rowHeight = visible[0].element.offsetHeight
       const spacing = Math.min(rowHeight + 3, (height - rowHeight) / Math.max(1, visible.length - 1))
       let previous = rowHeight / 2 - spacing
+      let previousControl: LabelControl | undefined
       for (const [index, control] of visible.entries()) {
         const lastCenter = height - rowHeight / 2 - (visible.length - index - 1) * spacing
         const center = Math.min(lastCenter, Math.max(control.y, previous + spacing))
         control.element.style.top = `${center}px`
+        const halfGap = previousControl ? Math.max(0, (center - previous - rowHeight) / 2) : 11
+        control.element.style.setProperty('--label-hit-above', `${halfGap}px`)
+        previousControl?.element.style.setProperty('--label-hit-below', `${halfGap}px`)
+        control.element.style.removeProperty('--label-hit-below')
         const offset = control.y - center
         const direction = side === 'left' ? 8 : -8
         control.element.style.setProperty('--label-leader-length', `${Math.abs(offset) > 2 ? Math.hypot(direction, offset) : 0}px`)
         control.element.style.setProperty('--label-leader-angle', `${Math.atan2(offset, direction)}rad`)
         previous = center
+        previousControl = control
       }
     }
   }

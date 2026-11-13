@@ -2724,7 +2724,8 @@ test.describe('touch chart labels', () => {
     const handle = label.locator('.simulation-label-handle')
     const pnl = label.locator('.simulation-label-pnl')
     await expect(label).toBeVisible()
-    expect((await label.boundingBox())!.height).toBeGreaterThanOrEqual(44)
+    const labelBox = (await label.boundingBox())!
+    expect(labelBox.height).toBe(22)
     await expect(handle).toBeHidden()
     const client = await page.context().newCDPSession(page)
     const drag = async (finish: 'touchEnd' | 'touchCancel', checkPreview?: () => Promise<void>) => {
@@ -2741,7 +2742,8 @@ test.describe('touch chart labels', () => {
     await drag('touchEnd')
     expect(await committed()).toEqual([])
     await expect(handle).toBeHidden()
-    await label.tap()
+    // The label looks compact, but a tap above its visible border still selects it.
+    await page.touchscreen.tap(labelBox.x + labelBox.width / 2, labelBox.y - 7)
     await expect(handle).toBeVisible()
     await page.screenshot({ path: test.info().outputPath('selected-mobile-price-label.png') })
     await drag('touchCancel', async () => { await expect(pnl).not.toHaveText(original) })

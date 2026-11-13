@@ -526,7 +526,7 @@ button:disabled {
   position: absolute;
   display: flex;
   align-items: stretch;
-  min-height: 28px;
+  min-height: 22px;
   transform: translateY(-50%);
   padding: 0;
   border: 1px solid var(--label-color);
@@ -576,7 +576,13 @@ button:disabled {
 }
 
 @media (pointer: coarse), (max-width: 767px) {
-  .chart-host .simulation-price-label { min-height: 44px; font-size: 11px; }
+  .chart-host .simulation-price-label { font-size: 11px; }
+  .chart-host button.simulation-price-label::before {
+    content: '';
+    position: absolute;
+    inset: calc(1px - min(11px, var(--label-hit-above, 11px))) -1px
+      calc(1px - min(11px, var(--label-hit-below, 11px)));
+  }
   .simulation-label-name, .simulation-label-pnl, .simulation-label-handle { padding-inline: 5px; }
 }
 
