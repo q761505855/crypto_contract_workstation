@@ -82,6 +82,7 @@ describe('ChartWorkspace', () => {
       getSymbol: () => ({ ticker: 'BTCUSDT' }),
       reloadData: async () => {},
       setPeriod: () => {}, setSymbol: () => {}, setTheme: () => {}, setTimezone: () => {}, setSimulationOverlays: () => {},
+      needsMorePaneSpace: () => true,
       getIndicatorPaneSizes: () => [{ id: 'rsi', label: 'RSI', height }],
       setIndicatorPaneHeight: (_id, next) => { height = next },
       getIndicatorPreferences: () => ({ ...indicatorPreferences, sub: [{ ...indicatorPreferences.sub[0], height }] }),

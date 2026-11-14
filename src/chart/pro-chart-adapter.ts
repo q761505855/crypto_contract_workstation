@@ -6,7 +6,7 @@ import {
   type Period,
   type SymbolInfo,
 } from '@klinecharts/pro'
-import { DomPosition, YAxisPosition } from 'klinecharts'
+import { DomPosition, YAxisPosition, type KLineData } from 'klinecharts'
 import type {
   ActionType,
   Chart,
@@ -37,21 +37,13 @@ import { replayVisibleUntil, type ReplayContext } from '../replay/models'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
 import {
   registerSimulationPriceLine, SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR,
-  SIMULATION_PRICE_LINE, SIMULATION_TRADE_LABEL,
+  SIMULATION_PRICE_LINE, SIMULATION_TRADE_LABEL, type SimulationTradeLabel,
 } from './simulation-price-line'
 import { SimulationPriceLabels, type PriceLabel, type PriceLabelText } from './simulation-price-labels'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
 const ON_PANE_DRAG = 'onPaneDrag' as ActionType
-
-export interface SimulationTradeOverlay {
-  id: string
-  timestamp: number
-  price: number
-  label: string
-  color: string
-}
 
 export interface SimulationPositionOverlay {
   side: 'long' | 'short'
@@ -70,7 +62,7 @@ export interface SimulationPositionOverlay {
 export interface SimulationOverlayState {
   currentTime: number | null
   positions: SimulationPositionOverlay[]
-  trades: SimulationTradeOverlay[]
+  trades: SimulationTradeLabel[]
 }
 
 const formatPnl = new Intl.NumberFormat('zh-CN', {
@@ -88,6 +80,7 @@ export interface ChartAdapterPort {
   setSymbol(symbol: SymbolInfo): void
   reloadData(): Promise<void>
   resize?(): void
+  needsMorePaneSpace?(height: number): boolean
   layoutSubPanes?(minimumHeight: number, compactBudget?: number): number
   setCompactLayout?(compact: boolean): void
   getIndicatorPaneSizes?(): { id: string; label: string; height: number }[]
@@ -157,6 +150,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private historyAbort = new AbortController()
   private readonly candleOwners = new WeakMap<object, string>()
   private priceLabels?: SimulationPriceLabels
+  private tradeMarkerGap = 0.08
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
   private subPaneMinimumHeight = 0
@@ -170,6 +164,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.clearPosition()
     this.priceLabels?.dispose()
     this.priceLabels = undefined
+    this.tradeMarkerGap = 0.08
     this.chart?.dispose?.()
     this.chart = null
     this.coreChart = null
@@ -225,6 +220,18 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.coreChart?.resize()
   }
 
+  needsMorePaneSpace(height: number): boolean {
+    const panes = this.getIndicatorPaneSizes()
+    const available = this.availablePaneHeight(height, panes.length)
+    const desired = panes.reduce((sum, pane) => sum + pane.height, 0)
+    return desired > available
+  }
+
+  private availablePaneHeight(chartHeight: number, paneCount: number): number {
+    const axisHeight = this.requireCoreChart().getSize('x_axis_pane')?.height ?? 30
+    return Math.max(0, chartHeight - axisHeight - 180 - paneCount * 2)
+  }
+
   layoutSubPanes(minimumHeight: number, compactBudget?: number): number {
     this.subPaneMinimumHeight = minimumHeight
     this.subPaneBudget = compactBudget
@@ -249,11 +256,9 @@ export class ProChartAdapter implements ChartAdapterPort {
       subPanes.push({ id: paneId, current: currentHeight, desired: Math.max(savedHeight, minimumHeight) })
     }
     const viewportHeight = chart.getSize()?.height ?? 0
-    const axisHeight = chart.getSize('x_axis_pane')?.height ?? 30
     const desiredTotal = subPanes.reduce((sum, pane) => sum + pane.desired, 0)
-    const available = viewportHeight > 0 ? Math.max(0, viewportHeight - axisHeight - 180 - subPanes.length * 2) : desiredTotal
-    // A phone-sized indicator budget follows the screen, not the resizable
-    // chart. Growing the chart therefore adds room to the candle pane.
+    const available = viewportHeight > 0 ? this.availablePaneHeight(viewportHeight, subPanes.length) : desiredTotal
+    // In automatic mode, keep the indicator panes compact on small screens.
     const budget = compactBudget === undefined ? available : Math.min(available, compactBudget)
     const scale = desiredTotal > budget ? budget / desiredTotal : 1
     for (const pane of subPanes) {
@@ -354,6 +359,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       timeframe: period.text, started: false,
     }
     this.requireChart().setPeriod(period)
+    this.setPriceRangeAuto(true)
   }
 
   private clearPosition(): void {
@@ -639,6 +645,20 @@ export class ProChartAdapter implements ChartAdapterPort {
       if (pane) this.priceLabels = new SimulationPriceLabels(chart, pane)
     }
     const overlays: OverlayCreate[] = []
+    const timeframe = this.getPeriod().text
+    const counts = new Map<number, number>()
+    let maxTradesPerBar = 0
+    for (const trade of state.trades) {
+      const open = alignOpenTime(trade.timestamp, timeframe, 'floor')
+      const count = (counts.get(open) ?? 0) + 1
+      counts.set(open, count)
+      maxTradesPerBar = Math.max(maxTradesPerBar, count)
+    }
+    const topGap = maxTradesPerBar === 0 ? 0.08 : Math.min(0.9, 0.24 + 0.15 * maxTradesPerBar)
+    if (this.tradeMarkerGap !== topGap) {
+      this.tradeMarkerGap = topGap
+      chart.setPaneOptions({ id: 'candle_pane', gap: { top: topGap, bottom: 0.08 } })
+    }
     const line = (label: PriceLabel) => {
       if (!Number.isFinite(label.price)) return
       overlays.push({
@@ -703,15 +723,21 @@ export class ProChartAdapter implements ChartAdapterPort {
       })
     }
 
-    for (const trade of state.trades) {
+    if (state.trades.length > 0) {
+      const trades = [...state.trades].sort((first, second) => first.timestamp - second.timestamp)
+      const displayCandle = (index: number, candle: KLineData): KLineData => {
+        if (chart.getStyles().candle.type !== 'heikin_ashi') return candle
+        // The patched renderer caches the same Heikin Ashi series used by the axis.
+        const core = chart as Chart & { getChartStore(): { getHeikinAshiData(index: number): KLineData } }
+        return core.getChartStore().getHeikinAshiData(index)
+      }
       overlays.push({
-        id: `simulation-trade-${trade.id}`,
+        id: 'simulation-trade-markers',
         groupId: 'simulation',
         name: SIMULATION_TRADE_LABEL,
         lock: true,
-        points: [{ timestamp: trade.timestamp, value: trade.price }],
-        extendData: trade.label,
-        styles: { text: { color: trade.color } },
+        points: [{ dataIndex: 0 }],
+        extendData: { chart, trades, displayCandle, timeframe },
       })
     }
     if (overlays.length > 0) {

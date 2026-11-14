@@ -14,6 +14,7 @@ export interface WorkspacePreferences {
   }
   chartHeight: number | null
   mobileChartHeight: number | null
+  /** Legacy archive field for clients that still support resizing the dock. */
   dockHeight: number
 }
 

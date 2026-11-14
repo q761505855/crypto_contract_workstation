@@ -1,6 +1,6 @@
 .chart-height-handle {
-  position: absolute;
-  inset: auto 0 0;
+  position: relative;
+  flex-shrink: 0;
   z-index: 12;
   display: grid;
   height: 16px;
@@ -11,6 +11,7 @@
   border-top: 1px solid #304052;
 }
 .chart-height-handle span { width: 52px; height: 3px; border-radius: 3px; background: #6f849c; }
+.chart-height-handle[aria-disabled="true"] { cursor: default; height: 0; border: 0; visibility: hidden; }
 .chart-height-handle:hover span, .chart-height-handle:focus-visible span { background: #65c9d0; }
 .chart-height-handle:focus-visible { outline: 2px solid #65c9d0; outline-offset: -2px; }
 .chart-size-backdrop {

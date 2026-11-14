@@ -12,6 +12,11 @@ import { ProChartAdapter } from './pro-chart-adapter'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
 
 function fakeChart(coreChart?: Chart): ChartPro {
+  const core = coreChart ?? ({
+    createOverlay: vi.fn(),
+    removeOverlay: vi.fn(),
+    setPriceRangeAuto: vi.fn(),
+  } as unknown as Chart)
   return {
     getLocale: vi.fn(() => 'zh-CN'),
     getPeriod: vi.fn(() => ({
@@ -23,14 +28,7 @@ function fakeChart(coreChart?: Chart): ChartPro {
     getSymbol: vi.fn(() => ({ ticker: 'BTCUSDT' })),
     getTheme: vi.fn(() => 'dark'),
     getTimezone: vi.fn(() => 'Asia/Shanghai'),
-    getChart: vi.fn(
-      () =>
-        coreChart ??
-        ({
-          createOverlay: vi.fn(),
-          removeOverlay: vi.fn(),
-        } as unknown as Chart),
-    ),
+    getChart: vi.fn(() => core),
     setLocale: vi.fn(),
     setPeriod: vi.fn(),
     setStyles: vi.fn(),
@@ -251,6 +249,9 @@ describe('ProChartAdapter', () => {
       timespan: 'hour',
       text: '1h',
     })
+    expect(chart.getChart().setPriceRangeAuto).toHaveBeenCalledWith(true)
+    adapter.setPeriod(adapter.getPeriod())
+    expect(chart.getChart().setPriceRangeAuto).toHaveBeenCalledTimes(1)
     expect(() => adapter.mount(options)).toThrow('already mounted')
   })
 
@@ -459,6 +460,7 @@ describe('ProChartAdapter', () => {
     const coreChart = {
       createOverlay: vi.fn(),
       removeOverlay: vi.fn(),
+      setPaneOptions: vi.fn(),
     } as unknown as Chart
     const chart = fakeChart(coreChart)
     const adapter = new ProChartAdapter(() => chart)
@@ -482,9 +484,7 @@ describe('ProChartAdapter', () => {
       }],
       trades: [
         {
-          id: 'trade-1',
           timestamp: 60_000,
-          price: 100,
           label: '开多',
           color: '#00ff00',
         },
@@ -503,9 +503,9 @@ describe('ProChartAdapter', () => {
           extendData: { color: '#4fd49f', active: false },
         }),
         expect.objectContaining({
-          id: 'simulation-trade-trade-1',
+          id: 'simulation-trade-markers',
           name: 'simulationTradeLabel',
-          extendData: '开多',
+          extendData: expect.objectContaining({ trades: [{ timestamp: 60_000, label: '开多', color: '#00ff00' }] }),
         }),
       ]),
       'candle_pane',

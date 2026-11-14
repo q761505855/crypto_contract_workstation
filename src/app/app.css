@@ -234,6 +234,9 @@ button:disabled {
   right: 6px;
   width: 224px;
   max-width: calc(100vw - 24px);
+  max-height: var(--period-menu-height, 100vh);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid #303b49;
   border-radius: 6px;
@@ -242,6 +245,7 @@ button:disabled {
 }
 
 .period-dropdown > p {
+  flex-shrink: 0;
   margin: 0;
   padding: 10px;
   color: #9eaab8;
@@ -249,6 +253,7 @@ button:disabled {
 }
 
 .period-options {
+  min-height: 0;
   max-height: min(320px, 40svh);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1162,14 +1167,6 @@ button:disabled {
     display: contents;
   }
 
-  .chart-workspace {
-    grid-area: chart;
-    /* Give the price pane its own space; each indicator adds to document height. */
-    height: calc(max(420px, 65svh) + var(--chart-subpanes-height, 404px) + 106px);
-    min-height: 0;
-    border-right: 0;
-  }
-
   .chart-host {
     min-height: 0;
   }
@@ -1350,7 +1347,6 @@ button:disabled {
 
 /* Workspace regions share one chart instance at every viewport size. */
 .workspace-shell { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
-.workspace-shell.fixed-chart-height { height: auto; min-height: 100dvh; overflow: visible; }
 .workspace-shell button { cursor: pointer; min-height: 32px; transition: background-color .12s, border-color .12s; }
 .workspace-shell button:hover:not(:disabled) { border-color: #50667d; background-color: #223247; }
 .workspace-shell button:focus-visible, .workspace-dialog button:focus-visible, .workspace-dialog input:focus-visible { outline: 2px solid #65b7ff; outline-offset: 2px; }
@@ -1362,7 +1358,6 @@ button:disabled {
 .mobile-brand, .mobile-workspace-nav, .mobile-header-toggle { display: none; }
 .workspace-content { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 280px; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: 'account account' 'chart order' 'dock order'; }
 .workspace-content.is-order-hidden { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'account' 'chart' 'dock'; }
-.workspace-content.has-fixed-chart { flex: none; grid-template-rows: auto auto auto; }
 .workspace-account { grid-area: account; min-width: 0; }
 .account-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; min-height: 40px; padding: 7px 16px; border-bottom: 1px solid #263345; font-size: 12px; background: #101722; }
 .account-strip > span { display: inline-flex; gap: 10px; color: #91a2b8; }
@@ -1372,7 +1367,10 @@ button:disabled {
 .text-button { border-color: transparent; color: #79baff; background: transparent; }
 .panel-close { margin-left: auto; color: #8b9db3; padding: 2px 7px; border: 0; background: transparent; }
 .chart-region { grid-area: chart; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.workspace-shell .chart-workspace { flex: 1; min-height: 200px; height: auto; border-right: 0; }
+.workspace-shell .chart-workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; height: auto; border-right: 0; }
+.chart-scroll-port { flex: 1; min-height: 0; overflow: clip; }
+.chart-scroll-port[data-resized] { overflow-y: auto; overscroll-behavior-y: contain; }
+.chart-surface { position: relative; height: 100%; min-height: 100%; overflow: clip; }
 .workspace-shell .chart-host { height: 100%; min-height: 0; }
 .workspace-shell.auxiliary-chart-window { padding-bottom: 0; }
 .auxiliary-chart-window .chart-workspace { min-height: 0; }
@@ -1399,8 +1397,6 @@ button:disabled {
 .auxiliary-chart-size button { padding: 4px 9px; }
 .auxiliary-chart-window .klinecharts-pro-period-bar > .symbol { cursor: default; }
 .auxiliary-chart-window .period-option { grid-template-columns: 1fr; }
-.workspace-content.has-fixed-chart .chart-workspace { flex: none; height: var(--workspace-chart-height); min-height: var(--workspace-chart-height); }
-.workspace-content.has-fixed-chart .chart-region { align-self: start; }
 .replay-region { position: relative; flex-shrink: 0; min-width: 0; }
 .workspace-shell .replay-controls { min-height: 48px; gap: 6px; padding: 7px 40px 7px 12px; font-size: 12px; border-top: 1px solid #263345; background: #111a27; }
 .workspace-shell .replay-controls button { padding: 5px 9px; }
@@ -1417,9 +1413,7 @@ button:disabled {
 .order-panel .button-row button { flex: 1; }
 .order-panel .long-button { background: #1f795b; color: #e7fff5; }
 .order-panel .short-button { background: #a94050; color: #fff3f4; }
-.dock-region { grid-area: dock; position: relative; min-width: 0; height: var(--workspace-dock-height); border-top: 1px solid #29364a; background: #101824; }
-.dock-resize-handle { position: absolute; top: -6px; left: 0; right: 0; height: 12px; z-index: 14; display: grid; place-items: center; cursor: ns-resize; touch-action: none; }
-.dock-resize-handle span { width: 48px; height: 3px; background: #465871; border-radius: 4px; }
+.dock-region { grid-area: dock; position: relative; min-width: 0; height: min(220px, 28dvh); border-top: 1px solid #29364a; background: #101824; }
 .simulation-dock { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dock-heading { display: flex; align-items: center; gap: 6px; justify-content: space-between; padding: 9px 10px; border-bottom: 1px solid #253246; flex-shrink: 0; }
 .dock-heading [role=tablist] { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -1479,12 +1473,11 @@ button:disabled {
   .workspace-nav { width: 100%; display: flex; justify-content: space-between; gap: 4px; }
   .workspace-nav button { padding: 5px 8px; min-height: 36px; font-size: 12px; }
   .workspace-content, .workspace-content.is-order-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: 'account' 'chart'; }
-  .workspace-content.has-fixed-chart { grid-template-rows: auto auto; }
   .account-strip { gap: 6px 14px; font-size: 11px; padding: 6px 10px; }
   .account-strip > span { gap: 5px; }
   .account-strip > span:nth-child(2) { display: none; }
   .account-strip button { min-height: 32px; font-size: 11px; }
-  .workspace-shell .chart-workspace { height: auto; min-height: 200px; grid-area: auto; }
+  .workspace-shell .chart-workspace { grid-area: auto; }
   .workspace-shell .chart-host { min-height: 0; }
   .workspace-shell .replay-controls { padding: 7px 32px 7px 8px; gap: 5px; min-height: 48px; grid-area: auto; }
   .workspace-shell .replay-controls button { min-height: 40px; font-size: 12px; padding: 6px 8px; }
@@ -1501,7 +1494,6 @@ button:disabled {
   .order-region .side-panel { padding: 16px; }
   .order-region .panel-heading { position: sticky; top: 0; z-index: 3; background: #111a26; padding-bottom: 8px; }
   .dock-region { height: min(65dvh, 540px); }
-  .dock-resize-handle { display: none; }
   .dock-heading { padding: 9px; }
   .dock-heading [role=tablist] { gap: 0; }
   .dock-heading button { padding: 8px 7px; min-height: 40px; font-size: 12px; }
@@ -1560,8 +1552,6 @@ button:disabled {
 @media (min-width: 1024px), (min-width: 768px) and (min-height: 521px) {
   .workspace-content.is-order-hidden { grid-template-columns: minmax(0, 1fr) 32px; grid-template-areas: 'account account' 'chart order' 'dock order'; }
   .workspace-content.is-focus-mode { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'account' 'chart' 'dock'; }
-  /* Let the page take over when a trading panel cannot scroll further. */
-  .order-region, .dock-body { overscroll-behavior-y: auto; }
 }
 @media (max-width: 767px), (max-width: 1023px) and (max-height: 520px) {
   .workspace-shell .collapsed-panel-handle { min-height: 40px; }
@@ -1571,6 +1561,7 @@ button:disabled {
 
 /* Native chart dialogs use the visible viewport, independent of chart height. */
 .workspace-shell .chart-workspace:has(.klinecharts-pro-modal) { container-type: normal; overflow: visible; z-index: 500; }
+.chart-scroll-port[data-resized] [k-line-chart-id] > div > div > div:first-child { touch-action: pan-y; }
 .workspace-shell .chart-host .klinecharts-pro-modal { position: fixed; inset: 0; top: var(--workspace-viewport-top, 0px); bottom: auto; width: 100%; height: var(--workspace-viewport-height, 100dvh); padding: 16px; align-items: center; background: #020814a6; }
 .workspace-shell .chart-host .klinecharts-pro-modal .inner { display: flex; flex-direction: column; max-width: 100%; max-height: calc(var(--workspace-viewport-height, 100dvh) - 32px); overflow: hidden; }
 .workspace-shell .chart-host .klinecharts-pro-modal:has(.klinecharts-pro-indicator-setting-modal-content) .inner { width: min(560px, 100%) !important; }

@@ -29,6 +29,7 @@ function fixture() {
     getBarSpace: () => 10,
     scrollToTimestamp: vi.fn((timestamp: number) => { visibleTo = data.findIndex(row => row.timestamp === timestamp) + 1 }),
     scrollByDistance: vi.fn(),
+    setPriceRangeAuto: vi.fn(),
   } as unknown as Chart
   const history = vi.fn(async (_symbol: unknown, selected: Period, from: number, to: number, _notifySelection?: boolean, _signal?: AbortSignal): Promise<KLineData[]> => {
     const result: KLineData[] = []

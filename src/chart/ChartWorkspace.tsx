@@ -66,6 +66,8 @@ export function ChartWorkspace({
   auxiliary = false,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const scrollPortRef = useRef<HTMLDivElement | null>(null)
+  const [canExpand, setCanExpand] = useState(false)
   const synchronizeLayoutRef = useRef<(() => void) | null>(null)
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
@@ -116,12 +118,19 @@ export function ChartWorkspace({
       )
     }
     const host = hostRef.current
-    setPeriodToolbar(host.querySelector('.klinecharts-pro-period-bar'))
+    const scrollPort = scrollPortRef.current
+    const toolbar = host.querySelector<HTMLElement>('.klinecharts-pro-period-bar')
+    setPeriodToolbar(toolbar)
     const priceAxis = adapter?.getPriceAxisContainer?.() ?? null
+    priceAxis?.classList.add('chart-price-axis')
     const synchronizePriceControl = () => {
       if (priceAxis === null) return
       const top = priceAxis.getBoundingClientRect().top - host.getBoundingClientRect().top
       host.parentElement?.style.setProperty('--price-axis-top', `${top}px`)
+    }
+    const measurePeriodMenu = () => {
+      const height = scrollPort && toolbar ? scrollPort.clientHeight - toolbar.offsetHeight : 0
+      toolbar?.style.setProperty('--period-menu-height', `${Math.max(0, height - 4)}px`)
     }
     const synchronizeLayout = (resized = false) => {
       // Core dimensions are refreshed synchronously by resize; pane sizing
@@ -129,10 +138,13 @@ export function ChartWorkspace({
       if (resized) adapter?.resize?.()
       const narrow = window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches ?? false
       adapter?.setCompactLayout?.(narrow)
-      // Keep secondary panes near a quarter of the phone's screen even when
-      // the user enlarges the chart. Archive only explicit size changes.
       const budget = narrow ? Math.round(window.innerHeight * 0.22) : undefined
-      adapter?.layoutSubPanes?.(narrow ? 60 : 0, budget)
+      const fitHeight = (scrollPort?.clientHeight ?? host.clientHeight) - (toolbar?.offsetHeight ?? 0)
+      const crowded = adapter?.needsMorePaneSpace?.(fitHeight) ?? false
+      setCanExpand(crowded)
+      const expanded = scrollPort?.hasAttribute('data-resized') && host.clientHeight > scrollPort.clientHeight
+      adapter?.layoutSubPanes?.(narrow ? 60 : 0, expanded ? undefined : budget)
+      measurePeriodMenu()
       synchronizePriceControl()
     }
     synchronizeLayoutRef.current = synchronizeLayout
@@ -141,6 +153,22 @@ export function ChartWorkspace({
       ? null
       : new ResizeObserver(() => synchronizeLayout(true))
     resizeObserver?.observe(host)
+    if (scrollPort) resizeObserver?.observe(scrollPort)
+    if (toolbar) resizeObserver?.observe(toolbar)
+    const scrollChart = (event: WheelEvent) => {
+      if (!scrollPort?.hasAttribute('data-resized') || host.clientHeight <= scrollPort.clientHeight ||
+          event.ctrlKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY) ||
+          !(event.target instanceof Element) ||
+          !event.target.closest('[k-line-chart-id]') ||
+          event.target.closest('.chart-price-axis')) return
+      // The chart consumes wheel events for zoom. Plain vertical wheel scrolls
+      // the expanded surface, while Ctrl+wheel still zooms the time scale.
+      event.preventDefault()
+      event.stopPropagation()
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scrollPort.clientHeight : 1
+      scrollPort.scrollTop += event.deltaY * unit
+    }
+    scrollPort?.addEventListener('wheel', scrollChart, { capture: true, passive: false })
     const axisResizeObserver = priceAxis !== null && typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(synchronizePriceControl) : null
     if (priceAxis !== null) axisResizeObserver?.observe(priceAxis)
@@ -159,6 +187,7 @@ export function ChartWorkspace({
     return () => {
       resizeObserver?.disconnect()
       axisResizeObserver?.disconnect()
+      scrollPort?.removeEventListener('wheel', scrollChart, true)
       synchronizeLayoutRef.current = null
       host.removeEventListener('click', openSymbolPicker, true)
       adapter?.dispose?.()
@@ -395,7 +424,7 @@ export function ChartWorkspace({
   }
 
   function currentChartHeight(): number {
-    return chartHeight ?? (hostRef.current?.parentElement?.getBoundingClientRect().height || 600)
+    return chartHeight ?? (scrollPortRef.current?.clientHeight || 600)
   }
 
   function changeChartHeight(height: number): void {
@@ -451,13 +480,18 @@ export function ChartWorkspace({
   )
 
   const periodSelector = <PeriodSelector value={period.text} onChange={selectCompactPeriod} allowPinning={!auxiliary} />
+  const expanded = chartHeight !== null && canExpand
 
   return (
     <section className="chart-workspace" aria-label="行情图表" data-price-range-auto={priceRangeAuto}>
-      <div className="chart-host" data-testid="chart-host" ref={hostRef} />
-      {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
-      {priceRangeMode}
-      {periodToolbar === null ? periodSelector : createPortal(periodSelector, periodToolbar)}
+      <div className="chart-scroll-port" data-resized={expanded || undefined} ref={scrollPortRef}>
+        <div className="chart-surface" style={{ height: expanded ? `${chartHeight}px` : undefined }}>
+          <div className="chart-host" data-testid="chart-host" ref={hostRef} />
+          {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
+          {priceRangeMode}
+          {periodToolbar === null ? periodSelector : createPortal(periodSelector, periodToolbar)}
+        </div>
+      </div>
       {symbolPickerOpen ? (
         <SymbolPicker
           currentSymbol={symbolRef.current}
@@ -472,12 +506,13 @@ export function ChartWorkspace({
           aria-orientation="horizontal"
           aria-valuemin={280}
           aria-valuemax={1600}
-          aria-valuenow={Math.round(currentChartHeight())}
+          aria-valuenow={Math.max(280, Math.min(1600, Math.round(currentChartHeight())))}
+          aria-disabled={!canExpand}
           className="chart-height-handle"
           role="separator"
-          tabIndex={0}
+          tabIndex={canExpand ? 0 : -1}
           onPointerDown={(event) => {
-            if (event.button !== 0 || heightDragRef.current !== null) return
+            if (!canExpand || event.button !== 0 || heightDragRef.current !== null) return
             event.preventDefault()
             event.currentTarget.focus()
             heightDragRef.current = { pointerId: event.pointerId, startY: event.clientY, height: currentChartHeight() }
@@ -495,6 +530,7 @@ export function ChartWorkspace({
           onPointerCancel={() => { heightDragRef.current = null }}
           onLostPointerCapture={() => { heightDragRef.current = null }}
           onKeyDown={(event) => {
+            if (!canExpand) return
             const delta = event.shiftKey ? 100 : 20
             const next = event.key === 'ArrowUp' ? currentChartHeight() - delta
               : event.key === 'ArrowDown' ? currentChartHeight() + delta
@@ -513,11 +549,11 @@ export function ChartWorkspace({
             <header><strong>图表尺寸设置</strong><button aria-label="关闭图表尺寸设置" onClick={onCloseLayoutSettings} ref={closeSizeSettingsRef} type="button">×</button></header>
             <div className="chart-size-fields">
               <label>
-                <span>图表区域高度 <output>{chartHeight === null ? '自动适配' : `${chartHeight} px`}</output></span>
-                <input aria-label="图表区域高度" disabled={onChartHeightChange === undefined} max={1600} min={280} onChange={(event) => changeChartHeight(Number(event.target.value))} step={1} type="range" value={Math.round(currentChartHeight())} />
+                <span>图表区域高度 <output>{expanded ? `${chartHeight} px` : '自动适配'}</output></span>
+                <input aria-label="图表区域高度" disabled={onChartHeightChange === undefined || !canExpand} max={1600} min={280} onChange={(event) => changeChartHeight(Number(event.target.value))} step={1} type="range" value={Math.round(currentChartHeight())} />
               </label>
               <button disabled={onChartHeightChange === undefined} onClick={() => onChartHeightChange?.(null)} type="button">自动适配</button>
-              <p>拖动图表底边也可调整高度。副图尺寸与指标设置一起保存；手机端副图紧凑显示，拉高图表主要增加主图空间；各副图可单独调节，空间不足时按比例缩小显示。</p>
+              <p>图表默认填满可用空间。副图放不下时，可拖动图表底边增高，并在图表区域内滚动。各副图高度随指标设置保存。</p>
               {paneSizes.length === 0 ? <p>当前没有副图指标。</p> : paneSizes.map((pane) => (
                 <label key={pane.id}>
                   <span>{pane.label}<output>{pane.height} px</output></span>

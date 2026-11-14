@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
 } from 'react'
 import Decimal from 'decimal.js'
 import {
@@ -15,11 +14,8 @@ import {
 import { ChartWorkspace } from '../chart/ChartWorkspace'
 import { ChartWindowHost, openChartWindow } from '../chart/chart-window'
 import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-overlay-preferences'
-import type {
-  SimulationOverlayState,
-  SimulationTradeOverlay,
-} from '../chart/pro-chart-adapter'
-import { SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR } from '../chart/simulation-price-line'
+import type { SimulationOverlayState } from '../chart/pro-chart-adapter'
+import { SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR, type SimulationTradeLabel } from '../chart/simulation-price-line'
 import {
   ModeSwitch,
   type WorkstationMode,
@@ -52,7 +48,7 @@ import { useSimulationController } from '../simulation/useSimulationController'
 import type { SimulationTrade } from '../simulation/models'
 import './app.css'
 
-function tradeOverlay(trade: SimulationTrade): SimulationTradeOverlay {
+function tradeOverlay(trade: SimulationTrade): SimulationTradeLabel {
   const direction = trade.positionSide === 'long' ? '多' : '空'
   const labels: Record<SimulationTrade['action'], string> = {
     open: `开${direction}`,
@@ -64,9 +60,7 @@ function tradeOverlay(trade: SimulationTrade): SimulationTradeOverlay {
     liquidation: `${direction}仓强平`,
   }
   return {
-    id: trade.tradeId,
     timestamp: trade.timestamp,
-    price: Number(trade.price),
     label: labels[trade.action],
     color: trade.side === 'buy' ? SIMULATION_BUY_COLOR : SIMULATION_SELL_COLOR,
   }
@@ -90,7 +84,6 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [layoutError, setLayoutError] = useState('')
   const layoutRef = useRef(layout)
   layoutRef.current = layout
-  const dockDrag = useRef<{ y: number; height: number } | null>(null)
   const mobileOpener = useRef<HTMLElement | null>(null)
   function updateLayout(change: (current: WorkspacePreferences) => WorkspacePreferences): void {
     const next = change(layoutRef.current)
@@ -437,7 +430,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const chartHeight = mobile ? layout.mobileChartHeight : layout.chartHeight
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
   return (
-    <main ref={shellRef} className={`app-shell workspace-shell${headerExpanded ? ' header-expanded' : ''}${chartHeight === null ? '' : ' fixed-chart-height'}`}>
+    <main ref={shellRef} className={`app-shell workspace-shell${headerExpanded ? ' header-expanded' : ''}`}>
       <header className="app-header">
         <h1><span className="desktop-brand">加密货币合约回放工作站</span><span className="mobile-brand">合约工作站</span></h1>
         <ModeSwitch mode={mode} onChange={changeMode} />
@@ -454,8 +447,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       {marketRuntime.configSync && <ConfigSyncStatus service={marketRuntime.configSync} />}
       <div
         data-testid={mode === 'history' ? 'simulation-panel' : 'live-workspace'}
-        className={`workspace-content${visible('order') ? '' : ' is-order-hidden'}${chartHeight === null ? '' : ' has-fixed-chart'}${focusMode ? ' is-focus-mode' : ''}`}
-        style={{ '--workspace-chart-height': chartHeight === null ? undefined : `${chartHeight}px`, '--workspace-dock-height': `${layout.dockHeight}px` } as CSSProperties}
+        className={`workspace-content${visible('order') ? '' : ' is-order-hidden'}${focusMode ? ' is-focus-mode' : ''}`}
       >
         <div className="workspace-account" hidden={focusMode}>
           <div id="workspace-account-content" hidden={!visible('account')}>
@@ -504,11 +496,6 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           {mode === 'history' ? <SimulationOrder session={replay.session} simulation={simulation} onClose={() => mobile ? closeMobilePanel() : setPanel('order', false)} /> : <><header className="panel-heading"><h2>行情状态</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={() => mobile ? closeMobilePanel() : setPanel('order', false)} /></header><LiveStatus status={liveStatus} /></>}
         </div>
         <div id="workspace-dock-content" className="dock-region" hidden={mode !== 'history' || !visible('dock')} data-mobile-open={mobile && mobilePanel === 'dock' || undefined}>
-          <div className="dock-resize-handle" role="separator" aria-label="持仓面板高度" aria-orientation="horizontal" aria-valuemin={160} aria-valuemax={480} aria-valuenow={layout.dockHeight} tabIndex={0}
-            onPointerDown={event => { dockDrag.current = { y: event.clientY, height: layout.dockHeight }; event.currentTarget.setPointerCapture(event.pointerId) }}
-            onPointerMove={event => { const drag = dockDrag.current; if (drag) updateLayout(current => ({ ...current, dockHeight: Math.max(160, Math.min(480, Math.round(drag.height + drag.y - event.clientY))) })) }}
-            onPointerUp={() => { dockDrag.current = null }} onPointerCancel={() => { dockDrag.current = null }}
-            onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); updateLayout(current => ({ ...current, dockHeight: Math.max(160, Math.min(480, current.dockHeight + (event.key === 'ArrowUp' ? 20 : -20))) })) } }}><span /></div>
           <SimulationDock simulation={simulation} pricePrecision={replay.session?.symbol.pricePrecision} tab={dockTab} onTabChange={setDockTab} onClose={() => mobile ? closeMobilePanel() : setPanel('dock', false)} />
         </div>
         <div className="dock-expander" hidden={mobile || mode !== 'history' || focusMode || visible('dock')}>
@@ -529,7 +516,6 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       <WorkspaceDialog open={workspaceMenu} title="工作区面板" onClose={() => setWorkspaceMenu(false)}>
         <p className="muted-text">账户、下单和持仓面板可展开或收起；回放控制和底部状态常驻。桌面和手机分别保存图表高度。</p>
         <div className="workspace-panel-toggles">{([['account', '账户摘要'], ['order', '下单面板'], ['dock', '持仓与复盘']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={layout.panels[key]} onChange={event => setPanel(key, event.target.checked)} />{label}</label>)}</div>
-        <label className="panel-field">持仓面板高度 · {layout.dockHeight}px<input type="range" min={160} max={480} step={10} aria-label="持仓面板高度" value={layout.dockHeight} onChange={event => updateLayout(current => ({ ...current, dockHeight: Number(event.target.value) }))} /></label>
         <div className="button-row"><button type="button" onClick={() => { setFocusMode(false); updateLayout(current => ({ ...current, panels: { ...current.panels, account: true, order: true, dock: true } })) }}>显示全部面板</button><button type="button" onClick={() => { setFocusMode(false); updateLayout(() => structuredClone(DEFAULT_WORKSPACE_PREFERENCES)) }}>恢复默认布局</button></div>
         <button type="button" className="dialog-done" onClick={() => { setWorkspaceMenu(false); setChartSizeOpen(true) }}>调整图表与指标高度</button>
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
