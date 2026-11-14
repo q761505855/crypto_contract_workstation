@@ -51,6 +51,14 @@ describe('automatic configuration sync', () => {
     expect(s.writes).toHaveLength(0)
     expect(s.auto.getStatus().phase).toBe('synced')
   })
+  it('keeps each captured window size together when both devices edit it', () => {
+    const before = { ...base, chartWindowSize: { width: 1100, height: 760 } }
+    const local = { ...base, chartWindowSize: { width: 900, height: 760 } }
+    const remote = { ...base, chartWindowSize: { width: 1100, height: 600 } }
+    expect(mergeConfig(before, local, remote)).toEqual({ preferences: local, conflicts: ['chartWindowSize'] })
+    expect(mergeConfig(before, local, remote, 'remote').preferences).toEqual(remote)
+    expect(mergeConfig(before, local, base).preferences).toEqual(local)
+  })
   it('uploads edits without an explicit sync action and debounces repeated writes', async () => {
     vi.useFakeTimers()
     const s = await setup()

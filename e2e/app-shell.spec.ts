@@ -129,6 +129,141 @@ test('keeps hedged positions and their risk orders isolated through reload and s
   await expect(shortRisk.getByRole('button', { name: '设置止损' })).toBeVisible()
 })
 
+test('uses a chart window’s captured size immediately and after JSON and cloud restore', async ({ page }) => {
+  test.setTimeout(90_000)
+  await mockBinance(page, true)
+  const github = await mockGitHub(page, true)
+  await page.addInitScript(() => {
+    const open = window.open
+    window.open = function (url, target, features) {
+      document.documentElement.dataset.popupFeatures = features
+      return open.call(window, url, target, features)
+    }
+  })
+  await page.goto('./')
+
+  async function openView(width: number, height: number) {
+    const popup = page.waitForEvent('popup')
+    await page.getByRole('button', { name: '打开副图', exact: true }).click()
+    const view = await popup
+    await expect(page.locator('html')).toHaveAttribute('data-popup-features', `popup,width=${width},height=${height}`)
+    return view
+  }
+
+  const view = await openView(1100, 760)
+  await view.setViewportSize({ width: 812, height: 566 })
+  await view.getByRole('button', { name: '设为默认大小', exact: true }).click()
+  await expect(view.getByText('默认大小已保存 · 812 × 566', { exact: true })).toBeVisible()
+  await (await openView(812, 566)).close()
+  await view.close()
+  const cloudSize = () => {
+    const file = github.files.get('projects/crypto-contract-workstation/config/preferences.json')
+    return file && JSON.parse(file.bytes.toString()).chartWindowSize
+  }
+  await page.clock.runFor(1_500)
+  await expect.poll(cloudSize).toEqual({ width: 812, height: 566 })
+  await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+
+  await page.getByTestId('open-data-manager').click()
+  const backupPanel = page.getByTestId('backup-sync-panel')
+  const download = page.waitForEvent('download')
+  await backupPanel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const archive = JSON.parse(await readFile((await (await download).path())!, 'utf8'))
+  expect(archive.data.preferences.chartWindowSize).toEqual({ width: 812, height: 566 })
+  archive.data.preferences.chartWindowSize = { width: 925, height: 600 }
+  page.once('dialog', dialog => dialog.accept())
+  await backupPanel.getByTestId('import-backup-file').setInputFiles({
+    name: 'window-size.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(archive)),
+  })
+  await expect(backupPanel.getByTestId('backup-status')).toContainText('导入完成')
+  await page.reload()
+  await (await openView(925, 600)).close()
+  await expect.poll(cloudSize).toEqual({ width: 925, height: 600 })
+  await expect(page.getByTestId('config-sync-status')).toContainText('已与云端同步')
+
+  await page.evaluate(() => localStorage.clear())
+  await page.reload()
+  await (await openView(925, 600)).close()
+})
+
+test('opens multiple desktop chart windows that share replay progress and one live socket', async ({ page, context }) => {
+  test.setTimeout(90_000)
+  await context.addInitScript(() => { Object.assign(window, { __enableViewportProbe: true }) })
+  const { liveSockets } = await mockBinance(page, true)
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const controls = page.getByTestId('replay-controls')
+  await jumpChart(page, '2026-07-22T00:00')
+  await setReplayEnd(page, '2026-07-22T03:00')
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  const next = controls.getByRole('button', { name: '下一根', exact: true })
+  await expect(next).toBeEnabled()
+
+  async function openView() {
+    const popup = page.waitForEvent('popup')
+    await page.getByRole('button', { name: '打开副图', exact: true }).click()
+    const view = await popup
+    await expect(view.getByRole('main', { name: '独立副图窗口' })).toBeVisible()
+    await expect(view.getByRole('button', { name: '图表周期', exact: true })).toBeVisible()
+    await expect(view.getByTestId('replay-controls')).toHaveCount(0)
+    return view
+  }
+  const first = await openView()
+  const second = await openView()
+  const third = await openView()
+  const selectPeriod = async (view: typeof page, period: string) => {
+    await view.getByRole('button', { name: '图表周期', exact: true }).click()
+    await view.getByRole('button', { name: `选择周期 ${period}`, exact: true }).click()
+  }
+  await selectPeriod(first, '1m')
+  await selectPeriod(second, '1h')
+  await expect(third.getByRole('button', { name: '图表周期', exact: true })).toHaveText(/15m/)
+  await expect(page.getByRole('button', { name: '图表周期', exact: true })).toHaveText(/15m/)
+
+  const readLast = (view: typeof page) => view.evaluate(() => {
+    const adapter = (window as unknown as { __viewportTestAdapter?: {
+      coreChart: { getDataList(): Array<{ timestamp: number; close: number; volume: number }> }
+    } }).__viewportTestAdapter
+    return adapter?.coreChart.getDataList().at(-1)
+  })
+  await Promise.all([first, second, third].map(view =>
+    expect.poll(async () => (await readLast(view))?.close).toBeDefined(),
+  ))
+  const prior = await Promise.all([first, second, third].map(readLast))
+  await next.click()
+  await expect.poll(async () => (await readLast(first))?.timestamp).toBe(prior[0]!.timestamp + 60_000)
+  await expect.poll(async () => (await readLast(second))?.volume).toBeGreaterThan(prior[1]!.volume)
+  await expect.poll(async () => (await readLast(third))?.timestamp).toBe(prior[2]!.timestamp + 15 * 60_000)
+  await expect.poll(async () => (await readLast(third))?.volume).toBe(prior[0]!.volume)
+  await controls.getByRole('button', { name: '上一根', exact: true }).click()
+  for (const [index, view] of [first, second, third].entries()) await expect.poll(() => readLast(view)).toEqual(prior[index])
+
+  await page.reload()
+  await expect(second.getByRole('button', { name: '图表周期', exact: true })).toHaveText(/1h/)
+  await expect.poll(() => readLast(second)).toEqual(prior[1])
+  await page.getByRole('button', { name: '实时行情', exact: true }).click()
+  await expect.poll(() => [...(liveSockets[0]?.streams ?? [])].sort()).toEqual(['btcusdt@kline_15m', 'btcusdt@kline_1h', 'btcusdt@kline_1m'])
+  expect(liveSockets).toHaveLength(1)
+  liveSockets[0].sendPrice('60123')
+  for (const view of [page, first, second, third]) await expect.poll(async () => (await readLast(view))?.close).toBe(60123)
+
+  await third.close()
+  await first.close()
+  await expect.poll(() => [...liveSockets[0].streams].sort()).toEqual(['btcusdt@kline_15m', 'btcusdt@kline_1h'])
+  liveSockets[0].sendPrice('60124')
+  for (const view of [page, second]) await expect.poll(async () => (await readLast(view))?.close).toBe(60124)
+
+  await page.evaluate(() => { window.open = () => null })
+  await page.getByRole('button', { name: '打开副图', exact: true }).click()
+  await expect(page.getByText('浏览器拦截了副图窗口，请允许此站点弹出窗口后重试。')).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.getByRole('button', { name: '打开副图', exact: true })).toHaveCount(0)
+  await page.close()
+  await expect(second.getByRole('status')).toHaveText('主窗口已关闭，请从工作站重新打开副图。')
+})
+
 test('toggles all replay trade overlays and restores the hidden setting from cloud configuration', async ({ page }) => {
   await mockBinance(page, true)
   const github = await mockGitHub(page, true)

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { CHART_WINDOW_SIZE_KEY, DEFAULT_CHART_WINDOW_SIZE, saveChartWindowSize } from '../chart/chart-window-preferences'
 import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
 import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
 import {
@@ -257,6 +258,39 @@ describe('WorkstationBackupService', () => {
     expect(storage.getItem('chart.candleType.v1')).toBeNull()
     expect(await new IndexedDbMarketDataStore(databaseName).getSymbols()).toEqual([])
   })
+  it('round-trips chart window size in config and full archives and preserves it for legacy archives', async () => {
+    const sourceStorage = new MemoryPreferences()
+    const source = new WorkstationBackupService(`chart-window-source-${crypto.randomUUID()}`, sourceStorage)
+    expect((await source.exportPreferences()).data.preferences?.chartWindowSize).toEqual(DEFAULT_CHART_WINDOW_SIZE)
+    const size = { width: 807, height: 564 }
+    saveChartWindowSize(size, sourceStorage)
+    for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
+      expect(archive.data.preferences?.chartWindowSize).toEqual(size)
+      const targetStorage = new MemoryPreferences()
+      const target = new WorkstationBackupService(`chart-window-target-${crypto.randomUUID()}`, targetStorage)
+      await target.import(archive)
+      expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
+      delete archive.data.preferences!.chartWindowSize
+      await target.import(archive)
+      expect(targetStorage.getItem(CHART_WINDOW_SIZE_KEY)).toBe(JSON.stringify(size))
+    }
+  })
+
+  it.each([null, '', [], {}, { width: 800 }, { width: 0, height: 600 }, { width: 800, height: 600.5 }].map(value => [value]))(
+    'rejects malformed window dimensions before writing (%j)', async chartWindowSize => {
+      const storage = new MemoryPreferences()
+      const name = `chart-window-invalid-${crypto.randomUUID()}`
+      const service = new WorkstationBackupService(name, storage)
+      const archive = await service.exportAll()
+      archive.data.symbols = [symbol()]
+      Object.assign(archive.data.preferences!, { chartWindowSize })
+      await expect(service.import(archive)).rejects.toThrow(/chartWindowSize/)
+      expect(storage.getItem('marketData.binanceBaseUrl')).toBeNull()
+      expect(storage.getItem(CHART_WINDOW_SIZE_KEY)).toBeNull()
+      expect(await new IndexedDbMarketDataStore(name).getSymbols()).toEqual([])
+    },
+  )
+
   it('round-trips workspace layout in config and full archives without replacing missing legacy layouts', async () => {
     const workspace = {
       schemaVersion: 1,

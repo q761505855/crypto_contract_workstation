@@ -72,6 +72,7 @@ function backup(): BackupEnvelope {
     pinnedPeriods: ['1m', '1d'],
     replayStepPeriod: '1M',
     showTradeOverlays: false,
+    chartWindowSize: { width: 870, height: 540 },
     workspace: {
       schemaVersion: 1,
       panels: { account: false, order: true, dock: false, replay: false, status: false },
@@ -280,6 +281,15 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual(complete)
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(complete.workspace)
 
+    const chartWindowSize = { width: 930, height: 570 }
+    sourceStorage.setItem('chart.windowSize.v1', JSON.stringify(chartWindowSize))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    expect((await target.readConfig(client(remote))).preferences).toEqual({ ...complete, chartWindowSize })
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual({ ...complete, chartWindowSize })
+    sourceStorage.setItem('chart.windowSize.v1', JSON.stringify(complete.chartWindowSize))
+
     sourceStorage.setItem('chart.showTradeOverlays.v1', 'true')
     await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
     await source.upload(client(remote), 'stop', selection)
@@ -327,14 +337,22 @@ describe('GitHubSyncService', () => {
     delete legacy.candleType
     delete legacy.replayStepPeriod
     delete legacy.showTradeOverlays
+    delete legacy.chartWindowSize
     await rewrite(legacy)
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
     expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
     expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('false')
+    expect(targetStorage.getItem('chart.windowSize.v1')).toBe(JSON.stringify(complete.chartWindowSize))
 
     const before = (await targetBackups.exportAll()).data
+    for (const chartWindowSize of [null, '', [], {}, { width: 0, height: 600 }, { width: 800, height: '600' }]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', chartWindowSize })
+      await expect(target.readConfig(client(remote))).rejects.toThrow(/chartWindowSize/)
+      await expect(target.pull(client(remote))).rejects.toThrow(/chartWindowSize/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const showTradeOverlays of [null, '', 0, 'false', [], {}]) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', showTradeOverlays })
       await expect(target.pull(client(remote))).rejects.toThrow(/showTradeOverlays/)

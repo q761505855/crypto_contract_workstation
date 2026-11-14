@@ -13,6 +13,7 @@ import {
   SUPPORTED_PERIODS,
 } from '../chart/chart-config'
 import { ChartWorkspace } from '../chart/ChartWorkspace'
+import { ChartWindowHost, openChartWindow } from '../chart/chart-window'
 import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import type {
   SimulationOverlayState,
@@ -133,6 +134,8 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   }, [mobile, mobilePanel])
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
   const [marketRuntime] = useState(() => runtime ?? createMarketDataRuntime())
+  const [chartWindows] = useState(() => new ChartWindowHost(marketRuntime))
+  const [popupBlocked, setPopupBlocked] = useState(false)
   const [configEpoch, setConfigEpoch] = useState(0)
   const [marketSelection, setMarketSelection] = useState<MarketSelection>(() => ({
     symbol: readSelectedSymbol() ?? DEFAULT_SYMBOL,
@@ -155,6 +158,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [stepPeriod, setStepPeriod] = useState(readReplayStepPeriod)
   const [showTradeOverlays, setShowTradeOverlays] = useState(readShowTradeOverlays)
   const replay = useReplayController(marketRuntime, stepPeriod)
+  const chartWindowsReady = useRef(false)
   const simulationController = useSimulationController(marketRuntime, replay)
   const simulation = { ...simulationController, busy: simulationController.busy || replay.busy }
   const replaySessionRef = useRef(replay.session)
@@ -340,22 +344,35 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     }
   }, [replay.session?.id])
 
+  useLayoutEffect(() => chartWindows.listen(), [chartWindows])
+
   useLayoutEffect(() => {
+    const activeReplay = mode === 'history' ? replay.session : null
     const nextContext: ReplayContext | null =
-      mode === 'history' && replay.session !== null
+      activeReplay !== null
         ? {
-            sessionId: replay.session.id,
-            symbol: replay.session.symbol.ticker.toUpperCase(),
-            timeframe: replaySourceTimeframe(replay.session),
-            currentTime: replay.session.currentTime,
-            visibleUntil: replay.session.visibleUntil,
-            endTime: replay.session.endTime,
+            sessionId: activeReplay.id,
+            symbol: activeReplay.symbol.ticker.toUpperCase(),
+            timeframe: replaySourceTimeframe(activeReplay),
+            currentTime: activeReplay.currentTime,
+            visibleUntil: activeReplay.visibleUntil,
+            endTime: activeReplay.endTime,
           }
         : null
     const previous = previousReplayContextRef.current
     const reloadAfterStep = previous !== null && nextContext !== null &&
       previous.sessionId === nextContext.sessionId && replayChartNeedsReload(previous, nextContext, marketSelection.period.text)
     marketRuntime.replayDatafeed.setReplayContext(nextContext, reloadAfterStep)
+    if (!replay.busy) chartWindowsReady.current = true
+    if (chartWindowsReady.current) {
+      chartWindows.publish({
+        symbol: activeReplay?.symbol ?? marketSelection.symbol,
+        period: marketSelection.period,
+        mode,
+        replay: nextContext,
+        configRevision: configEpoch,
+      })
+    }
     if (previous !== null && nextContext === null) {
       setMarketWarning('')
     }
@@ -369,7 +386,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       setChartReloadKey((current) => current + 1)
     }
     previousReplayContextRef.current = nextContext
-  }, [marketRuntime, marketSelection.period.text, mode, replay.session])
+  }, [chartWindows, configEpoch, marketRuntime, marketSelection, mode, replay.busy, replay.session])
 
   function changeMode(nextMode: WorkstationMode): void {
     if (nextMode === 'live') {
@@ -426,12 +443,14 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         <ModeSwitch mode={mode} onChange={changeMode} />
         <button type="button" className="mobile-header-toggle" aria-expanded={headerExpanded} aria-controls="workspace-header-actions" onClick={() => setHeaderExpanded(current => !current)}>{headerExpanded ? '收起工具 ⌃' : '工具 ⌄'}</button>
         <div id="workspace-header-actions" className="workspace-nav">
+          {!mobile && <button type="button" onClick={() => setPopupBlocked(openChartWindow() === null)}>打开副图</button>}
           <button type="button" data-testid="open-data-manager" onClick={() => setDataManagerOpen(true)}>数据管理</button>
           <button type="button" aria-expanded={chartSizeOpen} onClick={() => setChartSizeOpen(true)}>图表尺寸</button>
           <button type="button" aria-expanded={workspaceMenu} onClick={() => setWorkspaceMenu(true)}>工作区</button>
           <button type="button" className="focus-mode-button" aria-pressed={focusMode} onClick={() => { setFocusMode(current => !current); setMobilePanel(null) }}>{focusMode ? '退出专注' : '专注看图'}</button>
         </div>
       </header>
+      {popupBlocked && !mobile && <div className="chart-popup-warning" role="alert">浏览器拦截了副图窗口，请允许此站点弹出窗口后重试。</div>}
       {marketRuntime.configSync && <ConfigSyncStatus service={marketRuntime.configSync} />}
       <div
         data-testid={mode === 'history' ? 'simulation-panel' : 'live-workspace'}

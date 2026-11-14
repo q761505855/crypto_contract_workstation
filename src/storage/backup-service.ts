@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js'
 import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
 import { readShowTradeOverlays, SHOW_TRADE_OVERLAYS_KEY, validateShowTradeOverlays } from '../chart/trade-overlay-preferences'
+import { CHART_WINDOW_SIZE_KEY, readChartWindowSize, validateChartWindowSize, type ChartWindowSize } from '../chart/chart-window-preferences'
 import { CONFIG_PENDING_KEY, preferencesRestored } from './preference-events'
 import { klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
@@ -67,6 +68,7 @@ export interface BackupPreferences {
   pinnedPeriods?: string[]
   replayStepPeriod?: MarketTimeframe
   showTradeOverlays?: boolean
+  chartWindowSize?: ChartWindowSize
   workspace?: WorkspacePreferences
 }
 
@@ -205,6 +207,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     ...(item.pinnedPeriods === undefined ? {} : { pinnedPeriods: validatePinnedPeriods(item.pinnedPeriods) }),
     ...(item.replayStepPeriod === undefined ? {} : { replayStepPeriod: validateReplayStepPeriod(item.replayStepPeriod) }),
     ...(item.showTradeOverlays === undefined ? {} : { showTradeOverlays: validateShowTradeOverlays(item.showTradeOverlays) }),
+    ...(item.chartWindowSize === undefined ? {} : { chartWindowSize: validateChartWindowSize(item.chartWindowSize) }),
     ...(item.workspace === undefined ? {} : { workspace: validateWorkspacePreferences(item.workspace) }),
     ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
     ...(item.chartIndicators === undefined
@@ -812,6 +815,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
     pinnedPeriods: readPinnedPeriods(storage),
     replayStepPeriod: readReplayStepPeriod(storage),
     showTradeOverlays: readShowTradeOverlays(storage),
+    chartWindowSize: readChartWindowSize(storage),
     candleType: readCandleType(storage),
     workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
@@ -994,6 +998,7 @@ export class WorkstationBackupService {
       pinnedPeriods: PINNED_PERIODS_KEY,
       replayStepPeriod: REPLAY_STEP_PERIOD_KEY,
       showTradeOverlays: SHOW_TRADE_OVERLAYS_KEY,
+      chartWindowSize: CHART_WINDOW_SIZE_KEY,
       workspace: WORKSPACE_PREFERENCES_KEY,
       candleType: CANDLE_TYPE_KEY,
     } as const

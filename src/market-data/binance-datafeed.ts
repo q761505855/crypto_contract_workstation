@@ -47,7 +47,12 @@ export class BinanceDatafeed implements Datafeed {
   constructor(
     private readonly service: MarketDataService,
     private readonly liveStream: LiveStreamPort = new BinanceLiveStream(service),
+    private readonly ownsConnection = true,
   ) {}
+
+  createChartView(): BinanceDatafeed {
+    return new BinanceDatafeed(this.service, this.liveStream, false)
+  }
 
   setSelectionListener(
     listener?: (selection: MarketSelection) => void,
@@ -71,7 +76,7 @@ export class BinanceDatafeed implements Datafeed {
     this.liveEnabled = enabled
     // Period changes unsubscribe before loading history. Keep the transport
     // alive across that gap, and close it when leaving live mode.
-    this.liveStream.setKeepAlive?.(enabled)
+    if (this.ownsConnection) this.liveStream.setKeepAlive?.(enabled)
     for (const subscription of this.liveSubscriptions.values()) {
       if (enabled) {
         this.startLiveSubscription(subscription)

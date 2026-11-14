@@ -43,6 +43,7 @@ export interface ChartWorkspaceProps {
   onCloseLayoutSettings?: () => void
   chartHeight?: number | null
   onChartHeightChange?: (height: number | null) => void
+  auxiliary?: boolean
 }
 
 const demoDatafeed = new DemoDatafeed()
@@ -62,6 +63,7 @@ export function ChartWorkspace({
   onCloseLayoutSettings,
   chartHeight = null,
   onChartHeightChange,
+  auxiliary = false,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const synchronizeLayoutRef = useRef<(() => void) | null>(null)
@@ -150,7 +152,7 @@ export function ChartWorkspace({
       ) {
         event.preventDefault()
         event.stopImmediatePropagation()
-        setSymbolPickerOpen(true)
+        if (!auxiliary) setSymbolPickerOpen(true)
       }
     }
     host.addEventListener('click', openSymbolPicker, true)
@@ -318,6 +320,7 @@ export function ChartWorkspace({
   }, [onRightmostCandleTimeChange])
 
   useEffect(() => {
+    if (auxiliary) return
     const adapter = adapterRef.current
     if (adapter?.getIndicatorPreferences === undefined) return
     let previous = JSON.stringify(adapter.getIndicatorPreferences())
@@ -339,6 +342,7 @@ export function ChartWorkspace({
   }, [])
 
   useEffect(() => {
+    if (auxiliary) return
     const adapter = adapterRef.current
     if (adapter?.getCandleType === undefined) return
     let previous = adapter.getCandleType()
@@ -402,7 +406,7 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     adapter?.setIndicatorPaneHeight?.(paneId, height)
     const preferences = adapter?.getIndicatorPreferences?.()
-    if (preferences !== undefined) saveChartIndicatorPreferences(preferences)
+    if (!auxiliary && preferences !== undefined) saveChartIndicatorPreferences(preferences)
     setPaneSizes(adapter?.getIndicatorPaneSizes?.() ?? [])
     synchronizeLayoutRef.current?.()
     adapter?.resize?.()
@@ -446,14 +450,14 @@ export function ChartWorkspace({
     </div>
   )
 
+  const periodSelector = <PeriodSelector value={period.text} onChange={selectCompactPeriod} allowPinning={!auxiliary} />
+
   return (
     <section className="chart-workspace" aria-label="行情图表" data-price-range-auto={priceRangeAuto}>
       <div className="chart-host" data-testid="chart-host" ref={hostRef} />
       {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
       {priceRangeMode}
-      {periodToolbar === null
-        ? <PeriodSelector value={period.text} onChange={selectCompactPeriod} />
-        : createPortal(<PeriodSelector value={period.text} onChange={selectCompactPeriod} />, periodToolbar)}
+      {periodToolbar === null ? periodSelector : createPortal(periodSelector, periodToolbar)}
       {symbolPickerOpen ? (
         <SymbolPicker
           currentSymbol={symbolRef.current}

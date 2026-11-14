@@ -298,7 +298,7 @@ export class GitHubSyncService {
       const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
       if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
       if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
-      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays']) {
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
         if (value[key] !== undefined) preferences[key] = value[key]
       }
     }
@@ -636,6 +636,7 @@ export class GitHubSyncService {
           candleType?: unknown
           replayStepPeriod?: unknown
           showTradeOverlays?: unknown
+          chartWindowSize?: unknown
         }
         if (
           value.schemaVersion !== 1 ||
@@ -652,6 +653,9 @@ export class GitHubSyncService {
         }
         if (value.showTradeOverlays !== undefined) {
           preferences.showTradeOverlays = value.showTradeOverlays as BackupPreferences['showTradeOverlays']
+        }
+        if (value.chartWindowSize !== undefined) {
+          preferences.chartWindowSize = value.chartWindowSize as BackupPreferences['chartWindowSize']
         }
         if (value.workspace !== undefined) {
           preferences.workspace = value.workspace as BackupPreferences['workspace']

@@ -16,14 +16,14 @@ function stable(value: unknown): string {
 }
 const equal = (left: unknown, right: unknown) => stable(left) === stable(right)
 
-/** Arrays are one setting; objects (including workspace panel switches) merge by field. */
+/** Arrays and the captured window size are whole settings; other objects merge by field. */
 export function mergeConfig(base: BackupPreferences | undefined, local: BackupPreferences, remote: BackupPreferences, resolution?: 'local' | 'remote', remoteBase = base): { preferences: BackupPreferences; conflicts: string[] } {
   const conflicts: string[] = []
   const merge = (beforeHere: unknown, beforeThere: unknown, here: unknown, there: unknown, path: string): unknown => {
     // Absent remote optional fields are legacy omissions, never deletion commands.
     if (there === undefined) return here
     if (equal(here, there)) return here
-    if (object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
+    if (path !== 'chartWindowSize' && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
       return Object.fromEntries([...new Set([...Object.keys(here), ...Object.keys(there)])].map(key => [
         key, merge(object(beforeHere) ? beforeHere[key] : undefined, object(beforeThere) ? beforeThere[key] : undefined, here[key], there[key], path ? `${path}.${key}` : key),
       ]))

@@ -6,11 +6,13 @@
 
 用户修改配置后先保存到当前浏览器。导出“应用配置”和“全部数据”时都应包含它；GitHub 同步选择“应用配置”时，应参与差异比较、上传、校验、冲突处理和拉取恢复。刷新页面或在另一个浏览器恢复存档后，应得到相同配置。
 
-用户配置修改后先本地保存，约一秒内的连续操作合并后自动同步至默认云端。启动时先检查云端：没有待上传修改就恢复远端配置，再初始化界面；有待上传修改则根据本设备上次成功同步的基线进行三方比较。不同字段自动合并，同字段冲突保留本地并提示，可选择“保留本地并同步”或“使用云端冲突项”。数组按整个字段比较，工作区对象可按面板字段合并。断网或提交竞争会保留待同步状态，自动退避重试，联网／重新聚焦时也会检查；刷新后继续。下方原有手动比较、上传、拉取入口仍可用。默认已连接通用存储仓库，配置路径均相对 `projects/crypto-contract-workstation/`；历史行情仍自动上传到同项目的 `data/market-history/`。详见 [通用云端存储约定](cloud-storage.md)。
+用户配置修改后先本地保存，约一秒内的连续操作合并后自动同步至默认云端。启动时先检查云端：没有待上传修改就恢复远端配置，再初始化界面；有待上传修改则根据本设备上次成功同步的基线进行三方比较。不同字段自动合并，同字段冲突保留本地并提示，可选择“保留本地并同步”或“使用云端冲突项”。数组与成对保存的副图窗口尺寸按整个字段比较，工作区对象可按面板字段合并。断网或提交竞争会保留待同步状态，自动退避重试，联网／重新聚焦时也会检查；刷新后继续。下方原有手动比较、上传、拉取入口仍可用。默认已连接通用存储仓库，配置路径均相对 `projects/crypto-contract-workstation/`；历史行情仍自动上传到同项目的 `data/market-history/`。详见 [通用云端存储约定](cloud-storage.md)。
 
 不能把“组件 useState 里记住了”或“刷新后还在”作为配置修改的完整验收标准。
 
 ## 当前配置清单
+
+独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。
 
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
@@ -22,9 +24,12 @@
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
 | 回放步进周期 | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
 | 回放图表交易标记显隐 | `chart.showTradeOverlays.v1`；`chart/trade-overlay-preferences.ts` | `showTradeOverlays` | `config/preferences.json` |
+| 独立副图窗口的默认大小 | `chart.windowSize.v1`；`chart/chart-window-preferences.ts` | `chartWindowSize` | `config/preferences.json` |
 | 工作区账户／下单／持仓展开／收起、旧回放／状态显隐兼容字段、桌面／手机图表高度、底部区高度 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |
 
 上述入口均位于 `src/`。新增配置必须更新本表，不得在组件中另建脱离存档的持久化键。配置读写和校验应放在可独立调用的模块中，备份服务不能依赖 React 组件。
+
+副图窗口默认大小保存为 `chartWindowSize: { width, height }`，宽和高都是正的安全整数，单位为浏览器内容区 CSS 像素。点击“设为默认大小”会捕获两项并作为一个设置同步。新开副图读取最新值，因此保存或恢复后下一次打开就生效。应用配置、全部数据 JSON 和 GitHub“应用配置”均可导出和恢复。旧存档缺字段时保留本地值，本地缺失或损坏则使用 1100 × 760。导入时出现 `null`、空对象、缺少任一尺寸、零、负值或小数会在任何写入前拒绝。存档保持 Schema 1。
 
 会话的交易参数、进度、持仓和交易记录由现有 IndexedDB 会话及模拟状态存储负责，走会话／全部数据存档和云端“会话与交易”类别，不能为了保存配置而破坏会话隔离。
 

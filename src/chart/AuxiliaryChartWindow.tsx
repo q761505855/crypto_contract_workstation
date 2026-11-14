@@ -1,0 +1,136 @@
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { Period } from '@klinecharts/pro'
+import { ChartWorkspace } from './ChartWorkspace'
+import { connectChartWindow, type ChartWindowConnection } from './chart-window'
+import { INITIAL_LIVE_STATUS } from '../market-data/live-models'
+import type { MarketSelection } from '../market-data/models'
+
+const connectionLabels = {
+  connected: '已连接',
+  connecting: '连接中',
+  reconnecting: '重新连接中',
+  disconnected: '连接已断开',
+}
+
+function ConnectedChart({ connection, period, onSelection }: {
+  connection: ChartWindowConnection
+  period: Period
+  onSelection(selection: MarketSelection): void
+}) {
+  const snapshot = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
+  const [liveStatus, setLiveStatus] = useState(INITIAL_LIVE_STATUS)
+  const [warning, setWarning] = useState('')
+  const [sizeStatus, setSizeStatus] = useState('')
+
+  function saveDefaultSize(): void {
+    const { innerWidth: width, innerHeight: height } = window
+    try {
+      connection.saveDefaultSize({ width, height })
+      setSizeStatus(`默认大小已保存 · ${width} × ${height}`)
+    } catch {
+      setSizeStatus('无法保存默认大小')
+    }
+  }
+
+  useEffect(() => {
+    connection.liveDatafeed.setLiveStatusListener(setLiveStatus)
+    connection.datafeed.setWarningListener(setWarning)
+    return () => {
+      connection.liveDatafeed.setLiveStatusListener()
+      connection.datafeed.setWarningListener()
+    }
+  }, [connection])
+
+  useEffect(() => {
+    if (snapshot) document.title = `${snapshot.symbol.ticker} · ${period.text} · 副图`
+  }, [period.text, snapshot?.symbol.ticker])
+
+  useEffect(() => { setWarning('') }, [snapshot?.chartRevision, period.text])
+
+  if (snapshot === null) return <p className="auxiliary-chart-status" role="status">正在等待主窗口连接…</p>
+  const replayTime = snapshot.visibleUntil === null ? null : new Date(snapshot.visibleUntil).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false,
+  })
+  return (
+    <>
+      <header className="auxiliary-chart-status">
+        <strong>{snapshot.symbol.ticker}</strong>
+        {snapshot.mode === 'live'
+          ? <span>实时行情 · {connectionLabels[liveStatus.connection]}</span>
+          : <span>{replayTime === null ? '历史模拟 · 等待创建回放' : `历史模拟 · 已回放至 ${replayTime}`}</span>}
+        {warning && <span role="status">{warning}</span>}
+        <div className="auxiliary-chart-size">
+          <span role="status">{sizeStatus}</span>
+          <button type="button" onClick={saveDefaultSize}>设为默认大小</button>
+        </div>
+      </header>
+      <ChartWorkspace
+        auxiliary
+        key={`${snapshot.chartRevision}:${snapshot.configRevision}`}
+        datafeed={connection.datafeed}
+        symbol={snapshot.symbol}
+        period={period}
+        onSelectionChange={onSelection}
+      />
+    </>
+  )
+}
+
+export function AuxiliaryChartWindow() {
+  const [connection, setConnection] = useState<ChartWindowConnection>()
+  const [period, setPeriod] = useState<Period>()
+  const [openerClosed, setOpenerClosed] = useState(false)
+  const active = useRef<ChartWindowConnection>(undefined)
+  const selectedPeriod = useRef<Period>(undefined)
+
+  useEffect(() => {
+    document.title = '行情副图'
+    const connect = () => {
+      const opener = window.opener as Window | null
+      if (!opener || opener.closed) {
+        active.current?.close()
+        active.current = undefined
+        setConnection(undefined)
+        setOpenerClosed(true)
+        return
+      }
+      if (active.current?.getSnapshot()) return
+      const next = connectChartWindow(window, selectedPeriod.current)
+      if (next) {
+        active.current = next
+        selectedPeriod.current = next.initialPeriod
+        setPeriod(next.initialPeriod)
+        setConnection(next)
+      }
+    }
+    const disconnect = () => {
+      active.current?.close()
+      active.current = undefined
+      setConnection(undefined)
+    }
+    connect()
+    const retry = window.setInterval(connect, 500)
+    window.addEventListener('pagehide', disconnect)
+    return () => {
+      window.clearInterval(retry)
+      window.removeEventListener('pagehide', disconnect)
+      disconnect()
+    }
+  }, [])
+
+  function changePeriod(selection: MarketSelection): void {
+    active.current?.setPeriod(selection.period)
+    selectedPeriod.current = selection.period
+    setPeriod(selection.period)
+  }
+
+  return (
+    <main className="workspace-shell auxiliary-chart-window" aria-label="独立副图窗口">
+      {connection && period
+        ? <ConnectedChart connection={connection} period={period} onSelection={changePeriod} />
+        : <p className="auxiliary-chart-status" role="status">{openerClosed
+            ? '主窗口已关闭，请从工作站重新打开副图。'
+            : '正在等待主窗口连接…'}</p>}
+    </main>
+  )
+}

@@ -1374,6 +1374,31 @@ button:disabled {
 .chart-region { grid-area: chart; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .workspace-shell .chart-workspace { flex: 1; min-height: 200px; height: auto; border-right: 0; }
 .workspace-shell .chart-host { height: 100%; min-height: 0; }
+.workspace-shell.auxiliary-chart-window { padding-bottom: 0; }
+.auxiliary-chart-window .chart-workspace { min-height: 0; }
+.chart-popup-warning {
+  padding: 6px 16px;
+  color: #f2c982;
+  background: #251e15;
+  font-size: 12px;
+}
+.auxiliary-chart-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid #263345;
+  color: #aebdd0;
+  font-size: 12px;
+}
+.auxiliary-chart-status strong { color: #e0e9f5; }
+.auxiliary-chart-size { display: flex; align-items: center; gap: 8px; margin-inline-start: auto; }
+.auxiliary-chart-size button { padding: 4px 9px; }
+.auxiliary-chart-window .klinecharts-pro-period-bar > .symbol { cursor: default; }
+.auxiliary-chart-window .period-option { grid-template-columns: 1fr; }
 .workspace-content.has-fixed-chart .chart-workspace { flex: none; height: var(--workspace-chart-height); min-height: var(--workspace-chart-height); }
 .workspace-content.has-fixed-chart .chart-region { align-self: start; }
 .replay-region { position: relative; flex-shrink: 0; min-width: 0; }

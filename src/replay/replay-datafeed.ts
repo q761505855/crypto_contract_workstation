@@ -97,11 +97,24 @@ export class ReplayDatafeed implements Datafeed {
   constructor(
     private readonly base: Datafeed,
     private readonly service: MarketDataService,
+    private readonly sessionSource?: ReplayDatafeed,
   ) {
     const warningAware = base as Datafeed & {
       setWarningListener?: (listener?: (message: string) => void) => void
     }
     warningAware.setWarningListener?.((message) => this.onWarning?.(message))
+  }
+
+  createChartView(base: Datafeed): ReplayDatafeed {
+    return new ReplayDatafeed(base, this.service, this)
+  }
+
+  dispose(): void {
+    const subscription = this.subscription
+    if (subscription !== null) this.unsubscribe(subscription.symbol, subscription.period)
+    this.replayGeneration += 1
+    this.historyContexts.clear()
+    if (this.sessionSource === undefined) this.minutePool.clear()
   }
 
   setSelectionListener(
@@ -132,7 +145,7 @@ export class ReplayDatafeed implements Datafeed {
       this.onHistoryStatus?.('')
       this.historyContexts.clear()
       this.replayGeneration += 1
-      this.minutePool.clear()
+      if (this.sessionSource === undefined) this.minutePool.clear()
     }
     this.context = context === null ? null : { ...context }
     const subscription = this.subscription
@@ -505,14 +518,16 @@ export class ReplayDatafeed implements Datafeed {
     const isVisible = (candle: MarketCandle) => candle.symbol === context.symbol && candle.timeframe === timeframe &&
       candle.openTime >= from && candle.openTime <= to && candle.isClosed &&
       candle.closeTime < visibleUntil && klineCloseBoundary(candle.openTime, timeframe) <= visibleUntil
-    const session = this.sessionData?.id === context.sessionId && timeframe === context.timeframe &&
+    const sessionData = this.sessionSource ? this.sessionSource.sessionData : this.sessionData
+    const session = sessionData?.id === context.sessionId && timeframe === context.timeframe &&
       alignOpenTime(context.currentTime, timeframe, 'floor') === context.currentTime
-      ? this.sessionData.candles
+      ? sessionData.candles
       : []
     if (timeframe === '1m' && this.service.usesMinuteHistory?.()) {
       const generation = this.replayGeneration
       if (!this.isCurrentContext(context, generation)) return []
-      const local = new Map([...this.minutePool.values()].filter(isVisible).map((row) => [row.openTime, row]))
+      const cache = this.sessionSource ?? this
+      const local = new Map([...cache.minutePool.values()].filter(isVisible).map((row) => [row.openTime, row]))
       for (const row of session) if (isVisible(row)) local.set(row.openTime, row)
       const missing = findMissingRanges([...local.values()], '1m', from, to)
       for (const gap of missing) {
@@ -527,9 +542,9 @@ export class ReplayDatafeed implements Datafeed {
       const result = [...local.values()].sort((left, right) => left.openTime - right.openTime)
       // Commit only a fully successful, still-visible read. Navigation aborts
       // and replay restarts cannot seed a later request with retired results.
-      for (const row of result) this.minutePool.set(row.openTime, row)
-      if (this.minutePool.size > MAX_REPLAY_MINUTES) {
-        this.minutePool = new Map(result.slice(-MAX_REPLAY_MINUTES).map((row) => [row.openTime, row]))
+      for (const row of result) cache.minutePool.set(row.openTime, row)
+      if (cache.minutePool.size > MAX_REPLAY_MINUTES) {
+        cache.minutePool = new Map(result.slice(-MAX_REPLAY_MINUTES).map((row) => [row.openTime, row]))
       }
       return result
     }

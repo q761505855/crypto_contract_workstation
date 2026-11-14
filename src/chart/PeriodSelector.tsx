@@ -5,9 +5,10 @@ import { readPinnedPeriods, savePinnedPeriods } from './period-preferences'
 interface PeriodSelectorProps {
   value: string
   onChange: (period: string) => void
+  allowPinning?: boolean
 }
 
-export function PeriodSelector({ value, onChange }: PeriodSelectorProps) {
+export function PeriodSelector({ value, onChange, allowPinning = true }: PeriodSelectorProps) {
   const [pinned, setPinned] = useState(readPinnedPeriods)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -103,7 +104,7 @@ export function PeriodSelector({ value, onChange }: PeriodSelectorProps) {
       >{value}<span aria-hidden="true">▾</span></button>
       {open && (
         <div aria-label="选择图表周期" className="period-dropdown" ref={menuRef} role="dialog">
-          <p>选择周期 · ★ 固定到快捷栏</p>
+          {allowPinning && <p>选择周期 · ★ 固定到快捷栏</p>}
           <div className="period-options">
             {SUPPORTED_PERIODS.map(({ text }) => (
               <div className="period-option" key={text}>
@@ -117,13 +118,13 @@ export function PeriodSelector({ value, onChange }: PeriodSelectorProps) {
                   }}
                   type="button"
                 >{text}</button>
-                <button
+                {allowPinning && <button
                   aria-label={`${pinned.includes(text) ? '取消固定' : '固定'}周期 ${text}`}
                   aria-pressed={pinned.includes(text)}
                   className="period-pin"
                   onClick={() => togglePin(text)}
                   type="button"
-                >{pinned.includes(text) ? '★' : '☆'}</button>
+                >{pinned.includes(text) ? '★' : '☆'}</button>}
               </div>
             ))}
           </div>
