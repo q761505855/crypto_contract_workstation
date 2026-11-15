@@ -70,6 +70,7 @@ function ConnectedChart({ connection, period, onSelection }: {
         datafeed={connection.datafeed}
         symbol={snapshot.symbol}
         period={period}
+        simulationOverlays={snapshot.simulationOverlays}
         onSelectionChange={onSelection}
       />
     </>

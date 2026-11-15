@@ -278,18 +278,22 @@ test('opens multiple desktop chart windows that share replay progress and one li
   await expect(second.getByRole('status')).toHaveText('主窗口已关闭，请从工作站重新打开副图。')
 })
 
-test('toggles all replay trade overlays and restores the hidden setting from cloud configuration', async ({ page }) => {
+test('synchronizes replay overlays and their cloud-restored visibility across chart windows', async ({ page, context }) => {
   await mockBinance(page, true)
   const github = await mockGitHub(page, true)
-  await installViewportProbe(page)
+  await context.addInitScript(() => { Object.assign(window, { __enableViewportProbe: true }) })
   await page.goto('./')
   await expectCanvasContent(page)
-  await jumpChart(page, '2026-07-22T00:00')
+  await jumpChart(page, '2026-07-22T00:15')
   await setReplayEnd(page, '2026-07-22T05:00')
   const controls = page.getByTestId('replay-controls')
   await controls.getByRole('button', { name: '创建回放' }).click()
   const toggle = controls.getByRole('button', { name: '交易标记', exact: true })
   await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  const popup = page.waitForEvent('popup')
+  await page.getByRole('button', { name: '打开副图', exact: true }).click()
+  const auxiliary = await popup
+  await expect(auxiliary.getByRole('button', { name: '图表周期', exact: true })).toHaveText(/15m/)
   await page.getByRole('button', { name: '开多', exact: true }).click()
   const risk = await openPositionEditor(page, 'long', 'risk')
   await risk.getByLabel('止盈价格').fill('70000')
@@ -298,7 +302,7 @@ test('toggles all replay trade overlays and restores the hidden setting from clo
   await risk.getByRole('button', { name: '设置止损' }).click()
   await risk.getByRole('button', { name: '完成' }).click()
 
-  const overlays = () => page.evaluate(() => {
+  const overlays = (view = page) => view.evaluate(() => {
     type TestChart = { getChartStore(): { getOverlayStore(): { getInstances(paneId: string): { id: string; groupId: string }[] } } }
     const chart = (window as unknown as { __viewportTestAdapter?: { coreChart: TestChart } }).__viewportTestAdapter?.coreChart
     return chart?.getChartStore().getOverlayStore().getInstances('candle_pane')
@@ -306,18 +310,24 @@ test('toggles all replay trade overlays and restores the hidden setting from clo
   })
   const shown = ['simulation-long-entry', 'simulation-long-liquidation', 'simulation-long-stop-loss', 'simulation-long-take-profit', 'simulation-replay-time', 'trade']
   await expect.poll(overlays).toEqual(shown)
-  const tradeMarker = () => page.evaluate(() => {
-    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+  const tradeMarker = (view = page) => view.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter?: { coreChart: import('klinecharts').Chart | null } }).__viewportTestAdapter?.coreChart
+    if (!core) return null
     const chart = core as unknown as { getChartStore(): { getOverlayStore(): { getInstances(paneId: string): import('klinecharts').Overlay[] } } }
     const marker = chart.getChartStore().getOverlayStore().getInstances('candle_pane')
       .find(overlay => overlay.id === 'simulation-trade-markers')
     return (marker?.extendData.trades as { label: string; color: string }[] | undefined)
       ?.map(({ label, color }) => ({ label, color }))
   })
-  await expect.poll(tradeMarker).toEqual([{ label: '开多', color: '#4fd49f' }])
+  const longMarker = { label: '开多', color: '#4fd49f' }
+  const shortMarker = { label: '开空', color: '#ff7f79' }
+  await expect.poll(() => tradeMarker()).toEqual([longMarker])
+  await expect.poll(() => tradeMarker(auxiliary)).toEqual([longMarker])
+  await expect.poll(() => overlays(auxiliary)).toEqual(shown)
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-pressed', 'false')
   await expect.poll(overlays).toEqual(['simulation-replay-time'])
+  await expect.poll(() => overlays(auxiliary)).toEqual(['simulation-replay-time'])
   await expect(page.getByTestId('position-long')).toContainText('70000 / 50000')
   await page.getByRole('button', { name: '空', exact: true }).click()
   await page.getByRole('button', { name: '开空', exact: true }).click()
@@ -339,19 +349,25 @@ test('toggles all replay trade overlays and restores the hidden setting from clo
   await expect(toggle).toHaveAttribute('aria-pressed', 'false')
   await expect(page.getByTestId('position-long')).toContainText('70000 / 50000')
   await expect.poll(overlays).toEqual(['simulation-replay-time'])
+  await expect.poll(() => overlays(auxiliary)).toEqual(['simulation-replay-time'])
   await toggle.click()
-  await expect.poll(overlays).toEqual([...shown, 'simulation-short-entry', 'simulation-short-liquidation'].sort())
-  await expect.poll(tradeMarker).toEqual([{ label: '开多', color: '#4fd49f' }, { label: '开空', color: '#ff7f79' }])
+  const allOverlays = [...shown, 'simulation-short-entry', 'simulation-short-liquidation'].sort()
+  await expect.poll(overlays).toEqual(allOverlays)
+  await expect.poll(() => overlays(auxiliary)).toEqual(allOverlays)
+  await expect.poll(() => tradeMarker()).toEqual([longMarker, shortMarker])
+  await expect.poll(() => tradeMarker(auxiliary)).toEqual([longMarker, shortMarker])
 
-  const markerGeometry = () => page.evaluate(() => {
+  const markerGeometry = (view: typeof page, interval: number) => view.evaluate(interval => {
     type Core = import('klinecharts').Chart & {
       getChartStore(): { getOverlayStore(): { getInstances(paneId: string): import('klinecharts').Overlay[] } }
     }
-    const core = (window as unknown as { __viewportTestAdapter: { coreChart: Core } }).__viewportTestAdapter.coreChart
+    const core = (window as unknown as { __viewportTestAdapter?: { coreChart: Core | null } }).__viewportTestAdapter?.coreChart
+    if (!core) return null
     const marker = core.getChartStore().getOverlayStore().getInstances('candle_pane').find(overlay => overlay.id === 'simulation-trade-markers')
     if (!marker) return null
     const paneId = 'candle_pane'
-    const timestamp = marker.extendData.trades[0].timestamp as number
+    const tradeTime = marker.extendData.trades[0].timestamp as number
+    const timestamp = Math.floor(tradeTime / interval) * interval
     const candle = core.getDataList().find(row => row.timestamp === timestamp)
     if (!candle) return null
     const project = (point: Partial<import('klinecharts').Point>) =>
@@ -372,8 +388,25 @@ test('toggles all replay trade overlays and restores the hidden setting from clo
       aboveCandle: labels.every(label => label.y < target.y),
       arrowsPointAtWick: arrows.length === 2 && arrows.every(arrow => arrow.x === target.x && arrow.y === target.y),
     }
+  }, interval)
+  const geometry = { labels: ['开多', '开空'], aboveCandle: true, arrowsPointAtWick: true }
+  await expect.poll(() => markerGeometry(page, 15 * 60_000)).toEqual(geometry)
+  await selectChartPeriod(auxiliary, '1h')
+  await expect.poll(() => markerGeometry(auxiliary, 60 * 60_000)).toEqual(geometry)
+  const replayCursor = (view: typeof page) => view.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    return core.getOverlayById('simulation-replay-time')?.points[0].timestamp ?? null
   })
-  await expect.poll(markerGeometry).toEqual({ labels: ['开多', '开空'], aboveCandle: true, arrowsPointAtWick: true })
+  const mainCursor = (await replayCursor(page))!
+  const hourCursor = alignOpenTime(mainCursor, '1h', 'floor')
+  expect(hourCursor).toBeLessThan(mainCursor)
+  await expect.poll(() => replayCursor(auxiliary)).toBe(hourCursor)
+  await expect(page.getByRole('button', { name: '图表周期', exact: true })).toHaveText(/15m/)
+  await page.getByRole('button', { name: '实时行情', exact: true }).click()
+  await expect.poll(() => overlays(auxiliary)).toEqual([])
+  await page.getByRole('button', { name: '历史模拟', exact: true }).click()
+  await expect.poll(() => markerGeometry(auxiliary, 60 * 60_000)).toEqual(geometry)
+  await expect.poll(() => overlays(auxiliary)).toEqual(allOverlays)
 })
 
 test('plays while the mouse holds the next candle button and stops on release outside it', async ({ page }) => {
@@ -2869,8 +2902,11 @@ test('shows PnL in chart labels and highlights their prices on the axis', async 
   await page.screenshot({ path: test.info().outputPath('pnl-price-labels.png') })
 })
 
-test('sets a replay risk order by selecting and dragging the position label with a mouse', { tag: '@release' }, async ({ page }) => {
+test('drags replay risk orders in any chart and synchronizes confirmed prices to every window', { tag: '@release' }, async ({ page, context }) => {
+  test.setTimeout(60_000)
   await mockBinance(page, true)
+  await mockGitHub(page, true)
+  await context.addInitScript(() => { Object.assign(window, { __enableViewportProbe: true }) })
   await page.goto('./')
   await expectCanvasContent(page)
   await jumpChart(page, '2026-07-22T00:00')
@@ -2878,31 +2914,73 @@ test('sets a replay risk order by selecting and dragging the position label with
   await page.getByRole('button', { name: '创建回放' }).click()
   await page.getByRole('button', { name: '开多', exact: true }).click()
   const position = page.getByTestId('position-long')
-  const entry = page.getByRole('button', { name: '多仓', exact: true })
-  const takeProfit = page.getByRole('button', { name: '多仓止盈', exact: true })
+  const openView = async () => {
+    const popup = page.waitForEvent('popup')
+    await page.getByRole('button', { name: '打开副图', exact: true }).click()
+    const view = await popup
+    await expect(view.getByRole('button', { name: '多仓', exact: true })).toBeVisible()
+    return view
+  }
+  const auxiliary = await openView()
+  const observer = await openView()
+  await selectChartPeriod(auxiliary, '1h')
+  const entry = auxiliary.getByRole('button', { name: '多仓', exact: true })
+  const takeProfit = (view: typeof page) => view.getByRole('button', { name: '多仓止盈', exact: true })
+  const dragLabel = async (view: typeof page, label: typeof entry, delta: number) => {
+    const box = (await label.boundingBox())!
+    const x = box.x + box.width - 8, y = box.y + box.height / 2
+    await view.mouse.move(x, y)
+    await view.mouse.down()
+    await view.mouse.move(x, y + delta, { steps: 4 })
+  }
+  const readLinePrice = (view: typeof page, id: string) => view.evaluate(id => {
+    const core = (window as unknown as { __viewportTestAdapter?: { coreChart: import('klinecharts').Chart | null } }).__viewportTestAdapter?.coreChart
+    return core?.getOverlayById(id)?.points[0].value ?? null
+  }, id)
   await expect(position).toContainText('— / —')
-  await expect(page.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
-  await waitForChartRender(page)
+  await expect(auxiliary.locator('.klinecharts-pro-content > .klinecharts-pro-loading')).toBeHidden()
+  await waitForChartRender(auxiliary)
   const pnl = await entry.locator('.simulation-label-pnl').innerText()
   await entry.click()
   await expect(entry).toHaveAttribute('aria-pressed', 'true')
-  await page.keyboard.press('Escape')
+  await auxiliary.keyboard.press('Escape')
   await expect(entry).toHaveAttribute('aria-pressed', 'false')
   await entry.click()
-  const box = (await entry.boundingBox())!
-  const x = box.x + box.width - 8, y = box.y + box.height / 2
-  await page.mouse.move(x, y)
-  await page.mouse.down()
-  await page.mouse.move(x, y - 22, { steps: 4 })
+  await dragLabel(auxiliary, entry, -22)
   await expect(entry.locator('.simulation-label-name')).toHaveText('多仓止盈')
   await expect(position).toContainText('— / —')
-  await page.mouse.up()
-  await expect(takeProfit).toBeVisible()
+  await expect(takeProfit(observer)).toHaveCount(0)
+  await auxiliary.mouse.up()
   await expect(entry).toHaveText(`多仓${pnl}`)
   await expect(position).toContainText(/\d+(?:\.\d+)? \/ —/)
+  for (const view of [page, auxiliary, observer]) await expect(takeProfit(view)).toBeVisible()
+  const takeProfitId = 'simulation-long-take-profit'
+  const initialPrice = (await readLinePrice(page, takeProfitId))!
+  for (const view of [auxiliary, observer]) await expect.poll(() => readLinePrice(view, takeProfitId)).toBe(initialPrice)
+
+  const mainTarget = takeProfit(page)
+  await mainTarget.click()
+  await dragLabel(page, mainTarget, -12)
+  await page.mouse.up()
+  await expect.poll(() => readLinePrice(auxiliary, takeProfitId)).toBeGreaterThan(initialPrice)
+  const updatedPrice = (await readLinePrice(auxiliary, takeProfitId))!
+  await expect.poll(() => readLinePrice(observer, takeProfitId)).toBe(updatedPrice)
+
+  const otherEntry = observer.getByRole('button', { name: '多仓', exact: true })
+  await otherEntry.click()
+  await dragLabel(observer, otherEntry, 22)
+  await expect(otherEntry.locator('.simulation-label-name')).toHaveText('多仓止损')
+  await observer.mouse.up()
+  const stopLossId = 'simulation-long-stop-loss'
+  await expect.poll(() => readLinePrice(page, stopLossId)).toBeGreaterThan(0)
+  const stopLossPrice = (await readLinePrice(page, stopLossId))!
+  for (const view of [auxiliary, observer]) await expect.poll(() => readLinePrice(view, stopLossId)).toBe(stopLossPrice)
+
   await page.reload()
-  await expect(takeProfit).toBeVisible()
-  await expect(takeProfit).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(() => readLinePrice(page, takeProfitId)).toBe(updatedPrice)
+  await expect.poll(() => readLinePrice(page, stopLossId)).toBe(stopLossPrice)
+  await expect(takeProfit(page)).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(() => readLinePrice(auxiliary, takeProfitId)).toBe(updatedPrice)
 })
 
 test.describe('touch chart labels', () => {

@@ -60,9 +60,10 @@ export interface SimulationPositionOverlay {
 }
 
 export interface SimulationOverlayState {
+  /** Latest revealed timestamp before alignment to each chart's period. */
   currentTime: number | null
-  positions: SimulationPositionOverlay[]
-  trades: SimulationTradeLabel[]
+  positions: readonly SimulationPositionOverlay[]
+  trades: readonly SimulationTradeLabel[]
 }
 
 const formatPnl = new Intl.NumberFormat('zh-CN', {
@@ -712,7 +713,7 @@ export class ProChartAdapter implements ChartAdapterPort {
         groupId: 'simulation',
         name: 'verticalStraightLine',
         lock: true,
-        points: [{ timestamp: state.currentTime }],
+        points: [{ timestamp: alignOpenTime(state.currentTime, timeframe, 'floor') }],
         styles: {
           line: {
             color: '#8290a3',

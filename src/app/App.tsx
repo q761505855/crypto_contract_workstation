@@ -39,7 +39,6 @@ import {
 } from '../market-data/live-models'
 import { createMarketDataRuntime, type MarketDataRuntime } from '../market-data/runtime'
 import { replaySourceTimeframe, replayVisibleUntil, sessionVisibleUntil, type ReplayContext } from '../replay/models'
-import { alignOpenTime } from '../market-data/intervals'
 import { useReplayController } from '../replay/useReplayController'
 import { readReplayStepPeriod, saveReplayStepPeriod } from '../replay/step-preferences'
 import { replayChartNeedsReload } from '../replay/replay-datafeed'
@@ -179,14 +178,17 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   }, [marketRuntime])
   const simulationOverlays = useMemo<SimulationOverlayState>(() => {
     const currentTime = mode === 'history' && replay.session
-      ? alignOpenTime(sessionVisibleUntil(replay.session) - 1, marketSelection.period.text, 'floor')
+      ? sessionVisibleUntil(replay.session) - 1
       : null
-    if (mode !== 'history' || !showTradeOverlays) return { currentTime, positions: [], trades: [] }
+    const state = simulation.state
+    if (currentTime === null || !showTradeOverlays || state === null || state.sessionId !== replay.session?.id) {
+      return { currentTime, positions: [], trades: [] }
+    }
     const precision = marketSelection.symbol.pricePrecision ?? 8
-    const feeRate = simulation.state?.config.feeRate ?? '0'
+    const feeRate = state.config.feeRate
     return {
       currentTime,
-      positions: (simulation.state?.positions ?? []).map(position => {
+      positions: state.positions.map(position => {
         const priceText = (price: number) => simulationPriceText(price, precision)
         const previewEntryRisk = (price: number) =>
           classifyRiskPrice(position.side, Number(position.lastPrice), Number(priceText(price)))
@@ -212,11 +214,10 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           },
         }
       }),
-      trades: (simulation.state?.trades ?? []).slice(-100).map(tradeOverlay),
+      trades: state.trades.slice(-100).map(tradeOverlay),
     }
   }, [
     marketSelection.symbol.pricePrecision,
-    marketSelection.period.text,
     mode,
     replay.session,
     showTradeOverlays,
@@ -363,6 +364,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         period: marketSelection.period,
         mode,
         replay: nextContext,
+        simulationOverlays,
         configRevision: configEpoch,
       })
     }
@@ -379,7 +381,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       setChartReloadKey((current) => current + 1)
     }
     previousReplayContextRef.current = nextContext
-  }, [chartWindows, configEpoch, marketRuntime, marketSelection, mode, replay.busy, replay.session])
+  }, [chartWindows, configEpoch, marketRuntime, marketSelection, mode, replay.busy, replay.session, simulationOverlays])
 
   function changeMode(nextMode: WorkstationMode): void {
     if (nextMode === 'live') {

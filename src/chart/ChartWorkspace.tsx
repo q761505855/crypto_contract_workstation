@@ -304,7 +304,7 @@ export function ChartWorkspace({
     if (simulationOverlays !== undefined) {
       adapterRef.current?.setSimulationOverlays(simulationOverlays)
     }
-  }, [simulationOverlays])
+  }, [period.text, simulationOverlays])
 
   useEffect(() => {
     if (jumpRequest === null) return
