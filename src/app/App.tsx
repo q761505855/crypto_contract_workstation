@@ -181,7 +181,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       ? sessionVisibleUntil(replay.session) - 1
       : null
     const state = simulation.state
-    if (currentTime === null || !showTradeOverlays || state === null || state.sessionId !== replay.session?.id) {
+    if (currentTime === null || state === null || state.sessionId !== replay.session?.id) {
       return { currentTime, positions: [], trades: [] }
     }
     const precision = marketSelection.symbol.pricePrecision ?? 8
@@ -220,7 +220,6 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     marketSelection.symbol.pricePrecision,
     mode,
     replay.session,
-    showTradeOverlays,
     simulation.busy,
     simulation.setStopLoss,
     simulation.setTakeProfit,
@@ -468,6 +467,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
             period={marketSelection.period}
             reloadKey={chartReloadKey}
             simulationOverlays={simulationOverlays}
+            showTradeOverlays={showTradeOverlays}
             symbol={marketSelection.symbol}
             layoutSettingsOpen={chartSizeOpen}
             onCloseLayoutSettings={() => setChartSizeOpen(false)}

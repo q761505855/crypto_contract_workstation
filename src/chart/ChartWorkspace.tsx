@@ -33,6 +33,7 @@ export interface ChartWorkspaceProps {
     period: Period
   }) => void
   simulationOverlays?: SimulationOverlayState
+  showTradeOverlays?: boolean
   jumpRequest?: {
     id: string
     timestamp: number
@@ -56,6 +57,7 @@ export function ChartWorkspace({
   reloadKey = 0,
   onSelectionChange,
   simulationOverlays,
+  showTradeOverlays = true,
   jumpRequest = null,
   onJumpComplete,
   onRightmostCandleTimeChange,
@@ -302,9 +304,11 @@ export function ChartWorkspace({
 
   useEffect(() => {
     if (simulationOverlays !== undefined) {
-      adapterRef.current?.setSimulationOverlays(simulationOverlays)
+      adapterRef.current?.setSimulationOverlays(showTradeOverlays
+        ? simulationOverlays
+        : { currentTime: simulationOverlays.currentTime, positions: [], trades: [] })
     }
-  }, [period.text, simulationOverlays])
+  }, [period.text, showTradeOverlays, simulationOverlays])
 
   useEffect(() => {
     if (jumpRequest === null) return

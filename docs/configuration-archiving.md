@@ -23,7 +23,7 @@
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
 | 回放步进周期 | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
-| 回放图表交易标记显隐 | `chart.showTradeOverlays.v1`；`chart/trade-overlay-preferences.ts` | `showTradeOverlays` | `config/preferences.json` |
+| 回放主图交易标记显隐 | `chart.showTradeOverlays.v1`；`chart/trade-overlay-preferences.ts` | `showTradeOverlays` | `config/preferences.json` |
 | 独立副图窗口的默认大小 | `chart.windowSize.v1`；`chart/chart-window-preferences.ts` | `chartWindowSize` | `config/preferences.json` |
 | 工作区账户／下单／持仓展开／收起、旧回放／状态显隐兼容字段、桌面／手机图表高度、旧持仓面板高度兼容字段 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |
 
@@ -37,7 +37,7 @@
 
 回放步进周期独立于图表周期，支持现有 15 个周期，默认 `1m`，`1M` 表示一月。`replayStepPeriod` 随应用配置／全部数据 JSON 和 GitHub“应用配置”往返。旧存档缺少字段时保留目标浏览器的值，本地无值或损坏时用默认值。显式空串、`null` 和其他非法值在任何导入写入前拒绝。云端自动恢复会更新回放栏的选择，手动恢复后按界面提示刷新。
 
-回放栏的 `showTradeOverlays` 默认 `true`，显式 `false` 隐藏主窗口和独立副图的成交标记及仓位交易线。仅接受布尔值，非法值在导入写入前拒绝。该字段随应用配置／全部数据 JSON 和 GitHub“应用配置”往返。旧存档缺少字段时保留本地选择，本地缺失或损坏时默认显示。恢复会更新开关和各窗口的标记显隐，手动恢复其他会话数据时按界面提示刷新。
+回放栏的 `showTradeOverlays` 默认 `true`，显式 `false` 隐藏主图的成交标记及仓位交易线。仅接受布尔值，非法值在导入写入前拒绝。该字段随应用配置／全部数据 JSON 和 GitHub“应用配置”往返。旧存档缺少字段时保留本地选择，本地缺失或损坏时默认显示。恢复会更新主图开关和标记显隐，手动恢复其他会话数据时按界面提示刷新。各独立副图的显隐是窗口内的临时状态，刷新或重新打开时默认显示。
 
 会话 Schema 2 的可选 `visibleUntil` 保存分钟切片后的已揭示时间边界，随本地会话、会话／全部数据 JSON 和 GitHub“会话与交易”恢复。旧会话缺少该字段时沿用当前原始 K 线的收盘边界。导入时在写入前拒绝非分钟边界或越过有效会话进度的值。任一图表拖动确认止盈止损后，触发价和生效时间保存到同一会话的对应仓位。止盈止损输入方式属于弹窗临时状态，按百分比提交后同样保存触发价和生效时间。手动恢复后按提示刷新。
 

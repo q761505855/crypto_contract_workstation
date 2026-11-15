@@ -21,6 +21,7 @@ function ConnectedChart({ connection, period, onSelection }: {
   const [liveStatus, setLiveStatus] = useState(INITIAL_LIVE_STATUS)
   const [warning, setWarning] = useState('')
   const [sizeStatus, setSizeStatus] = useState('')
+  const [showTradeOverlays, setShowTradeOverlays] = useState(true)
 
   function saveDefaultSize(): void {
     const { innerWidth: width, innerHeight: height } = window
@@ -60,6 +61,10 @@ function ConnectedChart({ connection, period, onSelection }: {
           : <span>{replayTime === null ? '历史模拟 · 等待创建回放' : `历史模拟 · 已回放至 ${replayTime}`}</span>}
         {warning && <span role="status">{warning}</span>}
         <div className="auxiliary-chart-size">
+          {snapshot.mode === 'history' && (
+            <button type="button" className="trade-overlays-toggle" aria-pressed={showTradeOverlays}
+              onClick={() => setShowTradeOverlays(visible => !visible)}>交易标记</button>
+          )}
           <span role="status">{sizeStatus}</span>
           <button type="button" onClick={saveDefaultSize}>设为默认大小</button>
         </div>
@@ -71,6 +76,7 @@ function ConnectedChart({ connection, period, onSelection }: {
         symbol={snapshot.symbol}
         period={period}
         simulationOverlays={snapshot.simulationOverlays}
+        showTradeOverlays={showTradeOverlays}
         onSelectionChange={onSelection}
       />
     </>
