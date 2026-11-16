@@ -40,6 +40,8 @@ import {
   SIMULATION_PRICE_LINE, SIMULATION_TRADE_LABEL, type SimulationTradeLabel,
 } from './simulation-price-line'
 import { SimulationPriceLabels, type PriceLabel, type PriceLabelText } from './simulation-price-labels'
+import { DrawingOverlays } from './drawing-overlays'
+import type { DrawingStore } from './drawings'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -98,6 +100,7 @@ export interface ChartAdapterPort {
   getRightmostVisibleCandleTime?(): number | null
   jumpToTime?(timestamp: number): Promise<number | null>
   setSimulationOverlays(state: SimulationOverlayState): void
+  setDrawingScope?(store: DrawingStore, scope: string | null): void
 }
 
 export type ChartProFactory = (options: ChartProOptions) => ChartPro
@@ -151,6 +154,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private historyAbort = new AbortController()
   private readonly candleOwners = new WeakMap<object, string>()
   private priceLabels?: SimulationPriceLabels
+  private drawings?: DrawingOverlays
   private tradeMarkerGap = 0.08
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
@@ -161,6 +165,8 @@ export class ProChartAdapter implements ChartAdapterPort {
   constructor(private readonly factory: ChartProFactory = createProChart) {}
 
   dispose(): void {
+    this.drawings?.dispose()
+    this.drawings = undefined
     this.cancelHistoryWork()
     this.clearPosition()
     this.priceLabels?.dispose()
@@ -215,6 +221,12 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setTheme(theme: string): void {
     this.requireChart().setTheme(theme)
+  }
+
+  setDrawingScope(store: DrawingStore, scope: string | null): void {
+    if (!this.coreChart) return
+    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text)
+    this.drawings.setScope(scope)
   }
 
   resize(): void {

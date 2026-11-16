@@ -6,6 +6,7 @@ import { replayVisibleUntil, type ReplayContext } from '../replay/models'
 import type { BinanceDatafeed } from '../market-data/binance-datafeed'
 import { readChartWindowSize, saveChartWindowSize, type ChartWindowSize } from './chart-window-preferences'
 import type { SimulationOverlayState } from './pro-chart-adapter'
+import { drawingScope } from './drawings'
 
 const CONNECT_EVENT = 'workstation:connect-chart-window'
 export const CHART_WINDOW_QUERY = 'chart-window'
@@ -26,6 +27,7 @@ interface ChartWindowSnapshot {
   simulationOverlays: SimulationOverlayState
   chartRevision: number
   configRevision: number
+  drawingScope: string | null
 }
 
 export interface ChartWindowConnection {
@@ -142,7 +144,8 @@ export class ChartWindowHost {
             snapshot.visibleUntil === visibleUntil && snapshot.chartRevision === chartRevision &&
             snapshot.configRevision === state.configRevision && snapshot.simulationOverlays === state.simulationOverlays) return
         snapshot = { symbol: state.symbol, mode: state.mode, visibleUntil, simulationOverlays: state.simulationOverlays,
-          chartRevision, configRevision: state.configRevision }
+          chartRevision, configRevision: state.configRevision,
+          drawingScope: drawingScope(state.mode, state.symbol.ticker, next?.sessionId ?? null) }
         notify()
       },
       close: () => {

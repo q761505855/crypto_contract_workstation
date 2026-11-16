@@ -24,5 +24,8 @@ if (new URLSearchParams(window.location.search).has(CHART_WINDOW_QUERY)) {
   }
   // Construct the UI after cloud preferences are applied or the sync attempt ends.
   runtime.service.setBaseUrl((await runtime.backups.exportPreferences()).data.preferences!.binanceRestBaseUrl)
+  runtime.drawingSync.start()
+  window.addEventListener('pagehide', () => runtime.drawingSync.stop())
+  window.addEventListener('pageshow', event => { if (event.persisted) runtime.drawingSync.start() })
   root.render(<App runtime={runtime} />)
 }

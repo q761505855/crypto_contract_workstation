@@ -29,6 +29,7 @@ projects/
 
 - 用户配置：`projects/crypto-contract-workstation/config/`
 - 历史行情：`projects/crypto-contract-workstation/data/market-history/`
+- 图表绘图：`projects/crypto-contract-workstation/data/chart-drawings/archive.json`
 - 项目清单：`projects/crypto-contract-workstation/manifest.json`
 - 新分钟行情的目标路径：`data/market-history/{symbol}/1m/{year}/{month}.json.gz`，相对项目根目录。
 
@@ -37,6 +38,10 @@ projects/
 旧分片或 JSON 备份中的 `markCandles` 仍严格校验，之后忽略，不导入本地；旧 IndexedDB 表保留兼容但不再读写或导出。自动上传触及含旧字段的月份时，即使普通价格未变化，也会原子重写该月分片及对应清单，清除旧字段。旧模拟持仓的 `markPrice` 仅在缺少 `lastPrice` 时作迁移回退，新账户快照和云端交易文件仅保存 `lastPrice`；活动会话按当前普通 K 线重估。配置字段、空值与缺失值语义保持原有规则。
 
 初始化创建目录占位文件和空清单，后续由应用上传实际配置和历史行情。`.gitkeep` 不属于业务数据，不登记到清单。
+
+绘图存档独立保存，包含格式版本、数据字节数和 SHA-256。拉取后先验证校验和及全部绘图对象，再应用到界面。写入使用固定提交快照及非强制分支更新，保留项目清单、应用配置和其他数据。绘图单独使用存档文件，旧版项目清单解析器可以继续读取行情和配置。正常启动、联网、窗口聚焦和页面可见时的定期检查都会拉取绘图。修改先保存到浏览器，连续操作合并后自动上传。同一绘图在不同设备被修改时保留本机版本并提示处理，不同绘图可以自动合并。
+
+“一键清空绘图”和包含绘图的完整 JSON 恢复会建立新存档版本，已经使用过旧版本的设备不会把旧画线带回。统计中的云端大小是上次校验成功或提交成功的实际文件字节数。清空后仍会保留一个空存档文件来同步清空操作，Git 历史里的历史版本仍存在。绘图与默认仓库的其他数据一样可公开读取。
 
 ## 本地构建信息
 

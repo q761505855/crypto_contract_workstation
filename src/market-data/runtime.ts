@@ -17,6 +17,8 @@ import { GitHubContentsClient } from '../github-sync/github-client'
 import { GitHubHistoryStore } from '../github-sync/history-store'
 import { writePreference } from '../storage/preference-events'
 import type { ConfigAutoSync } from '../github-sync/config-auto-sync'
+import { DrawingStore } from '../chart/drawings'
+import { DrawingAutoSync } from '../github-sync/drawing-auto-sync'
 
 const BASE_URL_PREFERENCE = 'marketData.binanceBaseUrl'
 
@@ -31,6 +33,8 @@ export interface MarketDataRuntime {
   githubSync: GitHubSyncService
   defaultGitHubClient?: GitHubContentsClient
   configSync?: ConfigAutoSync
+  drawings: DrawingStore
+  drawingSync: DrawingAutoSync
 }
 
 function savedBaseUrl(): string {
@@ -52,7 +56,8 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
     pendingStorage: localStorage,
   })
   const datafeed = new BinanceDatafeed(service)
-  const backups = new WorkstationBackupService()
+  const drawings = new DrawingStore()
+  const backups = new WorkstationBackupService(undefined, localStorage, Date.now, drawings)
   return {
     requestGuard,
     datafeed,
@@ -63,6 +68,8 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
     backups,
     githubSync: new GitHubSyncService(backups),
     defaultGitHubClient,
+    drawings,
+    drawingSync: new DrawingAutoSync(drawings, defaultGitHubClient),
   }
 }
 

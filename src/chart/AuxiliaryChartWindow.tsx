@@ -4,6 +4,7 @@ import { ChartWorkspace } from './ChartWorkspace'
 import { connectChartWindow, type ChartWindowConnection } from './chart-window'
 import { INITIAL_LIVE_STATUS } from '../market-data/live-models'
 import type { MarketSelection } from '../market-data/models'
+import { DrawingStore } from './drawings'
 
 const connectionLabels = {
   connected: '已连接',
@@ -22,6 +23,7 @@ function ConnectedChart({ connection, period, onSelection }: {
   const [warning, setWarning] = useState('')
   const [sizeStatus, setSizeStatus] = useState('')
   const [showTradeOverlays, setShowTradeOverlays] = useState(true)
+  const [drawingStore] = useState(() => new DrawingStore())
 
   function saveDefaultSize(): void {
     const { innerWidth: width, innerHeight: height } = window
@@ -77,6 +79,8 @@ function ConnectedChart({ connection, period, onSelection }: {
         period={period}
         simulationOverlays={snapshot.simulationOverlays}
         showTradeOverlays={showTradeOverlays}
+        drawingStore={drawingStore}
+        drawingScope={snapshot.drawingScope}
         onSelectionChange={onSelection}
       />
     </>

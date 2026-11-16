@@ -22,6 +22,7 @@ import {
 } from '../market-data/runtime'
 import { BackupSyncPanel } from './BackupSyncPanel'
 import { RequestProtection } from './RequestProtection'
+import { DrawingStorage } from './DrawingStorage'
 
 interface DataManagerProps {
   configurationRevision?: number
@@ -509,6 +510,8 @@ export function DataManager({
           <p className="muted-text">已缓存，待上传：{pendingUploads} 个月份</p>
           <button disabled={busy || pendingUploads === 0} onClick={() => void retryUploads()} type="button">重试待上传</button>
         </section>
+
+        {runtime.drawingSync && <DrawingStorage service={runtime.drawingSync} disabled={busy} />}
 
         <BackupSyncPanel
           disabled={busy}

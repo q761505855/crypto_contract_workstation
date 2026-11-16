@@ -278,6 +278,123 @@ test('opens multiple desktop chart windows that share replay progress and one li
   await expect(second.getByRole('status')).toHaveText('主窗口已关闭，请从工作站重新打开副图。')
 })
 
+test('shares drawings across three chart periods, restores from GitHub and clears the archive', async ({ page, context }) => {
+  test.setTimeout(90_000)
+  await mockBinance(page, true)
+  const github = await mockGitHub(page, true)
+  await context.addInitScript(() => { Object.assign(window, { __enableViewportProbe: true }) })
+  await page.goto('./')
+  await expectCanvasContent(page)
+  await jumpChart(page, '2026-07-22T00:15')
+  await setReplayEnd(page, '2026-07-22T05:00')
+  await page.getByTestId('replay-controls').getByRole('button', { name: '创建回放', exact: true }).click()
+  await expect(page.getByTestId('replay-controls').getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
+  const openView = async () => {
+    const popup = page.waitForEvent('popup')
+    await page.getByRole('button', { name: '打开副图', exact: true }).click()
+    return popup
+  }
+  const minute = await openView()
+  const hourly = await openView()
+  await selectChartPeriod(minute, '1m')
+  await selectChartPeriod(hourly, '1h')
+  const read = (view: typeof page) => view.evaluate(() => {
+    type Core = import('klinecharts').Chart & {
+      getChartStore(): { getOverlayStore(): { getInstances(paneId: string): import('klinecharts').Overlay[] } }
+    }
+    const core = (window as unknown as { __viewportTestAdapter?: { coreChart: Core } }).__viewportTestAdapter?.coreChart
+    return core?.getChartStore().getOverlayStore().getInstances('candle_pane')
+      .filter(overlay => overlay.groupId === 'drawing_tools')
+      .map(({ id, points }) => ({ id, points: points.map(point => ({
+        ...point, x: (core.convertToPixel(point, { paneId: 'candle_pane' }) as { x: number }).x,
+      })) })) ?? []
+  })
+  const candleTargets = () => minute.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter?: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter?.coreChart
+    if (!core) return null
+    const rows = core.getDataList()
+    const { from, to } = core.getVisibleRange()
+    const pair = rows.slice(from + 8, to - 8).findIndex((row, index) => {
+      const other = rows[from + 8 + index + 12]
+      return other && Math.floor(row.timestamp / 3_600_000) === Math.floor(other.timestamp / 3_600_000)
+    })
+    if (pair < 0) return null
+    const main = 'main' as import('klinecharts').DomPosition
+    const rect = core.getDom('candle_pane', main)!.getBoundingClientRect()
+    return [rows[from + 8 + pair], rows[from + 8 + pair + 12]].map((row, i) => {
+      const point = core.convertToPixel({ timestamp: row.timestamp, value: i ? row.high : row.low }, { paneId: 'candle_pane' }) as { x: number; y: number }
+      return { x: rect.left + point.x, y: rect.top + point.y, timestamp: row.timestamp }
+    })
+  })
+  await expectCanvasContent(minute)
+  await expectCanvasContent(hourly)
+  await expect.poll(candleTargets).not.toBeNull()
+  const [start, end] = (await candleTargets())!
+  const bar = minute.locator('.klinecharts-pro-drawing-bar')
+  await bar.locator('.item .icon-arrow').first().click()
+  await bar.getByText('线段', { exact: true }).click()
+  await minute.mouse.click(start.x, start.y)
+  // The native chart consumes a second mouse-up inside its double-click window.
+  await page.clock.fastForward(550)
+  await minute.mouse.click(end.x, end.y)
+  for (const view of [minute, page, hourly]) await expect.poll(() => read(view)).toHaveLength(1)
+  const [source] = await read(minute)
+  const [projected] = await read(hourly)
+  expect(source.points.map(point => point.timestamp)).toEqual([start.timestamp, end.timestamp])
+  expect(projected.id).toBe(source.id)
+  expect(projected.points.map(point => point.value)).toEqual(source.points.map(point => point.value))
+  expect(projected.points[1].x).toBeGreaterThan(projected.points[0].x)
+
+  // Drag a point in the source window and verify the other chart sees the edit.
+  await minute.mouse.move(end.x, end.y)
+  await minute.mouse.down()
+  await minute.mouse.move(end.x, end.y + 18, { steps: 4 })
+  await minute.mouse.up()
+  await expect.poll(async () => (await read(hourly))[0]?.points[1].value).not.toBe(projected.points[1].value)
+  const beforeHourly = (await read(hourly))[0].points[1].value
+  const hourlyAnchor = await hourly.evaluate(id => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    const point = core.getOverlayById(id)!.points[1]
+    const coordinate = core.convertToPixel(point, { paneId: 'candle_pane' }) as { x: number; y: number }
+    const rect = core.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
+    return { x: rect.left + coordinate.x, y: rect.top + coordinate.y }
+  }, source.id)
+  await hourly.mouse.move(hourlyAnchor.x, hourlyAnchor.y)
+  await hourly.mouse.down()
+  await hourly.mouse.move(hourlyAnchor.x, hourlyAnchor.y + 14, { steps: 4 })
+  await hourly.mouse.up()
+  await expect.poll(async () => (await read(minute))[0]?.points[1].value).not.toBe(beforeHourly)
+  const [updated] = await read(minute)
+  expect(updated.points.map(point => point.timestamp)).toEqual([start.timestamp, end.timestamp])
+  const edited = updated.points[1].value
+
+  const path = 'projects/crypto-contract-workstation/data/chart-drawings/archive.json'
+  const cloud = () => {
+    const bytes = github.files.get(path)?.bytes
+    return bytes ? JSON.parse(bytes.toString()).archive.drawings : undefined
+  }
+  await expect.poll(() => cloud()?.[0]?.points[1].value).toBe(edited)
+  await page.getByRole('button', { name: '实时行情', exact: true }).click()
+  for (const view of [page, hourly, minute]) await expect.poll(() => read(view)).toHaveLength(0)
+  await page.getByRole('button', { name: '历史模拟', exact: true }).click()
+  await expect.poll(() => read(page)).toHaveLength(1)
+
+  // Remove the browser copy to prove the next page restores the GitHub file.
+  await page.evaluate(() => localStorage.removeItem('chart.drawings.v1'))
+  await page.reload()
+  await expect.poll(() => read(page)).toHaveLength(1)
+  await expect.poll(() => read(hourly)).toHaveLength(1)
+  await page.getByRole('button', { name: '数据管理', exact: true }).click()
+  const storage = page.getByRole('region', { name: '图表绘图存档' })
+  await expect(storage).toContainText('全部绘图 1 个')
+  await expect(storage).toContainText(`云端文件 ${github.files.get(path)!.bytes.length} B`)
+  page.once('dialog', dialog => dialog.accept())
+  await storage.getByRole('button', { name: '一键清空绘图' }).click()
+  await expect(storage).toContainText('全部绘图 0 个')
+  for (const view of [page, hourly, minute]) await expect.poll(() => read(view)).toHaveLength(0)
+  await expect.poll(cloud).toEqual([])
+})
+
 test('shares replay overlays while keeping visibility independent in each chart window', async ({ page, context }) => {
   test.setTimeout(60_000)
   await mockBinance(page, true)

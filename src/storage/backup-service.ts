@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js'
+import { validateDrawings, type ChartDrawing, type DrawingStore } from '../chart/drawings'
 import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
 import { readShowTradeOverlays, SHOW_TRADE_OVERLAYS_KEY, validateShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import { CHART_WINDOW_SIZE_KEY, readChartWindowSize, validateChartWindowSize, type ChartWindowSize } from '../chart/chart-window-preferences'
@@ -73,6 +74,7 @@ export interface BackupPreferences {
 }
 
 export interface BackupData {
+  drawings?: ChartDrawing[]
   preferences?: BackupPreferences
   symbols?: MarketSymbol[]
   tradeCandles?: MarketCandle[]
@@ -726,6 +728,10 @@ export function validateBackupEnvelope(value: unknown, currentIndicators?: Chart
   const kind = root.kind as BackupKind
   const source = record(root.data, 'data')
   const data: BackupData = {}
+  if (source.drawings !== undefined) {
+    if (kind !== 'all') throw new Error('仅全部数据备份可包含绘图')
+    data.drawings = validateDrawings(source.drawings)
+  }
   if (source.preferences !== undefined) {
     data.preferences = validatePreferences(source.preferences, currentIndicators)
   }
@@ -830,6 +836,7 @@ export class WorkstationBackupService {
     private readonly databaseName?: string,
     private readonly storage: StorageLike = localStorage,
     private readonly now: () => number = Date.now,
+    private readonly drawings?: DrawingStore,
   ) {
     this.simulations = new IndexedDbSimulationStateStore(databaseName)
   }
@@ -892,6 +899,7 @@ export class WorkstationBackupService {
       )
     ).filter((state): state is SimulationState => state !== undefined)
     return this.envelope('all', {
+      ...(this.drawings ? { drawings: this.drawings.read().local.drawings } : {}),
       preferences: defaultPreferences(this.storage),
       symbols,
       tradeCandles: this.sortCandles(tradeCandles),
@@ -977,6 +985,7 @@ export class WorkstationBackupService {
       onProgress?.('正在应用恢复的配置…')
       this.restorePreferences(envelope.data.preferences, options.source ?? 'local')
     }
+    if (envelope.data.drawings !== undefined) await this.drawings?.replace(envelope.data.drawings)
     return {
       kind: envelope.kind,
       symbols: envelope.data.symbols?.length ?? 0,

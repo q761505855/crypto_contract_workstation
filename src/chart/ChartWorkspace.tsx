@@ -20,6 +20,7 @@ import {
 import { SymbolPicker } from './SymbolPicker'
 import { PeriodSelector } from './PeriodSelector'
 import { saveCandleType } from './candle-preferences'
+import type { DrawingStore } from './drawings'
 import './chart-size-controls.css'
 
 export interface ChartWorkspaceProps {
@@ -45,6 +46,8 @@ export interface ChartWorkspaceProps {
   chartHeight?: number | null
   onChartHeightChange?: (height: number | null) => void
   auxiliary?: boolean
+  drawingStore?: DrawingStore
+  drawingScope?: string | null
 }
 
 const demoDatafeed = new DemoDatafeed()
@@ -66,6 +69,8 @@ export function ChartWorkspace({
   chartHeight = null,
   onChartHeightChange,
   auxiliary = false,
+  drawingStore,
+  drawingScope = null,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const scrollPortRef = useRef<HTMLDivElement | null>(null)
@@ -267,6 +272,10 @@ export function ChartWorkspace({
       adapterRef.current?.setPeriod(period)
     }
   }, [period])
+
+  useEffect(() => {
+    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope)
+  }, [drawingStore, drawingScope])
 
   useEffect(() => {
     if (reloadKeyRef.current !== reloadKey) {

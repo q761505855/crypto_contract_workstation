@@ -13,6 +13,7 @@ import {
 } from '../chart/chart-config'
 import { ChartWorkspace } from '../chart/ChartWorkspace'
 import { ChartWindowHost, openChartWindow } from '../chart/chart-window'
+import { drawingScope } from '../chart/drawings'
 import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import type { SimulationOverlayState } from '../chart/pro-chart-adapter'
 import { SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR, type SimulationTradeLabel } from '../chart/simulation-price-line'
@@ -468,6 +469,8 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
             reloadKey={chartReloadKey}
             simulationOverlays={simulationOverlays}
             showTradeOverlays={showTradeOverlays}
+            drawingStore={marketRuntime.drawings}
+            drawingScope={drawingScope(mode, marketSelection.symbol.ticker, replay.session?.id ?? null)}
             symbol={marketSelection.symbol}
             layoutSettingsOpen={chartSizeOpen}
             onCloseLayoutSettings={() => setChartSizeOpen(false)}

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { DrawingStore } from '../chart/drawings'
 import { CHART_WINDOW_SIZE_KEY, DEFAULT_CHART_WINDOW_SIZE, saveChartWindowSize } from '../chart/chart-window-preferences'
 import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
 import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
@@ -31,6 +32,32 @@ class MemoryPreferences implements Pick<Storage, 'getItem' | 'setItem'> {
     this.values.set(key, value)
   }
 }
+
+it('restores drawings from a complete backup and preserves them when an old backup omits the field', async () => {
+  const drawing = { id: 'drawing-line', scope: 'live:BTCUSDT', name: 'horizontalStraightLine',
+    points: [{ timestamp: 120_000, value: 123 }] }
+  const sourceStorage = new MemoryPreferences()
+  const sourceDrawings = new DrawingStore(sourceStorage)
+  await sourceDrawings.save(drawing)
+  const source = new WorkstationBackupService(`drawings-source-${crypto.randomUUID()}`, sourceStorage, Date.now, sourceDrawings)
+  const backup = await source.exportAll()
+  expect(backup.data.drawings).toEqual([drawing])
+  expect((await source.exportPreferences()).data.drawings).toBeUndefined()
+
+  const targetStorage = new MemoryPreferences()
+  const targetDrawings = new DrawingStore(targetStorage)
+  const target = new WorkstationBackupService(`drawings-target-${crypto.randomUUID()}`, targetStorage, Date.now, targetDrawings)
+  await target.import(backup)
+  expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
+  delete backup.data.drawings
+  await target.import(backup)
+  expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
+  const invalid = { ...backup, data: { ...backup.data, drawings: null } }
+  await expect(target.import(invalid)).rejects.toThrow('绘图存档格式无效')
+  expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
+  await target.import({ ...backup, data: { ...backup.data, drawings: [] } })
+  expect(targetDrawings.forScope(drawing.scope)).toEqual([])
+})
 
 function symbol(): MarketSymbol {
   return {
