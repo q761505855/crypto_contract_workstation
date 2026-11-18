@@ -31,6 +31,8 @@ import { registerKeltnerIndicator } from './keltner'
 import { registerTtmSqueezeIndicator } from './ttm-squeeze'
 import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
+import { registerMarketSessionsIndicator } from './market-sessions-indicator'
+import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference } from './market-session-times'
 import { readChartHistory } from '../market-data/indicator-history'
 import type { ReplayDatafeed } from '../replay/replay-datafeed'
 import { replayVisibleUntil, type ReplayContext } from '../replay/models'
@@ -85,6 +87,7 @@ export interface ChartAdapterPort {
   setSymbol(symbol: SymbolInfo): void
   reloadData(): Promise<void>
   resize?(): void
+  refreshMarketSessionTimeline?(): void
   needsMorePaneSpace?(height: number): boolean
   layoutSubPanes?(minimumHeight: number, compactBudget?: number): number
   setCompactLayout?(compact: boolean): void
@@ -124,7 +127,7 @@ const createProChart: ChartProFactory = (options) => {
   registerTtmSqueezeIndicator()
   registerTtmWaveIndicators()
   let chart: ChartPro | undefined
-  const resetPivotHistory = registerPivotsIndicator(options.datafeed, () => {
+  const indicatorContext = () => {
     const replay = (options.datafeed as Datafeed & {
       getReplayContext?: () => ReplayContext | null
     }).getReplayContext?.()
@@ -134,6 +137,11 @@ const createProChart: ChartProFactory = (options) => {
       confirmedUntil: replay ? replayVisibleUntil(replay) : Date.now(),
       sessionKey: replay?.sessionId ?? 'live',
     }
+  }
+  const resetPivotHistory = registerPivotsIndicator(options.datafeed, indicatorContext)
+  registerMarketSessionsIndicator(() => {
+    const { period, confirmedUntil } = indicatorContext()
+    return { timeframe: period.text, confirmedUntil }
   })
   chart = new KLineChartPro(options)
   chart.getChart().setXAxisAfterCandle()
@@ -211,6 +219,9 @@ export class ProChartAdapter implements ChartAdapterPort {
     })
     const candlePane = this.coreChart.getDom?.('candle_pane', DomPosition.Main)
     if (candlePane) this.candleReadout = new CandleReadout(this.coreChart, candlePane)
+    if (typeof this.coreChart.setFutureTimeAxis === 'function') {
+      this.coreChart.subscribeAction?.(ON_DATA_READY, () => this.refreshMarketSessionTimeline())
+    }
     this.coreChart.subscribeAction?.(ON_PANE_DRAG, () => {
       // Only an explicit separator drag changes the archived height. Responsive
       // enlargement must not overwrite a user's desktop layout in their backup.
@@ -241,6 +252,21 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   resize(): void {
     this.coreChart?.resize()
+  }
+
+  refreshMarketSessionTimeline(): void {
+    const chart = this.coreChart
+    if (!chart?.setFutureTimeAxis) return
+    const indicator = chart.getIndicatorByPaneId?.('candle_pane', MARKET_SESSIONS) as Indicator | null
+    const timeframe = this.getPeriod().text
+    const last = chart.getDataList().at(-1)
+    if (!indicator?.visible || !isMarketSessionTimeframe(timeframe) || !last) {
+      chart.setFutureTimeAxis(0, 0)
+      return
+    }
+    const replayEnd = this.replayHistoryEnd()
+    const reference = marketSessionReference(last.timestamp, replayEnd === undefined ? Date.now() : replayEnd + 1, timeframe)
+    chart.setFutureTimeAxis(nextOpenTime(last.timestamp, timeframe) - last.timestamp, marketSessionForecast(reference).end)
   }
 
   needsMorePaneSpace(height: number): boolean {

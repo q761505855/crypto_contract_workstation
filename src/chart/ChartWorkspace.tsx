@@ -260,7 +260,10 @@ export function ChartWorkspace({
   useEffect(() => {
     const adapter = adapterRef.current
     if (adapter?.getPriceRangeAuto === undefined) return
-    const synchronize = () => setPriceRangeAuto(adapter.getPriceRangeAuto?.() ?? true)
+    const synchronize = () => {
+      setPriceRangeAuto(adapter.getPriceRangeAuto?.() ?? true)
+      adapter.refreshMarketSessionTimeline?.()
+    }
     synchronize()
     const interval = window.setInterval(synchronize, 100)
     return () => window.clearInterval(interval)

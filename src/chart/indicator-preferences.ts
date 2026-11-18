@@ -1,5 +1,7 @@
 import { TTM_WAVE_PALETTES, type TtmWave } from './ttm-wave-colors'
 import { validatePivotParams } from './pivots'
+import { MARKET_SESSIONS, normalizeMarketSessionParams } from './market-session-times'
+import { validateMarketSessionStyles } from './market-session-styles'
 import { validateStyleColors } from './colors'
 import { validateRsiLevels } from './rsi'
 import { writePreference } from '../storage/preference-events'
@@ -78,6 +80,8 @@ function indicator(
   if (!Array.isArray(item.calcParams)) {
     throw new Error(`${field}.calcParams 必须是数组`)
   }
+  let calcParams = item.calcParams
+  if (item.name === MARKET_SESSIONS) calcParams = normalizeMarketSessionParams(calcParams)
   if (item.name === 'KC' || item.name === 'TTM_SQUEEZE') {
     const params = item.calcParams
     if (params.length !== 3 || params.some(entry => typeof entry !== 'number' || !Number.isFinite(entry) || entry <= 0) ||
@@ -107,15 +111,23 @@ function indicator(
   }
   let validatedStyles = jsonValue(item.styles ?? null, `${field}.styles`)
   validateStyleColors(validatedStyles, `${field}.styles`)
-  if (item.name === 'RSI') {
-    const prior = previous.find(setting => setting.name === 'RSI')?.styles
-    for (const key of ['rsiLevels', 'rsiLines']) {
+  if (item.name === MARKET_SESSIONS) validateMarketSessionStyles(validatedStyles)
+  if (item.name === 'RSI' || item.name === MARKET_SESSIONS) {
+    const prior = previous.find(setting => setting.name === item.name)?.styles
+    const keys = item.name === 'RSI' ? ['rsiLevels', 'rsiLines'] : ['sessionFills', 'sessionLines']
+    for (const key of keys) {
       const incoming = validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles) ? validatedStyles : null
       if (incoming?.[key] === undefined && prior && typeof prior === 'object' && !Array.isArray(prior) && prior[key] !== undefined) {
         validatedStyles ??= {}
         ;(validatedStyles as Record<string, JsonValue>)[key] = jsonValue(prior[key], `${field}.styles.${key}`)
       }
     }
+  }
+  if (item.name === MARKET_SESSIONS && validatedStyles && typeof validatedStyles === 'object' &&
+      !Array.isArray(validatedStyles) && Array.isArray(validatedStyles.sessionLines)) {
+    validatedStyles.sessionLines = validatedStyles.sessionLines.slice(-1)
+  }
+  if (item.name === 'RSI') {
     if (validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles)) {
       if (Object.hasOwn(validatedStyles, 'rsiLevels')) validateRsiLevels(validatedStyles.rsiLevels)
       const lines = validatedStyles.rsiLines
@@ -140,7 +152,7 @@ function indicator(
   }
   return {
     name: item.name,
-    calcParams: (item.name === 'PIVOTS' ? validatePivotParams(item.calcParams, previous.find(setting => setting.name === item.name)?.calcParams) : item.calcParams).map((entry, index) =>
+    calcParams: (item.name === 'PIVOTS' ? validatePivotParams(calcParams, previous.find(setting => setting.name === item.name)?.calcParams) : calcParams).map((entry, index) =>
       jsonValue(entry, `${field}.calcParams[${index}]`),
     ),
     visible: item.visible,

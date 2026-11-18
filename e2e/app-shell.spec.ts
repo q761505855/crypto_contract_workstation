@@ -3315,6 +3315,7 @@ test('keeps the price toggle beside the currency at the top and the time axis be
   await mockBinance(page, true)
   await mockGitHub(page, true)
   await installViewportProbe(page)
+  await seedCrowdedChart(page)
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto('./')
   await expectCanvasContent(page)
@@ -3322,6 +3323,7 @@ test('keeps the price toggle beside the currency at the top and the time axis be
   await expect(mode.getByRole('button')).toHaveCount(1)
   const axis = page.locator('[k-line-chart-id] > div > div:first-child > div:last-child')
   const panes = page.locator('[k-line-chart-id] > div > div').filter({ has: page.locator('canvas') })
+  const surface = page.locator('.chart-surface')
   const assertPosition = async () => {
     await expect(mode).toBeVisible()
     await expect.poll(async () => {
@@ -3347,12 +3349,12 @@ test('keeps the price toggle beside the currency at the top and the time axis be
     await page.setViewportSize(viewport)
     await page.clock.runFor(300)
     await assertPosition()
-    const initial = (await axis.boundingBox())!.height
+    const initial = (await surface.boundingBox())!.height
     await page.getByRole('separator', { name: '图表高度', exact: true }).focus()
     await page.getByRole('separator', { name: '图表高度', exact: true }).press('ArrowDown')
     await page.clock.runFor(300)
     await assertPosition()
-    expect((await axis.boundingBox())!.height).toBeGreaterThan(initial)
+    expect((await surface.boundingBox())!.height).toBeGreaterThan(initial)
     await setPriceRangeMode(page, false)
     await expect(mode.getByRole('button', { name: '自动价格范围', exact: true })).toHaveAttribute('aria-pressed', 'false')
     await setPriceRangeMode(page, true)
@@ -4181,6 +4183,208 @@ test.describe('indicator settings dialog layout', () => {
     expect(errors).toEqual([])
     await cdp.detach()
   })
+})
+
+test('scrolls to weekend market sessions on the regular time axis and restores their styles from GitHub', async ({ page }) => {
+  test.setTimeout(90_000)
+  const now = Date.UTC(2026, 10, 20, 22, 15)
+  await page.clock.install({ time: now })
+  await mockBinance(page, false, {}, { now })
+  const github = await mockGitHub(page)
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('chart.indicators.v1')) {
+      localStorage.setItem('chart.indicators.v1', JSON.stringify({ schemaVersion: 1, main: [], sub: [] }))
+    }
+    const fills = new Set<string>()
+    const rectangles: { color: string; start: number; end: number }[] = []
+    const labels = new Set<string>()
+    const axisTimes = new Set<string>()
+    const borders = new Set<number>()
+    const customLondonLines = new Set<string>()
+    const probe = { fills, rectangles, labels, axisTimes, borders, customLondonLines, gear: { x: 0, y: 0 } }
+    Object.assign(window, { sessionProbe: probe })
+    const { fillRect, fillText, stroke } = CanvasRenderingContext2D.prototype
+    CanvasRenderingContext2D.prototype.fillRect = function (x, y, width, height) {
+      if (this.globalCompositeOperation === 'destination-over' && width > 1 && height > 90) {
+        const color = String(this.fillStyle)
+        fills.add(color)
+        rectangles.push({ color, start: x, end: x + width })
+      }
+      return fillRect.call(this, x, y, width, height)
+    }
+    CanvasRenderingContext2D.prototype.stroke = function (...args: unknown[]) {
+      if (this.globalAlpha === 0.9 &&
+          ['#f5bb55', '#57b5fc', '#ce83ef'].includes(String(this.strokeStyle))) borders.add(this.getLineDash().length)
+      if (this.strokeStyle === '#123456') customLondonLines.add(this.getLineDash().join(','))
+      return Reflect.apply(stroke, this, args)
+    }
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (text.endsWith('周末休市')) labels.add(text)
+      if (this.canvas.closest('[data-pane-id="x_axis_pane"]') && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期./.test(text)) axisTimes.add(text)
+      if (text === '\ue902' && this.canvas.closest('[data-pane-id="candle_pane"]')) {
+        const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        probe.gear = { x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio }
+      }
+      if (maxWidth === undefined) fillText.call(this, text, x, y)
+      else fillText.call(this, text, x, y, maxWidth)
+    }
+  })
+  await page.goto('./')
+  await expectCanvasContent(page)
+  const readAxis = () => page.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    return { margin: core.getOffsetRightDistance(), barSpace: core.getBarSpace(), count: core.getDataList().length, range: core.getVisibleRange() }
+  })
+  const originalAxis = await readAxis()
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  const readSaved = () => page.evaluate(() => JSON.parse(localStorage.getItem('chart.indicators.v1')!).main
+    .find((item: { name: string }) => item.name === 'MARKET_SESSIONS')?.calcParams)
+  const openSettings = async () => {
+    const showInfo = page.getByRole('button', { name: '显示主图指标信息', exact: true })
+    if (await showInfo.isVisible()) await showInfo.click()
+    const readGear = () => page.evaluate(() => (window as unknown as { sessionProbe: { gear: { x: number; y: number } } }).sessionProbe.gear)
+    await expect(async () => {
+      const gear = await readGear()
+      expect(gear.x).toBeGreaterThan(0)
+      await page.mouse.click(gear.x + 3, gear.y + 3)
+      await expect(settings).toBeVisible({ timeout: 400 })
+    }).toPass({ timeout: 5000 })
+  }
+  await page.getByText('指标', { exact: true }).click()
+  const row = page.locator('.klinecharts-pro-indicator-modal-list li.row').filter({ hasText: '市场开收盘' })
+  await row.click()
+  await expect(row.locator('.klinecharts-pro-checkbox')).toHaveClass(/checked/)
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await expect.poll(readSaved).toEqual([])
+  await expect.poll(async () => (await readAxis()).margin).toBe(originalAxis.margin)
+  await expect(page.locator('.market-session-forecast')).toHaveCount(0)
+  const expectWeekendBlocks = async (minutes: number, londonColor = 'rgba(87, 181, 252, 0.22)') => {
+    const markets = [
+      { city: '东京', open: 0, close: 6.5, color: 'rgba(245, 187, 85, 0.22)' },
+      { city: '伦敦', open: 8, close: 16.5, color: londonColor },
+      { city: '纽约', open: 14.5, close: 21, color: 'rgba(206, 131, 239, 0.22)' },
+    ]
+    const axis = await readAxis()
+    for (const market of markets) {
+      const targets = minutes === 1 ? [market.open, market.close] : [(market.open + market.close) / 2]
+      for (const target of targets) {
+        const expected = await page.evaluate(({ market, target, minutes }) => {
+          const state = window as unknown as {
+            __viewportTestAdapter: { coreChart: import('klinecharts').Chart }
+            sessionProbe: { rectangles: { color: string; start: number; end: number }[] }
+          }
+          const core = state.__viewportTestAdapter.coreChart
+          const paneId = 'candle_pane'
+          const width = core.getSize(paneId, 'main' as import('klinecharts').DomPosition)!.width
+          const data = core.getDataList()
+          const xAt = (hour: number) => {
+            const timestamp = Date.UTC(2026, 10, 21) + hour * 3_600_000
+            const dataIndex = data.length - 1 + (timestamp - data.at(-1)!.timestamp) / (minutes * 60_000)
+            return (core.convertToPixel({ dataIndex }, { paneId }) as { x: number }).x
+          }
+          state.sessionProbe.rectangles.length = 0
+          core.scrollByDistance(width / 2 - xAt(target), 0)
+          return { start: Math.max(0, xAt(market.open)), end: Math.min(width, xAt(market.close)) }
+        }, { market, target, minutes })
+        expect(expected.end - expected.start).toBeGreaterThan(1)
+        await expect.poll(() => page.evaluate(({ market, expected }) => {
+          const probe = (window as unknown as {
+            sessionProbe: { rectangles: { color: string; start: number; end: number }[]; labels: Set<string> }
+          }).sessionProbe
+          return probe.labels.has(`${market.city}周末休市`) && probe.rectangles.some(rect =>
+            rect.color === market.color && Math.abs(rect.start - expected.start) < 2 && Math.abs(rect.end - expected.end) < 2)
+        }, { market, expected })).toBe(true)
+      }
+    }
+    const scrolled = await readAxis()
+    expect(scrolled).toMatchObject({ barSpace: axis.barSpace, count: axis.count })
+    if (minutes === 1) expect(scrolled.range.realFrom).toBeGreaterThan(axis.count)
+    await expect.poll(() => page.evaluate(() => {
+      const times = (window as unknown as { sessionProbe: { axisTimes: Set<string> } }).sessionProbe.axisTimes
+      return [...times].some(value => /^2026-11-22 .*星期日$/.test(value))
+    })).toBe(true)
+  }
+  const priceControl = page.getByRole('button', { name: '自动价格范围' })
+  await expect.poll(async () => {
+    const button = (await priceControl.boundingBox())!
+    const axis = (await page.locator('.chart-price-axis').boundingBox())!
+    return button.x >= axis.x && button.x + button.width <= axis.x + axis.width
+  }).toBe(true)
+  await expect.poll(() => page.evaluate(() => {
+    const probe = (window as unknown as { sessionProbe: { fills: Set<string>; borders: Set<number> } }).sessionProbe
+    return { fills: [...probe.fills].sort(), borders: [...probe.borders].sort() }
+  })).toEqual({ fills: ['rgba(206, 131, 239, 0.22)', 'rgba(245, 187, 85, 0.22)', 'rgba(87, 181, 252, 0.22)'], borders: [0] })
+  const plot = (await page.locator('[data-pane-id="candle_pane"] > div').first().boundingBox())!
+  const beforeDrag = await readAxis()
+  await page.mouse.move(plot.x + plot.width * 0.7, plot.y + plot.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(plot.x + plot.width * 0.3, plot.y + plot.height / 2, { steps: 8 })
+  await page.mouse.up()
+  await expect.poll(async () => (await readAxis()).range.realTo).toBeGreaterThan(beforeDrag.range.realTo)
+  await expectWeekendBlocks(15)
+  await page.evaluate(() => {
+    (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart.scrollToRealTime(0)
+  })
+
+  await openSettings()
+  for (const city of ['东京', '伦敦', '纽约']) {
+    await expect(settings.getByLabel(`${city}底色`, { exact: true })).toBeVisible()
+    await expect(settings.getByRole('spinbutton', { name: `${city}底色透明度` })).toHaveValue('78')
+  }
+  await expect(settings.getByRole('spinbutton', { name: /开盘提前|收盘提前/ })).toHaveCount(0)
+  await settings.getByLabel('伦敦底色', { exact: true }).fill('#123456')
+  await settings.getByRole('spinbutton', { name: '伦敦底色透明度' }).fill('100')
+  await settings.getByRole('combobox', { name: '开收盘线样式' }).selectOption('dotted')
+  await settings.getByRole('spinbutton', { name: '开收盘线宽（0 隐藏）' }).fill('2')
+  await page.getByText('确定', { exact: true }).click()
+  await expect.poll(() => page.evaluate(() => {
+    const probe = (window as unknown as { sessionProbe: { customLondonLines: Set<string> } }).sessionProbe
+    return [...probe.customLondonLines]
+  })).toEqual(['1,3'])
+
+  const openCloudPanel = async () => {
+    await revealHeaderActions(page)
+    await page.getByTestId('open-data-manager').click()
+    const panel = page.getByTestId('backup-sync-panel')
+    await panel.getByTestId('github-owner').fill('alice')
+    await panel.getByTestId('github-repository').fill('trading-backup')
+    await panel.getByTestId('github-token').fill('github_pat_e2e_secret')
+    await panel.getByRole('checkbox', { name: '会话与交易', exact: true }).uncheck()
+    await panel.getByRole('checkbox', { name: '历史行情', exact: true }).uncheck()
+    return panel
+  }
+  const panel = await openCloudPanel()
+  await panel.getByTestId('github-upload').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('上传完成')
+  expect(JSON.parse(github.files.get('config/preferences.json')!.bytes.toString()).chartIndicators.main)
+    .toEqual([{ name: 'MARKET_SESSIONS', calcParams: [], visible: true, styles: {
+      sessionFills: [{ color: '#f5bb5538' }, { color: '#12345600' }, { color: '#ce83ef38' }],
+      sessionLines: [{ style: 'dotted', size: 2 }],
+    } }])
+  await page.evaluate(() => {
+    const key = 'chart.indicators.v1'
+    const prefs = JSON.parse(localStorage.getItem(key)!)
+    prefs.main[0].styles.sessionFills[1].color = '#57b5fc38'
+    prefs.main[0].styles.sessionLines[0].style = 'dashed'
+    localStorage.setItem(key, JSON.stringify(prefs))
+  })
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('github-pull').click()
+  await expect(panel.getByTestId('backup-status')).toContainText('云端恢复完成')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload()
+  await expectCanvasContent(page)
+  await openSettings()
+  await expect(settings.getByRole('spinbutton', { name: /开盘提前|收盘提前/ })).toHaveCount(0)
+  await expect(settings.getByLabel('伦敦底色', { exact: true })).toHaveValue('#123456')
+  await expect(settings.getByRole('spinbutton', { name: '伦敦底色透明度' })).toHaveValue('100')
+  await expect(settings.getByRole('combobox', { name: '开收盘线样式' })).toHaveValue('dotted')
+  await expect(settings.getByRole('spinbutton', { name: '开收盘线宽（0 隐藏）' })).toHaveValue('2')
+  await page.getByText('确定', { exact: true }).click()
+  await selectChartPeriod(page, '1m')
+  await expectCanvasContent(page)
+  await expectWeekendBlocks(1, 'rgba(18, 52, 86, 0)')
 })
 
 test('renders standard pivot levels and persists type, timeframe, labels and level settings', async ({ page }) => {

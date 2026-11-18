@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PINNED_PERIODS_KEY } from '../chart/period-preferences'
-import { CHART_INDICATORS_PREFERENCE } from '../chart/indicator-preferences'
+import { CHART_INDICATORS_PREFERENCE, type JsonValue } from '../chart/indicator-preferences'
 import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { ReplayEngine } from '../replay/replay-engine'
@@ -85,6 +85,10 @@ function backup(): BackupEnvelope {
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
         { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#12345600', size: 0 }] } },
         { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
+        { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
+          sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
+          sessionLines: [{ style: 'solid', size: 0 }],
+        } },
       ],
       sub: [{ height: 210, indicators: [
         { name: 'TTM_SQUEEZE', calcParams: [14, 2.5, 1.25], visible: true, styles: { bars: [{ noChangeColor: '#abcdef', borderSize: 0 }] } },
@@ -636,7 +640,7 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportAll()).data).toEqual(before.data)
   })
 
-  it('round-trips KC, TTM Squeeze and Wave ABC through config-only cloud sync, including empty, missing and invalid settings', async () => {
+  it('round-trips indicator preferences through config-only cloud sync, including empty, missing and invalid settings', async () => {
     const storage = () => {
       const values = new Map<string, string>()
       return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
@@ -666,6 +670,10 @@ describe('GitHubSyncService', () => {
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(pivotChanged)
 
     const changed = structuredClone(indicators)
+    changed.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = {
+      sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
+      sessionLines: [{ style: 'dotted', size: 2 }],
+    }
     changed.sub[1].indicators[0].calcParams = [3, 5, 8]
     changed.sub[1].indicators[0].styles = { bars: [{ positiveColor: '#123456', negativeColor: '#654321' }] }
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(changed))
@@ -698,6 +706,9 @@ describe('GitHubSyncService', () => {
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicators)
     const legacyDefaults = structuredClone(indicators)
     legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
+    const legacySessions = legacyDefaults.main.find(i => i.name === 'MARKET_SESSIONS')!
+    legacySessions.calcParams = [45, 0]
+    legacySessions.styles = { sessionLines: [{ style: 'dotted', size: 2 }, { style: 'solid', size: 0 }] }
     legacyDefaults.sub[1].indicators[0].styles = { bars: [{ positiveColor: '#26a69a', negativeColor: '#ef5350', borderSize: 0 }] }
     await rewrite({ ...remotePreferences, chartIndicators: legacyDefaults })
     await target.pull(client(remote))
@@ -705,7 +716,27 @@ describe('GitHubSyncService', () => {
       .toEqual({ bars: [{ positiveColor: '#168c72', negativeColor: '#d93654', borderSize: 0 }] })
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).main.find((i: { name: string }) => i.name === 'PIVOTS').calcParams.slice(30))
       .toEqual(['#fb8c00', '#ef5350', '#26a69a', true, '#445566', '#aa7777', '#77aa77'])
+    expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'MARKET_SESSIONS'))
+      .toEqual(indicators.main.find(i => i.name === 'MARKET_SESSIONS'))
     const before = (await targetBackups.exportAll()).data
+    for (const params of [[60], [null, 60], [1441, 60]]) {
+      const invalidSessions = structuredClone(indicators)
+      invalidSessions.main.find(i => i.name === 'MARKET_SESSIONS')!.calcParams = params
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidSessions })
+      await expect(target.pull(client(remote))).rejects.toThrow(/MARKET_SESSIONS/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    const invalidSessionStyles: JsonValue[] = [
+      { sessionFills: [] }, { sessionFills: null },
+      { sessionLines: [{ style: 'solid', size: -1 }, { style: 'dashed', size: 1 }] },
+    ]
+    for (const styles of invalidSessionStyles) {
+      const invalidSessions = structuredClone(indicators)
+      invalidSessions.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = styles
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidSessions })
+      await expect(target.pull(client(remote))).rejects.toThrow(/MARKET_SESSIONS/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const [index, value] of [[33, 'true'], [35, null]] as const) {
       const invalidPivot = structuredClone(indicators)
       invalidPivot.main.find(i => i.name === 'PIVOTS')!.calcParams[index] = value

@@ -155,6 +155,10 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       },
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
       { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
+      { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
+        sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
+        sessionLines: [{ style: 'solid', size: 0 }],
+      } },
     ],
     sub: [
       {
@@ -433,15 +437,25 @@ describe('WorkstationBackupService', () => {
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicatorPreferences())
     archive.data.preferences!.chartIndicators = indicatorPreferences()
     archive.data.preferences!.chartIndicators.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
+    const legacySessions = archive.data.preferences!.chartIndicators.main.find(i => i.name === 'MARKET_SESSIONS')!
+    legacySessions.calcParams = [0, 95]
+    legacySessions.styles = null
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'PIVOTS')!.calcParams.slice(30))
       .toEqual(['#fb8c00', '#ef5350', '#26a69a', true, '#445566', '#aa7777', '#77aa77'])
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'MARKET_SESSIONS'))
+      .toEqual(indicatorPreferences().main.find(i => i.name === 'MARKET_SESSIONS'))
     archive.data.preferences!.chartIndicators = { schemaVersion: 1, main: [], sub: [] }
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
+    const invalid = indicatorPreferences()
+    invalid.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = { sessionLines: [] }
+    archive.data.preferences!.chartIndicators = invalid
+    await expect(target.import(archive)).rejects.toThrow(/MARKET_SESSIONS/)
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
   })
 
-  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
+  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
     const storage = new MemoryPreferences()
     storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
     const databaseName = `bad-indicator-${crypto.randomUUID()}`
