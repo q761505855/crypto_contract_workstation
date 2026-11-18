@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import type { ReplaySession } from '../replay/models'
 import type { BackupEnvelope } from '../storage/backup-service'
+import { formatDisplayTime } from '../format-display-time'
 import { defaultStorageTarget } from '../github-sync/default-storage'
 import {
   GitHubContentsClient,
@@ -85,12 +86,7 @@ export function BackupSyncPanel({
   }, [runtime])
 
   function addLog(message: string): void {
-    const time = new Intl.DateTimeFormat('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).format(Date.now())
+    const time = formatDisplayTime(Date.now())
     setLogs((current) => [`${time} ${message}`, ...current].slice(0, 30))
   }
 
@@ -283,7 +279,7 @@ export function BackupSyncPanel({
             {sessions.map((session) => (
               <option key={session.id} value={session.id}>
                 {session.symbol.ticker} {session.period.text} ·{' '}
-                {new Date(session.startTime).toLocaleString('zh-CN')}
+                {formatDisplayTime(session.startTime)}
               </option>
             ))}
           </select>

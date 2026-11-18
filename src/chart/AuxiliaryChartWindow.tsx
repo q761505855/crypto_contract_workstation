@@ -5,6 +5,7 @@ import { connectChartWindow, type ChartWindowConnection } from './chart-window'
 import { INITIAL_LIVE_STATUS } from '../market-data/live-models'
 import type { MarketSelection } from '../market-data/models'
 import { DrawingStore } from './drawings'
+import { formatDisplayTime } from '../format-display-time'
 
 const connectionLabels = {
   connected: '已连接',
@@ -51,9 +52,7 @@ function ConnectedChart({ connection, period, onSelection }: {
   useEffect(() => { setWarning('') }, [snapshot?.chartRevision, period.text])
 
   if (snapshot === null) return <p className="auxiliary-chart-status" role="status">正在等待主窗口连接…</p>
-  const replayTime = snapshot.visibleUntil === null ? null : new Date(snapshot.visibleUntil).toLocaleString('zh-CN', {
-    timeZone: 'Asia/Shanghai', hour12: false,
-  })
+  const replayTime = snapshot.visibleUntil === null ? null : formatDisplayTime(snapshot.visibleUntil, 'Asia/Shanghai')
   return (
     <>
       <header className="auxiliary-chart-status">

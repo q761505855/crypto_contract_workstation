@@ -1,8 +1,5 @@
 import type { LiveMarketStatus } from '../market-data/live-models'
-
-function displayTradeTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
-}
+import { formatDisplayTime } from '../format-display-time'
 
 const connectionLabels: Record<
   LiveMarketStatus['connection'],
@@ -26,11 +23,7 @@ export function LiveStatus({ status }: { status: LiveMarketStatus }) {
         </div>
         <div>
           <dt>最后消息</dt>
-          <dd>
-            {status.lastMessageTime === null
-              ? '—'
-              : displayTradeTime(status.lastMessageTime)}
-          </dd>
+          <dd>{formatDisplayTime(status.lastMessageTime)}</dd>
         </div>
         <div>
           <dt>数据延迟</dt>

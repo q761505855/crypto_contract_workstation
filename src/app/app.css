@@ -159,6 +159,52 @@ button:disabled {
   container-type: inline-size;
 }
 
+.candle-summary,
+.candle-details {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  color: #e4edf7;
+}
+
+.candle-summary[hidden],
+.candle-details[hidden] {
+  display: none;
+}
+
+.candle-summary {
+  top: 5px;
+  left: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: clamp(10px, 3.3cqw, 13px);
+  white-space: nowrap;
+}
+
+.candle-summary span { color: #aebdd0; }
+
+.candle-details {
+  bottom: 4px;
+  left: 6px;
+  min-width: min(184px, calc(100% - 12px));
+  max-width: calc(100% - 12px);
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid #3d5068;
+  border-radius: 6px;
+  background: #162235f5;
+  box-shadow: 0 4px 14px #0005;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.candle-details[data-side='right'] { left: auto; right: 6px; }
+.candle-details dl { display: grid; grid-template-columns: auto auto; gap: 2px 8px; margin: 5px 0 0; }
+.candle-details dt { color: #aebdd0; }
+.candle-details dd { text-align: right; margin: 0; }
+
 .chart-host
   .klinecharts-pro-period-bar
   > .item.tools:nth-last-child(4 of .tools),

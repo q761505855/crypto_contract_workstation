@@ -1,3 +1,5 @@
+import { formatDisplayTime } from '../format-display-time'
+
 export const REQUEST_GUARD_KEY = 'marketData.binanceRequestGuard.v1'
 export const REQUEST_GUARD_LOCK = 'marketData.binanceRequests'
 export const REST_MIN_INTERVAL_MS = 2_000
@@ -27,12 +29,6 @@ export interface RequestGuardDependencies {
   sleep(milliseconds: number): Promise<void>
   storage(): Pick<Storage, 'getItem' | 'setItem'>
   exclusive<T>(action: () => Promise<T>, waitForLock?: boolean): Promise<T>
-}
-
-function displayTime(timestamp: number): string {
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'short', timeStyle: 'medium', hour12: false,
-  }).format(timestamp)
 }
 
 export class BinanceRequestGuard {
@@ -76,7 +72,7 @@ export class BinanceRequestGuard {
         ? { paused: false, message: '保守限速已启用：REST 每分钟最多 10 次、每小时最多 100 次。', retryAt: null, canResume: false }
         : {
             paused: true,
-            message: `${halt.reason} 已暂停新增远程请求，最早 ${displayTime(halt.retryAt)} 后可手动恢复；不会自动恢复，本地缓存仍可使用。`,
+            message: `${halt.reason} 已暂停新增远程请求，最早 ${formatDisplayTime(halt.retryAt)} 后可手动恢复；不会自动恢复，本地缓存仍可使用。`,
             retryAt: halt.retryAt,
             canResume: this.dependencies.now() >= halt.retryAt,
           }
@@ -90,7 +86,7 @@ export class BinanceRequestGuard {
       const state = this.read()
       if (state.halt === null) return
       if (this.dependencies.now() < state.halt.retryAt) {
-        throw new Error(`保护冷却尚未结束，最早 ${displayTime(state.halt.retryAt)} 后可手动恢复。`)
+        throw new Error(`保护冷却尚未结束，最早 ${formatDisplayTime(state.halt.retryAt)} 后可手动恢复。`)
       }
       this.write({ ...state, halt: null })
     })

@@ -42,6 +42,8 @@ import {
 import { SimulationPriceLabels, type PriceLabel, type PriceLabelText } from './simulation-price-labels'
 import { DrawingOverlays } from './drawing-overlays'
 import type { DrawingStore } from './drawings'
+import { CandleReadout } from './candle-readout'
+import { formatDisplayTime } from '../format-display-time'
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -154,6 +156,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private historyAbort = new AbortController()
   private readonly candleOwners = new WeakMap<object, string>()
   private priceLabels?: SimulationPriceLabels
+  private candleReadout?: CandleReadout
   private drawings?: DrawingOverlays
   private tradeMarkerGap = 0.08
   private readonly responsivePaneHeights = new Map<string, number>()
@@ -165,6 +168,8 @@ export class ProChartAdapter implements ChartAdapterPort {
   constructor(private readonly factory: ChartProFactory = createProChart) {}
 
   dispose(): void {
+    this.candleReadout?.dispose()
+    this.candleReadout = undefined
     this.drawings?.dispose()
     this.drawings = undefined
     this.cancelHistoryWork()
@@ -201,6 +206,11 @@ export class ProChartAdapter implements ChartAdapterPort {
     })
     this.chart = this.factory({ ...options, datafeed })
     this.coreChart = this.chart.getChart()
+    this.coreChart.setCustomApi?.({
+      formatDate: (formatter, timestamp) => formatDisplayTime(timestamp, formatter.resolvedOptions().timeZone),
+    })
+    const candlePane = this.coreChart.getDom?.('candle_pane', DomPosition.Main)
+    if (candlePane) this.candleReadout = new CandleReadout(this.coreChart, candlePane)
     this.coreChart.subscribeAction?.(ON_PANE_DRAG, () => {
       // Only an explicit separator drag changes the archived height. Responsive
       // enlargement must not overwrite a user's desktop layout in their backup.
@@ -345,6 +355,7 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setTimezone(timezone: string): void {
     this.requireChart().setTimezone(timezone)
+    this.candleReadout?.refresh()
   }
 
   getCandleType(): ChartCandleType {
@@ -352,6 +363,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   }
 
   setSymbol(symbol: SymbolInfo): void {
+    this.candleReadout?.clearSelection()
     this.cancelHistoryWork()
     this.reloadSequence += 1
     this.clearPosition()
@@ -361,6 +373,7 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setPeriod(period: Period): void {
     if (this.getPeriod().text === period.text) return
+    this.candleReadout?.clearSelection()
     const current = this.getRightmostVisibleCandleTime()
     const timestamp = this.viewportRestore?.timestamp ??
       (current === this.viewportAnchor?.visibleTime ? this.viewportAnchor.timestamp : current)

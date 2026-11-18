@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import Decimal from 'decimal.js'
+import { formatDisplayTime } from '../format-display-time'
 import type { ReplaySession } from '../replay/models'
 import type { PositionSide, OrderPreview, SimulationPosition, SimulationState } from '../simulation/models'
 import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage } from '../simulation/models'
@@ -14,7 +15,6 @@ export function displayAmount(value: string, digits = 2) {
 const rate = (value: string) => `${(Number(value) * 100).toFixed(2)}%`
 const sideName = (side: PositionSide) => side === 'long' ? '多仓' : '空仓'
 const actionName = { open: '开仓', add: '加仓', reduce: '减仓', close: '平仓', take_profit: '止盈', stop_loss: '止损', liquidation: '强平' }
-const tradeTime = (time: number) => new Date(time).toLocaleString('zh-CN', { hour12: false })
 
 export function AccountStrip({ state, onClose }: { state: SimulationState | null; onClose(): void }) {
   const [details, setDetails] = useState(false)
@@ -180,9 +180,9 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
           </div>
           <div className="position-actions"><button type="button" onClick={() => edit(p.side, 'risk')}>止盈止损</button><button type="button" onClick={() => edit(p.side, 'reduce')}>减仓 / 平仓</button><button type="button" className="text-button" onClick={() => edit(p.side, 'details')}>详情</button></div>
         </article>)}</div>)}
-        {tab === 'trades' && <div className="trade-list">{state.trades.length === 0 ? <p className="muted-text">尚无成交</p> : [...state.trades].reverse().map(trade => <div key={trade.tradeId}><strong>{actionName[trade.action]} · {sideName(trade.positionSide)}</strong><span>{tradeTime(trade.timestamp)}</span><span>{trade.quantity} @ {trade.price}</span><span>手续费 {displayAmount(trade.fee, 4)} · 滑点 {displayAmount(trade.slippage, 4)}</span><span>盈亏 {displayAmount(trade.realizedPnl)} USDT</span></div>)}</div>}
+        {tab === 'trades' && <div className="trade-list">{state.trades.length === 0 ? <p className="muted-text">尚无成交</p> : [...state.trades].reverse().map(trade => <div key={trade.tradeId}><strong>{actionName[trade.action]} · {sideName(trade.positionSide)}</strong><span>{formatDisplayTime(trade.timestamp)}</span><span>{trade.quantity} @ {trade.price}</span><span>手续费 {displayAmount(trade.fee, 4)} · 滑点 {displayAmount(trade.slippage, 4)}</span><span>盈亏 {displayAmount(trade.realizedPnl)} USDT</span></div>)}</div>}
         {tab === 'stats' && <dl className="detail-list stats-grid">{[['总收益', `${displayAmount(state.stats.totalReturn)} USDT`], ['收益率', rate(state.stats.totalReturnRate)], ['成交次数', state.stats.totalTrades], ['完整平仓', state.stats.completedPositions], ['盈利次数', state.stats.wins], ['亏损次数', state.stats.losses], ['胜率', rate(state.stats.winRate)], ['最大单笔盈利', displayAmount(state.stats.largestWin)], ['最大单笔亏损', displayAmount(state.stats.largestLoss)], ['强平次数', state.stats.liquidations]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
-        {tab === 'ledger' && <div className="trade-list">{[...state.ledger].reverse().map(entry => <div key={entry.entryId}><strong>{entry.type}</strong><span>{tradeTime(entry.timestamp)}</span><span>变动 {displayAmount(entry.amount, 4)} · 余额 {displayAmount(entry.balanceAfter, 4)}</span></div>)}</div>}
+        {tab === 'ledger' && <div className="trade-list">{[...state.ledger].reverse().map(entry => <div key={entry.entryId}><strong>{entry.type}</strong><span>{formatDisplayTime(entry.timestamp)}</span><span>变动 {displayAmount(entry.amount, 4)} · 余额 {displayAmount(entry.balanceAfter, 4)}</span></div>)}</div>}
       </>}
     </div>
     <WorkspaceDialog open={editing !== null && position !== undefined} title={editing ? `${sideName(editing.side)} · ${editing.kind === 'risk' ? '止盈止损' : editing.kind === 'reduce' ? '减仓和平仓' : '仓位详情'}` : ''} onClose={() => setEditing(null)}>
@@ -202,7 +202,7 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
           ['逐仓保证金', `${position.isolatedMargin} USDT`],
           ['预估强平价', position.liquidationPrice],
           ['名义价值', position.notional],
-          ['开仓时间', tradeTime(position.openedAt)],
+          ['开仓时间', formatDisplayTime(position.openedAt)],
         ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
         {simulation.error && <p role="alert" className="panel-error">{simulation.error}</p>}
         <button type="button" className="dialog-done" onClick={() => setEditing(null)}>完成</button>

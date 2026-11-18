@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react'
 import Decimal from 'decimal.js'
+import { formatDisplayTime } from '../format-display-time'
 import {
   DEFAULT_SYMBOL,
   SUPPORTED_PERIODS,
@@ -268,11 +269,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         return
       }
       setMarketWarning(
-        `图表已跳转到 ${new Intl.DateTimeFormat('zh-CN', {
-          dateStyle: 'short',
-          timeStyle: 'short',
-          hour12: false,
-        }).format(timestamp)}`,
+        `图表已跳转到 ${formatDisplayTime(timestamp)}`,
       )
     },
     [],

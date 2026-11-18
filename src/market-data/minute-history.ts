@@ -7,6 +7,7 @@ import { findMissingRanges } from './gaps'
 import type { CandleKind, MarketCandle, MarketSymbol } from './models'
 import type { BinanceRestClient } from './rest-client'
 import type { LoadCandlesOptions } from './market-data-service'
+import { formatDisplayTime } from '../format-display-time'
 
 const MINUTE = 60_000
 const DAY = 86_400_000
@@ -217,7 +218,7 @@ export class MinuteHistory {
       // Today's daily ZIP cannot be complete before the UTC day has ended.
       let archived: MarketCandle[] | null = null
       if (dayTime < today) {
-        status(`检查 ${date.toISOString().slice(0, 10)} 日归档…`)
+        status(`检查日归档 ${formatDisplayTime(dayTime, 'UTC')} UTC…`)
         archived = await this.readArchive(`day/${key}/${date.getUTCDate()}`, () =>
           this.services.archives.loadDay('trade', symbol, year, month, date.getUTCDate(), { signal: options.signal }))
       }
@@ -244,7 +245,7 @@ export class MinuteHistory {
       }
     }
     const remaining = findMissingRanges(await this.local(symbol, from, to), '1m', from, to)
-    if (remaining.length > 0) throw new Error(`${symbol} 普通价格归档仍有 ${remaining.length} 个缺失区间，首个缺口 ${new Date(remaining[0].from).toISOString()}；30 天以前的历史不会改用 API。`)
+    if (remaining.length > 0) throw new Error(`${symbol} 普通价格归档仍有 ${remaining.length} 个缺失区间，首个缺口 ${formatDisplayTime(remaining[0].from, 'UTC')} UTC；30 天以前的历史不会改用 API。`)
   }
 
   async prepare(symbol: string, from: number, to: number, options: PrepareHistoryOptions = {}): Promise<{ from: number; to: number }> {

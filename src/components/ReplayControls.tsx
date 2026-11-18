@@ -11,6 +11,7 @@ import { validateReplayStepPeriod } from '../replay/step-preferences'
 import { MAX_ADJUSTABLE_LEVERAGE } from '../simulation/models'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
+import { formatDisplayTime, formatInputWeekday } from '../format-display-time'
 
 interface ReplayControlsProps {
   selection: MarketSelection
@@ -25,16 +26,8 @@ interface ReplayControlsProps {
   onLocateLatest: () => void
 }
 
-function displayTime(timestamp: number): string {
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'short',
-    timeStyle: 'medium',
-    hour12: false,
-  }).format(timestamp)
-}
-
 function sessionName(session: ReplaySession): string {
-  return `${session.symbol.ticker} ${session.period.text} · ${displayTime(
+  return `${session.symbol.ticker} ${session.period.text} · ${formatDisplayTime(
     session.startTime,
   )}`
 }
@@ -159,7 +152,7 @@ export function ReplayControls({
   if (replay.session === null) {
     return <section className="replay-controls replay-setup" data-testid="replay-controls">
       <TimeJumpControl compact disabled={replay.busy} onJump={onJumpToTime} onLocateLatest={onLocateLatest} />
-      <span className="replay-start-time">起点：{chartStartTime === null ? '等待图表 K 线' : displayTime(chartStartTime)}</span>
+      <span className="replay-start-time">起点：{chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(chartStartTime)}</span>
       <button type="button" onClick={() => setSettingsOpen(true)}>回放设置</button>
       <button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
       {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
@@ -167,7 +160,7 @@ export function ReplayControls({
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
         <p className="muted-text">{selection.symbol.ticker} · {selection.period.text} · 起点沿用当前图表视口</p>
         <label className="panel-field">
-          结束（可选）
+          <span>结束（可选） {formatInputWeekday(toText)}</span>
           <input
             aria-label="回放结束时间"
             onChange={(event) => setToText(event.target.value)}
@@ -301,7 +294,7 @@ export function ReplayControls({
       />
       <span className="replay-position">
         {session.symbol.ticker} · 当前：
-        {displayTime(sessionVisibleUntil(session) - 60_000)} · <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>
+        {formatDisplayTime(sessionVisibleUntil(session) - 60_000)} · <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>
       </span>
       <label className="replay-step-period">步进
         <select aria-label="步进周期" disabled={interactionLocked} value={stepPeriod} onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
@@ -349,7 +342,7 @@ export function ReplayControls({
         onClick={() => onTradeOverlaysChange(!showTradeOverlays)} title={showTradeOverlays ? '隐藏图表交易标记' : '显示图表交易标记'}>交易标记</button>
       <button type="button" className="replay-settings-actions" onClick={() => setActionsOpen(true)}>回放设置</button>
       <WorkspaceDialog open={actionsOpen} title="回放会话操作" onClose={() => setActionsOpen(false)}>
-        <p className="muted-text">{session.symbol.ticker} · {displayTime(session.startTime)} 至 {displayTime(session.endTime)}</p>
+        <p className="muted-text">{session.symbol.ticker} · {formatDisplayTime(session.startTime)} 至 {formatDisplayTime(session.endTime)}</p>
         <div className="workspace-session-actions">
       <button
         disabled={interactionLocked || session.status === 'completed'}

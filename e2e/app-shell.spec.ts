@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { formatDisplayTime } from '../src/format-display-time'
 import { readFile, writeFile } from 'node:fs/promises'
 import { alignOpenTime, klineCloseBoundary, nextOpenTime } from '../src/market-data/intervals'
 import { PIVOTS_DEFAULT_PARAMS } from '../src/chart/pivots'
@@ -42,7 +43,7 @@ test('keeps hedged positions and their risk orders isolated through reload and s
   await expectCanvasContent(page)
   const controls = page.getByTestId('replay-controls')
   await jumpChart(page, '2026-07-22T00:00')
-  await expect(controls.getByText(/起点：/)).toContainText('2026/7/22')
+  await expect(controls.getByText(/起点：/)).toContainText('2026-07-22')
   await setReplayEnd(page, '2026-07-22T05:00')
   await controls.getByRole('button', { name: '创建回放' }).click()
   const panel = page.getByTestId('simulation-panel')
@@ -770,7 +771,7 @@ test('keeps an active replay on its symbol when cloud preferences restore anothe
   await page.goto('./')
   await expectCanvasContent(page)
   await jumpChart(page, '2026-07-22T00:00')
-  await expect(page.getByTestId('replay-controls').getByText(/起点：/)).toContainText('2026/7/22')
+  await expect(page.getByTestId('replay-controls').getByText(/起点：/)).toContainText('2026-07-22')
   await setReplayEnd(page, '2026-07-22T05:00')
   const controls = page.getByTestId('replay-controls')
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
@@ -1101,7 +1102,7 @@ test('uses the redesigned desktop and touch workspace without losing chart or tr
   const originalChart = await page.getByTestId('chart-host').elementHandle()
   const controls = page.getByTestId('replay-controls')
   await jumpChart(page, '2026-07-22T00:00')
-  await expect(controls.getByText(/起点：/)).toContainText('2026/7/22')
+  await expect(controls.getByText(/起点：/)).toContainText('2026-07-22')
   await controls.getByRole('button', { name: '回放设置', exact: true }).click()
   const setup = page.getByRole('dialog', { name: '回放会话设置' })
   await setup.getByLabel('回放结束时间').fill('2026-07-22T05:00')
@@ -1223,7 +1224,7 @@ async function jumpChart(page: import('@playwright/test').Page, value: string) {
   if (await start.count()) {
     const period = (await page.getByRole('button', { name: '图表周期', exact: true }).innerText()).trim().split(/\s/)[0]
     const timestamp = await page.evaluate(value => new Date(value).getTime(), value)
-    const expected = await page.evaluate(time => new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium', hour12: false }).format(time), alignOpenTime(timestamp, period, 'floor'))
+    const expected = formatDisplayTime(alignOpenTime(timestamp, period, 'floor'), await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone))
     await expect(start).toHaveText(`起点：${expected}`, { timeout: 60_000 })
   } else {
     await expect(page.locator('.status-footer')).toContainText('图表已跳转到', { timeout: 60_000 })
@@ -1863,7 +1864,7 @@ test.describe('mobile workstation', () => {
     const originalHost = await page.getByTestId('chart-host').elementHandle()
     const controls = page.getByTestId('replay-controls')
     await jumpChart(page, '2026-07-22T00:00')
-    await expect(controls.getByText(/起点：/)).toContainText('2026/7/22')
+    await expect(controls.getByText(/起点：/)).toContainText('2026-07-22')
     await setReplayEnd(page, '2026-07-22T05:00')
     await controls.getByRole('button', { name: '创建回放' }).tap()
     const panel = page.getByTestId('simulation-panel')
@@ -2046,7 +2047,11 @@ test.describe('mobile workstation', () => {
     const before = await snapshot()
     // A prior tap must not leave a crosshair that captures the next manual pan.
     await page.touchscreen.tap(160, 360)
+    const candleDetails = page.getByLabel('选中 K 线')
+    await expect(candleDetails).toBeVisible()
+    await expect(candleDetails.locator('strong')).toHaveText(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期[一二三四五六日]/)
     await swipe(60)
+    await expect(candleDetails).toBeHidden()
     const moved = await snapshot()
     expect(moved.y - before.y).toBeCloseTo(60, 0)
     expect(moved.span).toBeCloseTo(before.span, 7)
@@ -2712,7 +2717,7 @@ test('exercises Pro chart interactions and the production path', { tag: ['@integ
     replayControls.getByRole('button', { name: '创建回放' }),
   ).toBeEnabled()
   // The chart remains ETH while the drawer downloaded BTC; this jump is cold.
-  await expect(replayControls.getByText(/起点：/)).toContainText('2026/7/22', { timeout: 60_000 })
+  await expect(replayControls.getByText(/起点：/)).toContainText('2026-07-22', { timeout: 60_000 })
   await setReplayEnd(page, '2026-07-22T05:00')
   await replayControls.getByRole('button', { name: '创建回放' }).click()
   await expect(replayControls).toContainText('1/6', { timeout: 60_000 })
@@ -3373,6 +3378,65 @@ test('keeps the price toggle beside the currency at the top and the time axis be
   await assertPosition()
 })
 
+test('keeps the latest candle above the plot while the crosshair shows the selected candle', async ({ page }) => {
+  await mockBinance(page, true)
+  await installViewportProbe(page)
+  await page.addInitScript(() => {
+    const probe = window as unknown as { timeAxisLabels: string[] }
+    probe.timeAxisLabels = []
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (this.canvas.closest('[data-pane-id="x_axis_pane"]') && probe.timeAxisLabels.length < 400) {
+        probe.timeAxisLabels.push(text)
+      }
+      fillText.call(this, text, x, y, maxWidth)
+    }
+  })
+  await page.goto('./')
+  await expectCanvasContent(page)
+
+  const selectedTime = Date.UTC(2026, 10, 17, 16, 40)
+  const latestTime = selectedTime + 30 * 60_000
+  await page.evaluate(latestTime => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    const candles = Array.from({ length: 80 }, (_, index) => ({
+      timestamp: latestTime - (79 - index) * 60_000,
+      open: 102, high: 115, low: 95, close: 100, volume: 42,
+    }))
+    candles[49].close = 110
+    candles[79].close = 108
+    core.applyNewData(candles, false)
+  }, latestTime)
+  const latest = page.getByLabel('最新 K 线')
+  const details = page.getByLabel('选中 K 线')
+  await expect(latest).toHaveText('2026-11-18 01:10 星期三108.00')
+  await expect(details).toBeHidden()
+
+  const selectedX = await page.evaluate(selectedTime => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    return (core.convertToPixel({ timestamp: selectedTime }, { paneId: 'candle_pane' }) as { x: number }).x
+  }, selectedTime)
+  const plot = (await latest.locator('..').boundingBox())!
+  await page.mouse.move(plot.x + selectedX, plot.y + plot.height / 2)
+  await expect(details).toBeVisible()
+  await expect(details.locator('strong')).toHaveText('2026-11-18 00:40 星期三')
+  await expect(details.locator('dd')).toHaveText([
+    '102.00', '115.00', '95.00', '110.00', '42.000', '20.00%', '+10.00 (+10.00%)',
+  ])
+  await expect(latest).toHaveText('2026-11-18 01:10 星期三108.00')
+  const timeAxisLabels = () => page.evaluate(() => (window as unknown as { timeAxisLabels: string[] }).timeAxisLabels)
+  await expect.poll(timeAxisLabels).toContain('2026-11-18 00:40 星期三')
+  expect((await timeAxisLabels()).every(text => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期[一二三四五六日]$/.test(text))).toBe(true)
+
+  await page.mouse.move(0, 0)
+  await expect(details).toBeHidden()
+  await page.evaluate(() => {
+    const core = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+    core.updateData({ ...core.getDataList().at(-1)!, close: 109 })
+  })
+  await expect(latest).toHaveText('2026-11-18 01:10 星期三109.00')
+})
+
 test('retains time-axis zoom and subpane crosshair coordinates after moving the time axis', async ({ page }) => {
   await mockBinance(page, true)
   await installViewportProbe(page)
@@ -3543,7 +3607,7 @@ test('toggles the order panel in both modes and resizes the existing chart witho
   const panel = page.getByRole('complementary', { name: '模拟下单面板' })
   const replayControls = page.getByTestId('replay-controls')
   await jumpChart(page, '2026-07-22T00:00')
-  await expect(replayControls.getByText(/起点：/)).toContainText('2026/7/22')
+  await expect(replayControls.getByText(/起点：/)).toContainText('2026-07-22')
   await setReplayEnd(page, '2026-07-22T05:00')
   await replayControls.getByRole('button', { name: '创建回放' }).click()
   const input = panel.getByLabel('保证金金额', { exact: true })

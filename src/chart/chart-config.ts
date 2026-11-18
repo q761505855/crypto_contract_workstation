@@ -5,7 +5,7 @@ import type {
   SymbolInfo,
 } from '@klinecharts/pro'
 import type { ChartIndicatorPreferences } from './indicator-preferences'
-import type { CandleType } from 'klinecharts'
+import type { CandleType, TooltipShowRule } from 'klinecharts'
 import { readCandleType } from './candle-preferences'
 
 export const DEFAULT_SYMBOL: SymbolInfo = Object.freeze({
@@ -53,7 +53,10 @@ export function createChartOptions(
     datafeed,
     drawingBarVisible: !(typeof window !== 'undefined' && window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches),
     styles: {
-      candle: { type: readCandleType() as CandleType, tooltip: { offsetLeft: 24 } },
+      candle: {
+        type: readCandleType() as CandleType,
+        tooltip: { showRule: 'none' as TooltipShowRule, offsetLeft: 24, offsetTop: 26 },
+      },
       indicator: { tooltip: { offsetLeft: 24 } },
     },
     locale: 'zh-CN',

@@ -29,7 +29,7 @@ index db8d576..7c2866a 100644
  	setPriceVolumePrecision: (pricePrecision: number, volumePrecision: number) => void;
  	getPriceVolumePrecision: () => Precision;
 diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
-index 86b1dce..39127fc 100644
+index 86b1dce..29c1ee9 100644
 --- a/node_modules/klinecharts/dist/index.esm.js
 +++ b/node_modules/klinecharts/dist/index.esm.js
 @@ -179,6 +179,7 @@ var CandleTooltipRectPosition;
@@ -72,7 +72,28 @@ index 86b1dce..39127fc 100644
      calcParams: [6, 12, 24],
      figures: [
          { key: 'rsi1', title: 'RSI1: ', type: 'line' },
-@@ -6491,12 +6517,35 @@ var ChartStore = /** @class */ (function () {
+@@ -4429,12 +4455,15 @@ var TooltipStore = /** @class */ (function () {
+         }
+         var kLineData = dataList[dataIndex];
+         var realX = this._chartStore.getTimeScaleStore().dataIndexToCoordinate(realDataIndex);
+-        var prevCrosshair = { x: this._crosshair.x, y: this._crosshair.y, paneId: this._crosshair.paneId };
++        var prevCrosshair = this._crosshair;
+         this._crosshair = __assign(__assign({}, cr), { realX: realX, kLineData: kLineData, realDataIndex: realDataIndex, dataIndex: dataIndex });
+-        if (prevCrosshair.x !== cr.x || prevCrosshair.y !== cr.y || prevCrosshair.paneId !== cr.paneId) {
+-            if (kLineData !== null && !(notExecuteAction !== null && notExecuteAction !== void 0 ? notExecuteAction : false)) {
+-                this._chartStore.getChart().crosshairChange(this._crosshair);
+-            }
++        var moved = prevCrosshair.x !== cr.x || prevCrosshair.y !== cr.y || prevCrosshair.paneId !== cr.paneId;
++        var candleChanged = isString(cr.paneId) && (prevCrosshair.kLineData !== kLineData ||
++            prevCrosshair.realDataIndex !== realDataIndex || prevCrosshair.dataIndex !== dataIndex);
++        if ((moved || candleChanged) && !notExecuteAction) {
++            this._chartStore.getChart().crosshairChange(this._crosshair);
++        }
++        if (moved) {
+             if (!(notInvalidate !== null && notInvalidate !== void 0 ? notInvalidate : false)) {
+                 this._chartStore.getChart().updatePane(1 /* UpdateLevel.Overlay */);
+             }
+@@ -6491,12 +6520,35 @@ var ChartStore = /** @class */ (function () {
      ChartStore.prototype.getVisibleDataList = function () {
          return this._visibleDataList;
      };
@@ -108,7 +129,7 @@ index 86b1dce..39127fc 100644
                          success = false;
                          adjustFlag = false;
                          dataLengthChange = 0;
-@@ -6601,6 +6650,7 @@ var ChartStore = /** @class */ (function () {
+@@ -6601,6 +6653,7 @@ var ChartStore = /** @class */ (function () {
          this._loading = true;
          this._dataList = [];
          this._visibleDataList = [];
@@ -116,7 +137,7 @@ index 86b1dce..39127fc 100644
          this._timeScaleStore.clear();
          this._tooltipStore.clear();
      };
-@@ -6686,6 +6736,7 @@ var Canvas = /** @class */ (function () {
+@@ -6686,6 +6739,7 @@ var Canvas = /** @class */ (function () {
          this._nextPixelWidth = 0;
          this._nextPixelHeight = 0;
          this._requestAnimationId = DEFAULT_REQUEST_ID;
@@ -124,7 +145,7 @@ index 86b1dce..39127fc 100644
          this._mediaQueryListener = function () {
              var pixelRatio = getPixelRatio(_this._element);
              _this._nextPixelWidth = Math.round(_this._element.clientWidth * pixelRatio);
-@@ -6736,10 +6787,15 @@ var Canvas = /** @class */ (function () {
+@@ -6736,10 +6790,15 @@ var Canvas = /** @class */ (function () {
      };
      Canvas.prototype._executeListener = function (fn) {
          var _this = this;
@@ -141,7 +162,7 @@ index 86b1dce..39127fc 100644
                  _this._listener();
                  _this._requestAnimationId = DEFAULT_REQUEST_ID;
              });
-@@ -7629,6 +7685,9 @@ var CandleBarView = /** @class */ (function (_super) {
+@@ -7629,6 +7688,9 @@ var CandleBarView = /** @class */ (function (_super) {
              var yAxis_1 = pane.getAxisComponent();
              this.eachChildren(function (data, barSpace) {
                  var kLineData = data.data, x = data.x;
@@ -151,7 +172,7 @@ index 86b1dce..39127fc 100644
                  if (isValid(kLineData)) {
                      var open_1 = kLineData.open, high = kLineData.high, low = kLineData.low, close_1 = kLineData.close;
                      var type = candleBarOptions.type, styles = candleBarOptions.styles;
-@@ -7658,6 +7717,7 @@ var CandleBarView = /** @class */ (function (_super) {
+@@ -7658,6 +7720,7 @@ var CandleBarView = /** @class */ (function (_super) {
                      priceY.sort(function (a, b) { return a - b; });
                      var rects = [];
                      switch (type) {
@@ -159,7 +180,7 @@ index 86b1dce..39127fc 100644
                          case CandleType.CandleSolid: {
                              rects = _this._createSolidBar(x, priceY, barSpace, colors);
                              break;
-@@ -8877,6 +8937,7 @@ var IndicatorWidget = /** @class */ (function (_super) {
+@@ -8877,6 +8940,7 @@ var IndicatorWidget = /** @class */ (function (_super) {
          _this._gridView = new GridView(_this);
          _this._indicatorView = new IndicatorView(_this);
          _this._crosshairLineView = new CrosshairLineView(_this);
@@ -167,7 +188,7 @@ index 86b1dce..39127fc 100644
          _this._tooltipView = _this.createTooltipView();
          _this._overlayView = new OverlayView(_this);
          _this.addChild(_this._tooltipView);
-@@ -8904,6 +8965,12 @@ var IndicatorWidget = /** @class */ (function (_super) {
+@@ -8904,6 +8968,12 @@ var IndicatorWidget = /** @class */ (function (_super) {
          this._overlayView.draw(ctx);
          this._crosshairLineView.draw(ctx);
          this._tooltipView.draw(ctx);
@@ -180,7 +201,7 @@ index 86b1dce..39127fc 100644
      };
      return IndicatorWidget;
  }(DrawWidget));
-@@ -9081,6 +9148,9 @@ var CandleHighLowPriceView = /** @class */ (function (_super) {
+@@ -9081,6 +9151,9 @@ var CandleHighLowPriceView = /** @class */ (function (_super) {
              var lowX_1 = 0;
              this.eachChildren(function (data) {
                  var kLineData = data.data, x = data.x;
@@ -190,7 +211,7 @@ index 86b1dce..39127fc 100644
                  if (isValid(kLineData)) {
                      if (high_1 < kLineData.high) {
                          high_1 = kLineData.high;
-@@ -9343,6 +9413,10 @@ var CandleTooltipView = /** @class */ (function (_super) {
+@@ -9343,6 +9416,10 @@ var CandleTooltipView = /** @class */ (function (_super) {
              var styles = chartStore.getStyles();
              var candleStyles = styles.candle;
              var indicatorStyles = styles.indicator;
@@ -201,7 +222,7 @@ index 86b1dce..39127fc 100644
              if (candleStyles.tooltip.showType === TooltipShowType.Rect &&
                  indicatorStyles.tooltip.showType === TooltipShowType.Rect) {
                  var isDrawCandleTooltip = this.isDrawTooltip(crosshair, candleStyles.tooltip);
-@@ -10142,7 +10216,17 @@ var CrosshairHorizontalLabelView = /** @class */ (function (_super) {
+@@ -10142,7 +10219,17 @@ var CrosshairHorizontalLabelView = /** @class */ (function (_super) {
                  text = chartStore.getCustomApi().formatBigNumber(text);
              }
          }
@@ -220,7 +241,7 @@ index 86b1dce..39127fc 100644
      };
      CrosshairHorizontalLabelView.prototype.getTextAttrs = function (text, _textWidth, crosshair, bounding, axis, _styles) {
          var yAxis = axis;
-@@ -10184,6 +10268,8 @@ var YAxisWidget = /** @class */ (function (_super) {
+@@ -10184,6 +10271,8 @@ var YAxisWidget = /** @class */ (function (_super) {
          _this._overlayYAxisView = new OverlayYAxisView(_this);
          _this._crosshairHorizontalLabelView = new CrosshairHorizontalLabelView(_this);
          _this.getContainer().style.cursor = 'ns-resize';
@@ -229,7 +250,7 @@ index 86b1dce..39127fc 100644
          _this.addChild(_this._overlayYAxisView);
          return _this;
      }
-@@ -10303,7 +10389,8 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10303,7 +10392,8 @@ var YAxisImp = /** @class */ (function (_super) {
          var specifyMin = Number.MAX_SAFE_INTEGER;
          var specifyMax = Number.MIN_SAFE_INTEGER;
          var indicatorPrecision = Number.MAX_SAFE_INTEGER;
@@ -239,7 +260,7 @@ index 86b1dce..39127fc 100644
          indicators.forEach(function (indicator) {
              var _a, _b, _c;
              if (!shouldOhlc) {
-@@ -10346,6 +10433,7 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10346,6 +10436,7 @@ var YAxisImp = /** @class */ (function (_super) {
              var dataIndex = _a.dataIndex, data = _a.data;
              if (isValid(data)) {
                  if (shouldCompareHighLow) {
@@ -247,7 +268,7 @@ index 86b1dce..39127fc 100644
                      min = Math.min(min, data.low);
                      max = Math.max(max, data.high);
                  }
-@@ -10617,6 +10705,15 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10617,6 +10708,15 @@ var YAxisImp = /** @class */ (function (_super) {
                  valueText = customApi.formatBigNumber(valueText);
              }
              valueText = formatFoldDecimal(valueText, chartStore.getDecimalFoldThreshold());
@@ -263,7 +284,7 @@ index 86b1dce..39127fc 100644
              crosshairVerticalTextWidth += (crosshairStyles.horizontal.text.paddingLeft +
                  crosshairStyles.horizontal.text.paddingRight +
                  crosshairStyles.horizontal.text.borderSize * 2 +
-@@ -10760,6 +10857,7 @@ var Pane = /** @class */ (function () {
+@@ -10760,6 +10860,7 @@ var Pane = /** @class */ (function () {
              overflow: 'hidden',
              boxSizing: 'border-box'
          });
@@ -271,7 +292,111 @@ index 86b1dce..39127fc 100644
          if (afterElement !== null) {
              rootContainer.insertBefore(this._container, afterElement);
          }
-@@ -12085,12 +12183,18 @@ var SyntheticEvent = /** @class */ (function () {
+@@ -11187,83 +11288,33 @@ var XAxisImp = /** @class */ (function (_super) {
+         };
+     };
+     XAxisImp.prototype.optimalTicks = function (ticks) {
+-        var _a, _b;
+-        var chart = this.getParent().getChart();
++        var pane = this.getParent();
++        var chart = pane.getChart();
+         var chartStore = chart.getChartStore();
+         var formatDate = chartStore.getCustomApi().formatDate;
+-        var optimalTicks = [];
+-        var tickLength = ticks.length;
++        var dateTimeFormat = chartStore.getTimeScaleStore().getDateTimeFormat();
++        var tickText = chart.getStyles().xAxis.tickText;
++        var width = pane.getMainWidget().getBounding().width;
+         var dataList = chartStore.getDataList();
+-        if (tickLength > 0) {
+-            var dateTimeFormat = chartStore.getTimeScaleStore().getDateTimeFormat();
+-            var tickTextStyles = chart.getStyles().xAxis.tickText;
+-            var defaultLabelWidth = calcTextWidth('00-00 00:00', tickTextStyles.size, tickTextStyles.weight, tickTextStyles.family);
+-            var pos = parseInt(ticks[0].value, 10);
+-            var x = this.convertToPixel(pos);
+-            var tickCountDif = 1;
+-            if (tickLength > 1) {
+-                var nextPos = parseInt(ticks[1].value, 10);
+-                var nextX = this.convertToPixel(nextPos);
+-                var xDif = Math.abs(nextX - x);
+-                if (xDif < defaultLabelWidth) {
+-                    tickCountDif = Math.ceil(defaultLabelWidth / xDif);
+-                }
+-            }
+-            for (var i = 0; i < tickLength; i += tickCountDif) {
+-                var pos_1 = parseInt(ticks[i].value, 10);
+-                var kLineData = dataList[pos_1];
+-                var timestamp = kLineData.timestamp;
+-                var text = formatDate(dateTimeFormat, timestamp, 'HH:mm', FormatDateType.XAxis);
+-                if (i !== 0) {
+-                    var prevPos = parseInt(ticks[i - tickCountDif].value, 10);
+-                    var prevKLineData = dataList[prevPos];
+-                    var prevTimestamp = prevKLineData.timestamp;
+-                    text = (_a = this._optimalTickLabel(formatDate, dateTimeFormat, timestamp, prevTimestamp)) !== null && _a !== void 0 ? _a : text;
+-                }
+-                var x_1 = this.convertToPixel(pos_1);
+-                optimalTicks.push({ text: text, coord: x_1, value: timestamp });
+-            }
+-            var optimalTickLength = optimalTicks.length;
+-            if (optimalTickLength === 1) {
+-                optimalTicks[0].text = formatDate(dateTimeFormat, optimalTicks[0].value, 'YYYY-MM-DD HH:mm', FormatDateType.XAxis);
+-            }
+-            else {
+-                var firstTimestamp = optimalTicks[0].value;
+-                var secondTimestamp = optimalTicks[1].value;
+-                if (isValid(optimalTicks[2])) {
+-                    var thirdText = optimalTicks[2].text;
+-                    if (/^[0-9]{2}-[0-9]{2}$/.test(thirdText)) {
+-                        optimalTicks[0].text = formatDate(dateTimeFormat, firstTimestamp, 'MM-DD', FormatDateType.XAxis);
+-                    }
+-                    else if (/^[0-9]{4}-[0-9]{2}$/.test(thirdText)) {
+-                        optimalTicks[0].text = formatDate(dateTimeFormat, firstTimestamp, 'YYYY-MM', FormatDateType.XAxis);
+-                    }
+-                    else if (/^[0-9]{4}$/.test(thirdText)) {
+-                        optimalTicks[0].text = formatDate(dateTimeFormat, firstTimestamp, 'YYYY', FormatDateType.XAxis);
+-                    }
+-                }
+-                else {
+-                    optimalTicks[0].text = (_b = this._optimalTickLabel(formatDate, dateTimeFormat, firstTimestamp, secondTimestamp)) !== null && _b !== void 0 ? _b : optimalTicks[0].text;
+-                }
++        var optimalTicks = [];
++        var previousRight = -8;
++        for (var i = 0; i < ticks.length; i++) {
++            var index = parseInt(ticks[i].value, 10);
++            var coordinate = this.convertToPixel(index);
++            // Skip positions that cannot fit even the left half of the next label.
++            if (coordinate <= previousRight + 8 || coordinate >= width) {
++                continue;
++            }
++            var timestamp = dataList[index].timestamp;
++            var text = formatDate(dateTimeFormat, timestamp, "YYYY-MM-DD HH:mm", FormatDateType.XAxis);
++            var halfWidth = calcTextWidth(text, tickText.size, tickText.weight, tickText.family) / 2;
++            if (coordinate - halfWidth >= previousRight + 8 && coordinate + halfWidth <= width) {
++                optimalTicks.push({ text: text, coord: coordinate, value: timestamp });
++                previousRight = coordinate + halfWidth;
+             }
+         }
+         return optimalTicks;
+     };
+-    XAxisImp.prototype._optimalTickLabel = function (formatDate, dateTimeFormat, timestamp, comparedTimestamp) {
+-        var year = formatDate(dateTimeFormat, timestamp, 'YYYY', FormatDateType.XAxis);
+-        var month = formatDate(dateTimeFormat, timestamp, 'YYYY-MM', FormatDateType.XAxis);
+-        var day = formatDate(dateTimeFormat, timestamp, 'MM-DD', FormatDateType.XAxis);
+-        if (year !== formatDate(dateTimeFormat, comparedTimestamp, 'YYYY', FormatDateType.XAxis)) {
+-            return year;
+-        }
+-        else if (month !== formatDate(dateTimeFormat, comparedTimestamp, 'YYYY-MM', FormatDateType.XAxis)) {
+-            return month;
+-        }
+-        else if (day !== formatDate(dateTimeFormat, comparedTimestamp, 'MM-DD', FormatDateType.XAxis)) {
+-            return day;
+-        }
+-        return null;
+-    };
+     XAxisImp.prototype.getAutoSize = function () {
+         var styles = this.getParent().getChart().getStyles();
+         var xAxisStyles = styles.xAxis;
+@@ -12085,12 +12136,18 @@ var SyntheticEvent = /** @class */ (function () {
          {
              var boundTouchMoveWithDownHandler_1 = this._touchMoveHandler.bind(this);
              var boundTouchEndHandler_1 = this._touchEndHandler.bind(this);
@@ -290,7 +415,7 @@ index 86b1dce..39127fc 100644
              this._clearLongTapTimeout();
              this._longTapTimeoutId = setTimeout(this._longTapHandler.bind(this, downEvent), 500 /* Delay.LongTap */);
          }
-@@ -12375,6 +12479,9 @@ var Event = /** @class */ (function () {
+@@ -12375,6 +12432,9 @@ var Event = /** @class */ (function () {
          // 用来记录捏合缩放的尺寸
          this._pinchScale = 1;
          this._mouseDownWidget = null;
@@ -300,7 +425,7 @@ index 86b1dce..39127fc 100644
          this._prevYAxisRange = null;
          this._xAxisStartScaleCoordinate = null;
          this._xAxisStartScaleDistance = 0;
-@@ -12416,12 +12523,32 @@ var Event = /** @class */ (function () {
+@@ -12416,12 +12476,32 @@ var Event = /** @class */ (function () {
          container.addEventListener('keydown', this._boundKeyBoardDownEvent);
      }
      Event.prototype.pinchStartEvent = function () {
@@ -333,7 +458,7 @@ index 86b1dce..39127fc 100644
          if ((pane === null || pane === void 0 ? void 0 : pane.getId()) !== PaneIdConstants.X_AXIS && (widget === null || widget === void 0 ? void 0 : widget.getName()) === WidgetNameConstants.MAIN) {
              var event_1 = this._makeWidgetEvent(e, widget);
              var zoomScale = (scale - this._pinchScale) * 5;
-@@ -12438,13 +12565,30 @@ var Event = /** @class */ (function () {
+@@ -12438,13 +12518,30 @@ var Event = /** @class */ (function () {
          return true;
      };
      Event.prototype.mouseWheelVertEvent = function (e, scale) {
@@ -365,7 +490,7 @@ index 86b1dce..39127fc 100644
          return false;
      };
      Event.prototype.mouseDownEvent = function (e) {
-@@ -12707,6 +12851,14 @@ var Event = /** @class */ (function () {
+@@ -12707,6 +12804,14 @@ var Event = /** @class */ (function () {
      };
      Event.prototype.touchStartEvent = function (e) {
          var _a = this._findWidgetByEvent(e), pane = _a.pane, widget = _a.widget;
@@ -380,7 +505,7 @@ index 86b1dce..39127fc 100644
          if (widget !== null) {
              var event_8 = this._makeWidgetEvent(e, widget);
              var name_7 = widget.getName();
-@@ -12727,6 +12879,13 @@ var Event = /** @class */ (function () {
+@@ -12727,6 +12832,14 @@ var Event = /** @class */ (function () {
                      }
                      this._flingStartTime = new Date().getTime();
                      this._startScrollCoordinate = { x: event_8.x, y: event_8.y };
@@ -390,11 +515,12 @@ index 86b1dce..39127fc 100644
 +                        // A previous tap's crosshair must not capture the next pan.
 +                        // A fresh long press can still activate inspection in this gesture.
 +                        this._touchCoordinate = null;
++                        tooltipStore.setCrosshair();
 +                    }
                      chartStore.getTimeScaleStore().startScroll();
                      this._touchZoomed = false;
                      if (this._touchCoordinate !== null) {
-@@ -12758,8 +12917,28 @@ var Event = /** @class */ (function () {
+@@ -12758,8 +12871,28 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchMoveEvent = function (e) {
@@ -424,7 +550,7 @@ index 86b1dce..39127fc 100644
          if (widget !== null) {
              var event_9 = this._makeWidgetEvent(e, widget);
              var name_8 = widget.getName();
-@@ -12778,8 +12957,31 @@ var Event = /** @class */ (function () {
+@@ -12778,8 +12911,31 @@ var Event = /** @class */ (function () {
                          tooltipStore.setCrosshair({ x: event_9.x, y: event_9.y, paneId: pane === null || pane === void 0 ? void 0 : pane.getId() });
                      }
                      else {
@@ -457,7 +583,7 @@ index 86b1dce..39127fc 100644
                              var distance = event_9.x - this._startScrollCoordinate.x;
                              chartStore.getTimeScaleStore().scroll(distance);
                          }
-@@ -12800,8 +13002,15 @@ var Event = /** @class */ (function () {
+@@ -12800,8 +12956,15 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchEndEvent = function (e) {
@@ -474,7 +600,7 @@ index 86b1dce..39127fc 100644
          if (widget !== null) {
              var event_10 = this._makeWidgetEvent(e, widget);
              var name_9 = widget.getName();
-@@ -12935,14 +13144,6 @@ var Event = /** @class */ (function () {
+@@ -12935,14 +13098,6 @@ var Event = /** @class */ (function () {
          }
          var widget = null;
          if (pane !== null) {
@@ -489,7 +615,7 @@ index 86b1dce..39127fc 100644
              if (widget === null) {
                  var yAxisWidget = pane.getYAxisWidget();
                  if (yAxisWidget !== null) {
-@@ -12953,6 +13154,14 @@ var Event = /** @class */ (function () {
+@@ -12953,6 +13108,14 @@ var Event = /** @class */ (function () {
                      }
                  }
              }
@@ -504,7 +630,7 @@ index 86b1dce..39127fc 100644
          }
          return { pane: pane, widget: widget };
      };
-@@ -13088,6 +13297,7 @@ var ChartImp = /** @class */ (function () {
+@@ -13088,6 +13251,7 @@ var ChartImp = /** @class */ (function () {
              default: {
                  for (var i = this._drawPanes.length - 1; i > -1; i--) {
                      var p = this._drawPanes[i];
@@ -512,7 +638,7 @@ index 86b1dce..39127fc 100644
                      var prevP = this._drawPanes[i - 1];
                      if ((p === null || p === void 0 ? void 0 : p.getOptions().position) === "bottom" /* PanePosition.Bottom */ &&
                          (prevP === null || prevP === void 0 ? void 0 : prevP.getOptions().position) !== "bottom" /* PanePosition.Bottom */) {
-@@ -13143,6 +13353,19 @@ var ChartImp = /** @class */ (function () {
+@@ -13143,6 +13307,19 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype._measurePaneHeight = function () {
          var _this = this;
          var _a;
@@ -532,7 +658,29 @@ index 86b1dce..39127fc 100644
          var totalHeight = Math.floor(this._container.clientHeight);
          var separatorSize = this._chartStore.getStyles().separator.size;
          var xAxisHeight = this._xAxisPane.getAxisComponent().getAutoSize();
-@@ -13427,6 +13650,19 @@ var ChartImp = /** @class */ (function () {
+@@ -13320,6 +13497,10 @@ var ChartImp = /** @class */ (function () {
+         var _this = this;
+         var actionStore = this._chartStore.getActionStore();
+         if (actionStore.has(ActionType.OnCrosshairChange)) {
++            if (!isString(crosshair.paneId)) {
++                actionStore.execute(ActionType.OnCrosshairChange, crosshair);
++                return;
++            }
+             var indicatorData_1 = {};
+             this._drawPanes.forEach(function (pane) {
+                 var id = pane.getId();
+@@ -13332,9 +13513,7 @@ var ChartImp = /** @class */ (function () {
+                 });
+                 indicatorData_1[id] = paneIndicatorData;
+             });
+-            if (isString(crosshair.paneId)) {
+-                actionStore.execute(ActionType.OnCrosshairChange, __assign(__assign({}, crosshair), { indicatorData: indicatorData_1 }));
+-            }
++            actionStore.execute(ActionType.OnCrosshairChange, __assign(__assign({}, crosshair), { indicatorData: indicatorData_1 }));
+         }
+     };
+     ChartImp.prototype.getDom = function (paneId, position) {
+@@ -13427,6 +13606,19 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getPriceVolumePrecision = function () {
          return this._chartStore.getPrecision();
      };

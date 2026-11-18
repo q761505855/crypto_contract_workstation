@@ -23,6 +23,7 @@ import {
 import { BackupSyncPanel } from './BackupSyncPanel'
 import { RequestProtection } from './RequestProtection'
 import { DrawingStorage } from './DrawingStorage'
+import { formatDisplayTime, formatInputWeekday, localDateTimeInputValue } from '../format-display-time'
 
 interface DataManagerProps {
   configurationRevision?: number
@@ -33,25 +34,8 @@ interface DataManagerProps {
   onClose: () => void
 }
 
-function inputDateTime(timestamp: number): string {
-  const date = new Date(timestamp)
-  const localTimestamp = timestamp - date.getTimezoneOffset() * 60_000
-  return new Date(localTimestamp).toISOString().slice(0, 16)
-}
-
 function parseInputDateTime(value: string): number {
   return new Date(value).getTime()
-}
-
-function displayTime(timestamp: number | null): string {
-  if (timestamp === null) {
-    return '—'
-  }
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    hour12: false,
-  }).format(timestamp)
 }
 
 function progressText(progress: DownloadProgress): string {
@@ -70,7 +54,7 @@ function CacheSummary({
       <strong>{title}</strong>
       <span>{summary.count.toLocaleString()} 根</span>
       <span>
-        {displayTime(summary.firstOpenTime)} — {displayTime(summary.lastOpenTime)}
+        {formatDisplayTime(summary.firstOpenTime)} — {formatDisplayTime(summary.lastOpenTime)}
       </span>
       <span>
         {summary.gaps.length === 0
@@ -101,9 +85,9 @@ export function DataManager({
     }
   })
   const [fromText, setFromText] = useState(() =>
-    inputDateTime(initialRange.from),
+    localDateTimeInputValue(initialRange.from),
   )
-  const [toText, setToText] = useState(() => inputDateTime(initialRange.to))
+  const [toText, setToText] = useState(() => localDateTimeInputValue(initialRange.to))
   const [baseUrl, setBaseUrl] = useState(runtime.service.getBaseUrl())
   const [favorites, setFavorites] = useState<string[]>(readFavoriteSymbols)
   const [summary, setSummary] = useState<SeriesSummary>(EMPTY_SERIES_SUMMARY)
@@ -227,7 +211,7 @@ export function DataManager({
       await refreshSummary(symbol.symbol)
       const pending = runtime.service.getPendingUploadCount()
       setPendingUploads(pending)
-      setStatus(`下载完成：${displayTime(actual.from)} — ${displayTime(actual.to)}，1m 数据已写入本地缓存。${pending > 0 ? `已缓存，待上传 ${pending} 个月份。` : runtime.defaultGitHubClient?.canWrite() ? '云端上传已安排。' : '已缓存，连接仓库后可上传。'}`)
+      setStatus(`下载完成：${formatDisplayTime(actual.from)} — ${formatDisplayTime(actual.to)}，1m 数据已写入本地缓存。${pending > 0 ? `已缓存，待上传 ${pending} 个月份。` : runtime.defaultGitHubClient?.canWrite() ? '云端上传已安排。' : '已缓存，连接仓库后可上传。'}`)
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') {
         setStatus('下载已取消，已经写入的数据会保留。')
@@ -449,23 +433,25 @@ export function DataManager({
           <h3>历史数据区间</h3>
           <p className="muted-text">固定下载 1m 普通价格数据，图表周期由分钟数据聚合。默认范围为上一个完整 UTC 月。</p>
           <label>
-            开始时间
+            <span>开始时间 {formatInputWeekday(fromText)}</span>
             <input
+              aria-label="开始时间"
               onChange={(event) => setFromText(event.target.value)}
               type="datetime-local"
               value={fromText}
             />
           </label>
           <label>
-            结束时间
+            <span>结束时间 {formatInputWeekday(toText)}</span>
             <input
+              aria-label="结束时间"
               onChange={(event) => setToText(event.target.value)}
               type="datetime-local"
               value={toText}
             />
           </label>
           <p className="muted-text" data-testid="history-range-preview">
-            {rangePreview ? `实际缓存范围：${displayTime(rangePreview.from)} — ${displayTime(rangePreview.to)}（本地时间显示，按 UTC 自然月展开，截止已收盘分钟及上市边界）。` : '请选择有效时间范围；归档按 UTC 自然月展开。'}
+            {rangePreview ? `实际缓存范围：${formatDisplayTime(rangePreview.from)} — ${formatDisplayTime(rangePreview.to)}（本地时间显示，按 UTC 自然月展开，截止已收盘分钟及上市边界）。` : '请选择有效时间范围；归档按 UTC 自然月展开。'}
           </p>
           <div className="button-row download-actions">
             <button
