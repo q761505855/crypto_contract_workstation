@@ -7,6 +7,7 @@ import { fixtureMinutePrices, installArchiveFixtures } from './archive-fixtures'
 import { traceNativeRestoreWrites } from './storage-diagnostics'
 import { installViewportProbe } from './viewport-probe'
 import { installCachedMarketFixture, seedSymbolListing } from './market-fixtures'
+import { installCloudConnectionFixture } from './cloud-connection-fixture'
 
 async function setPriceRangeMode(page: import('@playwright/test').Page, auto: boolean, touch = false) {
   const toggle = page.getByRole('button', { name: '自动价格范围', exact: true })
@@ -654,6 +655,7 @@ test('deletes an ended replay after confirmation and removes it from local backu
 })
 
 test.beforeEach(async ({ context }) => {
+  await installCloudConnectionFixture(context)
   // Cover every page in the context; individual manual cloud mocks override this.
   await context.route('https://api.github.com/**', (route) =>
     route.fulfill({ status: 404, json: { message: 'Not Found' } }),

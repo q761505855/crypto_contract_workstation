@@ -48,7 +48,6 @@ export default defineConfig({
     port: 4173,
     // Reusing an ordinary dev server would omit the test-only instrumentation.
     reuseExistingServer: false,
-    // Browser tests must never use a real deployment credential.
-    env: { VITE_GITHUB_TOKEN: 'e2e-mock-storage-token', E2E_CHART_PROBE: '1' },
+    env: { E2E_CHART_PROBE: '1' },
   },
 })

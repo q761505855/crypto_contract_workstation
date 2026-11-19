@@ -5,12 +5,16 @@ import { installArchiveFixtures } from './archive-fixtures'
 import { traceNativeRestoreWrites } from './storage-diagnostics'
 import { writeFile } from 'node:fs/promises'
 import { installCachedMarketFixture, seedSymbolListing } from './market-fixtures'
+import { installCloudConnectionFixture } from './cloud-connection-fixture'
 
 const project = 'projects/crypto-contract-workstation'
 const repoApi = '/repos/q761505855/personal-cloud-storage'
 const clockTime = Date.UTC(2025, 10, 1, 0, 1)
 // Each case validates native IndexedDB round-trips for complete 43k-minute months.
 test.setTimeout(120_000)
+test.beforeEach(async ({ context }) => {
+  await installCloudConnectionFixture(context)
+})
 interface StoredFile { bytes: Buffer; sha: string }
 const digest = (value: Buffer) => createHash('sha256').update(value).digest('hex')
 

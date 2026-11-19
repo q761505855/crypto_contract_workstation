@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { GitHubContentsClient, type GitHubRepositoryTarget } from './github-client'
+import type { GitHubRepositoryTarget } from './github-client'
 
 function buildValue(name: string): string {
   const env = import.meta.env
@@ -18,10 +18,8 @@ export function defaultStorageTarget(): GitHubRepositoryTarget {
 
 export const PUBLISHED_CLOUD_CONNECTION_URL = 'https://q761505855.github.io/crypto_contract_workstation/cloud-connection.json'
 
-/** New checkouts reuse the connection published by Pages, without committing a PAT. */
+/** All environments use the default connection published by Pages. */
 export async function resolveDefaultGitHubToken(fetcher: typeof fetch = fetch): Promise<string> {
-  const configuredToken = buildValue('VITE_GITHUB_TOKEN')
-  if (configuredToken) return configuredToken
   try {
     const response = await fetcher(PUBLISHED_CLOUD_CONNECTION_URL, {
       cache: 'no-store',
@@ -39,9 +37,4 @@ export async function resolveDefaultGitHubToken(fetcher: typeof fetch = fetch): 
     // Offline or older deployments keep public read access and local operation.
     return ''
   }
-}
-
-export function createDefaultGitHubClient(resolvedToken?: string): GitHubContentsClient | null {
-  const token = resolvedToken?.trim() ?? buildValue('VITE_GITHUB_TOKEN')
-  return token ? new GitHubContentsClient(defaultStorageTarget(), token) : null
 }

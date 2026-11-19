@@ -12,7 +12,7 @@ import { WorkstationBackupService } from '../storage/backup-service'
 import { GitHubSyncService } from '../github-sync/sync-service'
 import { BinanceRequestGuard, createBrowserRequestGuard } from './request-guard'
 import { BinanceArchiveClient } from './archive-client'
-import { createDefaultGitHubClient, defaultStorageTarget } from '../github-sync/default-storage'
+import { defaultStorageTarget } from '../github-sync/default-storage'
 import { GitHubContentsClient } from '../github-sync/github-client'
 import { GitHubHistoryStore } from '../github-sync/history-store'
 import { writePreference } from '../storage/preference-events'
@@ -49,7 +49,7 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
   const store = new IndexedDbMarketDataStore()
   const requestGuard = createBrowserRequestGuard()
   const client = new BinanceRestClient(savedBaseUrl(), fetch, Date.now, undefined, requestGuard)
-  const defaultGitHubClient = createDefaultGitHubClient(cloudToken) ?? new GitHubContentsClient(defaultStorageTarget())
+  const defaultGitHubClient = new GitHubContentsClient(defaultStorageTarget(), cloudToken)
   const service = new MarketDataService(client, store, {
     archives: new BinanceArchiveClient(),
     cloud: new GitHubHistoryStore(defaultGitHubClient),

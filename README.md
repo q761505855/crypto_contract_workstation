@@ -191,7 +191,7 @@ Supertrend 是本项目通过 KLineCharts 自定义指标接口实现的扩展�
 3. 默认仓库无需填写信息；历史和应用配置自动同步使用内置构建授权，保留“应用配置”手动比较、上传和恢复入口；
 4. 也可填入其他已有仓库及 Token，继续使用旧的仓库根目录存档；修改默认共享仓库的分支时仍保持当前项目目录隔离；
 5. 拉取会先校验 `manifest.json`、文件大小和 SHA-256，全部通过后才合并到本地；
-6. 默认授权优先使用本机 `.env.local` 或 Pages 构建 Secret；新拉取的代码没有本机 Token 时，启动会自动读取已发布 Pages 的 `cloud-connection.json`，无需手动填写。连接文件由 Pages 构建生成，明文 Token 不提交到 Git，避免 GitHub 自动撤销公开提交的 Token。手动输入的 Token 只保留在页面内存，“清除手动 Token”不影响默认连接。凭据不进入配置备份、云端业务数据或日志。
+6. 本地开发和线上页面启动时，都从已发布 Pages 的 `cloud-connection.json` 读取默认云同步 Token。连接文件由 Pages 构建生成，明文 Token 不提交到 Git，避免 GitHub 自动撤销公开提交的 Token。手动输入的 Token 只保留在页面内存，“清除手动 Token”不影响默认连接。凭据不进入配置备份、云端业务数据或日志。
 
 IndexedDB 是运行时缓存，GitHub 同时承担按需历史读取和存档。新行情按项目内相对路径
 `data/market-history/{symbol}/1m/{year}/{month}.json.gz` 保存，兼容旧 `market-data/` 分片和多周期 JSON 存档。
@@ -246,7 +246,11 @@ npm run build
 
 项目不需要后端，不接受币安 API Key，也不会发送真实订单。
 
-Pages 正式构建使用仓库 Actions Secret `CLOUD_STORAGE_TOKEN`，该值继续用于生成正式云端连接文件。最终产物同时提供 `cloud-connection.json` 供新拉取的代码自动连接；拉取后安装依赖并运行 `npm run dev` 即可，首次连接需要联网且 Pages 已成功发布。连接文件不可用、格式非法或请求超过 5 秒时，界面继续启动并保留本地操作和公开读取能力。轮换 Token 时更新 Actions Secret 并重新发布；已有本机 `.env.local` 的覆盖值也需更新。手动浏览器回归构建使用专用假Token，与正式发布构建分开。
+日常发布直接推送 `main` 即可。GitHub Actions 自动读取仓库里已配置的 `CLOUD_STORAGE_TOKEN`，本机无需 `.env.local`。首次设置或更换 Token 时，在代码仓库的 Settings → Secrets and variables → Actions 更新 `CLOUD_STORAGE_TOKEN`，然后重新运行 Deploy GitHub Pages 工作流。GitHub 会自动撤销推送到公开仓库的有效个人访问 Token，因此源码和 Git 提交里只放普通配置。
+
+如果需要等待部署并检查线上 Token 能否通过 GitHub 认证，可以运行 `npm run publish:pages`。这个命令使用已登录的 GitHub CLI 查看部署状态，当前提交已推送时会触发重新部署。
+
+当前 Pages 产物包含可公开读取的 `cloud-connection.json`，其中带有同步 Token。部署新 Token 后，刷新本地或线上页面即可读取新值。连接文件不可用、格式非法或请求超过 5 秒时，界面继续启动并保留本地操作和公开读取能力。浏览器回归测试使用专用假 Token 和模拟的远端连接文件请求。
 
 ## 文档
 

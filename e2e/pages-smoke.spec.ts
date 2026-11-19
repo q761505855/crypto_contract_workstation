@@ -1,18 +1,25 @@
 import { expect, test } from '@playwright/test'
+import { PUBLISHED_CLOUD_CONNECTION_URL } from '../src/github-sync/default-storage'
+import { mockCloudConnection } from './cloud-connection-fixture'
 
 test('publishes the isolated connection and authenticates cloud requests without manual input', { tag: '@release' }, async ({ page, request, baseURL }) => {
   const connection = await request.get(new URL('cloud-connection.json', baseURL!).href)
   expect(connection.ok()).toBe(true)
-  expect(await connection.json()).toEqual({ schemaVersion: 1, project: 'crypto-contract-workstation', token: 'e2e-mock-storage-token' })
+  const published = await connection.json()
+  expect(published).toEqual(mockCloudConnection)
   const authorization: (string | undefined)[] = []
   await page.route(/^https:\/\//, route => {
     if (route.request().url().startsWith('https://api.github.com/')) authorization.push(route.request().headers().authorization)
     return route.fulfill({ status: 404, json: { message: 'Not Found' } })
   })
+  await page.route(PUBLISHED_CLOUD_CONNECTION_URL, route => route.fulfill({
+    headers: { 'access-control-allow-origin': '*' },
+    json: published,
+  }))
   await page.goto('./')
   await expect(page.getByRole('heading', { level: 1 })).toContainText('工作站')
   expect(authorization.length).toBeGreaterThan(0)
-  expect(authorization.every(value => value === 'Bearer e2e-mock-storage-token')).toBe(true)
+  expect(authorization.every(value => value === `Bearer ${mockCloudConnection.token}`)).toBe(true)
 })
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {

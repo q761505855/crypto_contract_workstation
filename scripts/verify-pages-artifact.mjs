@@ -239,9 +239,12 @@ export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedClou
     if (!allowTestProbe && /__enableViewportProbe|__viewportTestAdapter/.test(content)) {
       problems.push(`Browser-test instrumentation found in ${relative(artifactDirectory, file)}`)
     }
-    // This personal application explicitly embeds its configured cloud token.
-    // Exempt that exact value only; continue detecting every unrelated secret.
-    const checkedContent = embeddedCloudToken.length >= 20 ? content.replaceAll(embeddedCloudToken, '') : content
+    const artifactPath = relative(artifactDirectory, file)
+    const containsCloudToken = embeddedCloudToken && content.includes(embeddedCloudToken)
+    if (containsCloudToken && artifactPath !== 'cloud-connection.json') {
+      problems.push(`Cloud token found outside cloud-connection.json in ${artifactPath}`)
+    }
+    const checkedContent = containsCloudToken ? content.replaceAll(embeddedCloudToken, '') : content
     for (const value of findSecretLikeValues(checkedContent)) {
       problems.push(
         `Secret-like value "${value}" found in ${relative(artifactDirectory, file)}`,
@@ -319,7 +322,7 @@ export async function verifyPagesArtifact(distDirectory = 'dist', { embeddedClou
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const env = loadEnv('production', process.cwd(), '')
-  verifyPagesArtifact('dist', {embeddedCloudToken:env.VITE_GITHUB_TOKEN ?? '', allowTestProbe:env.E2E_CHART_PROBE === '1', requireCloudConnection:env.REQUIRE_CLOUD_CONNECTION === '1'}).then(
+  verifyPagesArtifact('dist', {embeddedCloudToken:process.env.CLOUD_STORAGE_TOKEN?.trim() ?? '', allowTestProbe:env.E2E_CHART_PROBE === '1', requireCloudConnection:env.REQUIRE_CLOUD_CONNECTION === '1'}).then(
     () => {
       console.log('GitHub Pages artifact verification passed.')
     },
