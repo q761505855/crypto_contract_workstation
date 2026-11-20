@@ -10,7 +10,7 @@ export function toChartCandle(candle: MarketCandle): KLineData {
     low: Number(low),
     close: Number(close),
     ...(source === 'ctrader'
-      ? { volume: tickVolume, volumeKind: 'quotes' }
+      ? { volume: tickVolume, volumeKind: 'quotes', ctraderClosed: candle.isClosed }
       : { volume: Number(candle.volume), turnover: Number(candle.quoteVolume) }),
   }
 }

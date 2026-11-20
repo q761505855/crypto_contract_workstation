@@ -5,10 +5,14 @@ import { installViewportProbe } from './viewport-probe'
 const config = { clientId: 'test-app', clientSecret: 'test-secret', accessToken: 'test-access', accountId: 17 }
 const minute = 60_000
 
-async function connectFixture(page: Page, multipleAccounts = false) {
+async function connectFixture(page: Page, multipleAccounts = false, { initialQuote = true } = {}) {
   const messages: { type: number; accountId?: number; period?: number; symbolId?: number; live: boolean }[] = []
   const legacyRequests: string[] = []
   let currentSocket: WebSocketRoute | undefined
+  let currentAccount = config.accountId
+  const pushSpot = (payload: object) => currentSocket?.send(JSON.stringify({ payloadType: 2131,
+    payload: { ctidTraderAccountId: currentAccount, symbolId: 10, ...payload },
+  }))
   await page.route('**/ctrader-connection.json', route => route.fulfill({ json: config }))
   const cors = { 'access-control-allow-origin': '*' }
   await page.route('**/cloud-connection.json', route => route.fulfill({ status: 404, headers: cors, body: '' }))
@@ -37,7 +41,7 @@ async function connectFixture(page: Page, multipleAccounts = false) {
           { ...account, ctidTraderAccountId: 18, traderLogin: 2018 },
           { ...account, ctidTraderAccountId: 19, traderLogin: 2019, isLive: true },
         ] : [account] }); break
-        case 2102: activeAccount = payload.ctidTraderAccountId; response(2103, { ctidTraderAccountId: activeAccount }); break
+        case 2102: currentAccount = activeAccount = payload.ctidTraderAccountId; response(2103, { ctidTraderAccountId: activeAccount }); break
         case 2112: response(2113, { ...accountPayload, asset: assets }); break
         case 2114: response(2115, { ...accountPayload, symbol: symbols }); break
         case 2116: response(2117, { ...accountPayload, symbol: (payload.symbolId as number[]).map(symbolId => ({
@@ -58,14 +62,14 @@ async function connectFixture(page: Page, multipleAccounts = false) {
         case 2129: response(2130, accountPayload); break
         case 2135: {
           response(2165, accountPayload)
-          socket.send(JSON.stringify({ payloadType: 2131, payload: { ...accountPayload, symbolId: payload.symbolId, bid: 110050, ask: 110060, timestamp: Date.now() } }))
+          if (initialQuote) pushSpot({ symbolId: payload.symbolId, bid: 110050, ask: 110060 })
           break
         }
         case 2136: response(2166, accountPayload); break
       }
     })
   })
-  return { messages, legacyRequests, disconnect: () => currentSocket?.close({ code: 1011, reason: 'test outage' }) }
+  return { messages, legacyRequests, pushSpot, disconnect: () => currentSocket?.close({ code: 1011, reason: 'test outage' }) }
 }
 
 test('loads cTrader native intervals and keeps cloud sync limited to application archives', async ({ page }) => {
@@ -143,6 +147,36 @@ test('reloads native history after a live connection is restored', async ({ page
   disconnect()
   await expect.poll(() => messages.filter(message => message.type === 2100).length).toBe(2)
   await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start + 4 * minute - 30_000)
+})
+
+test('updates the open 15m candle on quotes and replaces it with a late official close', async ({ page }) => {
+  const start = Date.UTC(2026, 10, 20, 14)
+  await page.clock.setFixedTime(new Date(start + 5 * minute))
+  const { messages, pushSpot } = await connectFixture(page, false, { initialQuote: false })
+  const readChart = await installViewportProbe(page)
+  await page.goto('./')
+  await expect(page.locator('.candle-summary')).toBeVisible()
+  await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start)
+  await page.getByRole('button', { name: '实时行情', exact: true }).click()
+  await expect.poll(() => messages.some(message => message.type === 2135 && message.period === 7)).toBe(true)
+
+  pushSpot({ timestamp: start + 5 * minute, bid: 110120, trendbar: [
+    { utcTimestampInMinutes: start / minute, period: 7, low: 110000, deltaOpen: 20, deltaHigh: 70, deltaClose: 50, volume: 42 },
+  ] })
+  await expect.poll(async () => (await readChart()).last).toMatchObject({
+    timestamp: start, open: 1.1002, low: 1.1, high: 1.1012, close: 1.1012,
+  })
+  await expect(page.getByTestId('live-status')).toContainText('进行中')
+  await expect(page.locator('.candle-summary')).toContainText('1.10120')
+
+  await page.clock.setFixedTime(new Date(start + 15 * minute + 1000))
+  pushSpot({ timestamp: start + 15 * minute, bid: 110110 })
+  await expect.poll(async () => (await readChart()).last).toMatchObject({ timestamp: start + 15 * minute, close: 1.1011 })
+  pushSpot({ timestamp: start + 15 * minute + 1000, trendbar: [
+    { utcTimestampInMinutes: start / minute, period: 7, low: 110000, deltaOpen: 20, deltaHigh: 150, deltaClose: 130, volume: 51 },
+  ] })
+  await expect.poll(async () => (await readChart()).previous).toMatchObject({ timestamp: start, close: 1.1013, volume: 51 })
+  expect((await readChart()).last?.close).toBe(1.1011)
 })
 
 test('restores explicit empty and legacy settings in the experiment without overwriting production preferences', async ({ page }) => {

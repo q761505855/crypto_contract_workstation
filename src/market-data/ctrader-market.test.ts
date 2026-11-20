@@ -198,10 +198,11 @@ describe('cTrader market', () => {
     expect(await service.isMarketOpen('EURUSD', Date.UTC(2026, 10, 24, 6))).toBe(true)
   })
 
-  it('keeps ask-only quotes current when spot events carry a request correlation ID', async () => {
+  it('uses bids for forming bars while retaining the initial ask-only display', async () => {
     const { service, sockets } = setup()
     const onStatus = vi.fn()
-    const stop = service.subscribe({ symbol: 'EURUSD', timeframe: '1m', onCandle: vi.fn(), onStatus })
+    const onCandle = vi.fn()
+    const stop = service.subscribe({ symbol: 'EURUSD', timeframe: '1m', onCandle, onStatus })
     await vi.waitFor(() => expect(sockets[0]?.sent.some(message => message.payloadType === 2135)).toBe(true))
     const spot = sockets[0].sent.find(message => message.payloadType === 2127)!
     for (const ask of [105045, 105120]) {
@@ -211,6 +212,13 @@ describe('cTrader market', () => {
       })
     }
     expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ lastPrice: '1.05120' }))
+    expect(onCandle).not.toHaveBeenCalled()
+    for (const quote of [{ bid: 105100, timestamp: current + 1000 }, { ask: 105150, timestamp: current + 2000 },
+      { bid: 105090, timestamp: current }]) {
+      sockets[0].receive({ payloadType: 2131, payload: { ctidTraderAccountId: accountId, symbolId, ...quote } })
+    }
+    expect(onCandle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ close: '1.05100', isClosed: false }))
+    expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ lastPrice: '1.05100', candleClosed: false }))
     stop()
   })
 

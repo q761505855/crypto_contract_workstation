@@ -2,7 +2,7 @@ import type { Datafeed, DatafeedSubscribeCallback, Period, SymbolInfo } from '@k
 import type { KLineData } from 'klinecharts'
 import { CTRADER_TIMEFRAMES, alignOpenTime, shiftOpenTime } from './intervals'
 import { INITIAL_LIVE_STATUS, type LiveMarketStatus } from './live-models'
-import { toSymbolInfo, type MarketSelection } from './models'
+import { toSymbolInfo, type MarketCandle, type MarketSelection } from './models'
 import type { CTraderMarketService } from './ctrader-market'
 import { toChartCandle } from './chart-candle'
 
@@ -24,6 +24,7 @@ export class CTraderDatafeed implements Datafeed {
   private hasConnected = false
   private status = INITIAL_LIVE_STATUS
   private historySequence = 0
+  private historyCandle?: MarketCandle
   private readonly subscriptions = new Map<string, ChartSubscription>()
 
   constructor(private readonly service: CTraderMarketService) {}
@@ -92,6 +93,10 @@ export class CTraderDatafeed implements Datafeed {
       }
       signal?.throwIfAborted()
       if (notifySelection && sequence !== this.historySequence) return []
+      if (notifySelection && end >= Date.now() - 60_000) {
+        const last = candles.at(-1)
+        this.historyCandle = last?.isClosed === false ? last : undefined
+      }
       publish('')
       return candles.map(toChartCandle)
     } catch (reason) {
@@ -127,6 +132,11 @@ export class CTraderDatafeed implements Datafeed {
     subscription.stop = this.service.subscribe({
       symbol: subscription.symbol.ticker,
       timeframe: subscription.period.text,
+      getHistoryCandle: () => {
+        const candle = this.historyCandle
+        return candle && this.selectionKey(subscription.symbol, subscription.period) === `${candle.symbol.toUpperCase()}:${candle.timeframe}`
+          ? candle : undefined
+      },
       onCandle: candle => {
         if (active()) subscription.callback(toChartCandle(candle))
       },

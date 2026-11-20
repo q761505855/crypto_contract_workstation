@@ -2,7 +2,7 @@ import {
   CTraderClient, CTraderMessage, cTraderInteger, cTraderObject, waitForCTraderResult,
   type CTraderPayload,
 } from './ctrader-client'
-import { CTRADER_TIMEFRAMES, isCTraderTimeframe, nextOpenTime, type CTraderTimeframe } from './intervals'
+import { CTRADER_TIMEFRAMES, alignOpenTime, isCTraderTimeframe, nextOpenTime, type CTraderTimeframe } from './intervals'
 import { INITIAL_LIVE_STATUS, type LiveMarketStatus } from './live-models'
 import { normalizeMarketTicker, type MarketCandle, type MarketSymbol } from './models'
 
@@ -62,6 +62,7 @@ export interface CTraderMarketSubscription {
   symbol: string
   timeframe: string
   onCandle(candle: MarketCandle): void
+  getHistoryCandle?(): MarketCandle | undefined
   onStatus?(status: LiveMarketStatus): void
 }
 
@@ -70,6 +71,9 @@ interface Subscription {
   timeframe: CTraderTimeframe
   status: LiveMarketStatus
   lastClosedOpen?: number
+  lastBid?: string
+  lastBidTime?: number
+  forming?: MarketCandle
 }
 
 function objects(value: unknown): CTraderPayload[] {
@@ -124,6 +128,33 @@ function readTrendbar(
     isClosed: closeTime < now, tickVolume,
     volume: '', quoteVolume: '', tradeCount: 0,
   }
+}
+
+function updateFormingCandle(
+  subscription: Subscription, instrument: Instrument, timestamp: number, priceText: string, nativeUpdate?: MarketCandle,
+): void {
+  const { timeframe } = subscription
+  const openTime = nativeUpdate?.openTime ?? alignOpenTime(timestamp, timeframe, 'floor')
+  const previous = subscription.forming
+  if (openTime <= (subscription.lastClosedOpen ?? -1) || (previous && openTime < previous.openTime)) return
+  const current = previous?.openTime === openTime ? previous : undefined
+  if (!current && isInstrumentOpen(instrument.details, timestamp) === false) return
+  const snapshot = subscription.input.getHistoryCandle?.()
+  const native = nativeUpdate ?? (snapshot?.openTime === openTime ? snapshot : undefined)
+  const price = Number(priceText)
+  const digits = instrument.symbol.pricePrecision
+  const candle: MarketCandle = {
+    source: 'ctrader', symbol: instrument.symbol.symbol, timeframe, openTime,
+    closeTime: nextOpenTime(openTime, timeframe) - 1, isClosed: false,
+    open: native?.open ?? current?.open ?? priceText,
+    high: Math.max(price, Number(native?.high ?? priceText), Number(current?.high ?? priceText)).toFixed(digits),
+    low: Math.min(price, Number(native?.low ?? priceText), Number(current?.low ?? priceText)).toFixed(digits),
+    close: priceText, tickVolume: native?.tickVolume ?? current?.tickVolume, volume: '', quoteVolume: '', tradeCount: 0,
+  }
+  if (current && candle.open === current.open && candle.high === current.high && candle.low === current.low &&
+    candle.close === current.close && candle.tickVolume === current.tickVolume) return
+  subscription.forming = candle
+  subscription.input.onCandle(candle)
 }
 
 const exchangeClocks = new Map<string, Intl.DateTimeFormat>()
@@ -487,6 +518,7 @@ export class CTraderMarketService {
     if (id === undefined) return
     const now = this.now()
     const timestamp = cTraderInteger(payload.timestamp)
+    const time = timestamp ?? now
     const rawBid = cTraderInteger(payload.bid)
     const rawAsk = cTraderInteger(payload.ask)
     const trendbars = objects(payload.trendbar)
@@ -499,26 +531,43 @@ export class CTraderMarketService {
       const period = cTraderPeriod(subscription.timeframe)
       let closed = false
       let invalid = false
+      let nativeUpdate: MarketCandle | undefined
       for (const raw of trendbars) {
         if (decodePeriod(raw.period ?? 1) !== period) continue
         let candle: MarketCandle
         try {
-          // Spot events expose the most recently closed native bar.
-          candle = readTrendbar(raw, instrument.symbol, subscription.timeframe, Infinity)
+          candle = readTrendbar(raw, instrument.symbol, subscription.timeframe, time)
         } catch {
           invalid = true
           continue
         }
+        // Some spot payloads also include a snapshot of the active interval.
+        if (!candle.isClosed) {
+          if (candle.openTime <= time) nativeUpdate = candle
+          continue
+        }
         if (subscription.lastClosedOpen !== undefined && candle.openTime <= subscription.lastClosedOpen) continue
         subscription.lastClosedOpen = candle.openTime
+        if (subscription.forming && subscription.forming.openTime <= candle.openTime) subscription.forming = undefined
         subscription.input.onCandle(candle)
         closed = true
       }
+      const lastBidTime = subscription.lastBidTime ?? -1
+      if (time >= lastBidTime) {
+        if (bid !== undefined) {
+          subscription.lastBid = bid
+          subscription.lastBidTime = time
+          updateFormingCandle(subscription, instrument, time, bid, nativeUpdate)
+        } else if (nativeUpdate) {
+          const price = lastBidTime >= nativeUpdate.openTime ? subscription.lastBid ?? nativeUpdate.close : nativeUpdate.close
+          updateFormingCandle(subscription, instrument, time, price, nativeUpdate)
+        }
+      }
       this.publishSubscriptionStatus(subscription, {
-        lastPrice: bid ?? ask ?? subscription.status.lastPrice,
-        lastMessageTime: timestamp ?? now,
+        lastPrice: subscription.lastBid ?? ask ?? subscription.status.lastPrice,
+        lastMessageTime: time,
         latencyMs: timestamp === undefined ? null : Math.max(0, now - timestamp),
-        candleClosed: closed ? true : subscription.status.candleClosed,
+        candleClosed: subscription.forming && time <= subscription.forming.closeTime ? false : closed ? true : subscription.status.candleClosed,
         warning: invalid ? 'cTrader 返回了无效的实时 K 线' : subscription.status.warning === MARKET_CLOSED ? MARKET_CLOSED : '',
       })
     }
