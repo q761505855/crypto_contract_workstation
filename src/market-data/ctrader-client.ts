@@ -45,6 +45,8 @@ export const CTraderMessage = {
   GetTrendbars: 2137,
   GetTrendbarsResponse: 2138,
   Error: 2142,
+  GetTicks: 2145,
+  GetTicksResponse: 2146,
   TokenInvalidated: 2147,
   ClientDisconnect: 2148,
   AccountList: 2149,
@@ -63,6 +65,7 @@ const MARKET_REQUESTS = {
   [CTraderMessage.SubscribeTrendbar]: CTraderMessage.SubscribeTrendbarResponse,
   [CTraderMessage.UnsubscribeTrendbar]: CTraderMessage.UnsubscribeTrendbarResponse,
   [CTraderMessage.GetTrendbars]: CTraderMessage.GetTrendbarsResponse,
+  [CTraderMessage.GetTicks]: CTraderMessage.GetTicksResponse,
 } as const
 
 export type CTraderPayload = Record<string, unknown>

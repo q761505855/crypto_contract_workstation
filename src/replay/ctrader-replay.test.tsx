@@ -49,6 +49,39 @@ function stores(saved?: ReplaySession) {
 }
 
 describe('cTrader replay', () => {
+  it('steps each same-millisecond quote, restores its ordinal and builds a 5s step from bid quotes', async () => {
+    const at = monday + hour
+    const quotes = [
+      { timestamp: at + 100, price: '1.10100' },
+      { timestamp: at + 100, price: '1.10200' },
+      { timestamp: at + 200, price: '1.10300' },
+      { timestamp: at + 5100, price: '1.10500' },
+      { timestamp: at + 5400, price: '1.10400' },
+    ]
+    const market = { ...service([mondayHour]), loadTicks: vi.fn(async (_symbol: string, from: number, to: number) =>
+      quotes.filter(quote => quote.timestamp >= from && quote.timestamp <= to)) }
+    const runtime = { service: market, replaySessions: stores() }
+    const first = renderHook(() => useCTraderReplayController(runtime, 'tick'))
+    await waitFor(() => expect(first.result.current.busy).toBe(false))
+    await act(() => first.result.current.createSession({ symbol, period: h1, startTime: monday, endTime: at + 10_000 }))
+    await act(() => first.result.current.next())
+    expect(first.result.current.getCurrentCandle()?.close).toBe('1.10100')
+    await act(() => first.result.current.next())
+    expect(first.result.current.session).toMatchObject({ cursorTimeframe: 'tick', cursorTickIndex: 1, currentTime: at + 100 })
+    expect(first.result.current.getCurrentCandle()?.close).toBe('1.10200')
+    first.unmount()
+    const restored = renderHook(() => useCTraderReplayController(runtime, 'tick'))
+    await waitFor(() => expect(restored.result.current.getCurrentCandle()?.close).toBe('1.10200'))
+    await act(() => restored.result.current.previous())
+    expect(restored.result.current.getCurrentCandle()?.close).toBe('1.10100')
+    await act(() => restored.result.current.next('5s'))
+    expect(restored.result.current.getCurrentCandle()).toMatchObject({
+      timeframe: '5s', openTime: at + 5000, closeTime: at + 9999,
+      open: '1.10500', high: '1.10500', low: '1.10400', close: '1.10400', tickVolume: 2,
+    })
+    expect(restored.result.current.session?.cursorTickIndex).toBeUndefined()
+  })
+
   it('skips the weekend and sends only the selected native candle to simulation', async () => {
     const market = service([fridayBar, mondayFirst, mondaySecond, mondayHour])
     const replaySessions = stores()

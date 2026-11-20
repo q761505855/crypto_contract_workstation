@@ -1,6 +1,6 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 import { alignOpenTime, klineCloseBoundary, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
-import type { MarketTimeframe } from '../market-data/intervals'
+import type { CTraderReplayStepPeriod } from './step-periods'
 
 export type ReplaySpeed = 1 | 2 | 5 | 10
 export type ReplayStatus = 'paused' | 'completed'
@@ -35,8 +35,10 @@ export interface ReplaySession {
   visibleUntil?: number
   /** Missing on legacy Binance sessions. */
   marketSource?: 'ctrader' | 'binance'
-  /** cTrader native period of the current cursor, which can differ from the starting chart period. */
-  cursorTimeframe?: MarketTimeframe
+  /** cTrader step that produced the current cursor. */
+  cursorTimeframe?: CTraderReplayStepPeriod
+  /** Zero-based quote order within currentTime when the cursor is on a Tick. */
+  cursorTickIndex?: number
   currentIndex: number
   candleCount: number
   speed: ReplaySpeed

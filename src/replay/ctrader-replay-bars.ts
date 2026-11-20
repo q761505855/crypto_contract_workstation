@@ -1,7 +1,9 @@
 import { isCTraderTimeframe, shiftOpenTime, type CTraderTimeframe } from '../market-data/intervals'
 import type { MarketCandle } from '../market-data/models'
+import type { CTraderTick } from '../market-data/ctrader-market'
 
 export interface CTraderReplayMarket {
+  loadTicks?(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<CTraderTick[]>
   loadCandles(
     kind: 'trade',
     symbol: string,

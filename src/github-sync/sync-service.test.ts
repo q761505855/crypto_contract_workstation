@@ -260,13 +260,14 @@ describe('GitHubSyncService', () => {
     const original = remote.files.get(legacyPath)
     const value = backup()
     const prefs = { ...value.data.preferences!, favoriteSymbols: ['EURUSD'], pinnedPeriods: ['2m', '6h'],
-      replayStepPeriod: '10m', selectedSymbol: { ticker: 'EURUSD', exchange: 'CTRADER', pricePrecision: 5 } } as const
+      replayStepPeriod: 'tick', selectedSymbol: { ticker: 'EURUSD', exchange: 'CTRADER', pricePrecision: 5 } } as const
     value.data.preferences = { ...prefs, favoriteSymbols: [...prefs.favoriteSymbols], pinnedPeriods: [...prefs.pinnedPeriods] }
     const nativeSession = { ...ReplayEngine.create({
       symbol: { ticker: 'EURUSD', exchange: 'CTRADER' },
       period: { multiplier: 1, timespan: 'minute', text: '1m' }, startTime: 0, endTime: 59_999,
     }, [{ ...candle(0), symbol: 'EURUSD' }]).snapshot(),
-    endTime: 59_999, marketSource: 'ctrader', cursorTimeframe: '1m', visibleUntil: 60_000 } as const
+    endTime: 120_000, marketSource: 'ctrader', cursorTimeframe: 'tick', cursorTickIndex: 0,
+    currentTime: 60_123, visibleUntil: 60_124, candleCount: 2, currentIndex: 1, status: 'paused' } as const
     value.data.sessions = [nativeSession]
     value.data.simulations = [SimulationEngine.create(nativeSession).snapshot()]
     const backups = new MemoryBackupService(value)
@@ -296,6 +297,8 @@ describe('GitHubSyncService', () => {
     const restore = new GitHubSyncService(target, Date.now, { scope: 'ctrader' })
     await restore.pull(client(remote))
     const beforeInvalidPull = (await target.exportAll()).data
+    expect(beforeInvalidPull.preferences).toEqual(value.data.preferences)
+    expect(beforeInvalidPull.sessions).toEqual([nativeSession])
     const path = `sessions/${nativeSession.id}.json`
     const invalid = encoder.encode(JSON.stringify({ ...nativeSession, visibleUntil: nativeSession.visibleUntil - 1 }))
     remote.files.get(path)!.bytes = invalid
@@ -374,11 +377,14 @@ describe('GitHubSyncService', () => {
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('true')
     sourceStorage.setItem('chart.showTradeOverlays.v1', 'false')
 
-    sourceStorage.setItem('replay.stepPeriod.v1', '"1m"')
-    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
-    await source.upload(client(remote), 'stop', selection)
-    await target.pull(client(remote))
-    expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1m"')
+    for (const replayStepPeriod of ['1m', '1s', '5s', '15s', 'tick'] as const) {
+      sourceStorage.setItem('replay.stepPeriod.v1', JSON.stringify(replayStepPeriod))
+      await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+      await source.writeConfig(client(remote), { ...complete, replayStepPeriod }, await source.readConfig(client(remote)))
+      expect((await target.readConfig(client(remote))).preferences).toEqual({ ...complete, replayStepPeriod })
+      await target.pull(client(remote))
+      expect((await targetBackups.exportPreferences()).data.preferences).toEqual({ ...complete, replayStepPeriod })
+    }
     sourceStorage.setItem('replay.stepPeriod.v1', '"1M"')
 
     sourceStorage.setItem('chart.candleType.v1', '"candle_solid"')
@@ -426,6 +432,12 @@ describe('GitHubSyncService', () => {
     expect(targetStorage.getItem('marketData.ctraderAccount.v1')).toBe('"live:19"')
 
     const before = (await targetBackups.exportAll()).data
+    for (const replayStepPeriod of [null, '', 0, false, '10s']) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', replayStepPeriod })
+      await expect(target.readConfig(client(remote))).rejects.toThrow('replayStepPeriod')
+      await expect(target.pull(client(remote))).rejects.toThrow('replayStepPeriod')
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const ctraderAccount of [null, '', false, 0, {}, 'live:0', 'demo:9007199254740992']) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', ctraderAccount })
       await expect(target.readConfig(client(remote))).rejects.toThrow('ctraderAccount')

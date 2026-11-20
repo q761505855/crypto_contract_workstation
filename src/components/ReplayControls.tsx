@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MarketSelection } from '../market-data/models'
-import { CTRADER_TIMEFRAMES, isCTraderTimeframe, type MarketTimeframe } from '../market-data/intervals'
+import { CTRADER_TIMEFRAMES } from '../market-data/intervals'
 import type {
   ReplaySession,
   ReplaySpeed,
@@ -8,6 +8,7 @@ import type {
 import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil } from '../replay/models'
 import type { ReplayController } from '../replay/useReplayController'
 import { validateReplayStepPeriod } from '../replay/step-preferences'
+import { FINE_STEP_PERIODS, isCTraderReplayStepPeriod, isFineStepPeriod, type ReplayStepPeriod } from '../replay/step-periods'
 import { MAX_ADJUSTABLE_LEVERAGE } from '../simulation/models'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
@@ -15,9 +16,9 @@ import { formatDisplayTime, formatInputWeekday } from '../format-display-time'
 
 interface ReplayControlsProps {
   selection: MarketSelection
-  replay: ReplayController
-  stepPeriod: MarketTimeframe
-  onStepPeriodChange: (period: MarketTimeframe) => void
+  replay: ReplayController<ReplayStepPeriod>
+  stepPeriod: ReplayStepPeriod
+  onStepPeriodChange: (period: ReplayStepPeriod) => void
   showTradeOverlays: boolean
   onTradeOverlaysChange: (visible: boolean) => void
   interactionLocked?: boolean
@@ -34,7 +35,7 @@ function sessionName(session: ReplaySession): string {
 
 const HOLD_TO_PLAY_MS = 450
 
-function NextCandleButton({ replay, disabled }: { replay: ReplayController; disabled: boolean }) {
+function NextCandleButton({ replay, disabled, label }: { replay: ReplayController<ReplayStepPeriod>; disabled: boolean; label: string }) {
   const { next, play, pause } = replay
   const [pressing, setPressing] = useState(false)
   const press = useRef<{ pointerId: number; timer: number; playing: boolean } | null>(null)
@@ -89,7 +90,7 @@ function NextCandleButton({ replay, disabled }: { replay: ReplayController; disa
       if (disabled || press.current !== null || (event.detail > 0 && suppressClick.current)) return
       void next()
     }}
-  >下一根</button>
+  >{label}</button>
 }
 
 export function ReplayControls({
@@ -287,6 +288,9 @@ export function ReplayControls({
 
   const session = replay.session
   const native = session.marketSource === 'ctrader'
+  const onTick = session.cursorTimeframe === 'tick'
+  const currentTime = onTick ? session.currentTime : sessionVisibleUntil(session) - (native ? 0 : 60_000)
+  const precision = onTick ? 'millisecond' : isFineStepPeriod(session.cursorTimeframe) ? 'second' : 'minute'
   return (
     <section className="replay-controls" data-testid="replay-controls">
       <TimeJumpControl compact
@@ -296,12 +300,13 @@ export function ReplayControls({
       />
       <span className="replay-position">
         {session.symbol.ticker} · 当前：
-        {formatDisplayTime(sessionVisibleUntil(session) - (native ? 0 : 60_000))} · {native
+        {formatDisplayTime(currentTime, undefined, precision)} · {native
           ? <span>第 {session.currentIndex + 1} 步</span>
           : <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>}
       </span>
       <label className="replay-step-period">步进
-        <select aria-label="步进周期" disabled={interactionLocked} value={isCTraderTimeframe(stepPeriod) ? stepPeriod : '1m'} onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
+        <select aria-label="步进周期" disabled={interactionLocked} value={isCTraderReplayStepPeriod(stepPeriod) ? stepPeriod : '1m'} onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
+          {FINE_STEP_PERIODS.map(period => <option key={period} value={period}>{period === 'tick' ? '逐笔 Tick' : period}</option>)}
           {CTRADER_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
         </select>
       </label>
@@ -314,11 +319,12 @@ export function ReplayControls({
         onClick={() => void replay.previous()}
         type="button"
       >
-        上一根
+        {stepPeriod === 'tick' ? '上一笔' : '上一根'}
       </button>
       <NextCandleButton
         key={session.id}
         replay={replay}
+        label={stepPeriod === 'tick' ? '下一笔' : '下一根'}
         disabled={interactionLocked || session.status === 'completed'}
       />
       <button

@@ -20,6 +20,8 @@ import type { MarketCandle } from '../market-data/models'
 import { validateAdjustableLeverage, validateSimulationConfig } from '../simulation/simulation-engine'
 
 export interface ReplayCandleEvent {
+  /** This quote follows another quote at the same millisecond. */
+  sameTimeTick?: true
   type: 'advance' | 'reset'
   candle: MarketCandle
   /** A later candle in the same step will publish the accumulated state. */
@@ -68,7 +70,7 @@ async function loadMinuteSlice(runtime: LegacyReplayRuntime, symbol: string, fro
   return rows
 }
 
-export interface ReplayController {
+export interface ReplayController<StepPeriod = MarketTimeframe> {
   session: ReplaySession | null
   sessions: ReplaySession[]
   busy: boolean
@@ -79,8 +81,8 @@ export interface ReplayController {
   loadSession(id: string): Promise<void>
   deleteSession(id: string): Promise<void>
   endSession(): Promise<void>
-  next(timeframe?: MarketTimeframe): Promise<void>
-  previous(timeframe?: MarketTimeframe): void | Promise<void>
+  next(timeframe?: StepPeriod): Promise<void>
+  previous(timeframe?: StepPeriod): void | Promise<void>
   reset(): Promise<void>
   jumpToEnd(): Promise<void>
   play(): void

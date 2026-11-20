@@ -45,7 +45,7 @@ import { replaySourceTimeframe, replayVisibleUntil, sessionVisibleUntil, type Re
 import { useCTraderReplayController } from '../replay/useCTraderReplayController'
 import { readReplayStepPeriod, saveReplayStepPeriod } from '../replay/step-preferences'
 import { ctraderReplayChartNeedsReload } from '../replay/ctrader-replay-datafeed'
-import { CTRADER_TIMEFRAMES } from '../market-data/intervals'
+import { isCTraderReplayStepPeriod } from '../replay/step-periods'
 import { classifyRiskPrice, estimateRiskPnl } from '../simulation/risk-price'
 import { useSimulationController } from '../simulation/useSimulationController'
 import type { SimulationTrade } from '../simulation/models'
@@ -80,7 +80,7 @@ function activeSymbol(): MarketSelection['symbol'] {
 
 function activeStepPeriod(): ReturnType<typeof readReplayStepPeriod> {
   const saved = readReplayStepPeriod()
-  return CTRADER_TIMEFRAMES.find(period => period === saved) ?? '1m'
+  return isCTraderReplayStepPeriod(saved) ? saved : '1m'
 }
 
 const connectionLabels: Record<LiveMarketStatus['connection'], string> = {

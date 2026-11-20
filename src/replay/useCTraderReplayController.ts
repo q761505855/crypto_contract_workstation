@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { isCTraderTimeframe, type MarketTimeframe } from '../market-data/intervals'
-import type { MarketCandle } from '../market-data/models'
+import { isCTraderTimeframe } from '../market-data/intervals'
 import { validateAdjustableLeverage, validateSimulationConfig } from '../simulation/simulation-engine'
 import type { ReplaySessionStore } from '../storage/replay-session-store'
 import { CTraderReplayBars, loadClosedReplayBars, type CTraderReplayMarket } from './ctrader-replay-bars'
+import { CTraderReplayTicks, type ReplayPriceCandle } from './ctrader-replay-ticks'
 import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil, type CreateReplaySessionInput, type ReplaySession, type ReplaySpeed } from './models'
+import { isCTraderReplayStepPeriod, isFineStepPeriod, type CTraderReplayStepPeriod, type ReplayStepPeriod } from './step-periods'
 import type { ReplayCandleEvent, ReplayCandleListener, ReplayController } from './useReplayController'
 
 interface CTraderReplayRuntime {
@@ -14,23 +15,24 @@ interface CTraderReplayRuntime {
 
 interface ReplayCursor {
   session: ReplaySession
-  candle: MarketCandle
-  initial: MarketCandle
+  candle: ReplayPriceCandle
+  initial: ReplayPriceCandle
 }
 
 function updateCursor(cursor: ReplayCursor, changes: Partial<ReplaySession>): void {
   cursor.session = { ...cursor.session, ...changes, updatedAt: Date.now() }
 }
 
-function moveCursor(cursor: ReplayCursor, candle: MarketCandle, index: number): void {
+function moveCursor(cursor: ReplayCursor, candle: ReplayPriceCandle, index: number): void {
   cursor.candle = candle
   updateCursor(cursor, {
     currentTime: candle.openTime,
     visibleUntil: candle.closeTime + 1,
-    cursorTimeframe: candle.timeframe as MarketTimeframe,
+    cursorTimeframe: candle.timeframe as CTraderReplayStepPeriod,
+    cursorTickIndex: candle.tickIndex,
     currentIndex: index,
     candleCount: Math.max(cursor.session.candleCount, index + 1),
-    status: candle.closeTime === cursor.session.endTime ? 'completed' : 'paused',
+    status: candle.timeframe !== 'tick' && candle.closeTime === cursor.session.endTime ? 'completed' : 'paused',
   })
 }
 
@@ -38,18 +40,18 @@ function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason)
 }
 
-function stepPeriod(session: ReplaySession, requested?: MarketTimeframe): string {
-  return requested !== undefined && isCTraderTimeframe(requested)
-    ? requested
-    : session.cursorTimeframe ?? session.period.text
+function stepPeriod(session: ReplaySession, requested?: ReplayStepPeriod): CTraderReplayStepPeriod {
+  if (requested !== undefined && isCTraderReplayStepPeriod(requested)) return requested
+  return session.cursorTimeframe ?? (isCTraderTimeframe(session.period.text) ? session.period.text : '1m')
 }
 
 export function useCTraderReplayController(
   runtime: CTraderReplayRuntime,
-  stepTimeframe?: MarketTimeframe,
-): ReplayController {
+  stepTimeframe?: ReplayStepPeriod,
+): ReplayController<ReplayStepPeriod> {
   const { service, replaySessions } = runtime
   const history = useMemo(() => new CTraderReplayBars(service), [service])
+  const ticks = useMemo(() => new CTraderReplayTicks(service, history), [service, history])
   const cursorRef = useRef<ReplayCursor | null>(null)
   const operationRef = useRef<AbortController | null>(null)
   const listeners = useRef(new Set<ReplayCandleListener>())
@@ -60,6 +62,13 @@ export function useCTraderReplayController(
   const [isPlaying, setIsPlaying] = useState(false)
   const [error, setError] = useState('')
   const [preparationStatus, setPreparationStatus] = useState('')
+
+  const findStep = useCallback((
+    symbol: string, timeframe: CTraderReplayStepPeriod, from: number, to: number,
+    direction: 1 | -1, signal: AbortSignal, tickIndex?: number,
+  ): Promise<ReplayPriceCandle | undefined> => isFineStepPeriod(timeframe)
+    ? ticks.find(symbol, timeframe, from, to, direction, signal, tickIndex)
+    : history.find(symbol, timeframe, from, to, direction, signal), [history, ticks])
 
   const remember = useCallback((saved: ReplaySession) => {
     setSessions(current => [saved, ...current.filter(item => item.id !== saved.id)])
@@ -119,14 +128,18 @@ export function useCTraderReplayController(
     const startPeriod = saved.period.text
     const cursorPeriod = saved.cursorTimeframe ?? startPeriod
     const initial = (await loadClosedReplayBars(service, symbol, startPeriod, saved.startTime, saved.startTime, signal))[0]
-    const candle = saved.currentTime === saved.startTime && cursorPeriod === startPeriod
-      ? initial
-      : (await loadClosedReplayBars(service, symbol, cursorPeriod, saved.currentTime, saved.currentTime, signal))[0]
-    if (!initial || !candle || candle.closeTime + 1 !== sessionVisibleUntil(saved)) {
+    let candle: ReplayPriceCandle | undefined = initial
+    if (isFineStepPeriod(cursorPeriod)) {
+      const afterIndex = cursorPeriod === 'tick' ? (saved.cursorTickIndex ?? 0) - 1 : undefined
+      candle = await ticks.find(symbol, cursorPeriod, saved.currentTime, sessionVisibleUntil(saved) - 1, 1, signal, afterIndex)
+    } else if (saved.currentTime !== saved.startTime || cursorPeriod !== startPeriod) {
+      candle = (await loadClosedReplayBars(service, symbol, cursorPeriod, saved.currentTime, saved.currentTime, signal))[0]
+    }
+    if (!initial || !candle || candle.closeTime + 1 !== sessionVisibleUntil(saved) || candle.tickIndex !== saved.cursorTickIndex) {
       throw new Error('cTrader 未返回与存档一致的回放 K 线')
     }
     return { session: saved, candle, initial }
-  }, [service])
+  }, [service, ticks])
 
   useEffect(() => {
     void run('恢复回放会话失败', async signal => {
@@ -182,7 +195,7 @@ export function useCTraderReplayController(
       const next: ReplaySession = {
         schemaVersion: 2,
         marketSource: 'ctrader',
-        cursorTimeframe: candle.timeframe as MarketTimeframe,
+        cursorTimeframe: candle.timeframe as CTraderReplayStepPeriod,
         id: crypto.randomUUID(),
         symbol: { ...input.symbol },
         period: { ...input.period },
@@ -238,13 +251,15 @@ export function useCTraderReplayController(
     setSessions(current => current.filter(item => item.id !== id))
   }), [replaySessions, run])
 
-  const advance = useCallback(async (cursor: ReplayCursor, timeframe: string, signal: AbortSignal) => {
+  const advance = useCallback(async (cursor: ReplayCursor, timeframe: CTraderReplayStepPeriod, signal: AbortSignal) => {
     const { session: saved } = cursor
-    const candle = await history.find(saved.symbol.ticker, timeframe, sessionVisibleUntil(saved), saved.endTime, 1, signal)
+    const tickIndex = timeframe === 'tick' ? saved.cursorTickIndex : undefined
+    const from = tickIndex === undefined ? sessionVisibleUntil(saved) : saved.currentTime
+    const candle = await findStep(saved.symbol.ticker, timeframe, from, saved.endTime, 1, signal, tickIndex)
     signal.throwIfAborted()
     if (candle === undefined) {
       setIsPlaying(false)
-      const remaining = timeframe === '1m' ? undefined : await history.find(
+      const remaining = timeframe === '1m' || isFineStepPeriod(timeframe) ? undefined : await history.find(
         saved.symbol.ticker, '1m', sessionVisibleUntil(saved), saved.endTime, 1, signal,
       )
       signal.throwIfAborted()
@@ -252,18 +267,19 @@ export function useCTraderReplayController(
       else setError('所选周期在结束前没有下一根完整 K 线，可换用更小的步进周期。')
       return false
     }
+    const sameTimeTick = tickIndex !== undefined && candle.openTime === saved.currentTime
     moveCursor(cursor, candle, saved.currentIndex + 1)
     // Publish the reached cursor even if simulation reports an error, so a
     // retry cannot replay the same candle against already updated positions.
     try {
-      await notify({ type: 'advance', candle })
+      await notify({ type: 'advance', candle, ...(sameTimeTick ? { sameTimeTick: true } : {}) })
     } catch (reason) {
       if (!signal.aborted) await publish(cursor)
       throw reason
     }
     if (cursor.session.status === 'completed') setIsPlaying(false)
     return true
-  }, [history, notify, publish])
+  }, [findStep, history, notify, publish])
 
   const next = useCallback((timeframe = stepTimeframe) => run('推进回放失败', async signal => {
     const cursor = cursorRef.current
@@ -278,14 +294,16 @@ export function useCTraderReplayController(
     if (cursor === null || cursor.session.hasTrades || cursor.candle.closeTime === cursor.initial.closeTime) return
     setIsPlaying(false)
     const { session: saved, initial } = cursor
-    const candle = await history.find(
-      saved.symbol.ticker, stepPeriod(saved, timeframe),
-      initial.closeTime + 1, cursor.candle.closeTime - 1, -1, signal,
+    const period = stepPeriod(saved, timeframe)
+    const tickIndex = period === 'tick' ? saved.cursorTickIndex : undefined
+    const candle = await findStep(
+      saved.symbol.ticker, period, initial.closeTime + 1,
+      tickIndex === undefined ? cursor.candle.closeTime - 1 : saved.currentTime, -1, signal, tickIndex,
     )
     signal.throwIfAborted()
     moveCursor(cursor, candle ?? initial, candle === undefined ? 0 : Math.max(1, saved.currentIndex - 1))
     await publish(cursor)
-  }), [history, publish, run, stepTimeframe])
+  }), [findStep, publish, run, stepTimeframe])
 
   const reset = useCallback(() => run('重置回放失败', async signal => {
     const cursor = cursorRef.current

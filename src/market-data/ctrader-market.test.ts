@@ -86,6 +86,24 @@ afterEach(() => {
 })
 
 describe('cTrader market', () => {
+  it('decodes signed tick deltas and preserves all quotes at a split boundary', async () => {
+    const start = current - 1000
+    const { service } = setup((socket, request) => {
+      if (request.payloadType !== 2145) return
+      const { fromTimestamp, toTimestamp, type } = request.payload
+      expect(type).toBe(1)
+      const tickData = toTimestamp === start + 2
+        ? [{ timestamp: start + 1, tick: 110002 }, { timestamp: 0, tick: -2 }]
+        : [{ timestamp: start + 3, tick: 110003 }]
+      socket.reply(request, 2146, { tickData, hasMore: fromTimestamp === start && toTimestamp === start + 4 })
+      return true
+    })
+    await expect(service.loadTicks('EURUSD', start, start + 3)).resolves.toEqual([
+      { timestamp: start + 1, price: '1.10000' }, { timestamp: start + 1, price: '1.10002' },
+      { timestamp: start + 3, price: '1.10003' },
+    ])
+  })
+
   it('authenticates once, verifies the account and gets prices and currencies from official symbol APIs', async () => {
     const { service, sockets, createSocket } = setup()
     const [symbols, concurrent] = await Promise.all([service.getSymbols(), service.getSymbols()])

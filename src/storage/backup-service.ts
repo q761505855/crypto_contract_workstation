@@ -4,7 +4,7 @@ import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleTy
 import { readShowTradeOverlays, SHOW_TRADE_OVERLAYS_KEY, validateShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import { CHART_WINDOW_SIZE_KEY, readChartWindowSize, validateChartWindowSize, type ChartWindowSize } from '../chart/chart-window-preferences'
 import { CONFIG_PENDING_KEY, preferencesRestored } from './preference-events'
-import { CTRADER_TIMEFRAMES, klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
+import { CTRADER_TIMEFRAMES, klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
 import {
   loadWorkspacePreferences,
@@ -36,6 +36,7 @@ import type {
 } from '../market-data/models'
 import { replaySourceTimeframe, type ReplaySession } from '../replay/models'
 import { REPLAY_STEP_PERIOD_KEY, readReplayStepPeriod, validateReplayStepPeriod } from '../replay/step-preferences'
+import { isCTraderReplayStepPeriod, isFineStepPeriod, SECOND_STEP_MS, type ReplayStepPeriod } from '../replay/step-periods'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
 import type {
   SimulationLedgerEntry,
@@ -72,7 +73,7 @@ export interface BackupPreferences {
   ctraderAccount?: string
   chartIndicators?: ChartIndicatorPreferences
   pinnedPeriods?: string[]
-  replayStepPeriod?: MarketTimeframe
+  replayStepPeriod?: ReplayStepPeriod
   showTradeOverlays?: boolean
   chartWindowSize?: ChartWindowSize
   workspace?: WorkspacePreferences
@@ -347,9 +348,15 @@ function validateSession(value: unknown, index: number): ReplaySession {
     : !ticker.endsWith('USDT') || !SUPPORTED_TIMEFRAMES.includes(timeframe)) {
     throw new Error(`${field} 的交易对或周期无效`)
   }
-  const nativeCursorPeriod = CTRADER_TIMEFRAMES.find(period => period === item.cursorTimeframe)
-  if ((native && nativeCursorPeriod === undefined) || (!native && item.cursorTimeframe !== undefined)) {
+  const cursorPeriod = typeof item.cursorTimeframe === 'string' && isCTraderReplayStepPeriod(item.cursorTimeframe)
+    ? item.cursorTimeframe : undefined
+  if ((native && cursorPeriod === undefined) || (!native && item.cursorTimeframe !== undefined)) {
     throw new Error(`${field}.cursorTimeframe 无效`)
+  }
+  const cursorTickIndex = item.cursorTickIndex === undefined ? undefined : nonNegativeInteger(item.cursorTickIndex, `${field}.cursorTickIndex`)
+  if ((cursorPeriod === 'tick') !== (cursorTickIndex !== undefined) ||
+    (cursorTickIndex !== undefined && !Number.isSafeInteger(cursorTickIndex))) {
+    throw new Error(`${field}.cursorTickIndex 无效`)
   }
   const startTime = finiteNumber(item.startTime, `${field}.startTime`)
   const endTime = finiteNumber(item.endTime, `${field}.endTime`)
@@ -367,13 +374,17 @@ function validateSession(value: unknown, index: number): ReplaySession {
     throw new Error(`${field} 的回放时间或索引无效`)
   }
   const visibleUntil = item.visibleUntil === undefined ? undefined : finiteNumber(item.visibleUntil, `${field}.visibleUntil`)
-  if (nativeCursorPeriod !== undefined) {
+  if (cursorPeriod !== undefined) {
     const configuredPeriod = CTRADER_PERIODS.find(candidate => candidate.text === timeframe)
     if (configuredPeriod?.multiplier !== period.multiplier || configuredPeriod?.timespan !== period.timespan) {
       throw new Error(`${field}.period 的周期规格无效`)
     }
-    if (![startTime, currentTime].every(time => Number.isSafeInteger(time) && time >= 0 && time % 60_000 === 0) ||
-      !Number.isSafeInteger(endTime) || visibleUntil !== nextOpenTime(currentTime, nativeCursorPeriod) ||
+    const fine = isFineStepPeriod(cursorPeriod)
+    const width = cursorPeriod === 'tick' ? 1 : fine ? SECOND_STEP_MS[cursorPeriod] : 60_000
+    if (![startTime, currentTime, endTime].every(time => Number.isSafeInteger(time) && time >= 0) ||
+      startTime % 60_000 !== 0 || currentTime % width !== 0 ||
+      (fine && currentTime < nextOpenTime(startTime, timeframe)) ||
+      visibleUntil !== (fine ? currentTime + width : nextOpenTime(currentTime, cursorPeriod)) ||
       visibleUntil === undefined || visibleUntil <= currentTime || visibleUntil > endTime + 1) {
       throw new Error(`${field}.visibleUntil 的回放进度无效`)
     }
@@ -432,7 +443,8 @@ function validateSession(value: unknown, index: number): ReplaySession {
     id: stringValue(item.id, `${field}.id`),
     schemaVersion: 2,
     ...(marketSource === undefined ? {} : { marketSource }),
-    ...(nativeCursorPeriod === undefined ? {} : { cursorTimeframe: nativeCursorPeriod }),
+    ...(cursorPeriod === undefined ? {} : { cursorTimeframe: cursorPeriod }),
+    ...(cursorTickIndex === undefined ? {} : { cursorTickIndex }),
     ...(visibleUntil === undefined ? {} : { visibleUntil }),
     symbol: nativeSymbol ?? {
       ...(symbol as unknown as ReplaySession['symbol']),

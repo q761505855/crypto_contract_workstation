@@ -9,7 +9,13 @@ async function connectFixture(page: Page, multipleAccounts = false, {
   initialQuote = true,
   rejectedAccount = 0,
   historyAvailable,
-}: { initialQuote?: boolean; rejectedAccount?: number; historyAvailable?: (timestamp: number) => boolean } = {}) {
+  ticks = [],
+}: {
+  initialQuote?: boolean
+  rejectedAccount?: number
+  historyAvailable?: (timestamp: number) => boolean
+  ticks?: { timestamp: number; price: number }[]
+} = {}) {
   const messages: { type: number; accountId?: number; period?: number; symbolId?: number; live: boolean }[] = []
   const legacyRequests: string[] = []
   let currentSocket: WebSocketRoute | undefined
@@ -68,6 +74,16 @@ async function connectFixture(page: Page, multipleAccounts = false, {
             trendbar.push({ utcTimestampInMinutes: stamp, period: payload.period, low: 110000, deltaOpen: 20, deltaHigh: 70, deltaClose: 50, volume: 42 })
           }
           response(2138, { ...accountPayload, symbolId: payload.symbolId, period: payload.period, trendbar, hasMore: false })
+          break
+        }
+        case 2145: {
+          const quotes = ticks.filter(quote =>
+            quote.timestamp >= Number(payload.fromTimestamp) && quote.timestamp < Number(payload.toTimestamp)).reverse()
+          const tickData = quotes.map((quote, i) => ({
+            timestamp: quote.timestamp - (quotes[i - 1]?.timestamp ?? 0),
+            tick: quote.price - (quotes[i - 1]?.price ?? 0),
+          }))
+          response(2146, { ...accountPayload, tickData, hasMore: false })
           break
         }
         case 2127: response(2128, accountPayload); break
@@ -332,6 +348,52 @@ test('loads later candles across a weekend when panning before replay starts', a
   const timestamps = (await readChart()).timestamps
   expect(timestamps[timestamps.indexOf(lastBeforeClose) + 1]).toBe(reopen)
   expect(new Set(timestamps).size).toBe(timestamps.length)
+})
+
+test('replays ticks and seconds on a native 5m chart and restores a same-time quote cursor', async ({ page }) => {
+  const start = Date.UTC(2026, 10, 20, 14, 20)
+  const at = start + 5 * minute
+  await page.clock.setFixedTime(new Date(at + 15 * minute))
+  const { messages } = await connectFixture(page, false, { ticks: [
+    { timestamp: at + 456, price: 110050 }, { timestamp: at + 456, price: 110060 },
+    { timestamp: at + 5100, price: 110080 }, { timestamp: at + 5400, price: 110070 },
+  ] })
+  const readChart = await installViewportProbe(page)
+  await page.goto('./')
+  const controls = page.getByTestId('replay-controls')
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 5m', exact: true }).click()
+  await controls.getByRole('button', { name: '时间定位', exact: true }).click()
+  const inputTime = await page.evaluate(timestamp => {
+    const offset = new Date(timestamp).getTimezoneOffset()
+    return new Date(timestamp - offset * 60_000).toISOString().slice(0, 16)
+  }, start)
+  const locate = page.getByRole('dialog', { name: '图表时间定位' })
+  await locate.getByLabel('图表跳转时间').fill(inputTime)
+  await locate.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect(controls.locator('.replay-start-time')).toContainText(inputTime.replace('T', ' '))
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  const mode = controls.getByLabel('步进周期')
+  await mode.selectOption('tick')
+  await controls.getByRole('button', { name: '下一笔', exact: true }).click()
+  await expect(controls).toContainText(':00.456')
+  await expect(controls).toContainText('第 2 步')
+  await controls.getByRole('button', { name: '下一笔', exact: true }).click()
+  await expect(controls).toContainText('第 3 步')
+  await expect(controls).toContainText(':00.456')
+  await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start)
+  expect(messages.some(message => message.type === 2145)).toBe(true)
+
+  await page.reload()
+  await expect(mode).toHaveValue('tick')
+  await expect(controls).toContainText('第 3 步')
+  await controls.getByRole('button', { name: '上一笔', exact: true }).click()
+  await expect(controls).toContainText('第 2 步')
+  await mode.selectOption('5s')
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect(controls).toContainText(':10 ')
+  await expect(controls).toContainText('第 3 步')
+  await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start)
 })
 
 test('replays native minute steps, reveals completed chart bars, and restores a simulated trade', async ({ page }) => {

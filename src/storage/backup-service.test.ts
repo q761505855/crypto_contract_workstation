@@ -178,6 +178,41 @@ it('validates native periods, cTrader settings and the archived cursor without r
   expect((await target.exportPreferences()).data.preferences?.favoriteSymbols).toEqual(['EURUSD'])
 })
 
+it('round-trips fine replay settings and Tick cursors while validating them before import', async () => {
+  const target = new WorkstationBackupService(`ctrader-ticks-${crypto.randomUUID()}`, new MemoryPreferences())
+  const archive = await target.exportAll()
+  const tick = {
+    ...session(), symbol: { exchange: 'CTRADER', ticker: 'EURUSD' }, marketSource: 'ctrader' as const,
+    cursorTimeframe: 'tick' as const, cursorTickIndex: 0, currentTime: 60_123, currentIndex: 1, visibleUntil: 60_124, endTime: 120_000,
+  }
+  for (const replayStepPeriod of ['1s', '5s', '15s', 'tick'] as const) {
+    const data = { ...archive.data, preferences: { ...archive.data.preferences!, replayStepPeriod }, sessions: [tick] }
+    await target.import({ ...archive, data })
+    expect((await target.exportPreferences()).data.preferences).toEqual(data.preferences)
+    expect((await target.exportAll()).data).toMatchObject({ preferences: data.preferences, sessions: [tick] })
+  }
+  const restored = (await target.exportAll()).data
+  const legacyPreferences = { ...restored.preferences }
+  delete legacyPreferences.replayStepPeriod
+  await target.import({ ...archive, kind: 'preferences', data: { preferences: legacyPreferences } })
+  expect((await target.exportPreferences()).data.preferences?.replayStepPeriod).toBe('tick')
+  for (const replayStepPeriod of [null, '', false, 0, '10s']) {
+    await expect(target.import({ ...archive, data: { ...restored, preferences: { ...restored.preferences!, replayStepPeriod } } }))
+      .rejects.toThrow('replayStepPeriod')
+  }
+  for (const cursorTickIndex of [undefined, -1, null, 1.5]) {
+    await expect(target.import({ ...archive, data: { ...restored, sessions: [{ ...tick, cursorTickIndex }] } }))
+      .rejects.toThrow('cursorTickIndex')
+  }
+  const seconds = { ...tick, cursorTimeframe: '5s', cursorTickIndex: undefined, currentTime: 65_000, visibleUntil: 70_000 }
+  await expect(target.import({ ...archive, data: { ...restored, sessions: [{ ...seconds, currentTime: 65_001 }] } }))
+    .rejects.toThrow('visibleUntil')
+  expect((await target.exportAll()).data).toEqual(restored)
+  await target.import({ ...archive, data: { ...restored, sessions: [seconds] } })
+  const { cursorTickIndex: _, ...archivedSeconds } = seconds
+  expect((await target.exportAll()).data.sessions).toEqual([archivedSeconds])
+})
+
 it('round-trips the cTrader account preference and rejects invalid values before writes', async () => {
   const target = new WorkstationBackupService(`ctrader-account-${crypto.randomUUID()}`, new MemoryPreferences())
   const archive = await target.exportPreferences()

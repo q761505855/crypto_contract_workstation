@@ -39,6 +39,11 @@ interface HistoryPage {
   hasMore: boolean
 }
 
+export interface CTraderTick {
+  timestamp: number
+  price: string
+}
+
 function appendHistoryPage(rows: Map<number, MarketCandle>, page: HistoryPage, start: number, end: number): number {
   let oldest = Infinity
   for (const candle of page.candles) {
@@ -310,6 +315,54 @@ export class CTraderMarketService {
     return [...candlesByOpen.values()].sort((left, right) => left.openTime - right.openTime).slice(-count)
   }
 
+  async loadTicks(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<CTraderTick[]> {
+    signal?.throwIfAborted()
+    const end = Math.min(to, this.now(), MAX_TIMESTAMP - 1)
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(end) || from < 0 || end - from >= 7 * DAY) {
+      throw new Error('cTrader Tick 历史请求时间范围无效')
+    }
+    if (from > end) return []
+    const instrument = await this.getInstrument(symbol, signal)
+    return this.getTickRange(instrument, from, end, signal)
+  }
+
+  private async getTickRange(instrument: Instrument, from: number, to: number, signal?: AbortSignal): Promise<CTraderTick[]> {
+    const payload = await this.requestHistory(CTraderMessage.GetTicks, {
+      // The quote API includes the start and excludes the end.
+      symbolId: instrument.id, type: 1, fromTimestamp: from, toTimestamp: to + 1,
+    }, signal)
+    if (payload.hasMore === true) {
+      if (from === to) throw new Error('cTrader 单毫秒 Tick 数量超过接口限制')
+      const middle = from + Math.floor((to - from) / 2)
+      const earlier = await this.getTickRange(instrument, from, middle, signal)
+      const later = await this.getTickRange(instrument, middle + 1, to, signal)
+      return earlier.concat(later)
+    }
+    const rows = objects(payload.tickData)
+    if (typeof payload.hasMore !== 'boolean' ||
+      (payload.tickData !== undefined && (!Array.isArray(payload.tickData) || rows.length !== payload.tickData.length))) {
+      throw new Error('cTrader 返回了无效的 Tick 历史')
+    }
+    // The newest row is absolute, followed by signed timestamp and price deltas.
+    let timestamp = 0
+    let price = 0
+    return rows.flatMap((row, index) => {
+      const timeValue = cTraderInteger(row.timestamp)
+      const priceValue = cTraderInteger(row.tick)
+      if (timeValue === undefined || priceValue === undefined || (index > 0 && timeValue > 0)) {
+        throw new Error('cTrader 返回了无效的 Tick 报价')
+      }
+      timestamp += timeValue
+      price += priceValue
+      if (!Number.isSafeInteger(timestamp) || timestamp < 0 || !Number.isSafeInteger(price)) {
+        throw new Error('cTrader 返回了无效的 Tick 报价')
+      }
+      return timestamp >= from && timestamp <= to
+        ? [{ timestamp, price: cTraderPrice(price, instrument.symbol.pricePrecision) }]
+        : []
+    }).reverse()
+  }
+
   subscribe(input: CTraderMarketSubscription): () => void {
     const { timeframe } = input
     if (!isCTraderTimeframe(timeframe)) throw new Error(`cTrader 不支持的原生周期：${timeframe}`)
@@ -400,14 +453,16 @@ export class CTraderMarketService {
     return result
   }
 
-  private requestHistory(payload: CTraderPayload, signal?: AbortSignal): Promise<CTraderPayload> {
+  private requestHistory(
+    type: typeof CTraderMessage.GetTrendbars | typeof CTraderMessage.GetTicks, payload: CTraderPayload, signal?: AbortSignal,
+  ): Promise<CTraderPayload> {
     const response = this.historyQueue.then(async () => {
       signal?.throwIfAborted()
       const delay = this.nextHistoryRequest - Date.now()
       if (delay > 0) await waitForCTraderResult(new Promise(resolve => setTimeout(resolve, delay)), signal)
       const session = await this.client.connect(signal)
       this.nextHistoryRequest = Date.now() + HISTORY_MIN_SPACING_MS
-      return this.client.request(CTraderMessage.GetTrendbars, payload, signal, session)
+      return this.client.request(type, payload, signal, session)
     })
     this.historyQueue = response.then(() => {}, () => {})
     return waitForCTraderResult(response, signal)
@@ -417,7 +472,7 @@ export class CTraderMarketService {
     instrument: Instrument, timeframe: CTraderTimeframe, from: number, to: number, count: number, signal?: AbortSignal,
   ): Promise<HistoryPage> {
     const period = cTraderPeriod(timeframe)
-    const response = await this.requestHistory({
+    const response = await this.requestHistory(CTraderMessage.GetTrendbars, {
       symbolId: instrument.id, period, fromTimestamp: from, toTimestamp: to, count,
     }, signal)
     if ((response.symbolId !== undefined && cTraderInteger(response.symbolId) !== instrument.id)
