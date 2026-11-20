@@ -3,7 +3,7 @@ import type { MarketCandle } from '../market-data/models'
 import type { CTraderReplayBars, CTraderReplayMarket } from './ctrader-replay-bars'
 import { SECOND_STEP_MS, type FineStepPeriod } from './step-periods'
 
-const WINDOW_MS = 5 * 60_000
+const WINDOW_MS = 10 * 60_000
 const MAX_WINDOWS = 6
 type Direction = 1 | -1
 type IndexedTick = CTraderTick & { index: number }

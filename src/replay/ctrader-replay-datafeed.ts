@@ -9,7 +9,7 @@ import { replayVisibleUntil, type ReplayContext } from './models'
 
 const PAGE_SIZE = 500
 const MAX_EMPTY_PAGES = 8
-const FORWARD_PAGE_SIZE = 128
+const FORWARD_PAGE_SIZE = 256
 const FORWARD_MAX_SPAN_MS = 365 * 86_400_000
 const HISTORY_ERROR_RETRY_MS = 3_000
 

@@ -57,13 +57,14 @@ describe('cTrader replay', () => {
       { timestamp: at + 200, price: '1.10300' },
       { timestamp: at + 5100, price: '1.10500' },
       { timestamp: at + 5400, price: '1.10400' },
+      { timestamp: at + 5 * minute + 1, price: '1.10600' },
     ]
     const market = { ...service([mondayHour]), loadTicks: vi.fn(async (_symbol: string, from: number, to: number) =>
       quotes.filter(quote => quote.timestamp >= from && quote.timestamp <= to)) }
     const runtime = { service: market, replaySessions: stores() }
     const first = renderHook(() => useCTraderReplayController(runtime, 'tick'))
     await waitFor(() => expect(first.result.current.busy).toBe(false))
-    await act(() => first.result.current.createSession({ symbol, period: h1, startTime: monday, endTime: at + 10_000 }))
+    await act(() => first.result.current.createSession({ symbol, period: h1, startTime: monday, endTime: at + 6 * minute }))
     await act(() => first.result.current.next())
     expect(first.result.current.getCurrentCandle()?.close).toBe('1.10100')
     await act(() => first.result.current.next())
@@ -83,6 +84,9 @@ describe('cTrader replay', () => {
       open: '1.10500', high: '1.10500', low: '1.10400', close: '1.10400', tickVolume: 2,
     })
     expect(restored.result.current.session?.cursorTickIndex).toBeUndefined()
+    await act(() => restored.result.current.next('tick'))
+    expect(restored.result.current.getCurrentCandle()?.openTime).toBe(at + 5 * minute + 1)
+    expect(market.loadTicks).toHaveBeenCalledTimes(2)
   })
 
   it('skips the weekend and sends only the selected native candle to simulation', async () => {
@@ -151,7 +155,7 @@ describe('cTrader replay', () => {
   })
 
   it('emits successive replay bars from a bounded page while keeping future bars hidden', async () => {
-    const rows = Array.from({ length: 15 }, (_, index) => candle(monday + index * minute, m1))
+    const rows = Array.from({ length: 135 }, (_, index) => candle(monday + index * minute, m1))
     const market = service(rows)
     const feed = new CTraderReplayDatafeed({} as Datafeed, market)
     const context = { sessionId: 'buffered', symbol: symbol.ticker, timeframe: '1m', currentTime: monday,
@@ -165,10 +169,13 @@ describe('cTrader replay', () => {
       await waitFor(() => expect(update).toHaveBeenCalledTimes(index))
       expect(update.mock.calls.at(-1)?.[0].timestamp).toBe(monday + index * minute)
     }
+    feed.setReplayContext({ ...context, visibleUntil: monday + 131 * minute })
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(130))
+    expect(update.mock.calls.at(-1)?.[0].timestamp).toBe(monday + 130 * minute)
     expect(market.loadCandles).toHaveBeenCalledTimes(2)
     const [, , , from, to] = market.loadCandles.mock.calls[1]
-    expect(to - from).toBeGreaterThan(6 * minute)
-    expect(to - from).toBeLessThanOrEqual(128 * minute)
+    expect(to - from).toBeGreaterThan(128 * minute)
+    expect(to - from).toBeLessThanOrEqual(256 * minute)
   })
 
   it('discards a newer history page if a replay starts while the page is loading', async () => {
