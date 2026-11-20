@@ -39,6 +39,8 @@ jobs:
         env:
           VITE_BASE_PATH: /crypto_contract_workstation/
           CLOUD_STORAGE_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}
+          CTRADER_CONNECTION_JSON: ${{ secrets.CTRADER_CONNECTION_JSON }}
+          REQUIRE_CTRADER_CONNECTION: '1'
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:

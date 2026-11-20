@@ -1,4 +1,5 @@
 import { INITIAL_LIVE_STATUS, type LiveMarketStatus } from './live-models'
+import type { CTraderConnectionConfig } from './ctrader-connection-config'
 
 export const CTRADER_DEMO_URL = 'wss://demo.ctraderapi.com:5036'
 export const CTRADER_LIVE_URL = 'wss://live.ctraderapi.com:5036'
@@ -6,13 +7,6 @@ export const CTRADER_LIVE_URL = 'wss://live.ctraderapi.com:5036'
 const TIMEOUT_MS = 12_000
 const HEARTBEAT_MS = 8_000
 const INITIAL_RECONNECT_MS = 500
-
-export interface CTraderConnectionConfig {
-  clientId: string
-  clientSecret: string
-  accessToken: string
-  accountId?: number
-}
 
 export interface CTraderAccount {
   key: string

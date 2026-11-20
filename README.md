@@ -10,7 +10,7 @@
 
 静态连接文件随网页发布，访问者可以读取它。Token 的只读权限覆盖其授权列表中的全部账户。
 
-本地开发可在仓库根目录使用 `ctrader-connection.local.json`。当静态连接模板为空时，`npm run dev` 会读取这份本机配置。它由 Git 忽略，静态构建只复制 `public/` 中的发布配置。
+本地开发可在仓库根目录使用 `ctrader-connection.local.json`。当静态连接模板为空时，`npm run dev` 会读取这份本机配置。GitHub Pages 发布从仓库 Actions 密钥 `CTRADER_CONNECTION_JSON` 读取 JSON，构建时生成站点的 `ctrader-connection.json`。配置须包含应用 ID、应用密钥和只读 Access Token。
 
 填入新的凭据后，先运行 `npm run dev` 并打开本地页面，确认账户通过认证，再构建静态产物。分别搜索 `EURUSD`、`XAUUSD`、`US500`、`BTCUSD`、`ETHUSD`，核对 IC 品种代码、至少两个原生周期和开市时的实时报价。账户存在不同品种代码时，使用账户列表返回的代码。令牌到期后重复此流程。API 消息和限制见 [cTrader Open API](https://help.ctrader.com/open-api/)。市场行情只在运行中的页面内缓存。
 
@@ -163,7 +163,7 @@ npm run build
 npm run preview
 ```
 
-`dist/` 可作为独立静态产物预览。现有 GitHub Pages 正式站点由 `main` 发布。实验版切换到正式地址前需确认。
+`dist/` 可作为独立静态产物预览。推送 `main` 会触发 GitHub Pages 正式站点部署。
 
 ## 文档
 

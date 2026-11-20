@@ -4,7 +4,17 @@ import { verifyPagesArtifact } from './verify-pages-artifact.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const vite = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url))
-const env = { ...process.env, E2E_CHART_PROBE: '1', VITE_BASE_PATH: '/crypto_contract_workstation/', CLOUD_STORAGE_TOKEN: 'e2e-mock-storage-token' }
+const env = {
+  ...process.env,
+  E2E_CHART_PROBE: '1',
+  VITE_BASE_PATH: '/crypto_contract_workstation/',
+  CLOUD_STORAGE_TOKEN: 'e2e-mock-storage-token',
+  CTRADER_CONNECTION_JSON: JSON.stringify({
+    clientId: 'e2e-published-app', clientSecret: 'e2e-published-secret', accessToken: 'e2e-published-view',
+    refreshToken: 'e2e-excluded-refresh',
+  }),
+  REQUIRE_CTRADER_CONNECTION: '1',
+}
 
 async function runVite(args) {
   const child = spawn(process.execPath, [vite, ...args], { cwd: root, env, stdio: 'inherit' })

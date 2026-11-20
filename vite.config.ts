@@ -1,6 +1,7 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv } from 'vite'
 import { viewportProbeSource } from './e2e/viewport-probe-source'
+import { parseCTraderConnection } from './src/market-data/ctrader-connection-config'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -8,13 +9,31 @@ export default defineConfig(({ mode }) => {
     base: env.VITE_BASE_PATH || '/',
     envPrefix: ['VITE_GITHUB_OWNER', 'VITE_GITHUB_REPOSITORY', 'VITE_GITHUB_BRANCH'],
     plugins: [react(), {
-      name: 'published-cloud-connection',
+      name: 'published-connections',
       generateBundle() {
         const token = process.env.CLOUD_STORAGE_TOKEN?.trim()
         if (token) this.emitFile({
           type: 'asset',
           fileName: 'cloud-connection.json',
           source: JSON.stringify({ schemaVersion: 1, project: 'crypto-contract-workstation', token }),
+        })
+        const rawConnection = process.env.CTRADER_CONNECTION_JSON?.trim()
+        if (!rawConnection) {
+          if (process.env.REQUIRE_CTRADER_CONNECTION === '1') throw new Error('Pages 发布缺少 cTrader 连接配置。')
+          return
+        }
+        let value: unknown
+        try {
+          value = JSON.parse(rawConnection)
+        } catch {
+          throw new Error('cTrader 发布连接配置必须是有效 JSON。')
+        }
+        const connection = parseCTraderConnection(value)
+        if (!connection) throw new Error('cTrader 发布连接配置缺少必要字段。')
+        this.emitFile({
+          type: 'asset',
+          fileName: 'ctrader-connection.json',
+          source: JSON.stringify({ ...connection, accountId: connection.accountId ?? null }),
         })
       },
     }, ...(env.E2E_CHART_PROBE === '1' ? [{

@@ -18,6 +18,7 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "playwright.pages.config.ts",
-    "e2e/viewport-probe-source.ts"
+    "e2e/viewport-probe-source.ts",
+    "src/market-data/ctrader-connection-config.ts"
   ]
 }
