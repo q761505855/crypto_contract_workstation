@@ -22,10 +22,13 @@ interface Subscription extends Partial<ReplayTail> {
   request?: AbortController
 }
 
+type LoadHistoryPage = (symbol: SymbolInfo, period: Period, edge: number, signal?: AbortSignal) =>
+  Promise<{ candles: KLineData[]; hasMore: boolean } | null>
+
 type BaseDatafeed = Datafeed & {
   setWarningListener?: (listener?: (message: string) => void) => void
-  getOlderHistory?: (symbol: SymbolInfo, period: Period, before: number, signal?: AbortSignal) =>
-    Promise<{ candles: KLineData[]; hasMore: boolean } | null>
+  getOlderHistory?: LoadHistoryPage
+  getNewerHistory?: LoadHistoryPage
 }
 
 function timelineChanged(before: ReplayContext | null, after: ReplayContext | null): boolean {
@@ -161,6 +164,13 @@ export class CTraderReplayDatafeed implements Datafeed {
     if (bars.length === 0 && hasMore) this.olderCursors.set(key, cursor)
     this.onHistoryStatus?.(!hasMore ? '已到最早历史数据' : bars.length === 0 ? '此区间休市或无报价，继续向左查看' : '')
     return { candles: bars.map(toChartCandle), hasMore }
+  }
+
+  async getNewerHistory(symbol: SymbolInfo, period: Period, after: number, signal?: AbortSignal) {
+    if (this.context !== null || !this.base.getNewerHistory) return null
+    const generation = this.generation
+    const page = await this.base.getNewerHistory(symbol, period, after, signal)
+    return generation === this.generation ? page : null
   }
 
   subscribe(symbol: SymbolInfo, period: Period, callback: DatafeedSubscribeCallback): void {

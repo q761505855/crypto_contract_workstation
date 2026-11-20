@@ -7,6 +7,7 @@ import type { CTraderMarketService } from './ctrader-market'
 import { toChartCandle } from './chart-candle'
 
 const HISTORY_CANDLES = 499
+const NEWER_HISTORY_MAX_WINDOWS = 12
 
 interface ChartSubscription {
   symbol: SymbolInfo
@@ -25,6 +26,7 @@ export class CTraderDatafeed implements Datafeed {
   private status = INITIAL_LIVE_STATUS
   private historySequence = 0
   private historyCandle?: MarketCandle
+  private newerHistoryCursor?: { key: string; after: number; from: number }
   private readonly subscriptions = new Map<string, ChartSubscription>()
 
   constructor(private readonly service: CTraderMarketService) {}
@@ -110,6 +112,30 @@ export class CTraderDatafeed implements Datafeed {
     const candles = await this.service.loadRecentCandles(symbol.ticker, period.text, before - 1, { signal })
     signal?.throwIfAborted()
     return { candles: candles.map(toChartCandle), hasMore: candles.length > 0 && candles[0].openTime > 0 }
+  }
+
+  async getNewerHistory(symbol: SymbolInfo, period: Period, after: number, signal?: AbortSignal) {
+    const timeframe = CTRADER_TIMEFRAMES.find(value => value === period.text)
+    if (!timeframe || !Number.isFinite(after)) return { candles: [], hasMore: false }
+    if (this.liveEnabled) return { candles: [], hasMore: true }
+    const key = this.selectionKey(symbol, period)
+    const cursor = this.newerHistoryCursor
+    const latest = Date.now()
+    let from = cursor?.key === key && cursor.after === after ? cursor.from : after + 1
+    for (let window = 0; window < NEWER_HISTORY_MAX_WINDOWS && from <= latest; window++) {
+      const to = Math.min(latest, shiftOpenTime(from, timeframe, HISTORY_CANDLES) - 1)
+      const candles = await this.service.loadCandles('trade', symbol.ticker, timeframe, from, to, { signal })
+      signal?.throwIfAborted()
+      if (this.liveEnabled) return { candles: [], hasMore: true }
+      if (candles.length > 0) {
+        this.newerHistoryCursor = undefined
+        return { candles: candles.map(toChartCandle), hasMore: to < latest }
+      }
+      from = to + 1
+    }
+    const hasMore = from <= latest
+    this.newerHistoryCursor = hasMore ? { key, after, from } : undefined
+    return { candles: [], hasMore }
   }
 
   subscribe(symbol: SymbolInfo, period: Period, callback: DatafeedSubscribeCallback): void {

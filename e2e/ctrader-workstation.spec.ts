@@ -5,7 +5,11 @@ import { installViewportProbe } from './viewport-probe'
 const config = { clientId: 'test-app', clientSecret: 'test-secret', accessToken: 'test-access', accountId: 17 }
 const minute = 60_000
 
-async function connectFixture(page: Page, multipleAccounts = false, { initialQuote = true, rejectedAccount = 0 } = {}) {
+async function connectFixture(page: Page, multipleAccounts = false, {
+  initialQuote = true,
+  rejectedAccount = 0,
+  historyAvailable,
+}: { initialQuote?: boolean; rejectedAccount?: number; historyAvailable?: (timestamp: number) => boolean } = {}) {
   const messages: { type: number; accountId?: number; period?: number; symbolId?: number; live: boolean }[] = []
   const legacyRequests: string[] = []
   let currentSocket: WebSocketRoute | undefined
@@ -58,7 +62,9 @@ async function connectFixture(page: Page, multipleAccounts = false, { initialQuo
           const start = Math.ceil(Number(payload.fromTimestamp) / (minute * width)) * width
           const end = Math.floor(Number(payload.toTimestamp) / (minute * width)) * width
           const trendbar = []
-          for (let stamp = Math.max(start, end - 10 * width); stamp <= end; stamp += width) {
+          const first = historyAvailable ? start : Math.max(start, end - 10 * width)
+          for (let stamp = first; stamp <= end; stamp += width) {
+            if (historyAvailable && !historyAvailable(stamp * minute)) continue
             trendbar.push({ utcTimestampInMinutes: stamp, period: payload.period, low: 110000, deltaOpen: 20, deltaHigh: 70, deltaClose: 50, volume: 42 })
           }
           response(2138, { ...accountPayload, symbolId: payload.symbolId, period: payload.period, trendbar, hasMore: false })
@@ -287,6 +293,45 @@ test('shows when an imported account preference needs a refresh and uses it afte
   await page.reload()
   await expect.poll(authAccounts).toEqual([18, 19])
   await expect(page.getByRole('dialog', { name: '选择 cTrader 账户' })).toBeHidden()
+})
+
+test('loads later candles across a weekend when panning before replay starts', async ({ page }) => {
+  const jumpAt = Date.UTC(2026, 10, 20, 21)
+  const lastBeforeClose = jumpAt + 10 * minute
+  const reopen = Date.UTC(2026, 10, 22, 22)
+  await page.clock.setFixedTime(new Date(reopen + 12 * 60 * minute))
+  await connectFixture(page, false, { historyAvailable: timestamp => timestamp <= lastBeforeClose || timestamp >= reopen })
+  const readChart = await installViewportProbe(page)
+  await page.goto('./')
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
+  await page.getByRole('button', { name: '时间定位', exact: true }).click()
+  const locate = page.getByRole('dialog', { name: '图表时间定位' })
+  const inputTime = await page.evaluate(timestamp => {
+    const offset = new Date(timestamp).getTimezoneOffset()
+    return new Date(timestamp - offset * 60_000).toISOString().slice(0, 16)
+  }, jumpAt)
+  await locate.getByLabel('图表跳转时间').fill(inputTime)
+  await locate.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect.poll(async () => (await readChart()).events).toContainEqual(expect.objectContaining({ type: 'scroll', time: jumpAt }))
+  expect((await readChart()).last?.timestamp).toBe(lastBeforeClose)
+
+  const box = (await page.locator('.candle-summary').boundingBox())!
+  const panLater = async () => {
+    await page.mouse.move(box.x + 540, box.y + 85)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 110, box.y + 85, { steps: 12 })
+    await page.mouse.up()
+  }
+  await panLater()
+  await expect.poll(async () => (await readChart()).last?.timestamp).toBeGreaterThanOrEqual(reopen)
+  await expect.poll(async () => (await readChart()).rightmost).toBeGreaterThanOrEqual(reopen)
+  const firstPageEnd = (await readChart()).last!.timestamp
+  await panLater()
+  await expect.poll(async () => (await readChart()).last?.timestamp).toBeGreaterThan(firstPageEnd)
+  const timestamps = (await readChart()).timestamps
+  expect(timestamps[timestamps.indexOf(lastBeforeClose) + 1]).toBe(reopen)
+  expect(new Set(timestamps).size).toBe(timestamps.length)
 })
 
 test('replays native minute steps, reveals completed chart bars, and restores a simulated trade', async ({ page }) => {

@@ -34,7 +34,6 @@ import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
 import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference } from './market-session-times'
 import { readChartHistory } from '../market-data/indicator-history'
-import type { ReplayDatafeed } from '../replay/replay-datafeed'
 import { replayVisibleUntil, type ReplayContext } from '../replay/models'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
 import {
@@ -203,15 +202,12 @@ export class ProChartAdapter implements ChartAdapterPort {
     const datafeed = new Proxy(options.datafeed, {
       get: (target, property) => {
         if (property === 'getHistoryKLineData') return this.loadChartHistory.bind(this)
-        if (property === 'getOlderHistory') {
-          const loadOlder = (target as Datafeed & Partial<Pick<ReplayDatafeed, 'getOlderHistory'>>).getOlderHistory
-          return loadOlder
-            ? (symbol: SymbolInfo, period: Period, before: number) =>
-              loadOlder.call(target, symbol, period, before, this.historyAbort.signal)
-            : undefined
-        }
         if (property === 'subscribe') return this.subscribeChart.bind(this)
         const value = Reflect.get(target, property, target) as unknown
+        if ((property === 'getOlderHistory' || property === 'getNewerHistory') && typeof value === 'function') {
+          return (symbol: SymbolInfo, period: Period, edge: number) =>
+            value.call(target, symbol, period, edge, this.historyAbort.signal)
+        }
         return typeof value === 'function' ? value.bind(target) : value
       },
     })

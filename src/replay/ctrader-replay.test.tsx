@@ -2,6 +2,7 @@ import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { MarketCandle } from '../market-data/models'
+import { toChartCandle } from '../market-data/chart-candle'
 import { CTraderReplayDatafeed } from './ctrader-replay-datafeed'
 import type { ReplaySession } from './models'
 import { useCTraderReplayController } from './useCTraderReplayController'
@@ -111,6 +112,22 @@ describe('cTrader replay', () => {
     await waitFor(() => expect(callback).toHaveBeenCalledTimes(1))
     expect(callback).toHaveBeenCalledWith(expect.objectContaining({ timestamp: monday, close: 1.109, volume: 7 }))
     expect(base.subscribe).not.toHaveBeenCalled()
+  })
+
+  it('discards a newer history page if a replay starts while the page is loading', async () => {
+    const page = { candles: [toChartCandle(mondayHour)], hasMore: true }
+    let finish!: (value: typeof page) => void
+    const getNewerHistory = vi.fn(() => new Promise<typeof page>(resolve => { finish = resolve }))
+    const base = { getNewerHistory } as unknown as Datafeed & { getNewerHistory: typeof getNewerHistory }
+    const feed = new CTraderReplayDatafeed(base, service([]))
+    const pending = feed.getNewerHistory(symbol, h1, friday)
+
+    feed.setReplayContext({ sessionId: 'demo', symbol: symbol.ticker, timeframe: '1h', currentTime: friday,
+      visibleUntil: friday + hour })
+    finish(page)
+    await expect(pending).resolves.toBeNull()
+    await expect(feed.getNewerHistory(symbol, h1, friday)).resolves.toBeNull()
+    expect(getNewerHistory).toHaveBeenCalledTimes(1)
   })
 
   it('bounds the chart library’s latest-history request to a recent native window', async () => {
