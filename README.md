@@ -1,12 +1,16 @@
 # cTrader 行情回放工作站
 
-`codex/ctrader-only` 是独立的静态实验版。网页通过 WebSocket 连接 IC Markets 的 cTrader 模拟环境，支持历史回放、实时只读行情、本机模拟交易、指标、画线和多窗口图表。
+`codex/ctrader-only` 是独立的静态实验版。网页通过 WebSocket 连接 cTrader 的模拟或真实环境，支持历史回放、实时只读行情、本机模拟交易、指标、画线和多窗口图表。
 
 第三方许可见 [THIRD_PARTY_NOTICES.txt](public/THIRD_PARTY_NOTICES.txt) 和 [许可文件](public/licenses)。构建时会复制到静态产物。
 
 ## 行情连接配置
 
-静态网页从同一站点读取 [ctrader-connection.json](public/ctrader-connection.json)。交付的空模板会显示连接未就绪；模拟连接和存档界面仍可测试。部署前核对应用 ID、应用密钥、Access Token 与 cTrader 内部账户 ID。Token 必须明确具有 `SCOPE_VIEW`，且授权名单只含配置中这一个模拟账户；页面在每次认证时检查。配置随静态文件发布，可以被访问者读取。配置格式只包含 `clientId`、`clientSecret`、`accessToken`、`accountId`。
+静态网页从同一站点读取 [ctrader-connection.json](public/ctrader-connection.json)。填入 `clientId`、`clientSecret` 和具有 `SCOPE_VIEW` 权限的 `accessToken` 即可读取授权账户列表。多个账户时，打开网页后选择模拟或真实账户并点击“连接账户”。只有一个账户时自动连接。页面根据所选账户的环境连接相应端点；断线重连沿用本次选择，刷新页面后可以重新选择。旧文件中的 `accountId` 仍可读取，网页会以实际授权列表及选择结果为准。账户选择只存在于页面内存。
+
+静态连接文件随网页发布，访问者可以读取它。Token 的只读权限覆盖其授权列表中的全部账户。
+
+本地开发可在仓库根目录使用 `ctrader-connection.local.json`。当静态连接模板为空时，`npm run dev` 会读取这份本机配置。它由 Git 忽略，静态构建只复制 `public/` 中的发布配置。
 
 填入新的凭据后，先运行 `npm run dev` 并打开本地页面，确认账户通过认证，再构建静态产物。分别搜索 `EURUSD`、`XAUUSD`、`US500`、`BTCUSD`、`ETHUSD`，核对 IC 品种代码、至少两个原生周期和开市时的实时报价。账户存在不同品种代码时，使用账户列表返回的代码。令牌到期后重复此流程。API 消息和限制见 [cTrader Open API](https://help.ctrader.com/open-api/)。市场行情只在运行中的页面内缓存。
 
@@ -146,7 +150,7 @@ npm run test:e2e
 npm run test:e2e:pages
 ```
 
-浏览器测试用可控的 cTrader WebSocket 与云端响应，覆盖原生周期、认证限制、回放与模拟持仓、存档和静态启动。真实 IC 行情需要通过前述单账户授权检查。
+浏览器测试用可控的 cTrader WebSocket 与云端响应，覆盖多账户选择、真实与模拟端点、只读认证、回放与模拟持仓、存档和静态启动。
 
 原币安 Playwright 套件继续供 `main` 使用。实验分支的浏览器入口运行 cTrader 测试和移动端键盘布局测试。
 

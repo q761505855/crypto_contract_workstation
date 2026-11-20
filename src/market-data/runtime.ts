@@ -1,4 +1,5 @@
 import { CTraderClient } from './ctrader-client'
+import { CTraderAccountSelection } from './ctrader-account-selection'
 import { loadCTraderConnection } from './ctrader-connection'
 import { CTraderDatafeed } from './ctrader-datafeed'
 import { CTraderMarketService } from './ctrader-market'
@@ -15,6 +16,7 @@ import { DrawingStore } from '../chart/drawings'
 import { DrawingAutoSync } from '../github-sync/drawing-auto-sync'
 
 export interface MarketDataRuntime {
+  accountSelection: CTraderAccountSelection
   datafeed: CTraderDatafeed
   replayDatafeed: CTraderReplayDatafeed
   service: CTraderMarketService
@@ -30,7 +32,8 @@ export interface MarketDataRuntime {
 }
 
 export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime {
-  const connection = new CTraderClient(loadCTraderConnection)
+  const accountSelection = new CTraderAccountSelection()
+  const connection = new CTraderClient(loadCTraderConnection, undefined, accountSelection.choose)
   const service = new CTraderMarketService(connection)
   const datafeed = new CTraderDatafeed(service)
   const defaultGitHubClient = new GitHubContentsClient(defaultStorageTarget(), cloudToken)
@@ -38,6 +41,7 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
   const backups = new WorkstationBackupService(CTRADER_DATABASE_NAME, ctraderStorage, Date.now, drawings, { includeMarketHistory: false })
 
   return {
+    accountSelection,
     datafeed,
     replayDatafeed: new CTraderReplayDatafeed(datafeed, service),
     service,

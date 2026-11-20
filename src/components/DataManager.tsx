@@ -75,7 +75,7 @@ export function DataManager({ configurationRevision, open, runtime, selection, o
         </header>
         <section>
           <h3>cTrader 行情</h3>
-          <p className="muted-text">网页直连模拟账户，按图表或回放周期读取原生 K 线。行情缓存在当前页面。</p>
+          <p className="muted-text">网页直连所选 cTrader 账户，按图表或回放周期读取原生 K 线。行情缓存在当前页面。</p>
           <button disabled={loading} onClick={() => setRefresh(current => current + 1)} type="button">刷新品种列表</button>
           {loading && <span role="status">正在读取品种…</span>}
           {error && <p className="data-error" role="alert">{error}</p>}

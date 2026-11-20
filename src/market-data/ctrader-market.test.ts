@@ -85,7 +85,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('cTrader demo market', () => {
+describe('cTrader market', () => {
   it('authenticates once, verifies the account and gets prices and currencies from official symbol APIs', async () => {
     const { service, sockets, createSocket } = setup()
     const [symbols, concurrent] = await Promise.all([service.getSymbols(), service.getSymbols()])
@@ -104,9 +104,9 @@ describe('cTrader demo market', () => {
   it.each([
     [{ permissionScope: 1, ctidTraderAccount: [{ ctidTraderAccountId: accountId, isLive: false }] }, '只读'],
     [{ ctidTraderAccount: [{ ctidTraderAccountId: accountId, isLive: false }] }, '只读'],
-    [{ permissionScope: 0, ctidTraderAccount: [{ ctidTraderAccountId: accountId, isLive: true }] }, '模拟账户'],
-    [{ permissionScope: 0, ctidTraderAccount: [{ ctidTraderAccountId: accountId }, { ctidTraderAccountId: 18 }] }, '模拟账户'],
-  ])('rejects a token that cannot be proven limited to the configured demo account', async (payload, error) => {
+    [{ permissionScope: 0, ctidTraderAccount: [{ ctidTraderAccountId: accountId, isLive: 'unknown' }] }, '授权账户'],
+    [{ permissionScope: 0, ctidTraderAccount: [] }, '授权账户'],
+  ])('rejects a token without explicit read access or a valid account', async (payload, error) => {
     const { service, sockets } = setup((socket, message) => {
       if (message.payloadType !== 2149) return
       socket.reply(message, 2150, payload)

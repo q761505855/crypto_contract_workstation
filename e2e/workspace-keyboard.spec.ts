@@ -16,6 +16,7 @@ test('keeps landscape forms and drawers within the visible viewport when a keybo
     }
   })
   await page.route('**/*', route => route.request().url().startsWith('https:') ? route.abort() : route.continue())
+  await page.route('**/ctrader-connection.local.json', route => route.fulfill({ status: 404 }))
   await page.goto('./')
   await page.getByRole('button', { name: '回放设置', exact: true }).tap()
   await page.evaluate(() => (window as unknown as { shrinkVisibleViewport(value: number): void }).shrinkVisibleViewport(150))

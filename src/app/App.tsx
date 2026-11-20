@@ -23,6 +23,7 @@ import {
   type WorkstationMode,
 } from '../components/ModeSwitch'
 import { DataManager } from '../components/DataManager'
+import { CTraderAccountPicker } from '../components/CTraderAccountPicker'
 import { ConfigSyncStatus } from '../components/ConfigSyncStatus'
 import { PREFERENCES_RESTORED } from '../storage/preference-events'
 import { ReplayControls } from '../components/ReplayControls'
@@ -459,6 +460,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       </header>
       {popupBlocked && !mobile && <div className="chart-popup-warning" role="alert">浏览器拦截了副图窗口，请允许此站点弹出窗口后重试。</div>}
       {marketRuntime.configSync && <ConfigSyncStatus service={marketRuntime.configSync} />}
+      {marketRuntime.accountSelection && <CTraderAccountPicker selection={marketRuntime.accountSelection} />}
       <div
         data-testid={mode === 'history' ? 'simulation-panel' : 'live-workspace'}
         className={`workspace-content${visible('order') ? '' : ' is-order-hidden'}${focusMode ? ' is-focus-mode' : ''}`}

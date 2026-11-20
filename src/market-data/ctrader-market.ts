@@ -324,7 +324,7 @@ export class CTraderMarketService {
   private async getInstrument(symbol: string, signal?: AbortSignal): Promise<Instrument> {
     const catalog = await this.getCatalog({ signal })
     const instrument = catalog.get(symbol.trim().toUpperCase())
-    if (!instrument) throw new Error(`cTrader 模拟账户中找不到品种 ${symbol}`)
+    if (!instrument) throw new Error(`cTrader 账户中找不到品种 ${symbol}`)
     return instrument
   }
 
@@ -442,7 +442,7 @@ export class CTraderMarketService {
         const symbol = subscription.input.symbol.trim().toUpperCase()
         const instrument = catalog?.get(symbol)
         if (!instrument) {
-          this.publishSubscriptionStatus(subscription, { warning: `cTrader 模拟账户中找不到品种 ${symbol}` })
+          this.publishSubscriptionStatus(subscription, { warning: `cTrader 账户中找不到品种 ${symbol}` })
           continue
         }
         const period = cTraderPeriod(subscription.timeframe)

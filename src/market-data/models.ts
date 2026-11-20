@@ -74,7 +74,7 @@ export function toSymbolInfo(symbol: MarketSymbol): SymbolInfo {
   const isCTrader = symbol.contractType === 'CFD'
   return {
     exchange: isCTrader ? 'CTRADER' : 'BINANCE',
-    market: isCTrader ? 'IC Markets Demo' : 'USDT-M PERPETUAL',
+    market: isCTrader ? 'cTrader' : 'USDT-M PERPETUAL',
     name: isCTrader ? symbol.description ?? symbol.symbol : `${symbol.baseAsset} / ${symbol.quoteAsset} Perpetual`,
     shortName: symbol.symbol,
     ticker: symbol.symbol,

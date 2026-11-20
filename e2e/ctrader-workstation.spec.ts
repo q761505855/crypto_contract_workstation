@@ -6,32 +6,38 @@ const config = { clientId: 'test-app', clientSecret: 'test-secret', accessToken:
 const minute = 60_000
 
 async function connectFixture(page: Page, multipleAccounts = false) {
-  const messages: { type: number; period?: number; symbolId?: number }[] = []
+  const messages: { type: number; accountId?: number; period?: number; symbolId?: number; live: boolean }[] = []
   const legacyRequests: string[] = []
   let currentSocket: WebSocketRoute | undefined
   await page.route('**/ctrader-connection.json', route => route.fulfill({ json: config }))
-  await page.route('**/cloud-connection.json', route => route.fulfill({ status: 404, body: '' }))
-  await page.route('https://api.github.com/**', route => route.fulfill({ status: 404, json: { message: 'Not Found' } }))
+  const cors = { 'access-control-allow-origin': '*' }
+  await page.route('**/cloud-connection.json', route => route.fulfill({ status: 404, headers: cors, body: '' }))
+  await page.route('https://api.github.com/**', route => route.fulfill({ status: 404, headers: cors, json: { message: 'Not Found' } }))
   await page.route(/binance\.com|binance\.vision/, route => {
     legacyRequests.push(route.request().url())
     return route.abort()
   })
-  await page.routeWebSocket('wss://demo.ctraderapi.com:5036/', socket => {
+  await page.routeWebSocket(/^wss:\/\/(demo|live)\.ctraderapi\.com:5036\/$/, socket => {
     currentSocket = socket
+    const live = new URL(socket.url()).hostname === 'live.ctraderapi.com'
+    let activeAccount = config.accountId
     socket.onMessage(message => {
       const { clientMsgId, payloadType, payload } = JSON.parse(message.toString())
-      messages.push({ type: payloadType, period: payload.period, symbolId: payload.symbolId })
+      messages.push({ type: payloadType, accountId: payload.ctidTraderAccountId, period: payload.period, symbolId: payload.symbolId, live })
       const response = (type: number, body: object = {}) => socket.send(JSON.stringify({ clientMsgId, payloadType: type, payload: body }))
-      const account = { ctidTraderAccountId: config.accountId, isLive: false, brokerTitleShort: 'IC Markets' }
-      const accountPayload = { ctidTraderAccountId: config.accountId }
+      const account = { ctidTraderAccountId: config.accountId, traderLogin: 2017, isLive: false, brokerTitleShort: 'IC Markets' }
+      const accountPayload = { ctidTraderAccountId: activeAccount }
       const assets = [{ assetId: 1, name: 'EUR', digits: 2 }, { assetId: 2, name: 'USD', digits: 2 }]
       const symbols = ['EURUSD', 'XAUUSD', 'US500', 'BTCUSD', 'ETHUSD'].map((symbolName, index) => ({
         symbolId: 10 + index, symbolName, enabled: true, baseAssetId: 1, quoteAssetId: 2,
       }))
       switch (payloadType) {
         case 2100: response(2101); break
-        case 2149: response(2150, { permissionScope: 0, ctidTraderAccount: multipleAccounts ? [account, { ...account, ctidTraderAccountId: 18 }] : [account] }); break
-        case 2102: response(2103, accountPayload); break
+        case 2149: response(2150, { permissionScope: 0, ctidTraderAccount: multipleAccounts ? [account,
+          { ...account, ctidTraderAccountId: 18, traderLogin: 2018 },
+          { ...account, ctidTraderAccountId: 19, traderLogin: 2019, isLive: true },
+        ] : [account] }); break
+        case 2102: activeAccount = payload.ctidTraderAccountId; response(2103, { ctidTraderAccountId: activeAccount }); break
         case 2112: response(2113, { ...accountPayload, asset: assets }); break
         case 2114: response(2115, { ...accountPayload, symbol: symbols }); break
         case 2116: response(2117, { ...accountPayload, symbol: (payload.symbolId as number[]).map(symbolId => ({
@@ -85,11 +91,41 @@ test('loads cTrader native intervals and keeps cloud sync limited to application
   expect(legacyRequests).toEqual([])
 })
 
-test('refuses a token granted to more than one account before requesting data', async ({ page }) => {
+test('connects the chosen demo account and asks again only after reload', async ({ page }) => {
+  const { messages, disconnect } = await connectFixture(page, true)
+  await page.goto('./')
+  const picker = page.getByRole('dialog', { name: '选择 cTrader 账户' })
+  await expect(picker).toBeVisible()
+  const accounts = picker.getByRole('combobox', { name: 'cTrader 账户', exact: true })
+  await expect(accounts.getByRole('option', { name: /真实账户.*2019/ })).toHaveCount(1)
+  expect(messages.some(message => message.type === 2102 || message.type === 2137)).toBe(false)
+  await accounts.press('Escape')
+  await expect(picker).toBeHidden()
+  await page.getByRole('button', { name: '选择 cTrader 账户', exact: true }).click()
+  await accounts.selectOption('demo:18')
+  await picker.getByRole('button', { name: '连接账户' }).click()
+  await expect(picker).toBeHidden()
+  await expect.poll(() => messages.find(message => message.type === 2137)?.accountId).toBe(18)
+
+  await page.getByRole('button', { name: '实时行情', exact: true }).click()
+  await expect.poll(() => messages.some(message => message.type === 2135 && message.accountId === 18)).toBe(true)
+  disconnect()
+  await expect.poll(() => messages.filter(message => message.type === 2102).map(message => message.accountId)).toEqual([18, 18])
+  await expect(picker).toBeHidden()
+
+  await page.reload()
+  await expect(picker).toBeVisible()
+  expect(messages.filter(message => message.type === 2102).map(message => message.accountId)).toEqual([18, 18])
+})
+
+test('authenticates a selected real account through the live endpoint', async ({ page }) => {
   const { messages } = await connectFixture(page, true)
   await page.goto('./')
-  await expect(page.getByRole('contentinfo')).toContainText(/模拟账户/)
-  expect(messages.map(message => message.type)).toEqual([2100, 2149])
+  const picker = page.getByRole('dialog', { name: '选择 cTrader 账户' })
+  await picker.getByRole('combobox', { name: 'cTrader 账户', exact: true }).selectOption('live:19')
+  await picker.getByRole('button', { name: '连接账户' }).click()
+  await expect.poll(() => messages.find(message => message.type === 2137)).toMatchObject({ live: true, accountId: 19 })
+  expect(messages.filter(message => message.type === 2102)).toMatchObject([{ live: true, accountId: 19 }])
 })
 
 test('reloads native history after a live connection is restored', async ({ page }) => {

@@ -1,6 +1,7 @@
 import { INITIAL_LIVE_STATUS, type LiveMarketStatus } from './live-models'
 
 export const CTRADER_DEMO_URL = 'wss://demo.ctraderapi.com:5036'
+export const CTRADER_LIVE_URL = 'wss://live.ctraderapi.com:5036'
 
 const TIMEOUT_MS = 12_000
 const HEARTBEAT_MS = 8_000
@@ -10,7 +11,15 @@ export interface CTraderConnectionConfig {
   clientId: string
   clientSecret: string
   accessToken: string
-  accountId: number
+  accountId?: number
+}
+
+export interface CTraderAccount {
+  key: string
+  id: number
+  isLive: boolean
+  broker?: string
+  login?: number
 }
 
 export const CTraderMessage = {
@@ -73,6 +82,8 @@ interface PendingRequest {
 interface Connection {
   sessionId: number
   socket: WebSocket
+  isLive: boolean
+  abort: AbortController
   accountId?: number
   heartbeat?: ReturnType<typeof setInterval>
   pending: Map<string, PendingRequest>
@@ -134,6 +145,7 @@ export class CTraderClient {
   private reconnectTimer?: ReturnType<typeof setTimeout>
   private reconnectEnabled = false
   private disposed = false
+  private selectedAccount?: CTraderAccount
   private sequence = 0
   private sessionSequence = 0
   private reconnectAttempt = 0
@@ -144,6 +156,7 @@ export class CTraderClient {
   constructor(
     private readonly loadConfig: () => Promise<CTraderConnectionConfig>,
     private readonly createSocket: (url: string) => WebSocket = url => new WebSocket(url),
+    private readonly chooseAccount?: (accounts: readonly CTraderAccount[], signal: AbortSignal) => Promise<string>,
   ) {}
 
   get sessionId(): number | undefined {
@@ -227,14 +240,44 @@ export class CTraderClient {
     try {
       config = await this.loadConfig()
     } catch {
-      throw new FatalConnectionError('无法读取 cTrader 模拟账户连接配置')
+      throw new FatalConnectionError('无法读取 cTrader 账户连接配置')
     }
-    if (![config?.clientId, config?.clientSecret, config?.accessToken].every(value => typeof value === 'string' && value.trim().length > 0)
-      || !Number.isSafeInteger(config?.accountId) || config.accountId <= 0) {
-      throw new FatalConnectionError('缺少 cTrader 模拟账户连接配置')
+    if (![config?.clientId, config?.clientSecret, config?.accessToken].every(value => typeof value === 'string' && value.trim().length > 0)) {
+      throw new FatalConnectionError('缺少 cTrader 账户连接配置')
     }
+    try {
+      let connection = await this.openSocket(this.selectedAccount?.isLive ?? false)
+      const accounts = await this.listAccounts(connection, config)
+      const account = await this.selectAccount(accounts, connection.abort.signal, config.accountId)
+      if (connection.isLive !== account.isLive) {
+        this.end(connection, new Error('正在切换 cTrader 账户环境'))
+        connection = await this.openSocket(account.isLive)
+        const verified = await this.listAccounts(connection, config)
+        if (!verified.some(candidate => candidate.key === account.key)) {
+          throw new FatalConnectionError('所选 cTrader 账户不在当前环境的授权列表中')
+        }
+      }
+      const result = await this.send(connection, CTraderMessage.AccountAuth, CTraderMessage.AccountAuthResponse, {
+        ctidTraderAccountId: account.id, accessToken: config.accessToken,
+      })
+      if (cTraderInteger(result.ctidTraderAccountId) !== account.id) {
+        throw new FatalConnectionError('cTrader 账户认证返回了不同的账户')
+      }
+      connection.abort.signal.throwIfAborted()
+      connection.accountId = account.id
+      this.selectedAccount = account
+      this.reconnectAttempt = 0
+      this.publish({ connection: 'connected', warning: '' })
+      return connection
+    } catch (error) {
+      if (error instanceof ServerError) throw new FatalConnectionError(`cTrader 认证失败：${error.message}`)
+      throw error
+    }
+  }
+
+  private async openSocket(isLive: boolean): Promise<Connection> {
     if (this.disposed) throw new Error('cTrader 行情连接已关闭')
-    const socket = this.createSocket(CTRADER_DEMO_URL)
+    const socket = this.createSocket(isLive ? CTRADER_LIVE_URL : CTRADER_DEMO_URL)
     socket.binaryType = 'arraybuffer'
     let failOpen: Connection['failOpen'] = () => {}
     const opened = new Promise<void>((resolve, reject) => {
@@ -247,13 +290,14 @@ export class CTraderClient {
       failOpen = settle
       socket.addEventListener('open', () => settle(), { once: true })
     })
-    const connection: Connection = { socket, sessionId: ++this.sessionSequence, pending: new Map(), failOpen }
+    const connection: Connection = { socket, isLive, abort: new AbortController(), sessionId: ++this.sessionSequence, pending: new Map(), failOpen }
     this.connection = connection
     socket.addEventListener('message', event => this.receive(connection, decodeFrame(event.data)))
     const disconnected = () => this.end(connection, new Error('cTrader 行情连接已中断'))
     socket.addEventListener('close', disconnected, { once: true })
     socket.addEventListener('error', disconnected, { once: true })
     await opened
+    connection.abort.signal.throwIfAborted()
     connection.heartbeat = setInterval(() => {
       if (socket.readyState === 1) {
         try {
@@ -263,38 +307,39 @@ export class CTraderClient {
         }
       }
     }, HEARTBEAT_MS)
-    await this.authenticate(connection, config)
-    if (this.connection !== connection || socket.readyState !== 1) throw new Error('cTrader 行情连接已中断')
-    connection.accountId = config.accountId
-    this.reconnectAttempt = 0
-    this.publish({ connection: 'connected', warning: '' })
     return connection
   }
 
-  private async authenticate(connection: Connection, config: CTraderConnectionConfig): Promise<void> {
-    const { clientId, clientSecret, accountId, accessToken } = config
-    try {
-      await this.send(connection, CTraderMessage.ApplicationAuth, CTraderMessage.ApplicationAuthResponse, { clientId, clientSecret })
-      const list = await this.send(connection, CTraderMessage.AccountList, CTraderMessage.AccountListResponse, { accessToken })
-      if (list.permissionScope !== 'SCOPE_VIEW' && cTraderInteger(list.permissionScope) !== 0) {
-        throw new FatalConnectionError('cTrader Access Token 必须明确为只读权限')
-      }
-      const accounts = Array.isArray(list.ctidTraderAccount) ? list.ctidTraderAccount : []
-      const account = cTraderObject(accounts[0])
-      if (accounts.length !== 1 || cTraderInteger(account?.ctidTraderAccountId) !== accountId
-        || (account?.isLive !== false && account?.isLive !== undefined)) {
-        throw new FatalConnectionError('cTrader Access Token 必须仅授权配置中的模拟账户')
-      }
-      const result = await this.send(connection, CTraderMessage.AccountAuth, CTraderMessage.AccountAuthResponse, {
-        ctidTraderAccountId: accountId, accessToken,
-      })
-      if (cTraderInteger(result.ctidTraderAccountId) !== accountId) {
-        throw new FatalConnectionError('cTrader 模拟账户认证返回了不同的账户')
-      }
-    } catch (error) {
-      if (error instanceof ServerError) throw new FatalConnectionError(`cTrader 认证失败：${error.message}`)
-      throw error
+  private async listAccounts(connection: Connection, config: CTraderConnectionConfig): Promise<CTraderAccount[]> {
+    const { clientId, clientSecret, accessToken } = config
+    await this.send(connection, CTraderMessage.ApplicationAuth, CTraderMessage.ApplicationAuthResponse, { clientId, clientSecret })
+    const list = await this.send(connection, CTraderMessage.AccountList, CTraderMessage.AccountListResponse, { accessToken })
+    if (list.permissionScope !== 'SCOPE_VIEW' && cTraderInteger(list.permissionScope) !== 0) {
+      throw new FatalConnectionError('cTrader Access Token 必须明确为只读权限')
     }
+    const entries = Array.isArray(list.ctidTraderAccount) ? list.ctidTraderAccount as unknown[] : []
+    const accounts = new Map<string, CTraderAccount>()
+    for (const entry of entries) {
+      const row = cTraderObject(entry)
+      const id = cTraderInteger(row?.ctidTraderAccountId)
+      if (id === undefined || id <= 0 || (row?.isLive !== undefined && typeof row.isLive !== 'boolean')) continue
+      const isLive = row?.isLive === true
+      const key = `${isLive ? 'live' : 'demo'}:${id}`
+      const broker = typeof row?.brokerTitleShort === 'string' ? row.brokerTitleShort.trim() : undefined
+      accounts.set(key, { key, id, isLive, broker, login: cTraderInteger(row?.traderLogin) })
+    }
+    if (accounts.size === 0) throw new FatalConnectionError('cTrader Access Token 没有可连接的授权账户')
+    return [...accounts.values()]
+  }
+
+  private async selectAccount(accounts: CTraderAccount[], signal: AbortSignal, legacyAccountId?: number): Promise<CTraderAccount> {
+    const key = this.selectedAccount?.key ?? (accounts.length === 1 ? accounts[0].key
+      : this.chooseAccount ? await this.chooseAccount(accounts, signal)
+        : accounts.find(account => account.id === legacyAccountId)?.key)
+    signal.throwIfAborted()
+    const account = accounts.find(candidate => candidate.key === key)
+    if (account === undefined) throw new FatalConnectionError('所选 cTrader 账户不在授权列表中')
+    return account
   }
 
   private send(
@@ -368,6 +413,7 @@ export class CTraderClient {
   private end(connection: Connection, error: unknown): void {
     if (this.connection !== connection) return
     this.connection = null
+    connection.abort.abort(error)
     clearInterval(connection.heartbeat)
     connection.failOpen(error instanceof Error ? error : new Error('cTrader 行情连接已中断'))
     for (const pending of connection.pending.values()) pending.reject(error)

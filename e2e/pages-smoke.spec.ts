@@ -47,7 +47,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     expect(response?.ok()).toBe(true)
     await expect(page.getByRole('button', { name: '历史模拟', exact: true })).toHaveAttribute('aria-pressed', 'true')
     await expect(page.locator('.klinecharts-pro-period-bar .symbol')).toContainText('EURUSD')
-    await expect(page.getByRole('contentinfo')).toContainText('模拟账户连接配置')
+    await expect(page.getByRole('contentinfo')).toContainText('cTrader 账户连接配置')
     await expect(page.locator('canvas').first()).toBeVisible()
     await page.getByRole('button', { name: '回放设置', exact: true }).click()
     const replaySettings = page.getByRole('dialog', { name: '回放会话设置', exact: true })

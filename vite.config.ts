@@ -31,6 +31,6 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: { exclude: ['@klinecharts/pro', 'klinecharts'] },
     // Playwright writes large attachments while Vite runs. Watching those
     // generated files can fail with EBUSY on Windows and restart test pages.
-    server: { watch: { ignored: ['**/test-results/**', '**/test-results-*/**'] } },
+    server: { watch: { ignored: ['**/test-results/**', '**/test-results-*/**', '**/ctrader-connection.local.json'] } },
   }
 })

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task by task. Steps use checkbox syntax for tracking.
 
-**Goal** — Switch the experimental workstation to direct, read-only cTrader demo market data while preserving its chart, simulation, replay, and application archives.
+**Goal** — Switch the experimental workstation to direct, read-only cTrader market data while preserving its chart, simulation, replay, and application archives.
 
 **Architecture** — The browser uses one cTrader JSON socket for authentication, symbol lookup, native trendbar requests, and multiplexed chart subscriptions. Replay steps on closed native candles. Existing backup formats remain readable, while browser and GitHub data use experimental namespaces.
 
@@ -13,8 +13,8 @@
 ## Global constraints
 
 - Implement on `codex/ctrader-only`. Production Pages remains on `main`.
-- The demo WebSocket is the only live market source. Use native `1m`, `2m`, `3m`, `4m`, `5m`, `10m`, `15m`, `30m`, `1h`, `4h`, `12h`, `1d`, `1w`, `1M` candles.
-- Authenticate the application, verify the token allows only the specified demo account, then verify `SCOPE_VIEW` before requesting market data. Publish a populated connection configuration only after actual verification. Exclude refresh tokens and GitHub credentials from that configuration.
+- Use the cTrader WebSocket for the selected demo or live environment. Use native `1m`, `2m`, `3m`, `4m`, `5m`, `10m`, `15m`, `30m`, `1h`, `4h`, `12h`, `1d`, `1w`, `1M` candles.
+- Authenticate the application and verify `SCOPE_VIEW` before displaying authorized accounts. Wait for a selection when there are multiple accounts, authenticate it on its environment, then request market data. Exclude refresh tokens and GitHub credentials from the connection file.
 - Cloud writes stay under `projects/crypto-contract-workstation/experiments/ctrader/`. Application archives retain old formats and omit credentials. Market history is memory-only.
 
 ## Review focus
@@ -63,5 +63,6 @@
 
 - [x] Add browser coverage for native chart requests, replay, configuration restore and the removed market-history controls.
 - [x] Wire the runtime, picker, status, archive controls and static config template.
-- [x] Run `npm run check` (821 tests), `npm run test:e2e` (6 tests), and `npm run test:e2e:pages` (8 tests). Address the independent review findings and run the regressions again.
-- [ ] Run the five-symbol real demo verification. The supplied token returned `SCOPE_VIEW` for two accounts, so it fails the agreed publication condition. The committed connection file is a blank template.
+- [x] Run `npm run check` (821 tests), `npm run test:e2e` (7 tests), and `npm run test:e2e:pages` (9 tests). Address the independent review findings and run the regressions again.
+- [x] Verify the authorized demo and live accounts with the existing read-only token. Both returned EURUSD historical bars. The demo account returned historical bars and live spot quotes for EURUSD, XAUUSD, US500, BTCUSD, and ETHUSD.
+- [x] Add a picker for multiple accounts, including live accounts, and test selection, endpoint routing, reconnect, and reload. Keep the selection in page memory and the verified credentials in the ignored local development file.
