@@ -13,9 +13,12 @@ test('publishes the isolated connection and authenticates cloud requests without
   expect(published).toEqual(mockCloudConnection)
   const marketConfiguration = await request.get(new URL('ctrader-connection.json', baseURL!).href)
   expect(marketConfiguration.ok()).toBe(true)
-  expect(await marketConfiguration.json()).toEqual({
+  const market = await marketConfiguration.json()
+  const testConnection = {
     clientId: 'e2e-published-app', clientSecret: 'e2e-published-secret', accessToken: 'e2e-published-view', accountId: null,
-  })
+  }
+  expect(Object.keys(market).sort()).toEqual(Object.keys(testConnection).sort())
+  expect(Object.entries(testConnection).every(([key, value]) => market[key] === value)).toBe(true)
   const authorization: (string | undefined)[] = []
   await page.route(/^https:\/\//, route => {
     if (route.request().url().startsWith('https://api.github.com/')) authorization.push(route.request().headers().authorization)

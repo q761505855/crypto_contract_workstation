@@ -113,7 +113,6 @@ describe('deployment configuration', () => {
     ])
     expect(captureStep(deployJob, 'Build Pages artifact')).toContain('VITE_BASE_PATH: /crypto_contract_workstation/')
     expect(captureStep(deployJob, 'Build Pages artifact')).toContain('CLOUD_STORAGE_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}')
-    expect(captureStep(deployJob, 'Build Pages artifact')).toContain('CTRADER_CONNECTION_JSON: ${{ secrets.CTRADER_CONNECTION_JSON }}')
     expect(captureStep(deployJob, 'Build Pages artifact')).toContain("REQUIRE_CTRADER_CONNECTION: '1'")
     expect(captureStep(deployJob, 'Upload Pages artifact')).toContain('path: ./dist')
     expect(captureStep(deployJob, 'Deploy')).toContain('id: deployment')
@@ -121,8 +120,6 @@ describe('deployment configuration', () => {
     expect(workflow).not.toMatch(/^        run: .*?(?:npm run (?:check|test|typecheck|verify)|playwright|tsc)/m)
     expect(workflow).not.toContain('e2e-mock-storage-token')
     expect(workflow).not.toContain('needs:')
-    expectNoSecrets(workflow
-      .replace('          CLOUD_STORAGE_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}\n', '')
-      .replace('          CTRADER_CONNECTION_JSON: ${{ secrets.CTRADER_CONNECTION_JSON }}\n', ''))
+    expectNoSecrets(workflow.replace('          CLOUD_STORAGE_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}\n', ''))
   })
 })

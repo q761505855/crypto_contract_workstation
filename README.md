@@ -10,7 +10,7 @@
 
 静态连接文件随网页发布，访问者可以读取它。Token 的只读权限覆盖其授权列表中的全部账户。
 
-本地开发可在仓库根目录使用 `ctrader-connection.local.json`。当静态连接模板为空时，`npm run dev` 会读取这份本机配置。GitHub Pages 发布从仓库 Actions 密钥 `CTRADER_CONNECTION_JSON` 读取 JSON，构建时生成站点的 `ctrader-connection.json`。配置须包含应用 ID、应用密钥和只读 Access Token。
+正式站直接使用仓库里的 `public/ctrader-connection.json`。更新凭据时，编辑这个文件并推送到 `main`，GitHub Pages 会自动发布。本文件仅填写应用 ID、应用密钥、只读 Access Token 和可选的账户 ID。旧值会保留在 Git 历史中，轮换 Token 后请在 cTrader 撤销旧 Token。当此文件缺失或无效时，本地开发可从仓库根目录的 `ctrader-connection.local.json` 读取配置。
 
 填入新的凭据后，先运行 `npm run dev` 并打开本地页面，确认账户通过认证，再构建静态产物。分别搜索 `EURUSD`、`XAUUSD`、`US500`、`BTCUSD`、`ETHUSD`，核对 IC 品种代码、至少两个原生周期和开市时的实时报价。账户存在不同品种代码时，使用账户列表返回的代码。令牌到期后重复此流程。API 消息和限制见 [cTrader Open API](https://help.ctrader.com/open-api/)。市场行情只在运行中的页面内缓存。
 

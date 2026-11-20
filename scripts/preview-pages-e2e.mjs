@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process'
+import { cp, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { verifyPagesArtifact } from './verify-pages-artifact.mjs'
 
@@ -9,15 +12,11 @@ const env = {
   E2E_CHART_PROBE: '1',
   VITE_BASE_PATH: '/crypto_contract_workstation/',
   CLOUD_STORAGE_TOKEN: 'e2e-mock-storage-token',
-  CTRADER_CONNECTION_JSON: JSON.stringify({
-    clientId: 'e2e-published-app', clientSecret: 'e2e-published-secret', accessToken: 'e2e-published-view',
-    refreshToken: 'e2e-excluded-refresh',
-  }),
   REQUIRE_CTRADER_CONNECTION: '1',
 }
 
-async function runVite(args) {
-  const child = spawn(process.execPath, [vite, ...args], { cwd: root, env, stdio: 'inherit' })
+async function runVite(args, overrides = {}) {
+  const child = spawn(process.execPath, [vite, ...args], { cwd: root, env: { ...env, ...overrides }, stdio: 'inherit' })
   let stopping = false
   const stop = signal => { stopping = true; child.kill(signal) }
   const interrupt = () => stop('SIGINT')
@@ -41,7 +40,22 @@ async function runVite(args) {
 
 // Build a credential-isolated test artifact without requiring workflow changes.
 // The existing deployment workflow rebuilds the production artifact after tests.
-await runVite(['build'])
+const tempRoot = await realpath(tmpdir())
+const testPublicDir = await mkdtemp(join(tempRoot, 'workstation-pages-public-'))
+try {
+  await cp(join(root, 'public'), testPublicDir, {
+    recursive: true,
+    filter: source => basename(source) !== 'ctrader-connection.json',
+  })
+  await writeFile(join(testPublicDir, 'ctrader-connection.json'), JSON.stringify({
+    clientId: 'e2e-published-app', clientSecret: 'e2e-published-secret', accessToken: 'e2e-published-view', accountId: null,
+  }))
+  await runVite(['build'], { E2E_PAGES_PUBLIC_DIR: testPublicDir })
+} finally {
+  if (dirname(await realpath(testPublicDir)) === tempRoot) {
+    await rm(testPublicDir, { recursive: true, force: true })
+  }
+}
 await verifyPagesArtifact(fileURLToPath(new URL('../dist/', import.meta.url)), {
   allowTestProbe: true,
   embeddedCloudToken: env.CLOUD_STORAGE_TOKEN,
