@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Decimal from 'decimal.js'
 import { formatDisplayTime } from '../format-display-time'
+import { displayAmount, displayRate as rate } from '../format-amount'
 import type { ReplaySession } from '../replay/models'
 import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
 import type { PositionSide, OrderPreview, SimulationPosition, SimulationState } from '../simulation/models'
@@ -9,13 +10,10 @@ import { estimateRiskPnl, riskPricePercent, riskTriggerPrice, type RiskInputMode
 import type { SimulationController } from '../simulation/useSimulationController'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { PanelToggle } from './PanelToggle'
+import { ReviewStatistics } from './ReviewStatistics'
+import { AccountLedger, TradeHistory } from './TradingHistory'
 
-export function displayAmount(value: string, digits = 2) {
-  return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })
-}
-const rate = (value: string) => `${(Number(value) * 100).toFixed(2)}%`
 const sideName = (side: PositionSide) => side === 'long' ? '多仓' : '空仓'
-const actionName = { open: '开仓', add: '加仓', reduce: '减仓', close: '平仓', take_profit: '止盈', stop_loss: '止损', liquidation: '强平' }
 
 export function AccountStrip({ state, currency = 'USDT', onClose }: { state: SimulationState | null; currency?: string; onClose(): void }) {
   const [details, setDetails] = useState(false)
@@ -210,9 +208,9 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
           </div>
           <div className="position-actions"><button type="button" onClick={() => edit(p.side, 'risk')}>止盈止损</button><button type="button" onClick={() => edit(p.side, 'reduce')}>减仓 / 平仓</button><button type="button" className="text-button" onClick={() => edit(p.side, 'details')}>详情</button></div>
         </article>)}</div>)}
-        {tab === 'trades' && <div className="trade-list">{state.trades.length === 0 ? <p className="muted-text">尚无成交</p> : [...state.trades].reverse().map(trade => <div key={trade.tradeId}><strong>{actionName[trade.action]} · {sideName(trade.positionSide)}</strong><span>{formatDisplayTime(trade.timestamp)}</span><span>{volumeText(trade.quantity)}{terms ? ' 手' : ''} @ {trade.price}</span><span>{terms ? '佣金' : '手续费'} {displayAmount(trade.fee, 4)} · 滑点 {displayAmount(trade.slippage, 4)}</span><span>盈亏 {displayAmount(trade.realizedPnl)} {currency}</span></div>)}</div>}
-        {tab === 'stats' && <dl className="detail-list stats-grid">{[['总收益', `${displayAmount(state.stats.totalReturn)} ${currency}`], ['收益率', rate(state.stats.totalReturnRate)], ['成交次数', state.stats.totalTrades], ['完整平仓', state.stats.completedPositions], ['盈利次数', state.stats.wins], ['亏损次数', state.stats.losses], ['胜率', rate(state.stats.winRate)], ['最大单笔盈利', displayAmount(state.stats.largestWin)], ['最大单笔亏损', displayAmount(state.stats.largestLoss)], ['强平次数', state.stats.liquidations]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
-        {tab === 'ledger' && <div className="trade-list">{[...state.ledger].reverse().map(entry => <div key={entry.entryId}><strong>{entry.type === 'swap' ? '隔夜调整' : entry.type}</strong><span>{formatDisplayTime(entry.timestamp)}</span><span>变动 {displayAmount(entry.amount, 4)} · 余额 {displayAmount(entry.balanceAfter, 4)}</span></div>)}</div>}
+        {tab === 'trades' && <TradeHistory trades={state.trades} currency={currency} usesLots={terms !== undefined} volumeText={volumeText} />}
+        {tab === 'stats' && <ReviewStatistics key={state.sessionId} state={state} currency={currency} />}
+        {tab === 'ledger' && <AccountLedger entries={state.ledger} currency={currency} usesLots={terms !== undefined} />}
       </>}
     </div>
     <WorkspaceDialog open={editing !== null && position !== undefined} title={editing ? `${sideName(editing.side)} · ${editing.kind === 'risk' ? '止盈止损' : editing.kind === 'reduce' ? '减仓和平仓' : '仓位详情'}` : ''} onClose={() => setEditing(null)}>

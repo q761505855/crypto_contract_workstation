@@ -16,7 +16,7 @@ const candle: MarketCandle = {
   quoteVolume: '100', tradeCount: 1, isClosed: true, source: 'binance',
 }
 
-function Harness() {
+function Harness({ closePrice = candle.close }: { closePrice?: string }) {
   const [session] = useState(() => ReplayEngine.create({ symbol: DEFAULT_SYMBOL, period: SUPPORTED_PERIODS[0], startTime: 0, endTime: 0 }, [candle]).snapshot())
   const [engine] = useState(() => SimulationEngine.create(session))
   const [state, setState] = useState(() => engine.snapshot())
@@ -32,7 +32,7 @@ function Harness() {
       const position = engine.snapshot().positions.find(position => position.side === side)!
       engine.reduce(side, String(Number(position.quantity) * percent / 100), candle); publish()
     },
-    async closeAll(side) { engine.closeAll(side, candle); publish() },
+    async closeAll(side) { engine.closeAll(side, { ...candle, close: closePrice }); publish() },
     setTakeProfit(side, price) { engine.setTakeProfit(side, price, 0); publish() },
     setStopLoss(side, price) { engine.setStopLoss(side, price, 0); publish() },
   }
@@ -93,4 +93,56 @@ describe('simulation position cards', () => {
     expect(short.getByTestId('position-summary')).toHaveTextContent('— / 110')
     expect(screen.getByRole('button', { name: '同向加仓' })).toBeEnabled()
   })
+})
+
+it('distinguishes opening trades and realized gains, and shows signed wallet movements', () => {
+  render(<Harness closePrice="120" />)
+  const selectTab = (name: string) => fireEvent.click(screen.getByRole('tab', { name }))
+  const rows = (name: string) => within(screen.getByRole('tabpanel', { name })).getAllByRole('listitem')
+
+  selectTab('成交记录')
+  expect(screen.getByText('尚无成交')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: '开多' }))
+  expect(rows('成交记录')[0]).toHaveTextContent(/已实现盈亏\s*—/)
+  selectTab('持仓 (1)')
+  fireEvent.click(screen.getByRole('button', { name: '减仓 / 平仓' }))
+  fireEvent.click(screen.getByRole('button', { name: '全部平仓' }))
+
+  selectTab('成交记录')
+  const [close, open] = rows('成交记录')
+  expect(close).toHaveTextContent('平仓')
+  expect(close).toHaveTextContent('多仓')
+  expect(close).toHaveTextContent(/已实现盈亏\s*\+\d+\.\d+ USDT/)
+  expect(open).toHaveTextContent('开仓')
+
+  selectTab('账户流水')
+  const [fee, pnl, , initial] = rows('账户流水')
+  expect(fee).toHaveTextContent(/手续费.*变动金额\s*-0\.\d+ USDT/)
+  expect(pnl).toHaveTextContent(/已实现盈亏.*变动金额\s*\+\d+\.\d+ USDT/)
+  expect(initial).toHaveTextContent(/初始资金.*变动后余额\s*10,000\.0000 USDT/)
+})
+
+it('shows wallet costs while a position is open and classifies its net loss once it closes', () => {
+  render(<Harness />)
+  const selectTab = (name: string) => fireEvent.click(screen.getByRole('tab', { name }))
+  const stats = () => within(screen.getByRole('tabpanel', { name: '复盘统计' }))
+
+  selectTab('复盘统计')
+  expect(stats().getByText('尚无余额变动')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: '开多' }))
+  const balanceChart = stats().getByRole('slider', { name: '钱包余额曲线' })
+  expect(balanceChart).toHaveAttribute('aria-valuenow', '1')
+  fireEvent.keyDown(balanceChart, { key: 'Home' })
+  expect(balanceChart).toHaveAttribute('aria-valuenow', '0')
+  expect(balanceChart).toHaveAttribute('aria-valuetext', expect.stringContaining('10,000.00 USDT'))
+  expect(stats().getByText('胜率', { exact: true }).nextElementSibling).toHaveTextContent('—')
+  fireEvent.click(stats().getByRole('button', { name: /^回撤$/ }))
+  expect(stats().getByRole('slider', { name: '回撤曲线' })).toBeVisible()
+
+  selectTab('持仓 (1)')
+  fireEvent.click(screen.getByRole('button', { name: '减仓 / 平仓' }))
+  fireEvent.click(screen.getByRole('button', { name: '全部平仓' }))
+  selectTab('复盘统计')
+  expect(stats().getByText('完整平仓', { exact: true }).nextElementSibling).toHaveTextContent('1')
+  expect(stats().getByText('胜率', { exact: true }).nextElementSibling).toHaveTextContent('0.00%')
 })
