@@ -13,6 +13,7 @@ import type { ReplayCandleEvent, ReplayCandleListener, ReplayController } from '
 interface CTraderReplayRuntime {
   service: CTraderReplayMarket & Pick<CTraderMarketService, 'getReplayTradingTerms'>
   replaySessions: Omit<ReplaySessionStore, 'getLatestActive'>
+  replayTicks?: CTraderReplayTicks
 }
 
 interface ReplayCursor {
@@ -51,9 +52,9 @@ export function useCTraderReplayController(
   runtime: CTraderReplayRuntime,
   stepTimeframe?: ReplayStepPeriod,
 ): ReplayController<ReplayStepPeriod> {
-  const { service, replaySessions } = runtime
+  const { service, replaySessions, replayTicks } = runtime
   const history = useMemo(() => new CTraderReplayBars(service), [service])
-  const ticks = useMemo(() => new CTraderReplayTicks(service, history), [service, history])
+  const ticks = useMemo(() => replayTicks ?? new CTraderReplayTicks(service, history), [replayTicks, service, history])
   const cursorRef = useRef<ReplayCursor | null>(null)
   const operationRef = useRef<AbortController | null>(null)
   const listeners = useRef(new Set<ReplayCandleListener>())

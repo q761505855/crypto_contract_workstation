@@ -69,11 +69,22 @@ export interface ReplayContext {
   timeframe: string
   currentTime: number
   visibleUntil?: number
+  cursorTickIndex?: number
   endTime?: number
 }
 
 export function replayVisibleUntil(context: Pick<ReplayContext, 'currentTime' | 'timeframe' | 'visibleUntil'>): number {
   return context.visibleUntil ?? klineCloseBoundary(context.currentTime, context.timeframe)
+}
+
+export function replayConfirmedUntil(context: ReplayContext): number {
+  // A native bar ending on the current Tick could include later quotes in that millisecond.
+  return replayVisibleUntil(context) - Number(context.cursorTickIndex !== undefined)
+}
+
+export function compareReplayPositions(left: ReplayContext, right: ReplayContext): number {
+  return replayVisibleUntil(left) - replayVisibleUntil(right) ||
+    (left.cursorTickIndex ?? Number.MAX_SAFE_INTEGER) - (right.cursorTickIndex ?? Number.MAX_SAFE_INTEGER)
 }
 
 export function sessionVisibleUntil(session: ReplaySession): number {

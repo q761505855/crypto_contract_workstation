@@ -379,6 +379,8 @@ test('replays ticks and seconds on a native 5m chart and restores a same-time qu
   const { messages } = await connectFixture(page, false, { ticks: [
     { timestamp: at + 456, price: 110050 }, { timestamp: at + 456, price: 110060 },
     { timestamp: at + 5100, price: 110080 }, { timestamp: at + 5400, price: 110070 },
+    { timestamp: at + 10200, price: 110090 }, { timestamp: at + 10900, price: 110040 },
+    { timestamp: at + 15100, price: 110100 }, { timestamp: at + 29800, price: 110030 },
   ] })
   const readChart = await installViewportProbe(page)
   await page.goto('./')
@@ -396,28 +398,77 @@ test('replays ticks and seconds on a native 5m chart and restores a same-time qu
   await expect(controls.locator('.replay-start-time')).toContainText(inputTime.replace('T', ' '))
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
   const mode = controls.getByLabel('步进周期')
+  const last = () => readChart().then(chart => chart.last)
   await mode.selectOption('tick')
   await controls.getByRole('button', { name: '下一笔', exact: true }).click()
   await expect(controls).toContainText(':00.456')
   await expect(controls).toContainText('第 2 步')
+  await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1005, volume: 1, ctraderClosed: false })
   await controls.getByRole('button', { name: '下一笔', exact: true }).click()
   await expect(controls).toContainText('第 3 步')
   await expect(controls).toContainText(':00.456')
-  await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start)
+  await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1006, volume: 2, ctraderClosed: false })
   const tickRequests = () => messages.filter(message => message.type === 2145).length
   expect(tickRequests()).toBe(1)
 
   await page.reload()
   await expect(mode).toHaveValue('tick')
   await expect(controls).toContainText('第 3 步')
+  await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1006, volume: 2 })
   await controls.getByRole('button', { name: '上一笔', exact: true }).click()
   await expect(controls).toContainText('第 2 步')
+  await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1005, volume: 1 })
   await mode.selectOption('5s')
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
   await expect(controls).toContainText(':10 ')
   await expect(controls).toContainText('第 3 步')
-  await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start)
+  await expect.poll(last).toMatchObject({ timestamp: at, high: 1.1008, close: 1.1007, volume: 4 })
+  await mode.selectOption('1s')
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect.poll(last).toMatchObject({ timestamp: at, high: 1.1009, close: 1.1004, volume: 6 })
+  await mode.selectOption('15s')
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect.poll(last).toMatchObject({ timestamp: at, high: 1.101, low: 1.1003, close: 1.1003, volume: 8 })
   expect(tickRequests()).toBe(2)
+})
+
+test('updates a 15m chart at 1m steps and reveals every 1m bar at a 15m step', async ({ page }) => {
+  const start = Date.UTC(2026, 10, 20, 14, 30)
+  const forming = start + 15 * minute
+  await page.clock.setFixedTime(new Date(start + 60 * minute))
+  await connectFixture(page, false, { historyAvailable: time => time >= start - 15 * minute })
+  const readChart = await installViewportProbe(page)
+  await page.goto('./')
+
+  const controls = page.getByTestId('replay-controls')
+  const selectPeriod = async (timeframe: string) => {
+    await page.getByRole('button', { name: '图表周期', exact: true }).click()
+    await page.getByRole('button', { name: `选择周期 ${timeframe}`, exact: true }).click()
+  }
+  await selectPeriod('15m')
+  await controls.getByRole('button', { name: '时间定位', exact: true }).click()
+  const inputTime = await page.evaluate(timestamp =>
+    new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60_000).toISOString().slice(0, 16), start)
+  const locate = page.getByRole('dialog', { name: '图表时间定位' })
+  await locate.getByLabel('图表跳转时间').fill(inputTime)
+  await locate.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect(controls.locator('.replay-start-time')).toContainText(inputTime.replace('T', ' '))
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  const last = () => readChart().then(chart => chart.last)
+  const next = controls.getByRole('button', { name: '下一根', exact: true })
+  await expect.poll(last).toMatchObject({ timestamp: start, volume: 42, ctraderClosed: true })
+  await next.click()
+  await expect.poll(last).toMatchObject({ timestamp: forming, volume: 42, ctraderClosed: false })
+  await next.click()
+  await expect.poll(last).toMatchObject({ timestamp: forming, volume: 84, ctraderClosed: false })
+
+  await selectPeriod('1m')
+  await expect.poll(last).toMatchObject({ timestamp: forming + minute, ctraderClosed: true })
+  await controls.getByLabel('步进周期').selectOption('15m')
+  await next.click()
+  const revealed = Array.from({ length: 29 }, (_, index) => forming + (1 + index) * minute)
+  await expect.poll(async () => (await readChart()).timestamps.slice(-revealed.length)).toEqual(revealed)
+  await expect.poll(last).toMatchObject({ timestamp: revealed.at(-1), ctraderClosed: true })
 })
 
 test('replays native minute steps, reveals completed chart bars, and restores a simulated trade', async ({ page }) => {
@@ -466,7 +517,7 @@ test('replays native minute steps, reveals completed chart bars, and restores a 
   await next.click()
   await expect(controls).toContainText('第 2 步')
   await expect.poll(() => messages.some(message => message.type === 2137 && message.period === 1)).toBe(true)
-  expect(await lastCandle()).toBe(jumpAt)
+  await expect.poll(async () => (await readChart()).last).toMatchObject({ timestamp: jumpAt + 2 * minute, ctraderClosed: false })
 
   const trade = page.getByRole('complementary', { name: '模拟下单面板' })
   await expect(trade.getByRole('spinbutton', { name: '手数', exact: true })).toHaveValue('0.01')

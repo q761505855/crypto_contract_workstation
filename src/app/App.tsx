@@ -41,7 +41,7 @@ import {
   type LiveMarketStatus,
 } from '../market-data/live-models'
 import { createMarketDataRuntime, type MarketDataRuntime } from '../market-data/runtime'
-import { replaySourceTimeframe, replayVisibleUntil, sessionVisibleUntil, type ReplayContext } from '../replay/models'
+import { compareReplayPositions, replaySourceTimeframe, sessionVisibleUntil, type ReplayContext } from '../replay/models'
 import { useCTraderReplayController } from '../replay/useCTraderReplayController'
 import { readReplayStepPeriod, saveReplayStepPeriod } from '../replay/step-preferences'
 import { ctraderReplayChartNeedsReload } from '../replay/ctrader-replay-datafeed'
@@ -360,6 +360,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
             timeframe: replaySourceTimeframe(activeReplay),
             currentTime: activeReplay.currentTime,
             visibleUntil: activeReplay.visibleUntil,
+            cursorTickIndex: activeReplay.cursorTickIndex,
             endTime: activeReplay.endTime,
           }
         : null
@@ -386,7 +387,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       (previous !== null &&
         nextContext !== null &&
         (previous.sessionId !== nextContext.sessionId ||
-          replayVisibleUntil(nextContext) < replayVisibleUntil(previous)))
+          compareReplayPositions(nextContext, previous) < 0))
     if (needsReload) {
       setChartReloadKey((current) => current + 1)
     }

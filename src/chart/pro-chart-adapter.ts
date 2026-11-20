@@ -34,7 +34,7 @@ import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
 import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference } from './market-session-times'
 import { readChartHistory } from '../market-data/indicator-history'
-import { replayVisibleUntil, type ReplayContext } from '../replay/models'
+import { replayConfirmedUntil, replayVisibleUntil, type ReplayContext } from '../replay/models'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
 import {
   registerSimulationPriceLine, SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR,
@@ -136,7 +136,7 @@ const createProChart: ChartProFactory = (options) => {
     return {
       symbol: chart?.getSymbol() ?? options.symbol,
       period: chart?.getPeriod() ?? options.period,
-      confirmedUntil: replay ? replayVisibleUntil(replay) : Date.now(),
+      confirmedUntil: replay ? replayConfirmedUntil(replay) : Date.now(),
       sessionKey: replay?.sessionId ?? 'live',
     }
   }

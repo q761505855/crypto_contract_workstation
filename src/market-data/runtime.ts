@@ -4,6 +4,7 @@ import { loadCTraderConnection } from './ctrader-connection'
 import { CTraderDatafeed } from './ctrader-datafeed'
 import { CTraderMarketService } from './ctrader-market'
 import { CTraderReplayDatafeed } from '../replay/ctrader-replay-datafeed'
+import { CTraderReplayTicks } from '../replay/ctrader-replay-ticks'
 import { CTRADER_DATABASE_NAME, ctraderStorage } from '../storage/ctrader-storage'
 import { IndexedDbReplaySessionStore } from '../storage/replay-session-store'
 import { IndexedDbSimulationStateStore } from '../storage/simulation-state-store'
@@ -19,6 +20,7 @@ export interface MarketDataRuntime {
   accountSelection: CTraderAccountSelection
   datafeed: CTraderDatafeed
   replayDatafeed: CTraderReplayDatafeed
+  replayTicks: CTraderReplayTicks
   service: CTraderMarketService
   replaySessions: IndexedDbReplaySessionStore
   simulationStates: IndexedDbSimulationStateStore
@@ -36,6 +38,7 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
   const connection = new CTraderClient(loadCTraderConnection, undefined, accountSelection.choose, accountSelection.selected)
   const service = new CTraderMarketService(connection)
   const datafeed = new CTraderDatafeed(service)
+  const replayTicks = new CTraderReplayTicks(service)
   const defaultGitHubClient = new GitHubContentsClient(defaultStorageTarget(), cloudToken)
   const drawings = new DrawingStore()
   const backups = new WorkstationBackupService(CTRADER_DATABASE_NAME, ctraderStorage, Date.now, drawings, { includeMarketHistory: false })
@@ -43,7 +46,8 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
   return {
     accountSelection,
     datafeed,
-    replayDatafeed: new CTraderReplayDatafeed(datafeed, service),
+    replayDatafeed: new CTraderReplayDatafeed(datafeed, service, replayTicks),
+    replayTicks,
     service,
     replaySessions: new IndexedDbReplaySessionStore(CTRADER_DATABASE_NAME),
     simulationStates: new IndexedDbSimulationStateStore(CTRADER_DATABASE_NAME),

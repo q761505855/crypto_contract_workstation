@@ -1,6 +1,6 @@
 import type { CTraderTick } from '../market-data/ctrader-market'
 import type { MarketCandle } from '../market-data/models'
-import type { CTraderReplayBars, CTraderReplayMarket } from './ctrader-replay-bars'
+import { CTraderReplayBars, type CTraderReplayMarket } from './ctrader-replay-bars'
 import { SECOND_STEP_MS, type FineStepPeriod } from './step-periods'
 
 const WINDOW_MS = 10 * 60_000
@@ -16,7 +16,7 @@ interface TickWindow {
 }
 
 function priceCandle(
-  symbol: string, timeframe: FineStepPeriod, openTime: number, closeTime: number, ticks: IndexedTick[],
+  symbol: string, timeframe: FineStepPeriod | '1m', openTime: number, closeTime: number, ticks: IndexedTick[],
 ): ReplayPriceCandle {
   const first = ticks[0]
   let high = first.price
@@ -35,7 +35,15 @@ function priceCandle(
 export class CTraderReplayTicks {
   private readonly windows = new Map<string, TickWindow>()
 
-  constructor(private readonly service: CTraderReplayMarket, private readonly nativeBars: CTraderReplayBars) {}
+  constructor(private readonly service: CTraderReplayMarket, private readonly nativeBars = new CTraderReplayBars(service)) {}
+
+  async readFormingMinute(symbol: string, from: number, to: number, signal: AbortSignal | undefined, tickIndex?: number) {
+    if (!this.service.loadTicks) return undefined
+    const { ticks } = await this.readWindow(symbol, to, signal)
+    const revealed = ticks.filter(tick => tick.timestamp >= from &&
+      (tick.timestamp < to || (tick.timestamp === to && (tickIndex === undefined || tick.index <= tickIndex))))
+    if (revealed.length > 0) return priceCandle(symbol, '1m', from, to, revealed)
+  }
 
   async find(
     symbol: string, timeframe: FineStepPeriod, from: number, to: number, direction: Direction,
@@ -75,7 +83,8 @@ export class CTraderReplayTicks {
     }
   }
 
-  private async readWindow(symbol: string, position: number, signal: AbortSignal): Promise<TickWindow> {
+  private async readWindow(symbol: string, position: number, signal?: AbortSignal): Promise<TickWindow> {
+    signal?.throwIfAborted()
     const from = Math.floor(position / WINDOW_MS) * WINDOW_MS
     const key = `${symbol.toUpperCase()}:${from}`
     const cached = this.windows.get(key)
@@ -87,7 +96,7 @@ export class CTraderReplayTicks {
     if (!this.service.loadTicks) throw new Error('当前行情来源不提供历史 Tick')
     const to = Math.min(Date.now(), from + WINDOW_MS - 1)
     const rows = await this.service.loadTicks(symbol, from, to, signal)
-    signal.throwIfAborted()
+    signal?.throwIfAborted()
     let time = -1
     let index = 0
     const ticks = rows.map(tick => {

@@ -2,19 +2,21 @@ import type { Datafeed, DatafeedSubscribeCallback, Period, SymbolInfo } from '@k
 import type { KLineData } from 'klinecharts'
 import { toChartCandle } from '../market-data/chart-candle'
 import { readChartHistory } from '../market-data/indicator-history'
-import { shiftOpenTime } from '../market-data/intervals'
+import { alignOpenTime, nextOpenTime, shiftOpenTime } from '../market-data/intervals'
 import type { MarketCandle, MarketSelection } from '../market-data/models'
 import { loadClosedReplayBars, type CTraderReplayMarket } from './ctrader-replay-bars'
-import { replayVisibleUntil, type ReplayContext } from './models'
+import { CTraderReplayTicks } from './ctrader-replay-ticks'
+import { compareReplayPositions, replayConfirmedUntil, replayVisibleUntil, type ReplayContext } from './models'
 
 const PAGE_SIZE = 500
 const MAX_EMPTY_PAGES = 8
 const FORWARD_PAGE_SIZE = 256
-const FORWARD_MAX_SPAN_MS = 365 * 86_400_000
+const DAY = 86_400_000
+const FORWARD_MAX_SPAN_MS = 365 * DAY
 const HISTORY_ERROR_RETRY_MS = 3_000
 
 interface ReplayTail {
-  until: number
+  position: ReplayContext
   nextClose?: number
 }
 
@@ -39,7 +41,7 @@ type BaseDatafeed = Datafeed & {
 function timelineChanged(before: ReplayContext | null, after: ReplayContext | null): boolean {
   if (before === null || after === null) return before !== after
   return before.sessionId !== after.sessionId || before.symbol !== after.symbol ||
-    replayVisibleUntil(before) > replayVisibleUntil(after)
+    compareReplayPositions(before, after) > 0
 }
 
 export function ctraderReplayChartNeedsReload(before: ReplayContext, after: ReplayContext, timeframe: string): boolean {
@@ -64,12 +66,13 @@ export class CTraderReplayDatafeed implements Datafeed {
   constructor(
     private readonly base: BaseDatafeed,
     private readonly service: CTraderReplayMarket,
+    private readonly ticks = new CTraderReplayTicks(service),
   ) {
     base.setWarningListener?.(message => this.onWarning?.(message))
   }
 
   createChartView(base: Datafeed): CTraderReplayDatafeed {
-    return new CTraderReplayDatafeed(base, this.service)
+    return new CTraderReplayDatafeed(base, this.service, this.ticks)
   }
 
   dispose(): void {
@@ -108,10 +111,10 @@ export class CTraderReplayDatafeed implements Datafeed {
     }
     if (context === null) return
     if (restart || reloadChart) {
-      subscription.until = replayVisibleUntil(context)
+      subscription.position = context
       subscription.nextClose = undefined
     } else {
-      void this.emitClosedBars(subscription)
+      void this.emitBars(subscription)
     }
   }
 
@@ -137,24 +140,34 @@ export class CTraderReplayDatafeed implements Datafeed {
       return generation === this.generation ? rows : this.getHistoryKLineData(symbol, period, from, to, false, signal)
     }
     const until = replayVisibleUntil(context)
+    const nativeUntil = replayConfirmedUntil(context)
     const upper = Math.min(to, until - 1)
     const recent = Math.max(0, shiftOpenTime(upper + 1, period.text, -PAGE_SIZE))
     const lower = from < 0 || from > upper ? recent : Math.max(from, notifySelection ? recent : 0)
     let bars = await loadClosedReplayBars(this.service, context.symbol, period.text, lower, upper, signal)
-    let visible = bars.filter(bar => bar.closeTime < until)
+    let visible = bars.filter(bar => bar.closeTime < nativeUntil)
     if (notifySelection && upper === until - 1 && visible.length === 0 && lower > 0) {
       const older = await this.olderPage(context, period, lower, signal)
       visible = older.bars
       bars = [...visible, ...bars]
       this.onHistoryStatus?.(older.hasMore && visible.length === 0 ? '区间内没有已收盘 K 线' : '')
     }
+    const forming = await this.readFormingBar(context, period.text, lower, upper, signal)
     if (generation !== this.generation) {
       return this.getHistoryKLineData(symbol, period, from, to, false, signal)
     }
-    if (upper === until - 1) {
-      this.tails.set(this.key(symbol, period), { until, nextClose: nextNativeClose(bars, until) })
+    const latest = this.context
+    if (upper === until - 1 && latest !== null && to >= replayVisibleUntil(latest) - 1 &&
+      compareReplayPositions(latest, context) > 0) {
+      // A history replacement must not roll the chart back over newer subscription updates.
+      return this.getHistoryKLineData(symbol, period, lower, to, false, signal)
     }
-    return visible.map(toChartCandle)
+    if (upper === until - 1 || forming !== undefined) {
+      this.tails.set(this.key(symbol, period), { position: context, nextClose: nextNativeClose(bars, nativeUntil) })
+    }
+    const candles = visible.map(toChartCandle)
+    if (forming !== undefined && forming.timestamp > (candles.at(-1)?.timestamp ?? -1)) candles.push(forming)
+    return candles
   }
 
   async getOlderHistory(symbol: SymbolInfo, period: Period, before: number, signal?: AbortSignal) {
@@ -186,8 +199,8 @@ export class CTraderReplayDatafeed implements Datafeed {
     this.subscription = subscription
     if (context === null) this.base.subscribe(symbol, period, callback)
     else {
-      subscription.until ??= replayVisibleUntil(context)
-      void this.emitClosedBars(subscription)
+      subscription.position ??= context
+      void this.emitBars(subscription)
     }
   }
 
@@ -213,7 +226,7 @@ export class CTraderReplayDatafeed implements Datafeed {
   }
 
   private async olderPage(context: ReplayContext, period: Period, before: number, signal?: AbortSignal) {
-    const until = replayVisibleUntil(context)
+    const until = replayConfirmedUntil(context)
     let cursor = Math.min(before, until)
     for (let page = 0; page < MAX_EMPTY_PAGES && cursor > 0; page += 1) {
       const from = Math.max(0, shiftOpenTime(cursor - 1, period.text, -PAGE_SIZE))
@@ -225,36 +238,85 @@ export class CTraderReplayDatafeed implements Datafeed {
     return { bars: [], hasMore: cursor > 0, cursor }
   }
 
-  private async emitClosedBars(subscription: Subscription): Promise<void> {
-    const context = this.context
-    const since = subscription.until
-    if (context === null || since === undefined || subscription.request !== undefined ||
-      subscription.symbol.ticker.toUpperCase() !== context.symbol) return
+  private async readFormingBar(
+    context: ReplayContext, timeframe: string, from: number, to: number, signal?: AbortSignal,
+  ): Promise<KLineData | undefined> {
     const until = replayVisibleUntil(context)
-    if (since >= until || (subscription.nextClose !== undefined && subscription.nextClose > until) ||
+    const nativeUntil = replayConfirmedUntil(context)
+    const open = alignOpenTime(until - 1, timeframe, 'floor')
+    const end = nextOpenTime(open, timeframe)
+    if (open < from || open > to || end <= nativeUntil) return undefined
+
+    const generation = this.generation
+    try {
+      // Use complete hours within long buckets to keep the minute reads bounded.
+      const minuteEnd = alignOpenTime(nativeUntil, '1m', 'floor')
+      const hourEnd = end - open >= DAY ? alignOpenTime(minuteEnd, '1h', 'floor') : open
+      const hours = await loadClosedReplayBars(this.service, context.symbol, '1h', open, hourEnd - 1, signal)
+      const minutes = await loadClosedReplayBars(this.service, context.symbol, '1m', hourEnd, minuteEnd - 1, signal)
+      const bars = [...hours.filter(bar => bar.closeTime < hourEnd), ...minutes]
+      if (minuteEnd < until) {
+        const quoted = await this.ticks.readFormingMinute(context.symbol, minuteEnd, until - 1, signal, context.cursorTickIndex)
+        if (quoted !== undefined) bars.push(quoted)
+      }
+      const first = bars[0]
+      if (first === undefined) return undefined
+      const forming = { ...toChartCandle(first), timestamp: open, ctraderClosed: false }
+      for (const bar of bars.slice(1)) {
+        forming.high = Math.max(forming.high, Number(bar.high))
+        forming.low = Math.min(forming.low, Number(bar.low))
+        forming.close = Number(bar.close)
+        forming.volume = (forming.volume ?? 0) + (bar.tickVolume ?? 0)
+      }
+      return forming
+    } catch (reason) {
+      signal?.throwIfAborted()
+      if (generation === this.generation) {
+        this.onWarning?.(`回放中的 K 线暂时无法更新：${reason instanceof Error ? reason.message : String(reason)}`)
+      }
+    }
+  }
+
+  private async emitBars(subscription: Subscription): Promise<void> {
+    const context = this.context
+    const previous = subscription.position
+    if (context === null || previous === undefined || subscription.request !== undefined ||
+      subscription.symbol.ticker.toUpperCase() !== context.symbol || compareReplayPositions(context, previous) <= 0 ||
       (subscription.retryAfter ?? 0) > Date.now()) return
+    const since = replayConfirmedUntil(previous)
+    const until = replayConfirmedUntil(context)
+    const timeframe = subscription.period.text
     const request = new AbortController()
     subscription.request = request
     try {
-      let page = subscription.buffered
-      if (page === undefined || page.to < until - 1) {
-        const timeframe = subscription.period.text
-        const from = Math.max(0, shiftOpenTime(since, timeframe, -1))
-        const pageEnd = Math.min(shiftOpenTime(from, timeframe, FORWARD_PAGE_SIZE) - 1, from + FORWARD_MAX_SPAN_MS - 1)
-        const to = Math.min(context.endTime ?? Date.now(), Math.max(until - 1, pageEnd))
-        const bars = await loadClosedReplayBars(this.service, context.symbol, timeframe, from, to, request.signal)
-        if (request.signal.aborted || this.subscription !== subscription) return
-        page = { to, bars }
-        subscription.buffered = page
+      let closed: MarketCandle[] = []
+      let nextClose = subscription.nextClose
+      if (since < until && (nextClose === undefined || nextClose <= until)) {
+        let page = subscription.buffered
+        if (page === undefined || page.to < until - 1) {
+          const from = Math.max(0, shiftOpenTime(since, timeframe, -1))
+          const pageEnd = Math.min(shiftOpenTime(from, timeframe, FORWARD_PAGE_SIZE) - 1, from + FORWARD_MAX_SPAN_MS - 1)
+          const to = Math.min(context.endTime ?? Date.now(), Math.max(until - 1, pageEnd))
+          const bars = await loadClosedReplayBars(this.service, context.symbol, timeframe, from, to, request.signal)
+          if (request.signal.aborted || this.subscription !== subscription) return
+          page = { to, bars }
+          subscription.buffered = page
+        }
+        // Bars ahead of the replay clock stay private to this buffer.
+        closed = page.bars.filter(bar => bar.closeTime >= since && bar.closeTime < until)
+        nextClose = nextNativeClose(page.bars, until)
       }
-      // Bars ahead of the replay clock stay private to this buffer.
-      const bars = page.bars
-      for (const bar of bars) {
+      const forming = await this.readFormingBar(context, timeframe, 0, replayVisibleUntil(context) - 1, request.signal)
+      for (const bar of closed) {
         if (request.signal.aborted || this.subscription !== subscription) return
-        if (bar.closeTime >= since && bar.closeTime < until) subscription.callback(toChartCandle(bar))
+        subscription.callback(toChartCandle(bar))
       }
-      subscription.until = until
-      subscription.nextClose = nextNativeClose(bars, until)
+      if (request.signal.aborted || this.subscription !== subscription) return
+      subscription.nextClose = nextClose
+      subscription.position = context
+      if (forming !== undefined && forming.timestamp > (closed.at(-1)?.openTime ?? -1)) {
+        subscription.callback(forming)
+      }
     } catch (reason) {
       if (!request.signal.aborted) {
         subscription.retryAfter = Date.now() + HISTORY_ERROR_RETRY_MS
@@ -265,7 +327,7 @@ export class CTraderReplayDatafeed implements Datafeed {
       if (subscription.request === request) subscription.request = undefined
     }
     if (!request.signal.aborted && this.subscription === subscription) {
-      void this.emitClosedBars(subscription)
+      void this.emitBars(subscription)
     }
   }
 

@@ -1,6 +1,7 @@
 import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { nextOpenTime } from '../market-data/intervals'
 import type { MarketCandle } from '../market-data/models'
 import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
 import { toChartCandle } from '../market-data/chart-candle'
@@ -15,11 +16,12 @@ const monday = Date.UTC(2026, 0, 12, 0)
 const symbol = { exchange: 'CTRADER', ticker: 'EURUSD' } as SymbolInfo
 const h1: Period = { text: '1h', multiplier: 1, timespan: 'hour' }
 const m1: Period = { text: '1m', multiplier: 1, timespan: 'minute' }
+const m15: Period = { text: '15m', multiplier: 15, timespan: 'minute' }
 
 function candle(openTime: number, period: Period, close = '1.10'): MarketCandle {
   return {
     source: 'ctrader', symbol: symbol.ticker, timeframe: period.text, openTime,
-    closeTime: openTime + (period === h1 ? hour : minute) - 1,
+    closeTime: nextOpenTime(openTime, period.text) - 1,
     isClosed: true, open: '1.10', high: '1.11', low: '1.09', close,
     volume: '', quoteVolume: '', tradeCount: 0, tickVolume: 7,
   }
@@ -146,20 +148,133 @@ describe('cTrader replay', () => {
     expect(market.loadCandles).not.toHaveBeenCalled()
   })
 
-  it('keeps a high-period candle sealed until its native close', async () => {
+  it('updates a 15m replay candle with revealed minutes and replaces it at the native close', async () => {
     const base = { searchSymbols: vi.fn(), subscribe: vi.fn(), unsubscribe: vi.fn() } as unknown as Datafeed
-    const market = service([fridayBar, mondayFirst, mondayHour])
+    const previous = candle(monday - 15 * minute, m15)
+    const official = { ...candle(monday, m15, '1.15'), high: '1.20', tickVolume: 99 }
+    const second = { ...mondaySecond, high: '1.12', low: '1.08', tickVolume: 4 }
+    const future = { ...candle(monday + 2 * minute, m1, '1.13'), high: '1.15', low: '1.03' }
+    const market = service([previous, official, mondayFirst, second, future])
     const feed = new CTraderReplayDatafeed(base, market)
-    const context = { sessionId: 'demo', symbol: symbol.ticker, timeframe: '1h', currentTime: monday, visibleUntil: monday + minute }
+    const context = { sessionId: 'demo', symbol: symbol.ticker, timeframe: '15m', currentTime: previous.openTime,
+      visibleUntil: monday, endTime: monday + 30 * minute - 1 }
     feed.setReplayContext(context)
-    const result = await feed.getHistoryKLineData(symbol, h1, friday, monday + hour)
-    expect(result.map(row => row.timestamp)).toEqual([friday])
+    const history = () => feed.getHistoryKLineData(symbol, m15, previous.openTime, context.endTime)
+    expect(await history()).toEqual([toChartCandle(previous)])
     const callback = vi.fn()
-    feed.subscribe(symbol, h1, callback)
-    feed.setReplayContext({ ...context, visibleUntil: monday + hour })
+    feed.subscribe(symbol, m15, callback)
+
+    feed.setReplayContext({ ...context, visibleUntil: monday + minute })
     await waitFor(() => expect(callback).toHaveBeenCalledTimes(1))
-    expect(callback).toHaveBeenCalledWith(expect.objectContaining({ timestamp: monday, close: 1.109, volume: 7 }))
+    expect(callback).toHaveBeenLastCalledWith(expect.objectContaining({
+      timestamp: monday, open: 1.10, high: 1.11, low: 1.09, close: 1.102, volume: 7, ctraderClosed: false,
+    }))
+
+    feed.setReplayContext({ ...context, visibleUntil: monday + 2 * minute })
+    await waitFor(() => expect(callback).toHaveBeenCalledTimes(2))
+    const partial = expect.objectContaining({
+      timestamp: monday, open: 1.10, high: 1.12, low: 1.08, close: 1.103, volume: 11, ctraderClosed: false,
+    })
+    expect(callback).toHaveBeenLastCalledWith(partial)
+    expect(await history()).toEqual([toChartCandle(previous), partial])
+
+    feed.setReplayContext({ ...context, visibleUntil: monday + 15 * minute })
+    await waitFor(() => expect(callback).toHaveBeenCalledTimes(3))
+    expect(callback).toHaveBeenLastCalledWith(toChartCandle(official))
+    expect(await history()).toEqual([toChartCandle(previous), toChartCandle(official)])
     expect(base.subscribe).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { text: '1d', multiplier: 1, timespan: 'day' },
+    { text: '1w', multiplier: 1, timespan: 'week' },
+    { text: '1M', multiplier: 1, timespan: 'month' },
+  ] satisfies Period[])('builds a $text forming candle from complete hours and only the elapsed tail', async period => {
+    const start = Date.UTC(2026, 5, 1)
+    const tail = start + 4 * hour
+    const closedHour = candle(start, h1, '1.105')
+    const offsetHour = { ...candle(tail - 30 * minute, h1), high: '1.80' }
+    const revealedMinute = { ...candle(tail, m1, '1.107'), low: '1.085' }
+    const futureMinute = { ...candle(tail + minute, m1), high: '1.90' }
+    const futurePeriod = { ...candle(start, period), high: '1.95' }
+    const feed = new CTraderReplayDatafeed({} as Datafeed, service([closedHour, offsetHour, revealedMinute, futureMinute, futurePeriod]))
+    feed.setReplayContext({ sessionId: 'calendar', symbol: symbol.ticker, timeframe: '1m', currentTime: tail,
+      visibleUntil: tail + minute })
+    const rows = await feed.getHistoryKLineData(symbol, period, start, tail + minute)
+    expect(rows).toEqual([expect.objectContaining({
+      timestamp: start, open: 1.10, high: 1.11, low: 1.085, close: 1.107, volume: 14, ctraderClosed: false,
+    })])
+  })
+
+  it('keeps closed history visible if the forming candle cannot be loaded', async () => {
+    const previous = candle(monday - 15 * minute, m15)
+    const market = service([previous, mondayFirst, mondaySecond])
+    const load = market.loadCandles.getMockImplementation()!
+    let failed = true
+    market.loadCandles.mockImplementation(async (...args) => {
+      if (failed && args[2] === '1m') throw new Error('minute history unavailable')
+      return load(...args)
+    })
+    const feed = new CTraderReplayDatafeed({} as Datafeed, market)
+    const position = { sessionId: 'retry', symbol: symbol.ticker, timeframe: '15m', currentTime: monday,
+      visibleUntil: monday + minute }
+    feed.setReplayContext(position)
+    expect(await feed.getHistoryKLineData(symbol, m15, previous.openTime, monday + 2 * minute)).toEqual([toChartCandle(previous)])
+
+    const update = vi.fn()
+    feed.subscribe(symbol, m15, update)
+    failed = false
+    feed.setReplayContext({ ...position, visibleUntil: monday + 2 * minute })
+    await waitFor(() => expect(update).toHaveBeenLastCalledWith(expect.objectContaining({
+      timestamp: monday, close: 1.103, volume: 14, ctraderClosed: false,
+    })))
+  })
+
+  it('does not return older replay history over an update that arrived during a reload', async () => {
+    const previous = candle(monday - 15 * minute, m15)
+    const market = service([previous, mondayFirst])
+    const feed = new CTraderReplayDatafeed({} as Datafeed, market)
+    const position = { sessionId: 'loading', symbol: symbol.ticker, timeframe: '15m', currentTime: previous.openTime,
+      visibleUntil: monday }
+    feed.setReplayContext(position)
+    const update = vi.fn()
+    feed.subscribe(symbol, m15, update)
+    let finish!: (rows: MarketCandle[]) => void
+    market.loadCandles.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const history = feed.getHistoryKLineData(symbol, m15, previous.openTime, monday + 15 * minute)
+
+    feed.setReplayContext({ ...position, currentTime: monday, visibleUntil: monday + minute })
+    const forming = expect.objectContaining({ timestamp: monday, close: 1.102, ctraderClosed: false })
+    await waitFor(() => expect(update).toHaveBeenLastCalledWith(forming))
+    finish([previous])
+    await expect(history).resolves.toEqual([toChartCandle(previous), forming])
+  })
+
+  it('does not reveal a native minute or later same-time quotes on its last millisecond', async () => {
+    const end = monday + minute - 1
+    const official = { ...mondayFirst, close: '1.108', tickVolume: 3 }
+    const quotes = [
+      { timestamp: end - 1, price: '1.10' }, { timestamp: end, price: '1.104' },
+      { timestamp: end, price: '1.108' }, { timestamp: end + 1, price: '1.12' },
+    ]
+    const market = { ...service([official, mondaySecond]), loadTicks: vi.fn(async () => quotes) }
+    const feed = new CTraderReplayDatafeed({} as Datafeed, market)
+    const position = { sessionId: 'last-quote', symbol: symbol.ticker, timeframe: '1m', currentTime: end,
+      visibleUntil: end + 1, cursorTickIndex: 0 }
+    feed.setReplayContext(position)
+    const read = () => feed.getHistoryKLineData(symbol, m1, monday, monday + 2 * minute)
+    expect(await read()).toEqual([expect.objectContaining({ timestamp: monday, close: 1.104, volume: 2, ctraderClosed: false })])
+    const update = vi.fn()
+    feed.subscribe(symbol, m1, update)
+
+    feed.setReplayContext({ ...position, cursorTickIndex: 1 })
+    await waitFor(() => expect(update).toHaveBeenLastCalledWith(expect.objectContaining({
+      timestamp: monday, close: 1.108, volume: 3, ctraderClosed: false,
+    })))
+    feed.setReplayContext({ ...position, currentTime: end + 1, visibleUntil: end + 2 })
+    await waitFor(() => expect(update.mock.calls.slice(1)).toEqual([[toChartCandle(official)], [expect.objectContaining({
+      timestamp: end + 1, close: 1.12, volume: 1, ctraderClosed: false,
+    })]]))
   })
 
   it('emits successive replay bars from a bounded page while keeping future bars hidden', async () => {

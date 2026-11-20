@@ -2,7 +2,7 @@ import type { Period, SymbolInfo } from '@klinecharts/pro'
 import type { WorkstationMode } from '../components/ModeSwitch'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import { ctraderReplayChartNeedsReload, type CTraderReplayDatafeed } from '../replay/ctrader-replay-datafeed'
-import { replayVisibleUntil, type ReplayContext } from '../replay/models'
+import { compareReplayPositions, replayVisibleUntil, type ReplayContext } from '../replay/models'
 import type { CTraderDatafeed } from '../market-data/ctrader-datafeed'
 import { readChartWindowSize, saveChartWindowSize, type ChartWindowSize } from './chart-window-preferences'
 import type { SimulationOverlayState } from './pro-chart-adapter'
@@ -129,8 +129,8 @@ export class ChartWindowHost {
         const reload = snapshot !== null && (
           snapshot.mode !== state.mode || snapshot.symbol.ticker !== state.symbol.ticker ||
           (replay === null) !== (next === null) ||
-          (replay !== null && next !== null && visibleUntil !== null && (
-            replay.sessionId !== next.sessionId || visibleUntil < replayVisibleUntil(replay) ||
+          (replay !== null && next !== null && (
+            replay.sessionId !== next.sessionId || compareReplayPositions(next, replay) < 0 ||
             ctraderReplayChartNeedsReload(replay, next, period.text)
           ))
         )
