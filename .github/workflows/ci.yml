@@ -35,18 +35,9 @@ jobs:
         run: npm run check
 
   browser:
-    name: Browser (${{ matrix.project }})
+    name: cTrader browser tests
     needs: verify
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        project:
-          - chromium
-          - chromium-integration
-          - chromium-monthly-replay
-          - chromium-production
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -60,4 +51,6 @@ jobs:
       - name: Install Playwright Chromium
         run: node scripts/install-playwright.mjs
       - name: Browser smoke test
-        run: npm run test:e2e -- --project=${{ matrix.project }}
+        run: npm run test:e2e
+      - name: Static artifact browser test
+        run: npm run test:e2e:pages

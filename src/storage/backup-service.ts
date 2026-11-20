@@ -4,7 +4,7 @@ import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleTy
 import { readShowTradeOverlays, SHOW_TRADE_OVERLAYS_KEY, validateShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import { CHART_WINDOW_SIZE_KEY, readChartWindowSize, validateChartWindowSize, type ChartWindowSize } from '../chart/chart-window-preferences'
 import { CONFIG_PENDING_KEY, preferencesRestored } from './preference-events'
-import { klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
+import { CTRADER_TIMEFRAMES, klineCloseBoundary, nextOpenTime, SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
 import { PINNED_PERIODS_KEY, readPinnedPeriods, validatePinnedPeriods } from '../chart/period-preferences'
 import {
   loadWorkspacePreferences,
@@ -22,6 +22,7 @@ import {
 import {
   FAVORITE_SYMBOLS_STORAGE_KEY,
   readFavoriteSymbols,
+  validateFavoriteSymbols,
 } from '../market-data/favorites'
 import {
   SELECTED_SYMBOL_STORAGE_KEY,
@@ -48,6 +49,8 @@ import {
   type WorkstationDatabase,
 } from './market-data-store'
 import { IndexedDbSimulationStateStore } from './simulation-state-store'
+import { ctraderStorage } from './ctrader-storage'
+import { CTRADER_PERIODS } from '../chart/chart-config'
 
 export const BACKUP_FILE_TYPE = 'crypto-contract-workstation-backup'
 export const BACKUP_SCHEMA_VERSION = 1
@@ -186,22 +189,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     'preferences.binanceRestBaseUrl',
   )
   assertHttpUrl(binanceRestBaseUrl, 'preferences.binanceRestBaseUrl')
-  const favoriteSymbols = arrayValue(
-    item.favoriteSymbols,
-    'preferences.favoriteSymbols',
-  ).map((symbol, index) => {
-    const result = stringValue(
-      symbol,
-      `preferences.favoriteSymbols[${index}]`,
-    ).toUpperCase()
-    if (!result.endsWith('USDT')) {
-      throw new Error(`收藏交易对 ${result} 不是 USDT 交易对`)
-    }
-    return result
-  })
-  if (new Set(favoriteSymbols).size !== favoriteSymbols.length) {
-    throw new Error('收藏交易对包含重复项')
-  }
+  const favoriteSymbols = validateFavoriteSymbols(item.favoriteSymbols)
   return {
     binanceRestBaseUrl,
     favoriteSymbols,
@@ -346,8 +334,19 @@ function validateSession(value: unknown, index: number): ReplaySession {
   const ticker = stringValue(symbol.ticker, `${field}.symbol.ticker`)
     .toUpperCase()
   const timeframe = stringValue(period.text, `${field}.period.text`)
-  if (!ticker.endsWith('USDT') || !SUPPORTED_TIMEFRAMES.includes(timeframe)) {
+  const marketSource = item.marketSource
+  if (marketSource !== undefined && marketSource !== 'binance' && marketSource !== 'ctrader') {
+    throw new Error(`${field}.marketSource 无效`)
+  }
+  const native = marketSource === 'ctrader'
+  const nativeSymbol = native ? validateSelectedSymbol(symbol) : undefined
+  if (native ? nativeSymbol?.exchange !== 'CTRADER' || !CTRADER_TIMEFRAMES.some(period => period === timeframe)
+    : !ticker.endsWith('USDT') || !SUPPORTED_TIMEFRAMES.includes(timeframe)) {
     throw new Error(`${field} 的交易对或周期无效`)
+  }
+  const nativeCursorPeriod = CTRADER_TIMEFRAMES.find(period => period === item.cursorTimeframe)
+  if ((native && nativeCursorPeriod === undefined) || (!native && item.cursorTimeframe !== undefined)) {
+    throw new Error(`${field}.cursorTimeframe 无效`)
   }
   const startTime = finiteNumber(item.startTime, `${field}.startTime`)
   const endTime = finiteNumber(item.endTime, `${field}.endTime`)
@@ -364,8 +363,18 @@ function validateSession(value: unknown, index: number): ReplaySession {
   ) {
     throw new Error(`${field} 的回放时间或索引无效`)
   }
-  if (item.visibleUntil !== undefined) {
-    const visibleUntil = finiteNumber(item.visibleUntil, `${field}.visibleUntil`)
+  const visibleUntil = item.visibleUntil === undefined ? undefined : finiteNumber(item.visibleUntil, `${field}.visibleUntil`)
+  if (nativeCursorPeriod !== undefined) {
+    const configuredPeriod = CTRADER_PERIODS.find(candidate => candidate.text === timeframe)
+    if (configuredPeriod?.multiplier !== period.multiplier || configuredPeriod?.timespan !== period.timespan) {
+      throw new Error(`${field}.period 的周期规格无效`)
+    }
+    if (![startTime, currentTime].every(time => Number.isSafeInteger(time) && time >= 0 && time % 60_000 === 0) ||
+      !Number.isSafeInteger(endTime) || visibleUntil !== nextOpenTime(currentTime, nativeCursorPeriod) ||
+      visibleUntil === undefined || visibleUntil <= currentTime || visibleUntil > endTime + 1) {
+      throw new Error(`${field}.visibleUntil 的回放进度无效`)
+    }
+  } else if (visibleUntil !== undefined) {
     const source = replaySourceTimeframe({ period: { ...period, text: timeframe } as ReplaySession['period'], startTime })
     const sourceClose = klineCloseBoundary(currentTime, source)
     const nextClose = klineCloseBoundary(nextOpenTime(currentTime, source), source)
@@ -417,10 +426,12 @@ function validateSession(value: unknown, index: number): ReplaySession {
     throw new Error(`${field} 的速度或状态无效`)
   }
   return {
-    ...(structuredClone(item) as unknown as ReplaySession),
     id: stringValue(item.id, `${field}.id`),
     schemaVersion: 2,
-    symbol: {
+    ...(marketSource === undefined ? {} : { marketSource }),
+    ...(nativeCursorPeriod === undefined ? {} : { cursorTimeframe: nativeCursorPeriod }),
+    ...(visibleUntil === undefined ? {} : { visibleUntil }),
+    symbol: nativeSymbol ?? {
       ...(symbol as unknown as ReplaySession['symbol']),
       ticker,
     },
@@ -831,14 +842,17 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
 
 export class WorkstationBackupService {
   private readonly simulations: IndexedDbSimulationStateStore
+  private readonly includeMarketHistory: boolean
 
   constructor(
     private readonly databaseName?: string,
-    private readonly storage: StorageLike = localStorage,
+    private readonly storage: StorageLike = ctraderStorage,
     private readonly now: () => number = Date.now,
     private readonly drawings?: DrawingStore,
+    options: { includeMarketHistory?: boolean } = {},
   ) {
     this.simulations = new IndexedDbSimulationStateStore(databaseName)
+    this.includeMarketHistory = options.includeMarketHistory ?? true
   }
 
   async exportPreferences(): Promise<BackupEnvelope> {
@@ -851,6 +865,7 @@ export class WorkstationBackupService {
     symbol?: string,
     timeframe?: string,
   ): Promise<BackupEnvelope> {
+    if (!this.includeMarketHistory) throw new Error('cTrader 行情按需读取，不提供行情存档')
     const database = await openWorkstationDatabase(this.databaseName)
     const symbols = await database.getAll('symbols')
     let tradeCandles = await database.getAll('tradeCandles')
@@ -888,8 +903,8 @@ export class WorkstationBackupService {
       sessions,
       stateRows,
     ] = await Promise.all([
-      database.getAll('symbols'),
-      database.getAll('tradeCandles'),
+      this.includeMarketHistory ? database.getAll('symbols') : [],
+      this.includeMarketHistory ? database.getAll('tradeCandles') : [],
       database.getAll('replaySessions'),
       database.getAll('simulationStates'),
     ])
@@ -919,20 +934,16 @@ export class WorkstationBackupService {
       this.restorePreferences(envelope.data.preferences!, options.source ?? 'local')
       return { kind: 'preferences', symbols: 0, tradeCandles: 0, markCandles: 0, sessions: 0, simulations: 0, preferences: true }
     }
-    const candleCount = envelope.data.tradeCandles?.length ?? 0
-    onProgress?.(`正在恢复行情：${candleCount.toLocaleString()} 根…`)
+    const symbols = this.includeMarketHistory ? envelope.data.symbols ?? [] : []
+    const tradeCandles = this.includeMarketHistory ? envelope.data.tradeCandles ?? [] : []
+    if (this.includeMarketHistory) onProgress?.(`正在恢复行情：${tradeCandles.length.toLocaleString()} 根…`)
+    if (!this.includeMarketHistory && envelope.kind === 'market-data') {
+      return { kind: 'market-data', symbols: 0, tradeCandles: 0, markCandles: 0, sessions: 0, simulations: 0, preferences: false }
+    }
     const database = await openWorkstationDatabase(this.databaseName)
-    const transaction = database.transaction(
-      [
-        'symbols',
-        'tradeCandles',
-        'replaySessions',
-        'simulationStates',
-        'simulationTrades',
-        'simulationLedger',
-      ],
-      'readwrite',
-    )
+    const tables: BackupStoreName[] = ['replaySessions', 'simulationStates', 'simulationTrades', 'simulationLedger']
+    if (this.includeMarketHistory) tables.push('symbols', 'tradeCandles')
+    const transaction = database.transaction(tables, 'readwrite')
     // Native requests share one atomic transaction without allocating a promise
     // and JS completion handlers for every minute in a multi-month restore.
     try {
@@ -956,16 +967,16 @@ export class WorkstationBackupService {
       }
       // Read in this same transaction, so a concurrent write cannot invalidate
       // the comparison. Imported ranges do not scan unrelated market series.
-      const tradeExisting = await readExisting('tradeCandles',envelope.data.tradeCandles ?? [])
+      const tradeExisting = await readExisting('tradeCandles', tradeCandles)
       const changed = (row: MarketCandle, existing: Map<string,MarketCandle>) => {
         const prior = existing.get(candleKey(row))
         return prior === undefined || (Object.keys(row) as Array<keyof MarketCandle>).some(field => prior[field] !== row[field])
       }
       const native = unwrap(transaction)
-      for (const symbol of envelope.data.symbols ?? []) {
+      for (const symbol of symbols) {
         native.objectStore('symbols').put(symbol)
       }
-      for (const candle of envelope.data.tradeCandles ?? []) {
+      for (const candle of tradeCandles) {
         if (changed(candle,tradeExisting)) native.objectStore('tradeCandles').put(candle)
       }
       for (const session of envelope.data.sessions ?? []) {
@@ -988,8 +999,8 @@ export class WorkstationBackupService {
     if (envelope.data.drawings !== undefined) await this.drawings?.replace(envelope.data.drawings)
     return {
       kind: envelope.kind,
-      symbols: envelope.data.symbols?.length ?? 0,
-      tradeCandles: envelope.data.tradeCandles?.length ?? 0,
+      symbols: symbols.length,
+      tradeCandles: tradeCandles.length,
       markCandles: 0,
       sessions: envelope.data.sessions?.length ?? 0,
       simulations: envelope.data.simulations?.length ?? 0,

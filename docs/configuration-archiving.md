@@ -10,6 +10,14 @@
 
 不能把“组件 useState 里记住了”或“刷新后还在”作为配置修改的完整验收标准。
 
+## cTrader 实验版
+
+实验版的浏览器配置和绘图键使用 `crypto-contract-workstation:ctrader:` 前缀，回放会话和模拟状态保存在独立的 `crypto-contract-workstation-ctrader` IndexedDB。配置使用既有 Schema 1，应用配置／完整 JSON 和 GitHub“应用配置”继续覆盖原配置清单。云端目录固定为 `projects/crypto-contract-workstation/experiments/ctrader/`。手动恢复后按界面提示刷新，自动配置恢复后界面重建。
+
+当前品种使用 `selectedSymbol`，cTrader 品种保存 `exchange: "CTRADER"` 和对应显示精度。旧产品保留原始来源与代码，运行时对不可用的旧产品使用默认 cTrader 品种。收藏列表、固定周期列表与回放步进周期仍原样存档。旧备份中不支持的周期保留在存档中，界面仅使用 cTrader 原生周期，旧步进周期在运行时回退为 `1m`。可选字段缺失时保留本地值，显式空列表、布尔 `false` 和样式值 `0` 原样恢复，非法配置在写入前拒绝。旧 `binanceRestBaseUrl` 只用于存档兼容。
+
+cTrader 回放会话在原有 Schema 2 中保存 `marketSource: "ctrader"`、最后一根已揭示 K 线的 `cursorTimeframe` 和排他收盘边界 `visibleUntil`。缺少来源或标注 `binance` 的旧会话仍能恢复记录、画线和交易。回放只激活 cTrader 会话。完整 JSON 使用空行情数组兼容原格式，旧行情数据校验后跳过恢复。cTrader 连接资料、GitHub 凭据和设备同步状态均排除在应用存档之外。
+
 ## 当前配置清单
 
 独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。

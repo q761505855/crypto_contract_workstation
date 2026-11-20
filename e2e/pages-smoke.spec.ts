@@ -2,11 +2,18 @@ import { expect, test } from '@playwright/test'
 import { PUBLISHED_CLOUD_CONNECTION_URL } from '../src/github-sync/default-storage'
 import { mockCloudConnection } from './cloud-connection-fixture'
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/ctrader-connection.json', route => route.fulfill({ status: 404 }))
+})
+
 test('publishes the isolated connection and authenticates cloud requests without manual input', { tag: '@release' }, async ({ page, request, baseURL }) => {
   const connection = await request.get(new URL('cloud-connection.json', baseURL!).href)
   expect(connection.ok()).toBe(true)
   const published = await connection.json()
   expect(published).toEqual(mockCloudConnection)
+  const marketConfiguration = await request.get(new URL('ctrader-connection.json', baseURL!).href)
+  expect(marketConfiguration.ok()).toBe(true)
+  expect(Object.keys(await marketConfiguration.json()).sort()).toEqual(['accessToken', 'accountId', 'clientId', 'clientSecret'])
   const authorization: (string | undefined)[] = []
   await page.route(/^https:\/\//, route => {
     if (route.request().url().startsWith('https://api.github.com/')) authorization.push(route.request().headers().authorization)
@@ -35,13 +42,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         else failedAssets.push(`${response.status()} ${response.url()}`)
       }
     })
-    // Publishing must not depend on live exchange/cloud availability or import
-    // whole months of candles. Those workflows remain in the full CI suite.
     await page.route(/^https:\/\//, route => route.fulfill({ status: 404, json: { message: 'Not Found' } }))
     const response = await page.goto('./')
     expect(response?.ok()).toBe(true)
     await expect(page.getByRole('button', { name: '历史模拟', exact: true })).toHaveAttribute('aria-pressed', 'true')
-    await expect(page.locator('.klinecharts-pro-period-bar .symbol')).toContainText('BTCUSDT')
+    await expect(page.locator('.klinecharts-pro-period-bar .symbol')).toContainText('EURUSD')
+    await expect(page.getByRole('contentinfo')).toContainText('模拟账户连接配置')
     await expect(page.locator('canvas').first()).toBeVisible()
     await page.getByRole('button', { name: '回放设置', exact: true }).click()
     const replaySettings = page.getByRole('dialog', { name: '回放会话设置', exact: true })

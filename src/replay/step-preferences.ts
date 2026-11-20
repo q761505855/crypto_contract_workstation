@@ -1,5 +1,6 @@
 import { SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
 import { writePreference } from '../storage/preference-events'
+import { ctraderStorage } from '../storage/ctrader-storage'
 
 export const REPLAY_STEP_PERIOD_KEY = 'replay.stepPeriod.v1'
 export const DEFAULT_REPLAY_STEP_PERIOD: MarketTimeframe = '1m'
@@ -11,7 +12,7 @@ export function validateReplayStepPeriod(value: unknown): MarketTimeframe {
   return value as MarketTimeframe
 }
 
-export function readReplayStepPeriod(storage: Pick<Storage, 'getItem'> = localStorage): MarketTimeframe {
+export function readReplayStepPeriod(storage: Pick<Storage, 'getItem'> = ctraderStorage): MarketTimeframe {
   try {
     const saved = storage.getItem(REPLAY_STEP_PERIOD_KEY)
     if (saved !== null) return validateReplayStepPeriod(JSON.parse(saved))
@@ -21,6 +22,6 @@ export function readReplayStepPeriod(storage: Pick<Storage, 'getItem'> = localSt
   return DEFAULT_REPLAY_STEP_PERIOD
 }
 
-export function saveReplayStepPeriod(value: MarketTimeframe, storage: Pick<Storage, 'setItem'> = localStorage): void {
+export function saveReplayStepPeriod(value: MarketTimeframe, storage: Pick<Storage, 'setItem'> = ctraderStorage): void {
   writePreference(storage, REPLAY_STEP_PERIOD_KEY, JSON.stringify(validateReplayStepPeriod(value)))
 }

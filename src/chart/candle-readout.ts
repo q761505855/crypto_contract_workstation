@@ -14,6 +14,7 @@ export class CandleReadout {
   private readonly latestTime = document.createElement('span')
   private readonly latestPrice = document.createElement('strong')
   private readonly selectedTime = document.createElement('strong')
+  private readonly volumeLabel: HTMLElement
   private readonly values: HTMLElement[] = []
   private selected?: KLineData
   private previous?: KLineData
@@ -32,6 +33,7 @@ export class CandleReadout {
       rows.append(title, value)
       this.values.push(value)
     }
+    this.volumeLabel = rows.querySelectorAll('dt')[4]
     this.details.append(this.selectedTime, rows)
     pane.append(this.summary, this.details)
     this.clearSelection()
@@ -89,6 +91,7 @@ export class CandleReadout {
 
   private renderSelection(candle: KLineData, previous?: KLineData): void {
     const { price, volume } = this.chart.getPriceVolumePrecision()
+    this.volumeLabel.textContent = candle.volumeKind === 'quotes' ? '报价量' : '成交量'
     const base = previous?.close ?? 0
     const change = candle.close - base
     const values = [

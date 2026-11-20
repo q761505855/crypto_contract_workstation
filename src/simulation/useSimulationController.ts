@@ -37,7 +37,7 @@ export interface SimulationController {
 }
 
 export function useSimulationController(
-  runtime: MarketDataRuntime,
+  runtime: Pick<MarketDataRuntime, 'simulationStates'>,
   replay: ReplayController,
 ): SimulationController {
   const engineRef = useRef<SimulationEngine | null>(null)

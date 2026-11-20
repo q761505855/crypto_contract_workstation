@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MarketSelection } from '../market-data/models'
-import { SUPPORTED_TIMEFRAMES, type MarketTimeframe } from '../market-data/intervals'
+import { CTRADER_TIMEFRAMES, isCTraderTimeframe, type MarketTimeframe } from '../market-data/intervals'
 import type {
   ReplaySession,
   ReplaySpeed,
@@ -29,7 +29,7 @@ interface ReplayControlsProps {
 function sessionName(session: ReplaySession): string {
   return `${session.symbol.ticker} ${session.period.text} · ${formatDisplayTime(
     session.startTime,
-  )}`
+  )}${session.marketSource === 'ctrader' ? '' : ' · 币安存档'}`
 }
 
 const HOLD_TO_PLAY_MS = 450
@@ -260,7 +260,7 @@ export function ReplayControls({
             </select>
             <div className="button-row">
               <button
-                disabled={replay.busy}
+                disabled={replay.busy || selectedSession.marketSource !== 'ctrader'}
                 onClick={() => { void replay.loadSession(selectedSession.id); setSettingsOpen(false) }}
                 type="button"
               >
@@ -285,6 +285,7 @@ export function ReplayControls({
   }
 
   const session = replay.session
+  const native = session.marketSource === 'ctrader'
   return (
     <section className="replay-controls" data-testid="replay-controls">
       <TimeJumpControl compact
@@ -294,17 +295,19 @@ export function ReplayControls({
       />
       <span className="replay-position">
         {session.symbol.ticker} · 当前：
-        {formatDisplayTime(sessionVisibleUntil(session) - 60_000)} · <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>
+        {formatDisplayTime(sessionVisibleUntil(session) - (native ? 0 : 60_000))} · {native
+          ? <span>第 {session.currentIndex + 1} 步</span>
+          : <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>}
       </span>
       <label className="replay-step-period">步进
-        <select aria-label="步进周期" disabled={interactionLocked} value={stepPeriod} onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
-          {SUPPORTED_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
+        <select aria-label="步进周期" disabled={interactionLocked} value={isCTraderTimeframe(stepPeriod) ? stepPeriod : '1m'} onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
+          {CTRADER_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
         </select>
       </label>
       <button
         disabled={
           interactionLocked ||
-          (session.currentIndex === 0 && session.visibleUntil === undefined) ||
+          (session.currentIndex === 0 && (native || session.visibleUntil === undefined)) ||
           session.hasTrades
         }
         onClick={() => void replay.previous()}

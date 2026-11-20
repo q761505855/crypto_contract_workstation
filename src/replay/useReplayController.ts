@@ -6,7 +6,9 @@ import {
 } from 'react'
 import { findMissingRanges } from '../market-data/gaps'
 import { alignOpenTime, klineCloseBoundary, lastClosedOpenTime, LEGACY_THREE_DAY_TIMEFRAME, nextOpenTime, shiftTimeByPeriod, type MarketTimeframe } from '../market-data/intervals'
-import type { MarketDataRuntime } from '../market-data/runtime'
+import type { MarketDataService } from '../market-data/market-data-service'
+import type { ReplaySessionStore } from '../storage/replay-session-store'
+import type { ReplayDatafeed } from './replay-datafeed'
 import type {
   CreateReplaySessionInput,
   ReplaySession,
@@ -28,6 +30,12 @@ export type ReplayCandleListener = (
   event: ReplayCandleEvent,
 ) => void | Promise<void>
 
+export interface LegacyReplayRuntime {
+  service: Pick<MarketDataService, 'loadCandles' | 'loadReplayCandles' | 'resetReplayRequests'>
+  replaySessions: ReplaySessionStore
+  replayDatafeed: Pick<ReplayDatafeed, 'setSessionCandles'>
+}
+
 /** Only complete source bars within this UTC month and the following month. */
 function preparationEnd(currentTime: number, timeframe: string, sessionEnd: number): number {
   const date = new Date(currentTime)
@@ -48,7 +56,7 @@ function stepBoundary(visibleUntil: number, timeframe: MarketTimeframe, directio
   return shiftTimeByPeriod(visibleUntil - MINUTE, timeframe, direction) + MINUTE
 }
 
-async function loadMinuteSlice(runtime: MarketDataRuntime, symbol: string, from: number, until: number, options: {
+async function loadMinuteSlice(runtime: LegacyReplayRuntime, symbol: string, from: number, until: number, options: {
   signal?: AbortSignal
   onStatus?: (status: string) => void
 } = {}): Promise<MarketCandle[]> {
@@ -85,7 +93,7 @@ export interface ReplayController {
 }
 
 export function useReplayController(
-  runtime: MarketDataRuntime,
+  runtime: LegacyReplayRuntime,
   stepTimeframe?: MarketTimeframe,
 ): ReplayController {
   const engineRef = useRef<ReplayEngine | null>(null)

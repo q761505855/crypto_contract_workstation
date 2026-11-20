@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_SYMBOL } from '../chart/chart-config'
+import { DEFAULT_CTRADER_SYMBOL } from '../chart/chart-config'
+import { ctraderStorage } from '../storage/ctrader-storage'
 import { DEFAULT_TRADING_CONFIG, type ReplaySession } from '../replay/models'
 import type { MarketSelection } from '../market-data/models'
 
@@ -13,16 +14,15 @@ const harness = vi.hoisted(() => ({
   },
   simulation: { state: null, busy: false, error: '' },
   runtime: {
-    datafeed: { setLiveEnabled: vi.fn(), setLiveStatusListener: vi.fn() },
+    datafeed: { setLiveEnabled: vi.fn(), setLiveStatusListener: vi.fn(), setReconnectListener: vi.fn() },
     replayDatafeed: { setSelectionListener: vi.fn(), setWarningListener: vi.fn(), setHistoryStatusListener: vi.fn(), setReplayContext: vi.fn() },
   },
 }))
 
 vi.mock('../market-data/runtime', () => ({ createMarketDataRuntime: () => harness.runtime }))
-vi.mock('../replay/useReplayController', () => ({ useReplayController: () => harness.replay }))
+vi.mock('../replay/useCTraderReplayController', () => ({ useCTraderReplayController: () => harness.replay }))
 vi.mock('../simulation/useSimulationController', () => ({ useSimulationController: () => harness.simulation }))
 vi.mock('../components/DataManager', () => ({ DataManager: () => null }))
-vi.mock('../components/HistoryUploadStatus', () => ({ HistoryUploadStatus: () => null }))
 vi.mock('../components/panels', () => ({ SimulationPanel: () => null, LiveStatus: () => null }))
 vi.mock('../chart/ChartWorkspace', () => ({ ChartWorkspace: (props: typeof harness.chart) => { harness.chart = props; return null } }))
 
@@ -39,7 +39,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 function activeSession(): ReplaySession {
   return {
-    schemaVersion: 2, id: 'navigation-session', symbol: DEFAULT_SYMBOL,
+    schemaVersion: 2, id: 'navigation-session', symbol: DEFAULT_CTRADER_SYMBOL,
     period: { text: '15m', multiplier: 15, timespan: 'minute' },
     startTime: Date.UTC(2025, 8, 15), currentTime: Date.UTC(2025, 8, 15, 12), endTime: Date.UTC(2025, 8, 16),
     currentIndex: 48, candleCount: 97, speed: 1, status: 'paused', active: true, hasTrades: true,
@@ -52,8 +52,8 @@ describe('App locate latest navigation', () => {
     harness.replay.session = activeSession()
     const before = structuredClone(harness.replay.session)
     render(<App />)
-    act(() => harness.chart!.onSelectionChange({ symbol: DEFAULT_SYMBOL, period: { text: '1m', multiplier: 1, timespan: 'minute' } }))
-    expect(screen.getByRole('contentinfo')).toHaveTextContent('BTCUSDT · 1m')
+    act(() => harness.chart!.onSelectionChange({ symbol: DEFAULT_CTRADER_SYMBOL, period: { text: '1m', multiplier: 1, timespan: 'minute' } }))
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('EURUSD · 1m')
     fireEvent.click(screen.getByRole('button', { name: '定位最新' }))
     expect(harness.chart?.jumpRequest).toMatchObject({ timestamp: Date.UTC(2025, 8, 15, 12, 15) - 1 })
     expect(harness.replay.session).toEqual(before)
@@ -99,15 +99,15 @@ describe('workspace panel collapse controls', () => {
     fireEvent.click(collapse)
     const expand = screen.getByRole('button', { name: `展开${label}` })
     expect(expand).toHaveAttribute('aria-expanded', 'false')
-    expect(JSON.parse(localStorage.getItem('workspace.layout.v1')!).panels[key]).toBe(false)
+    expect(JSON.parse(ctraderStorage.getItem('workspace.layout.v1')!).panels[key]).toBe(false)
     fireEvent.click(expand)
     expect(screen.getByRole('button', { name: `收起${label}` })).toHaveAttribute('aria-expanded', 'true')
-    expect(JSON.parse(localStorage.getItem('workspace.layout.v1')!).panels[key]).toBe(true)
+    expect(JSON.parse(ctraderStorage.getItem('workspace.layout.v1')!).panels[key]).toBe(true)
   })
 
   it.each(['history', 'live'] as const)('keeps replay and status visible in %s while preserving legacy archive flags', mode => {
     const layout = { schemaVersion: 1, panels: { account: false, order: true, dock: false, replay: false, status: false }, chartHeight: null, mobileChartHeight: null, dockHeight: 220 }
-    localStorage.setItem('workspace.layout.v1', JSON.stringify(layout))
+    ctraderStorage.setItem('workspace.layout.v1', JSON.stringify(layout))
     render(<App />)
     if (mode === 'live') fireEvent.click(screen.getByRole('button', { name: '实时行情' }))
     expect(screen.getByRole('button', { name: '定位最新' })).toBeVisible()
@@ -120,7 +120,7 @@ describe('workspace panel collapse controls', () => {
     fireEvent.click(screen.getByRole('button', { name: '专注看图' }))
     expect(screen.getByRole('button', { name: '定位最新' })).toBeVisible()
     expect(screen.getByRole('contentinfo')).toBeVisible()
-    expect(JSON.parse(localStorage.getItem('workspace.layout.v1')!)).toEqual(layout)
+    expect(JSON.parse(ctraderStorage.getItem('workspace.layout.v1')!)).toEqual(layout)
   })
 
   it('expands the account summary again without opening workspace settings', () => {

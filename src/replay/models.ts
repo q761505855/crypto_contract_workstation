@@ -1,5 +1,6 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 import { alignOpenTime, klineCloseBoundary, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
+import type { MarketTimeframe } from '../market-data/intervals'
 
 export type ReplaySpeed = 1 | 2 | 5 | 10
 export type ReplayStatus = 'paused' | 'completed'
@@ -30,8 +31,12 @@ export interface ReplaySession {
   startTime: number
   endTime: number
   currentTime: number
-  /** Exclusive visibility boundary when the latest revealed candle is a minute slice. */
+  /** Exclusive visibility boundary of the last processed price. */
   visibleUntil?: number
+  /** Missing on legacy Binance sessions. */
+  marketSource?: 'ctrader' | 'binance'
+  /** cTrader native period of the current cursor, which can differ from the starting chart period. */
+  cursorTimeframe?: MarketTimeframe
   currentIndex: number
   candleCount: number
   speed: ReplaySpeed

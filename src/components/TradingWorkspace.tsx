@@ -16,7 +16,7 @@ const rate = (value: string) => `${(Number(value) * 100).toFixed(2)}%`
 const sideName = (side: PositionSide) => side === 'long' ? '多仓' : '空仓'
 const actionName = { open: '开仓', add: '加仓', reduce: '减仓', close: '平仓', take_profit: '止盈', stop_loss: '止损', liquidation: '强平' }
 
-export function AccountStrip({ state, onClose }: { state: SimulationState | null; onClose(): void }) {
+export function AccountStrip({ state, currency = 'USDT', onClose }: { state: SimulationState | null; currency?: string; onClose(): void }) {
   const [details, setDetails] = useState(false)
   if (state === null) return null
   const account = state.account
@@ -24,7 +24,7 @@ export function AccountStrip({ state, onClose }: { state: SimulationState | null
     <section className="account-strip" aria-label="模拟账户摘要">
       <span>账户权益 <strong>{displayAmount(account.equity)}</strong></span>
       <span>可用余额 <strong>{displayAmount(account.availableBalance)}</strong></span>
-      <span>浮动盈亏 <strong className={Number(account.unrealizedPnl) >= 0 ? 'profit' : 'loss'}>{displayAmount(account.unrealizedPnl)} USDT</strong></span>
+      <span>浮动盈亏 <strong className={Number(account.unrealizedPnl) >= 0 ? 'profit' : 'loss'}>{displayAmount(account.unrealizedPnl)} {currency}</strong></span>
       <button type="button" className="text-button" onClick={() => setDetails(true)}>账户详情</button>
       <PanelToggle label="账户摘要" expanded controls="workspace-account-content" onToggle={onClose} className="panel-close" />
     </section>
@@ -32,7 +32,7 @@ export function AccountStrip({ state, onClose }: { state: SimulationState | null
       <dl className="detail-list">{[
         ['钱包余额', account.walletBalance], ['账户权益', account.equity], ['可用余额', account.availableBalance],
         ['占用保证金', account.usedMargin], ['浮动盈亏', account.unrealizedPnl], ['已实现盈亏', account.realizedPnl], ['累计手续费', account.totalFees],
-      ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{displayAmount(value)} USDT</dd></div>)}</dl>
+      ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{displayAmount(value)} {currency}</dd></div>)}</dl>
     </WorkspaceDialog>
   </>
 }
@@ -51,6 +51,7 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
   useEffect(() => { if (requestedSide) { setDirection(requestedSide); setPreview(null) } }, [requestedSide])
   useEffect(() => { setLeverageDraft(null); setPreview(null) }, [session?.id])
   const state = simulation.state
+  const currency = session?.symbol.priceCurrency ?? ''
   const leverage = Number(leverageDraft)
   const minimumLeverage = state === null ? 1 : minimumContractLeverage(state)
 
@@ -83,9 +84,9 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
       </WorkspaceDialog>
       <div className="segmented-control" aria-label="下单方向">{(['long', 'short'] as const).map(side => <button key={side} type="button" aria-pressed={direction === side} onClick={() => { setDirection(side); setPreview(null) }}>{side === 'long' ? '多' : '空'}</button>)}</div>
       <label className="panel-field">下单方式<select value={mode} onChange={event => { setMode(event.target.value as typeof mode); setPreview(null) }}><option value="margin">保证金金额</option><option value="quantity">仓位数量</option></select></label>
-      <label className="panel-field">{mode === 'margin' ? '保证金（USDT）' : `数量（${state.symbol.replace(/USDT$/, '')}）`}<input aria-label={mode === 'margin' ? '保证金金额' : '仓位数量'} inputMode="decimal" type="number" min="0" value={value} onChange={event => { setValue(event.target.value); setPreview(null) }} /></label>
+      <label className="panel-field">{mode === 'margin' ? `保证金${currency ? `（${currency}）` : ''}` : '仓位数量'}<input aria-label={mode === 'margin' ? '保证金金额' : '仓位数量'} inputMode="decimal" type="number" min="0" value={value} onChange={event => { setValue(event.target.value); setPreview(null) }} /></label>
       {mode === 'margin' && <div className="compact-actions">{[25, 50, 75, 100].map(percent => <button type="button" key={percent} onClick={() => { setValue(new Decimal(state.account.availableBalance).mul(percent).div(100).toDecimalPlaces(4).toString()); setPreview(null) }}>{percent}%</button>)}</div>}
-      <p className="order-available">可用 {displayAmount(state.account.availableBalance)} USDT</p>
+      <p className="order-available">可用 {displayAmount(state.account.availableBalance)} {currency}</p>
       <div className="button-row"><button type="button" disabled={simulation.busy} onClick={() => void simulation.preview(direction, mode === 'margin' ? { margin: value } : { quantity: value }).then(setPreview)}>计算预估</button><button type="button" className={direction === 'long' ? 'long-button' : 'short-button'} disabled={simulation.busy} onClick={() => void simulation.open(direction, mode === 'margin' ? { margin: value } : { quantity: value })}>{state.positions.some(position => position.side === direction) ? '同向加仓' : direction === 'long' ? '开多' : '开空'}</button></div>
       {preview && <dl className="order-preview detail-list">{[['预计数量', preview.quantity], ['预计成交价', preview.fillPrice], ['所需保证金', preview.requiredMargin], ['手续费', preview.fee], ['预估强平价', preview.estimatedLiquidationPrice]].map(([label, amount]) => <div key={label}><dt>{label}</dt><dd>{amount}</dd></div>)}</dl>}
       <p className="muted-text">在对应仓位设置止盈止损、减仓或平仓。</p>
@@ -96,11 +97,12 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
 
 export type TradingTab = 'positions' | 'trades' | 'stats' | 'ledger'
 
-function RiskEditor({ position, simulation, feeRate, precision }: {
+function RiskEditor({ position, simulation, feeRate, precision, currency }: {
   position: SimulationPosition
   simulation: SimulationController
   feeRate: string
   precision: number
+  currency: string
 }) {
   const [mode, setMode] = useState<RiskInputMode>('price')
   const [values, setValues] = useState({
@@ -132,7 +134,7 @@ function RiskEditor({ position, simulation, feeRate, precision }: {
       const save = takeProfit ? simulation.setTakeProfit : simulation.setStopLoss
       return <div key={target}>
         <label className="panel-field">{inputLabel}{mode === 'percent' && '（%）'}<input aria-label={inputLabel} type="number" inputMode="decimal" step="any" value={values[target]} onChange={event => setValues({ ...values, [target]: event.target.value })} /></label>
-        <p className="muted-text">预计{label}盈亏 {pnl === null ? '—' : <strong className={pnl.gte(0) ? 'profit' : 'loss'}>{pnl.gt(0) ? '+' : ''}{displayAmount(pnl.toString())} USDT</strong>}{mode === 'percent' && price !== null && ` · 触发价 ${price.toString()}`}</p>
+        <p className="muted-text">预计{label}盈亏 {pnl === null ? '—' : <strong className={pnl.gte(0) ? 'profit' : 'loss'}>{pnl.gt(0) ? '+' : ''}{displayAmount(pnl.toString())} {currency}</strong>}{mode === 'percent' && price !== null && ` · 触发价 ${price.toString()}`}</p>
         <div className="compact-actions">
           <button type="button" onClick={() => { if (price !== null) save(position.side, price.toString()) }} disabled={simulation.busy || price === null}>设置{label}</button>
           <button type="button" onClick={() => { save(position.side, null); setValues({ ...values, [target]: '' }) }} disabled={simulation.busy}>取消{label}</button>
@@ -144,9 +146,10 @@ function RiskEditor({ position, simulation, feeRate, precision }: {
   </>
 }
 
-export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePrecision = 8 }: {
+export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePrecision = 8, currency = 'USDT' }: {
   simulation: SimulationController
   pricePrecision?: number
+  currency?: string
   onClose(): void
   tab: TradingTab
   onTabChange(tab: TradingTab): void
@@ -170,18 +173,18 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
           <div className="position-summary" data-testid="position-summary">
             <div><span className={p.side === 'long' ? 'profit' : 'loss'}>{sideName(p.side)}</span><span className="muted-text">{p.symbol} · {p.leverage}×</span></div>
             <dl className="position-values">
-              <div><dt>保证金</dt><dd>{displayAmount(p.isolatedMargin)} USDT</dd></div>
+              <div><dt>保证金</dt><dd>{displayAmount(p.isolatedMargin)} {currency}</dd></div>
               <div><dt>开仓均价</dt><dd>{p.entryPrice}</dd></div>
               <div><dt>当前价格</dt><dd>{p.lastPrice}</dd></div>
-              <div><dt>浮动盈亏</dt><dd className={Number(p.unrealizedPnl) >= 0 ? 'profit' : 'loss'}>{displayAmount(p.unrealizedPnl)} USDT</dd></div>
+              <div><dt>浮动盈亏</dt><dd className={Number(p.unrealizedPnl) >= 0 ? 'profit' : 'loss'}>{displayAmount(p.unrealizedPnl)} {currency}</dd></div>
               <div><dt>持仓收益率</dt><dd>{rate(new Decimal(p.unrealizedPnl).div(new Decimal(p.isolatedMargin).isZero() ? 1 : p.isolatedMargin).toString())}</dd></div>
               <div><dt>止盈 / 止损</dt><dd>{p.takeProfitPrice ?? '—'} / {p.stopLossPrice ?? '—'}</dd></div>
             </dl>
           </div>
           <div className="position-actions"><button type="button" onClick={() => edit(p.side, 'risk')}>止盈止损</button><button type="button" onClick={() => edit(p.side, 'reduce')}>减仓 / 平仓</button><button type="button" className="text-button" onClick={() => edit(p.side, 'details')}>详情</button></div>
         </article>)}</div>)}
-        {tab === 'trades' && <div className="trade-list">{state.trades.length === 0 ? <p className="muted-text">尚无成交</p> : [...state.trades].reverse().map(trade => <div key={trade.tradeId}><strong>{actionName[trade.action]} · {sideName(trade.positionSide)}</strong><span>{formatDisplayTime(trade.timestamp)}</span><span>{trade.quantity} @ {trade.price}</span><span>手续费 {displayAmount(trade.fee, 4)} · 滑点 {displayAmount(trade.slippage, 4)}</span><span>盈亏 {displayAmount(trade.realizedPnl)} USDT</span></div>)}</div>}
-        {tab === 'stats' && <dl className="detail-list stats-grid">{[['总收益', `${displayAmount(state.stats.totalReturn)} USDT`], ['收益率', rate(state.stats.totalReturnRate)], ['成交次数', state.stats.totalTrades], ['完整平仓', state.stats.completedPositions], ['盈利次数', state.stats.wins], ['亏损次数', state.stats.losses], ['胜率', rate(state.stats.winRate)], ['最大单笔盈利', displayAmount(state.stats.largestWin)], ['最大单笔亏损', displayAmount(state.stats.largestLoss)], ['强平次数', state.stats.liquidations]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
+        {tab === 'trades' && <div className="trade-list">{state.trades.length === 0 ? <p className="muted-text">尚无成交</p> : [...state.trades].reverse().map(trade => <div key={trade.tradeId}><strong>{actionName[trade.action]} · {sideName(trade.positionSide)}</strong><span>{formatDisplayTime(trade.timestamp)}</span><span>{trade.quantity} @ {trade.price}</span><span>手续费 {displayAmount(trade.fee, 4)} · 滑点 {displayAmount(trade.slippage, 4)}</span><span>盈亏 {displayAmount(trade.realizedPnl)} {currency}</span></div>)}</div>}
+        {tab === 'stats' && <dl className="detail-list stats-grid">{[['总收益', `${displayAmount(state.stats.totalReturn)} ${currency}`], ['收益率', rate(state.stats.totalReturnRate)], ['成交次数', state.stats.totalTrades], ['完整平仓', state.stats.completedPositions], ['盈利次数', state.stats.wins], ['亏损次数', state.stats.losses], ['胜率', rate(state.stats.winRate)], ['最大单笔盈利', displayAmount(state.stats.largestWin)], ['最大单笔亏损', displayAmount(state.stats.largestLoss)], ['强平次数', state.stats.liquidations]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
         {tab === 'ledger' && <div className="trade-list">{[...state.ledger].reverse().map(entry => <div key={entry.entryId}><strong>{entry.type}</strong><span>{formatDisplayTime(entry.timestamp)}</span><span>变动 {displayAmount(entry.amount, 4)} · 余额 {displayAmount(entry.balanceAfter, 4)}</span></div>)}</div>}
       </>}
     </div>
@@ -191,7 +194,7 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
           {position.symbol} · {sideName(position.side)}
           {editing.kind !== 'details' && ` · 剩余数量 ${position.quantity}`}
         </p>
-        {editing.kind === 'risk' && <RiskEditor key={`${state.sessionId}:${position.side}`} position={position} simulation={simulation} feeRate={state.config.feeRate} precision={pricePrecision} />}
+        {editing.kind === 'risk' && <RiskEditor key={`${state.sessionId}:${position.side}`} position={position} simulation={simulation} feeRate={state.config.feeRate} precision={pricePrecision} currency={currency} />}
         {editing.kind === 'reduce' && <>
           <label className="panel-field">减仓数量<input aria-label="减仓数量" type="number" inputMode="decimal" value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
           <div className="compact-actions">{([25, 50, 75] as const).map(value => <button key={value} type="button" disabled={simulation.busy} onClick={() => void simulation.reducePercent(editing.side, value)}>减 {value}%</button>)}</div>
@@ -199,7 +202,7 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
         </>}
         {editing.kind === 'details' && <dl className="detail-list">{[
           ['数量', position.quantity],
-          ['逐仓保证金', `${position.isolatedMargin} USDT`],
+          ['逐仓保证金', `${position.isolatedMargin} ${currency}`],
           ['预估强平价', position.liquidationPrice],
           ['名义价值', position.notional],
           ['开仓时间', formatDisplayTime(position.openedAt)],

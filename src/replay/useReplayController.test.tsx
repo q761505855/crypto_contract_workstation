@@ -1,12 +1,13 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
-import type { MarketDataRuntime } from '../market-data/runtime'
+import type { MarketDataService } from '../market-data/market-data-service'
 import type { MarketCandle } from '../market-data/models'
 import { useSimulationController } from '../simulation/useSimulationController'
 import { SimulationEngine } from '../simulation/simulation-engine'
+import type { IndexedDbSimulationStateStore } from '../storage/simulation-state-store'
 import { ReplayEngine } from './replay-engine'
-import { useReplayController } from './useReplayController'
+import { useReplayController, type LegacyReplayRuntime } from './useReplayController'
 import type { ReplaySession } from './models'
 import { nextOpenTime } from '../market-data/intervals'
 
@@ -47,7 +48,10 @@ function setup(options: { noMarks?: boolean; restore?: boolean; sourceCandles?: 
       loadReplayCandles: vi.fn(async (kind: string) => kind === 'mark' ? marks : source),
       resetReplayRequests: vi.fn(),
     },
-  } as unknown as MarketDataRuntime
+  } as unknown as LegacyReplayRuntime & {
+    service: Pick<MarketDataService, 'loadCachedCandles'>
+    simulationStates: IndexedDbSimulationStateStore
+  }
   const hook = renderHook(() => {
     const replay = useReplayController(runtime)
     const simulation = useSimulationController(runtime, replay)

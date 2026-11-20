@@ -81,13 +81,11 @@ describe('deployment configuration', () => {
     ])
     expect(browserJob).toMatch(/^    needs: verify$/m)
     expect(browserJob).toMatch(/^    runs-on: ubuntu-24\.04$/m)
-    for (const project of ['chromium', 'chromium-integration', 'chromium-monthly-replay', 'chromium-production']) {
-      expect(browserJob).toContain(`          - ${project}\n`)
-    }
     expectLinesInOrder(browserJob, [
       '        run: npm ci',
       '        run: node scripts/install-playwright.mjs',
-      '        run: npm run test:e2e -- --project=${{ matrix.project }}',
+      '        run: npm run test:e2e',
+      '        run: npm run test:e2e:pages',
     ])
     expectNoSecrets(workflow)
   })

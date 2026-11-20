@@ -6,7 +6,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
     base: env.VITE_BASE_PATH || '/',
-    envPrefix: ['VITE_GITHUB_OWNER', 'VITE_GITHUB_REPOSITORY', 'VITE_GITHUB_BRANCH', 'VITE_GITHUB_STORAGE_ROOT'],
+    envPrefix: ['VITE_GITHUB_OWNER', 'VITE_GITHUB_REPOSITORY', 'VITE_GITHUB_BRANCH'],
     plugins: [react(), {
       name: 'published-cloud-connection',
       generateBundle() {

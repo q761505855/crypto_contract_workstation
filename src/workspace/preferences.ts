@@ -1,4 +1,5 @@
 import { writePreference } from '../storage/preference-events'
+import { ctraderStorage } from '../storage/ctrader-storage'
 
 export const WORKSPACE_PREFERENCES_KEY = 'workspace.layout.v1'
 
@@ -66,8 +67,8 @@ export function validateWorkspacePreferences(value: unknown): WorkspacePreferenc
 
 export function loadWorkspacePreferences(storage?: Pick<Storage, 'getItem'>): WorkspacePreferences {
   try {
-    const local = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage)
-    const saved = local?.getItem(WORKSPACE_PREFERENCES_KEY)
+    const local = storage ?? ctraderStorage
+    const saved = local.getItem(WORKSPACE_PREFERENCES_KEY)
     if (saved != null) return validateWorkspacePreferences(JSON.parse(saved))
   } catch {
     // Damaged or inaccessible device storage must not prevent the workspace from opening.
@@ -77,6 +78,6 @@ export function loadWorkspacePreferences(storage?: Pick<Storage, 'getItem'>): Wo
 
 export function saveWorkspacePreferences(value: WorkspacePreferences, storage?: Pick<Storage, 'setItem'>): void {
   const validated = validateWorkspacePreferences(value)
-  const local = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage)
+  const local = storage ?? (typeof localStorage === 'undefined' ? undefined : ctraderStorage)
   if (local) writePreference(local, WORKSPACE_PREFERENCES_KEY, JSON.stringify(validated))
 }

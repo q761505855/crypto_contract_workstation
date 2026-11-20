@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 import type { GitHubRepositoryTarget } from './github-client'
 
+export const CTRADER_STORAGE_ROOT = 'projects/crypto-contract-workstation/experiments/ctrader'
+
 function buildValue(name: string): string {
   const env = import.meta.env
   const value = env?.[name]
@@ -12,7 +14,7 @@ export function defaultStorageTarget(): GitHubRepositoryTarget {
     owner: buildValue('VITE_GITHUB_OWNER') || 'q761505855',
     repository: buildValue('VITE_GITHUB_REPOSITORY') || 'personal-cloud-storage',
     branch: buildValue('VITE_GITHUB_BRANCH') || 'main',
-    root: buildValue('VITE_GITHUB_STORAGE_ROOT') || 'projects/crypto-contract-workstation',
+    root: CTRADER_STORAGE_ROOT,
   }
 }
 

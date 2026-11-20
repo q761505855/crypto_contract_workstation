@@ -33,6 +33,14 @@ projects/
 - 项目清单：`projects/crypto-contract-workstation/manifest.json`
 - 新分钟行情的目标路径：`data/market-history/{symbol}/1m/{year}/{month}.json.gz`，相对项目根目录。
 
+## cTrader 实验版
+
+`codex/ctrader-only` 的云端根目录固定为 `projects/crypto-contract-workstation/experiments/ctrader/`。手动与自动同步都使用该目录下的清单、应用配置、会话、交易和绘图。默认仓库和分支可以按构建设置选择，实验目录固定。配置与会话上传沿用校验和、原子提交及冲突处理，拉取在同一个提交下验证各文件后再恢复。生产目录、原有市场行情分片、顶层注册信息与其他项目各自保留。
+
+实验版的 K 线由浏览器访问 cTrader，短期缓存留在内存。GitHub 同步跳过旧清单中的行情条目并保留相应文件。JSON 旧备份里的行情必须通过校验，随后跳过恢复。应用配置、会话、交易和绘图仍可使用 JSON 与云端存档，连接 cTrader 的配置和 GitHub 凭据留在应用存档之外。
+
+## 主分支行情存档
+
 历史行情统一使用普通成交价格；新月分片只包含 `tradeCandles` 和可选的 `symbolInfo`，不写 `markCandles`。上传局部日期时应保留同月已有普通价格和其他月份。清单记录文件大小、SHA-256 等信息，恢复必须在写入前完成结构与校验和验证，并沿用现有冲突检测规则。
 
 旧分片或 JSON 备份中的 `markCandles` 仍严格校验，之后忽略，不导入本地；旧 IndexedDB 表保留兼容但不再读写或导出。自动上传触及含旧字段的月份时，即使普通价格未变化，也会原子重写该月分片及对应清单，清除旧字段。旧模拟持仓的 `markPrice` 仅在缺少 `lastPrice` 时作迁移回退，新账户快照和云端交易文件仅保存 `lastPrice`；活动会话按当前普通 K 线重估。配置字段、空值与缺失值语义保持原有规则。

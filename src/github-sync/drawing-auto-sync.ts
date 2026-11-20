@@ -99,7 +99,7 @@ export class DrawingAutoSync {
   private async run(): Promise<void> {
     try {
       if (navigator.locks?.request) {
-        await navigator.locks.request('workstation:drawing-sync', { ifAvailable: true }, async lock => {
+        await navigator.locks.request(this.store.scopedKey('workstation:drawing-sync'), { ifAvailable: true }, async lock => {
           if (lock) await this.cycle()
           else this.schedule(1_000)
         })
