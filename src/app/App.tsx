@@ -401,25 +401,6 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     setMobilePanel(null)
   }
 
-  function applyMarketSelection(next: MarketSelection): void {
-    if (
-      replay.session !== null &&
-      replay.session.symbol.ticker !== next.symbol.ticker
-    ) {
-      if (!window.confirm('切换交易对需要结束当前回放会话，是否继续？')) {
-        return
-      }
-      deferredCloudSymbolRef.current = null
-      void replay.endSession().then(() => {
-        saveSelectedSymbol(next.symbol)
-        setMarketSelection(next)
-      })
-      return
-    }
-    if (replay.session === null) saveSelectedSymbol(next.symbol)
-    setMarketSelection(next)
-  }
-
   useLayoutEffect(() => {
     const shell = shellRef.current
     if (shell === null) return
@@ -541,7 +522,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         <button type="button" className="dialog-done" onClick={() => { setWorkspaceMenu(false); setChartSizeOpen(true) }}>调整图表与指标高度</button>
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
       </WorkspaceDialog>
-      <DataManager configurationRevision={configEpoch} onApplySelection={applyMarketSelection} onClose={() => setDataManagerOpen(false)} open={dataManagerOpen} runtime={marketRuntime} selection={marketSelection} />
+      {dataManagerOpen && <DataManager onClose={() => setDataManagerOpen(false)} runtime={marketRuntime} />}
     </main>
   )
 }

@@ -1,10 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_CTRADER_PERIOD, DEFAULT_CTRADER_SYMBOL } from '../chart/chart-config'
 import { GitHubContentsClient } from '../github-sync/github-client'
 import { defaultStorageTarget } from '../github-sync/default-storage'
 import type { MarketDataRuntime } from '../market-data/runtime'
-import { ctraderStorage } from '../storage/ctrader-storage'
 import { BackupSyncPanel } from './BackupSyncPanel'
 import { DataManager } from './DataManager'
 
@@ -18,22 +16,16 @@ function fixture() {
 }
 
 describe('cTrader archive interface', () => {
-  it('refreshes restored preferences while retaining an in-flight cloud operation and its selections', async () => {
+  it('retains an in-flight cloud operation and its selections when the drawer rerenders', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { runtime } = fixture()
     let finishPull!: (result: { files: number; bytes: number }) => void
     Object.assign(runtime.githubSync, { pull: vi.fn(() => new Promise(resolve => { finishPull = resolve })) })
-    const props = {
-      open: true, runtime, selection: { symbol: DEFAULT_CTRADER_SYMBOL, period: DEFAULT_CTRADER_PERIOD },
-      onApplySelection: () => undefined, onClose: () => undefined,
-    }
-    const { rerender } = render(<DataManager {...props} />)
+    const { rerender } = render(<DataManager runtime={runtime} onClose={() => undefined} />)
     fireEvent.click(screen.getByRole('checkbox', { name: '会话与交易' }))
     fireEvent.click(screen.getByTestId('github-pull'))
     expect(screen.getByTestId('github-pull')).toBeDisabled()
-    ctraderStorage.setItem('marketData.favoriteSymbols', '["EURUSD"]')
-    rerender(<DataManager {...props} configurationRevision={1} />)
-    expect(screen.getByRole('button', { name: '取消收藏' })).toBeVisible()
+    rerender(<DataManager runtime={runtime} onClose={() => undefined} />)
     expect(screen.getByRole('checkbox', { name: '会话与交易' })).not.toBeChecked()
     expect(screen.queryByRole('checkbox', { name: '历史行情' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '下载历史数据' })).not.toBeInTheDocument()

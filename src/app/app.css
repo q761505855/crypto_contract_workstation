@@ -996,8 +996,7 @@ button:disabled {
   border-color: #55b8ff;
 }
 
-.button-row,
-.favorite-symbols {
+.button-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1005,7 +1004,6 @@ button:disabled {
 }
 
 .button-row button,
-.favorite-symbols button,
 .data-drawer header button {
   padding: 7px 11px;
 }
