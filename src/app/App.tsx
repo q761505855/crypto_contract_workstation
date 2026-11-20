@@ -156,11 +156,12 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     ...INITIAL_LIVE_STATUS,
   })
   const [chartReloadKey, setChartReloadKey] = useState(0)
-  const [chartRightmostCandleTime, setChartRightmostCandleTime] =
+  const [chartReplayStartTime, setChartReplayStartTime] =
     useState<number | null>(null)
   const [chartJumpRequest, setChartJumpRequest] = useState<{
     id: string
     timestamp: number
+    previewReplay: boolean
   } | null>(null)
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
   const [stepPeriod, setStepPeriod] = useState(activeStepPeriod)
@@ -258,11 +259,12 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     )
   }, [])
 
-  const jumpChartToTime = useCallback((timestamp: number): void => {
+  const jumpChartToTime = useCallback((timestamp: number, previewReplay = false): void => {
     setMarketWarning('')
     setChartJumpRequest({
       id: crypto.randomUUID(),
       timestamp,
+      previewReplay,
     })
   }, [])
 
@@ -280,7 +282,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
         setMarketWarning('所选时间附近没有可显示的 K 线。')
         return
       }
-      setChartRightmostCandleTime(timestamp)
+      setChartReplayStartTime(timestamp)
       setMarketWarning(
         `图表已跳转到 ${formatDisplayTime(timestamp)}`,
       )
@@ -477,7 +479,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
             datafeed={marketRuntime.replayDatafeed}
             jumpRequest={chartJumpRequest}
             onJumpComplete={completeChartTimeJump}
-            onRightmostCandleTimeChange={setChartRightmostCandleTime}
+            onReplayStartTimeChange={setChartReplayStartTime}
             onSelectionChange={syncMarketSelection}
             period={marketSelection.period}
             reloadKey={chartReloadKey}
@@ -494,9 +496,9 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           <div className="replay-region">
             <div id="workspace-replay-content" className="replay-content">
               {mode === 'history' ? <ReplayControls
-                chartStartTime={chartRightmostCandleTime}
+                chartStartTime={chartReplayStartTime}
                 interactionLocked={simulation.busy}
-                onJumpToTime={jumpChartToTime}
+                onJumpToTime={timestamp => jumpChartToTime(timestamp, replay.session === null)}
                 onLocateLatest={locateLatestChartTime}
                 replay={replay}
                 selection={marketSelection}

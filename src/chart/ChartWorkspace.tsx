@@ -39,9 +39,10 @@ export interface ChartWorkspaceProps {
   jumpRequest?: {
     id: string
     timestamp: number
+    previewReplay: boolean
   } | null
   onJumpComplete?: (timestamp: number | null) => void
-  onRightmostCandleTimeChange?: (timestamp: number | null) => void
+  onReplayStartTimeChange?: (timestamp: number | null) => void
   layoutSettingsOpen?: boolean
   onCloseLayoutSettings?: () => void
   chartHeight?: number | null
@@ -64,7 +65,7 @@ export function ChartWorkspace({
   showTradeOverlays = true,
   jumpRequest = null,
   onJumpComplete,
-  onRightmostCandleTimeChange,
+  onReplayStartTimeChange,
   layoutSettingsOpen = false,
   onCloseLayoutSettings,
   chartHeight = null,
@@ -336,7 +337,7 @@ export function ChartWorkspace({
     const periodAtJump = adapter.getPeriod().text
     const isCurrent = () => active && adapter.getSymbol().ticker === symbolAtJump && adapter.getPeriod().text === periodAtJump
     void jump
-      .call(adapterRef.current, jumpRequest.timestamp)
+      .call(adapter, jumpRequest.timestamp, jumpRequest.previewReplay)
       .then((timestamp) => {
         if (isCurrent()) onJumpComplete?.(timestamp)
       })
@@ -350,20 +351,20 @@ export function ChartWorkspace({
   }, [jumpRequest?.id, onJumpComplete])
 
   useEffect(() => {
-    if (onRightmostCandleTimeChange === undefined) return
+    if (onReplayStartTimeChange === undefined) return
     const adapter = adapterRef.current
-    if (adapter?.getRightmostVisibleCandleTime === undefined) return
+    if (adapter?.getReplayStartTime === undefined) return
     let previous: number | null | undefined
     const synchronize = () => {
-      const timestamp = adapter.getRightmostVisibleCandleTime?.() ?? null
+      const timestamp = adapter.getReplayStartTime?.() ?? null
       if (timestamp === previous) return
       previous = timestamp
-      onRightmostCandleTimeChange(timestamp)
+      onReplayStartTimeChange(timestamp)
     }
     synchronize()
     const interval = window.setInterval(synchronize, 250)
     return () => window.clearInterval(interval)
-  }, [onRightmostCandleTimeChange])
+  }, [onReplayStartTimeChange])
 
   useEffect(() => {
     if (auxiliary) return

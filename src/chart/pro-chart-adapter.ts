@@ -50,6 +50,7 @@ import { formatDisplayTime } from '../format-display-time'
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
 const ON_PANE_DRAG = 'onPaneDrag' as ActionType
+const ON_SCROLL = 'onScroll' as ActionType
 
 export interface SimulationPositionOverlay {
   side: 'long' | 'short'
@@ -103,7 +104,8 @@ export interface ChartAdapterPort {
   getIndicatorPreferences?(): ChartIndicatorPreferences
   applyIndicatorPreferences?(preferences: ChartIndicatorPreferences): void
   getRightmostVisibleCandleTime?(): number | null
-  jumpToTime?(timestamp: number): Promise<number | null>
+  getReplayStartTime?(): number | null
+  jumpToTime?(timestamp: number, previewReplay?: boolean): Promise<number | null>
   setSimulationOverlays(state: SimulationOverlayState): void
   setDrawingScope?(store: DrawingStore, scope: string | null): void
 }
@@ -112,6 +114,7 @@ export type ChartProFactory = (options: ChartProOptions) => ChartPro
 
 interface ViewportRestore {
   timestamp: number
+  previewReplay: boolean
   symbol: string
   timeframe: string
   sequence: number
@@ -159,7 +162,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private datafeed: Datafeed | null = null
   private reloadSequence = 0
   private viewportRestore: ViewportRestore | null = null
-  private viewportAnchor: { timestamp: number; visibleTime: number } | null = null
+  private viewportAnchor: { timestamp: number; visibleTime: number; previewStart?: number } | null = null
   private cancelPosition: (() => void) | null = null
   private historyAbort = new AbortController()
   private readonly candleOwners = new WeakMap<object, string>()
@@ -222,6 +225,9 @@ export class ProChartAdapter implements ChartAdapterPort {
     if (typeof this.coreChart.setFutureTimeAxis === 'function') {
       this.coreChart.subscribeAction?.(ON_DATA_READY, () => this.refreshMarketSessionTimeline())
     }
+    this.coreChart.subscribeAction?.(ON_SCROLL, () => {
+      if (this.viewportAnchor?.previewStart !== undefined) this.viewportAnchor = null
+    })
     this.coreChart.subscribeAction?.(ON_PANE_DRAG, () => {
       // Only an explicit separator drag changes the archived height. Responsive
       // enlargement must not overwrite a user's desktop layout in their backup.
@@ -401,13 +407,15 @@ export class ProChartAdapter implements ChartAdapterPort {
     if (this.getPeriod().text === period.text) return
     this.candleReadout?.clearSelection()
     const current = this.getRightmostVisibleCandleTime()
+    const anchor = this.viewportAnchor
+    const previewReplay = this.viewportRestore?.previewReplay ?? (anchor?.previewStart !== undefined)
     const timestamp = this.viewportRestore?.timestamp ??
-      (current === this.viewportAnchor?.visibleTime ? this.viewportAnchor.timestamp : current)
+      (anchor !== null && (previewReplay || current === anchor.visibleTime) ? anchor.timestamp : current)
     const sequence = ++this.reloadSequence
     this.cancelHistoryWork()
     this.clearPosition()
     if (timestamp !== null) this.viewportRestore = {
-      timestamp, sequence, symbol: this.getSymbol().ticker,
+      timestamp, sequence, previewReplay, symbol: this.getSymbol().ticker,
       timeframe: period.text, started: false,
     }
     this.requireChart().setPeriod(period)
@@ -448,16 +456,20 @@ export class ProChartAdapter implements ChartAdapterPort {
     return context ? replayVisibleUntil(context) - 1 : undefined
   }
 
-  private timeWindow(timestamp: number, period: Period): { target: number; from: number; to: number } {
+  private timeWindow(timestamp: number, period: Period, previewReplay = false): { target: number; from: number; to: number } {
     const replayEnd = this.replayHistoryEnd()
     const latest = replayEnd ?? Date.now()
     const target = alignOpenTime(Math.min(timestamp, latest), period.text, 'floor')
-    const monthStart = alignOpenTime(target, '1M', 'floor')
     const chartStart = shiftOpenTime(target, period.text, -249)
+    const chartEnd = shiftOpenTime(target, period.text, 249)
+    if (previewReplay && replayEnd === undefined) {
+      return { target, from: Math.max(0, chartStart), to: Math.min(chartEnd, latest) }
+    }
+    const monthStart = alignOpenTime(target, '1M', 'floor')
     return {
       target,
       from: Math.max(0, chartStart, replayEnd !== undefined && usesNativeKlines(period.text) ? 0 : monthStart),
-      to: Math.min(shiftOpenTime(target, period.text, 249), nextOpenTime(monthStart, '1M') - 1, latest),
+      to: Math.min(chartEnd, nextOpenTime(monthStart, '1M') - 1, latest),
     }
   }
 
@@ -467,7 +479,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       restore.symbol === symbol.ticker && restore.timeframe === period.text
     if (anchored) {
       restore.started = true
-      const range = this.timeWindow(restore.timestamp, period)
+      const range = this.timeWindow(restore.timestamp, period, restore.previewReplay)
       from = range.from
       to = range.to
     }
@@ -481,19 +493,20 @@ export class ProChartAdapter implements ChartAdapterPort {
       throw error
     }
     if (anchored && restore.sequence === this.reloadSequence) {
-      this.positionWhenReady(candles, restore.timestamp, period, restore.sequence)
+      this.positionWhenReady(candles, restore.timestamp, period, restore.sequence, restore.previewReplay)
     }
     this.ownLastCandle(candles, symbol, period)
     return candles
   }
 
-  private positionWhenReady(candles: ReturnType<Chart['getDataList']>, timestamp: number, period: Period, sequence: number): number | null {
+  private positionWhenReady(candles: ReturnType<Chart['getDataList']>, timestamp: number, period: Period, sequence: number, previewReplay: boolean): number | null {
     if (candles.length === 0) {
       this.clearPosition()
       return null
     }
     const target = this.timeWindow(timestamp, period).target
-    const actual = candles.reduce((nearest, candle) => Math.abs(candle.timestamp - target) < Math.abs(nearest.timestamp - target) ? candle : nearest).timestamp
+    const nearest = candles.reduce((closest, candle) => Math.abs(candle.timestamp - target) < Math.abs(closest.timestamp - target) ? candle : closest)
+    const actual = nearest.timestamp
     const core = this.requireCoreChart()
     this.cancelPosition?.()
     const position = () => {
@@ -502,9 +515,17 @@ export class ProChartAdapter implements ChartAdapterPort {
       if (!core.getDataList().includes(candles[0])) return
       cleanup()
       this.viewportRestore = null
-      this.viewportAnchor = { timestamp: actual === target ? timestamp : actual, visibleTime: actual }
       core.scrollToTimestamp(actual, 0)
-      core.scrollByDistance(core.getBarSpace(), 0)
+      const barSpace = core.getBarSpace()
+      const previewWidth = previewReplay
+        ? Math.min((core.getSize('candle_pane')?.width ?? 0) / 2, (candles.length - 1 - candles.indexOf(nearest)) * barSpace)
+        : 0
+      core.scrollByDistance(barSpace - previewWidth, 0)
+      this.viewportAnchor = {
+        timestamp: actual === target ? timestamp : actual,
+        visibleTime: actual,
+        ...(previewReplay ? { previewStart: actual } : {}),
+      }
     }
     const cleanup = () => {
       core.unsubscribeAction(ON_DATA_READY, position)
@@ -524,6 +545,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.cancelHistoryWork()
     const signal = this.historyAbort.signal
     this.clearPosition()
+    this.viewportAnchor = null
     chart.cancelHistoryRequests?.()
     pivotHistoryReset.get(chart)?.()
     const replay = (datafeed as Datafeed & { getReplayContext?: () => unknown }).getReplayContext?.()
@@ -560,14 +582,19 @@ export class ProChartAdapter implements ChartAdapterPort {
     return data[index]?.timestamp ?? data.at(-1)?.timestamp ?? null
   }
 
-  async jumpToTime(timestamp: number): Promise<number | null> {
+  getReplayStartTime(): number | null {
+    return this.viewportAnchor?.previewStart ?? this.getRightmostVisibleCandleTime()
+  }
+
+  async jumpToTime(timestamp: number, previewReplay = false): Promise<number | null> {
     if (!Number.isFinite(timestamp)) return null
     const chart = this.requireChart()
     const coreChart = this.requireCoreChart()
     const datafeed = this.datafeed
     if (datafeed === null) return null
     const period = chart.getPeriod()
-    const { from, to } = this.timeWindow(timestamp, period)
+    const preview = previewReplay && this.replayHistoryEnd() === undefined
+    const { from, to } = this.timeWindow(timestamp, period, preview)
     const sequence = ++this.reloadSequence
     this.cancelHistoryWork()
     const signal = this.historyAbort.signal
@@ -595,7 +622,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       if (index >= 0) candles[index] = liveCandle
       else if (liveCandle.timestamp > candles.at(-1)!.timestamp) candles.push(liveCandle)
     }
-    const actual = this.positionWhenReady(candles, timestamp, period, sequence)
+    const actual = this.positionWhenReady(candles, timestamp, period, sequence, preview)
     this.ownLastCandle(candles, chart.getSymbol(), period)
     pivotHistoryReset.get(chart)?.()
     coreChart.applyNewData(candles, true)

@@ -150,15 +150,16 @@ export function ReplayControls({
   }
 
   if (replay.session === null) {
+    const startLabel = chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(chartStartTime)
     return <section className="replay-controls replay-setup" data-testid="replay-controls">
       <TimeJumpControl compact disabled={replay.busy} onJump={onJumpToTime} onLocateLatest={onLocateLatest} />
-      <span className="replay-start-time">起点：{chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(chartStartTime)}</span>
+      <span className="replay-start-time">起点：{startLabel}</span>
       <button type="button" onClick={() => setSettingsOpen(true)}>回放设置</button>
       <button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
       {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
       {!settingsOpen && replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
-        <p className="muted-text">{selection.symbol.ticker} · {selection.period.text} · 起点沿用当前图表视口</p>
+        <p className="muted-text">{selection.symbol.ticker} · {selection.period.text} · 起点：{startLabel}</p>
         <label className="panel-field">
           <span>结束（可选） {formatInputWeekday(toText)}</span>
           <input
