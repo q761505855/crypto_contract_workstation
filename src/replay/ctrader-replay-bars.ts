@@ -15,6 +15,8 @@ export interface CTraderReplayMarket {
 }
 
 const CANDLES_PER_WINDOW = 500
+const MAX_WINDOW_SPAN_MS = 365 * 86_400_000
+const MAX_WINDOWS = 8
 
 export function requireNativeReplayPeriod(timeframe: string): asserts timeframe is CTraderTimeframe {
   if (!isCTraderTimeframe(timeframe)) {
@@ -49,9 +51,9 @@ interface SearchWindow {
   bars: MarketCandle[]
 }
 
-/** Scans bounded native windows and retains the most recent window in each direction. */
+/** Retains native history across direction and step-period changes. */
 export class CTraderReplayBars {
-  private readonly windows = new Map<1 | -1, SearchWindow>()
+  private readonly windows = new Map<string, SearchWindow>()
 
   constructor(private readonly service: CTraderReplayMarket) {}
 
@@ -62,13 +64,11 @@ export class CTraderReplayBars {
     let position = direction === 1 ? from : to
     while (position >= from && position <= to) {
       signal.throwIfAborted()
-      const cached = this.windows.get(direction)
-      const window = cached?.symbol === symbol && cached.timeframe === timeframe &&
-        cached.from <= position && cached.to >= position
-        ? cached
-        : await this.readWindow(symbol, timeframe, position, from, to, direction, signal)
+      const window = this.cachedWindow(symbol, timeframe, position)
+        ?? await this.readWindow(symbol, timeframe, position, from, to, direction, signal)
       const fits = (bar: MarketCandle) =>
         bar.openTime >= (direction === 1 ? position : from) &&
+        (direction === 1 || bar.openTime <= position) &&
         bar.closeTime <= to
       const bars = direction === 1 ? window.bars : [...window.bars].reverse()
       const bar = bars.find(fits)
@@ -77,15 +77,28 @@ export class CTraderReplayBars {
     }
   }
 
+  private cachedWindow(symbol: string, timeframe: string, position: number): SearchWindow | undefined {
+    for (const [key, window] of this.windows) {
+      if (window.symbol === symbol && window.timeframe === timeframe && window.from <= position && window.to >= position) {
+        this.windows.delete(key)
+        this.windows.set(key, window)
+        return window
+      }
+    }
+  }
+
   private async readWindow(
     symbol: string, timeframe: string, position: number, min: number, max: number,
     direction: 1 | -1, signal: AbortSignal,
   ): Promise<SearchWindow> {
-    const from = direction === 1 ? position : Math.max(min, shiftOpenTime(position, timeframe, -CANDLES_PER_WINDOW))
-    const to = direction === 1 ? Math.min(max, shiftOpenTime(position, timeframe, CANDLES_PER_WINDOW) - 1) : position
+    const from = direction === 1 ? position
+      : Math.max(min, position - MAX_WINDOW_SPAN_MS + 1, shiftOpenTime(position, timeframe, -CANDLES_PER_WINDOW))
+    const to = direction === 1
+      ? Math.min(max, position + MAX_WINDOW_SPAN_MS - 1, shiftOpenTime(position, timeframe, CANDLES_PER_WINDOW) - 1) : position
     const bars = await loadClosedReplayBars(this.service, symbol, timeframe, from, to, signal)
     const window = { symbol, timeframe, from, to, bars }
-    this.windows.set(direction, window)
+    this.windows.set(`${symbol}:${timeframe}:${from}:${to}`, window)
+    if (this.windows.size > MAX_WINDOWS) this.windows.delete(this.windows.keys().next().value!)
     return window
   }
 }

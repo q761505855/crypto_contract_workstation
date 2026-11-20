@@ -382,7 +382,8 @@ test('replays ticks and seconds on a native 5m chart and restores a same-time qu
   await expect(controls).toContainText('第 3 步')
   await expect(controls).toContainText(':00.456')
   await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start)
-  expect(messages.some(message => message.type === 2145)).toBe(true)
+  const tickRequests = () => messages.filter(message => message.type === 2145).length
+  expect(tickRequests()).toBe(1)
 
   await page.reload()
   await expect(mode).toHaveValue('tick')
@@ -394,6 +395,7 @@ test('replays ticks and seconds on a native 5m chart and restores a same-time qu
   await expect(controls).toContainText(':10 ')
   await expect(controls).toContainText('第 3 步')
   await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start)
+  expect(tickRequests()).toBe(2)
 })
 
 test('replays native minute steps, reveals completed chart bars, and restores a simulated trade', async ({ page }) => {

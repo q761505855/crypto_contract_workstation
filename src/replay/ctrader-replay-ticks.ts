@@ -4,12 +4,12 @@ import type { CTraderReplayBars, CTraderReplayMarket } from './ctrader-replay-ba
 import { SECOND_STEP_MS, type FineStepPeriod } from './step-periods'
 
 const WINDOW_MS = 5 * 60_000
+const MAX_WINDOWS = 6
 type Direction = 1 | -1
 type IndexedTick = CTraderTick & { index: number }
 export type ReplayPriceCandle = MarketCandle & { tickIndex?: number }
 
 interface TickWindow {
-  symbol: string
   from: number
   to: number
   ticks: IndexedTick[]
@@ -33,7 +33,7 @@ function priceCandle(
 }
 
 export class CTraderReplayTicks {
-  private readonly windows = new Map<Direction, TickWindow>()
+  private readonly windows = new Map<string, TickWindow>()
 
   constructor(private readonly service: CTraderReplayMarket, private readonly nativeBars: CTraderReplayBars) {}
 
@@ -44,7 +44,7 @@ export class CTraderReplayTicks {
     let position = direction === 1 ? from : to
     while (position >= from && position <= to) {
       signal.throwIfAborted()
-      const window = await this.readWindow(symbol, position, direction, signal)
+      const window = await this.readWindow(symbol, position, signal)
       const duration = timeframe === 'tick' ? 1 : SECOND_STEP_MS[timeframe]
       const fits = (quote: IndexedTick) => {
         const start = Math.floor(quote.timestamp / duration) * duration
@@ -75,11 +75,16 @@ export class CTraderReplayTicks {
     }
   }
 
-  private async readWindow(symbol: string, position: number, direction: Direction, signal: AbortSignal): Promise<TickWindow> {
-    const cached = this.windows.get(direction)
-    if (cached?.symbol === symbol && position >= cached.from && position <= cached.to) return cached
-    if (!this.service.loadTicks) throw new Error('当前行情来源不提供历史 Tick')
+  private async readWindow(symbol: string, position: number, signal: AbortSignal): Promise<TickWindow> {
     const from = Math.floor(position / WINDOW_MS) * WINDOW_MS
+    const key = `${symbol.toUpperCase()}:${from}`
+    const cached = this.windows.get(key)
+    if (cached && position <= cached.to) {
+      this.windows.delete(key)
+      this.windows.set(key, cached)
+      return cached
+    }
+    if (!this.service.loadTicks) throw new Error('当前行情来源不提供历史 Tick')
     const to = Math.min(Date.now(), from + WINDOW_MS - 1)
     const rows = await this.service.loadTicks(symbol, from, to, signal)
     signal.throwIfAborted()
@@ -90,8 +95,10 @@ export class CTraderReplayTicks {
       time = tick.timestamp
       return { ...tick, index }
     })
-    const window = { symbol, from, to, ticks }
-    this.windows.set(direction, window)
+    const window = { from, to, ticks }
+    this.windows.delete(key)
+    this.windows.set(key, window)
+    if (this.windows.size > MAX_WINDOWS) this.windows.delete(this.windows.keys().next().value!)
     return window
   }
 }

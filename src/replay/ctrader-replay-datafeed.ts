@@ -9,6 +9,9 @@ import { replayVisibleUntil, type ReplayContext } from './models'
 
 const PAGE_SIZE = 500
 const MAX_EMPTY_PAGES = 8
+const FORWARD_PAGE_SIZE = 128
+const FORWARD_MAX_SPAN_MS = 365 * 86_400_000
+const HISTORY_ERROR_RETRY_MS = 3_000
 
 interface ReplayTail {
   until: number
@@ -20,6 +23,8 @@ interface Subscription extends Partial<ReplayTail> {
   period: Period
   callback: DatafeedSubscribeCallback
   request?: AbortController
+  buffered?: { to: number; bars: MarketCandle[] }
+  retryAfter?: number
 }
 
 type LoadHistoryPage = (symbol: SymbolInfo, period: Period, edge: number, signal?: AbortSignal) =>
@@ -199,7 +204,11 @@ export class CTraderReplayDatafeed implements Datafeed {
     this.tails.clear()
     this.olderCursors.clear()
     this.subscription?.request?.abort()
-    if (this.subscription !== null) this.subscription.request = undefined
+    if (this.subscription !== null) {
+      this.subscription.request = undefined
+      this.subscription.buffered = undefined
+      this.subscription.retryAfter = undefined
+    }
     this.onHistoryStatus?.('')
   }
 
@@ -222,13 +231,24 @@ export class CTraderReplayDatafeed implements Datafeed {
     if (context === null || since === undefined || subscription.request !== undefined ||
       subscription.symbol.ticker.toUpperCase() !== context.symbol) return
     const until = replayVisibleUntil(context)
-    if (since >= until || (subscription.nextClose !== undefined && subscription.nextClose > until)) return
+    if (since >= until || (subscription.nextClose !== undefined && subscription.nextClose > until) ||
+      (subscription.retryAfter ?? 0) > Date.now()) return
     const request = new AbortController()
     subscription.request = request
     try {
-      const timeframe = subscription.period.text
-      const from = Math.max(0, shiftOpenTime(since, timeframe, -1))
-      const bars = await loadClosedReplayBars(this.service, context.symbol, timeframe, from, until - 1, request.signal)
+      let page = subscription.buffered
+      if (page === undefined || page.to < until - 1) {
+        const timeframe = subscription.period.text
+        const from = Math.max(0, shiftOpenTime(since, timeframe, -1))
+        const pageEnd = Math.min(shiftOpenTime(from, timeframe, FORWARD_PAGE_SIZE) - 1, from + FORWARD_MAX_SPAN_MS - 1)
+        const to = Math.min(context.endTime ?? Date.now(), Math.max(until - 1, pageEnd))
+        const bars = await loadClosedReplayBars(this.service, context.symbol, timeframe, from, to, request.signal)
+        if (request.signal.aborted || this.subscription !== subscription) return
+        page = { to, bars }
+        subscription.buffered = page
+      }
+      // Bars ahead of the replay clock stay private to this buffer.
+      const bars = page.bars
       for (const bar of bars) {
         if (request.signal.aborted || this.subscription !== subscription) return
         if (bar.closeTime >= since && bar.closeTime < until) subscription.callback(toChartCandle(bar))
@@ -237,6 +257,7 @@ export class CTraderReplayDatafeed implements Datafeed {
       subscription.nextClose = nextNativeClose(bars, until)
     } catch (reason) {
       if (!request.signal.aborted) {
+        subscription.retryAfter = Date.now() + HISTORY_ERROR_RETRY_MS
         this.onWarning?.(`回放图表行情暂时不可用：${reason instanceof Error ? reason.message : String(reason)}`)
       }
       return

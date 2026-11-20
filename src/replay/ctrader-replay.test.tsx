@@ -69,6 +69,9 @@ describe('cTrader replay', () => {
     await act(() => first.result.current.next())
     expect(first.result.current.session).toMatchObject({ cursorTimeframe: 'tick', cursorTickIndex: 1, currentTime: at + 100 })
     expect(first.result.current.getCurrentCandle()?.close).toBe('1.10200')
+    await act(() => first.result.current.previous())
+    await act(() => first.result.current.next())
+    expect(market.loadTicks).toHaveBeenCalledTimes(1)
     first.unmount()
     const restored = renderHook(() => useCTraderReplayController(runtime, 'tick'))
     await waitFor(() => expect(restored.result.current.getCurrentCandle()?.close).toBe('1.10200'))
@@ -145,6 +148,27 @@ describe('cTrader replay', () => {
     await waitFor(() => expect(callback).toHaveBeenCalledTimes(1))
     expect(callback).toHaveBeenCalledWith(expect.objectContaining({ timestamp: monday, close: 1.109, volume: 7 }))
     expect(base.subscribe).not.toHaveBeenCalled()
+  })
+
+  it('emits successive replay bars from a bounded page while keeping future bars hidden', async () => {
+    const rows = Array.from({ length: 15 }, (_, index) => candle(monday + index * minute, m1))
+    const market = service(rows)
+    const feed = new CTraderReplayDatafeed({} as Datafeed, market)
+    const context = { sessionId: 'buffered', symbol: symbol.ticker, timeframe: '1m', currentTime: monday,
+      visibleUntil: monday + minute, endTime: monday + 300 * minute }
+    feed.setReplayContext(context)
+    expect((await feed.getHistoryKLineData(symbol, m1, monday, context.endTime)).map(row => row.timestamp)).toEqual([monday])
+    const update = vi.fn()
+    feed.subscribe(symbol, m1, update)
+    for (let index = 1; index <= 6; index++) {
+      feed.setReplayContext({ ...context, visibleUntil: monday + (index + 1) * minute })
+      await waitFor(() => expect(update).toHaveBeenCalledTimes(index))
+      expect(update.mock.calls.at(-1)?.[0].timestamp).toBe(monday + index * minute)
+    }
+    expect(market.loadCandles).toHaveBeenCalledTimes(2)
+    const [, , , from, to] = market.loadCandles.mock.calls[1]
+    expect(to - from).toBeGreaterThan(6 * minute)
+    expect(to - from).toBeLessThanOrEqual(128 * minute)
   })
 
   it('discards a newer history page if a replay starts while the page is loading', async () => {

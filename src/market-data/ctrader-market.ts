@@ -27,11 +27,15 @@ interface HistoryLoadOptions {
   onStatus?: (status: string) => void
 }
 
-interface HistoryRange {
-  from: number
-  to: number
+interface CachedCandles {
   expires: number
   candles: MarketCandle[]
+}
+
+interface HistoryRange extends CachedCandles {
+  series: string
+  from: number
+  to: number
 }
 
 interface HistoryPage {
@@ -218,6 +222,8 @@ export class CTraderMarketService {
   private historyQueue = Promise.resolve()
   private nextHistoryRequest = 0
   private readonly history = new Map<string, HistoryRange>()
+  private readonly recentHistory = new Map<string, CachedCandles>()
+  private readonly historyReads = new Map<string, Promise<void>>()
   private readonly subscriptions = new Set<Subscription>()
   private readonly activeSpots = new Set<number>()
   private readonly activeTrendbars = new Map<string, ActiveTrendbar>()
@@ -248,44 +254,75 @@ export class CTraderMarketService {
     kind: 'trade', symbol: string, timeframe: string, from: number, to: number,
     options: HistoryLoadOptions = {},
   ): Promise<MarketCandle[]> {
-    const { signal, onStatus } = options
+    const { signal } = options
     signal?.throwIfAborted()
     if (kind !== 'trade' || !isCTraderTimeframe(timeframe)) throw new Error(`cTrader 不支持此 K 线类型或周期：${timeframe}`)
     if (!Number.isFinite(from) || !Number.isFinite(to)) return []
-    const requestedFrom = Math.max(0, Math.ceil(from))
-    const requestedTo = Math.min(MAX_TIMESTAMP, Math.floor(to), this.now())
+    // All native trendbar opens use minute timestamps, even on higher periods.
+    const requestedFrom = Math.max(0, Math.ceil(from / MINUTE) * MINUTE)
+    const requestedTo = Math.floor(Math.min(MAX_TIMESTAMP, to, this.now()) / MINUTE) * MINUTE
     if (requestedFrom > requestedTo) return []
     const instrument = await this.getInstrument(symbol, signal)
-    const key = `${instrument.id}:${timeframe}:`
-    for (const [cacheKey, range] of this.history) {
-      if (cacheKey.startsWith(key) && range.expires > this.now() && range.from <= requestedFrom && range.to >= requestedTo) {
-        return range.candles.filter(candle => candle.openTime >= requestedFrom && candle.openTime <= requestedTo)
+    const series = `${instrument.id}:${timeframe}`
+    return this.queueHistoryRead(series, signal, () => this.readCandleRange(
+      instrument, timeframe, series, requestedFrom, requestedTo, options,
+    ))
+  }
+
+  private async readCandleRange(
+    instrument: Instrument, timeframe: CTraderTimeframe, series: string, from: number, to: number,
+    { signal, onStatus }: HistoryLoadOptions,
+  ): Promise<MarketCandle[]> {
+    const now = this.now()
+    const ranges = [...this.history.values()].filter(range =>
+      range.series === series && range.expires > now && range.from <= to && range.to >= from,
+    ).sort((left, right) => left.from - right.from)
+    const candles = new Map<number, MarketCandle>()
+    const gaps: { from: number; to: number }[] = []
+    let cursor = from
+    for (const range of ranges) {
+      if (range.from > cursor) gaps.push({ from: cursor, to: range.from - MINUTE })
+      cursor = Math.max(cursor, range.to + MINUTE)
+      for (const candle of range.candles) {
+        if (candle.openTime >= from && candle.openTime <= to) candles.set(candle.openTime, candle)
       }
     }
-    onStatus?.('正在读取 cTrader 原生 K 线')
+    if (cursor <= to) gaps.push({ from: cursor, to })
+    if (gaps.length > 0) {
+      onStatus?.('正在读取 cTrader 原生 K 线')
+      try {
+        for (const gap of gaps) {
+          const page = await this.readUncachedCandles(instrument, timeframe, gap.from, gap.to, signal)
+          for (const candle of page) candles.set(candle.openTime, candle)
+          if (page.length <= 4_000) {
+            this.rememberHistory(this.history, `${series}:${gap.from}:${gap.to}`, 32, {
+              series, ...gap, candles: page, expires: this.historyExpiry(gap.to, page),
+            })
+          }
+        }
+      } finally {
+        onStatus?.('')
+      }
+    }
+    return [...candles.values()].sort((left, right) => left.openTime - right.openTime)
+  }
+
+  private async readUncachedCandles(
+    instrument: Instrument, timeframe: CTraderTimeframe, from: number, to: number, signal?: AbortSignal,
+  ): Promise<MarketCandle[]> {
     const candlesByOpen = new Map<number, MarketCandle>()
-    let end = requestedTo
-    while (end >= requestedFrom) {
+    const step = nextOpenTime(0, timeframe)
+    const pageSpan = Math.min(step * (HISTORY_PAGE_SIZE - 1), 365 * DAY)
+    let end = to
+    while (end >= from) {
       signal?.throwIfAborted()
-      // Bound both the nominal history span and the number of bars per request.
-      const step = nextOpenTime(0, timeframe)
-      const pageSpan = Math.min(step * (HISTORY_PAGE_SIZE - 1), 365 * DAY)
-      const start = Math.max(requestedFrom, end - pageSpan)
+      const start = Math.max(from, end - pageSpan)
       const page = await this.getHistoryPage(
         instrument, timeframe, Math.max(0, start - 1), end, HISTORY_PAGE_SIZE, signal,
       )
       end = appendHistoryPage(candlesByOpen, page, start, end)
     }
-    const candles = [...candlesByOpen.values()].sort((left, right) => left.openTime - right.openTime)
-    const nextExpiry = candles.some(candle => !candle.isClosed) ? 2_000 : 60_000
-    if (candles.length <= 4_000) {
-      this.history.set(key + requestedFrom + ':' + requestedTo, {
-        from: requestedFrom, to: requestedTo, expires: this.now() + nextExpiry, candles,
-      })
-      if (this.history.size > 32) this.history.delete(this.history.keys().next().value!)
-    }
-    onStatus?.('')
-    return candles
+    return [...candlesByOpen.values()]
   }
 
   async loadRecentCandles(
@@ -296,13 +333,31 @@ export class CTraderMarketService {
     if (!isCTraderTimeframe(timeframe)) throw new Error(`cTrader 不支持的原生周期：${timeframe}`)
     if (!Number.isInteger(count) || count < 1 || count > HISTORY_PAGE_SIZE) throw new Error('cTrader K 线数量超出范围')
     if (!Number.isFinite(to) || to < 0) return []
-    let end = Math.min(MAX_TIMESTAMP, Math.floor(to), this.now())
+    const latest = Math.floor(Math.min(MAX_TIMESTAMP, to, this.now()) / MINUTE) * MINUTE
     const instrument = await this.getInstrument(symbol, signal)
+    const series = `${instrument.id}:${timeframe}`
+    return this.queueHistoryRead(series, signal, async () => {
+      const key = `${series}:${count}:${latest}`
+      const cached = this.recentHistory.get(key)
+      if (cached && cached.expires > this.now()) return cached.candles
+      onStatus?.('正在读取 cTrader 最近的原生 K 线')
+      try {
+        const candles = await this.readRecentCandles(instrument, timeframe, latest, count, signal)
+        this.rememberHistory(this.recentHistory, key, 16, { candles, expires: this.historyExpiry(latest, candles) })
+        return candles
+      } finally {
+        onStatus?.('')
+      }
+    })
+  }
+
+  private async readRecentCandles(
+    instrument: Instrument, timeframe: CTraderTimeframe, end: number, count: number, signal?: AbortSignal,
+  ): Promise<MarketCandle[]> {
     const step = nextOpenTime(0, timeframe)
     // A provider-side count can jump over a closure without requesting each empty chart window.
     const span = Math.min(365 * DAY, Math.max(7 * DAY, 2 * step * count))
     const candlesByOpen = new Map<number, MarketCandle>()
-    onStatus?.('正在读取 cTrader 最近的原生 K 线')
     for (let page = 0; page < RECENT_HISTORY_MAX_PAGES && end >= 0 && candlesByOpen.size < count; page++) {
       signal?.throwIfAborted()
       const start = Math.max(0, end - span)
@@ -311,8 +366,36 @@ export class CTraderMarketService {
       )
       end = appendHistoryPage(candlesByOpen, response, start, end)
     }
-    onStatus?.('')
     return [...candlesByOpen.values()].sort((left, right) => left.openTime - right.openTime).slice(-count)
+  }
+
+  private queueHistoryRead<T>(series: string, signal: AbortSignal | undefined, read: () => Promise<T>): Promise<T> {
+    const previous = this.historyReads.get(series) ?? Promise.resolve()
+    const pending = previous.then(() => {
+      signal?.throwIfAborted()
+      return read()
+    })
+    const settled = pending.then(() => {}, () => {})
+    this.historyReads.set(series, settled)
+    void settled.then(() => {
+      if (this.historyReads.get(series) === settled) this.historyReads.delete(series)
+    })
+    return waitForCTraderResult(pending, signal)
+  }
+
+  private historyExpiry(to: number, candles: readonly MarketCandle[]): number {
+    const now = this.now()
+    let expires = now + (to >= now - MINUTE ? 2_000 : 5 * MINUTE)
+    for (const candle of candles) {
+      if (!candle.isClosed) expires = Math.min(expires, now + 2_000, candle.closeTime + 1)
+    }
+    return expires
+  }
+
+  private rememberHistory<T>(cache: Map<string, T>, key: string, limit: number, value: T): void {
+    cache.delete(key)
+    cache.set(key, value)
+    if (cache.size > limit) cache.delete(cache.keys().next().value!)
   }
 
   async loadTicks(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<CTraderTick[]> {

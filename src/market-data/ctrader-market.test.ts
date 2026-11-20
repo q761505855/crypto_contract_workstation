@@ -160,6 +160,62 @@ describe('cTrader market', () => {
     expect(starts).toHaveLength(2)
   })
 
+  it('shares overlapping history reads and requests only the uncovered part', async () => {
+    const start = current - 20 * minute
+    const ranges: [number, number][] = []
+    const { service } = setup((socket, request) => {
+      if (request.payloadType !== 2137) return
+      const from = Number(request.payload.fromTimestamp)
+      const to = Number(request.payload.toTimestamp)
+      ranges.push([from, to])
+      const trendbars = []
+      for (let at = start; at <= to; at += minute) {
+        if (at > from) trendbars.push(trendbar(at))
+      }
+      socket.reply(request, 2138, { symbolId, period: 1, trendbar: trendbars, hasMore: false })
+      return true
+    })
+    const [first, same, overlap] = await Promise.all([
+      service.loadCandles('trade', 'EURUSD', '1m', start, start + 9 * minute),
+      service.loadCandles('trade', 'EURUSD', '1m', start, start + 9 * minute),
+      service.loadCandles('trade', 'EURUSD', '1m', start + 5 * minute, start + 14 * minute),
+    ])
+    expect(ranges).toEqual([[start - 1, start + 9 * minute], [start + 10 * minute - 1, start + 14 * minute]])
+    expect(first).toHaveLength(10)
+    expect(same).toEqual(first)
+    expect(overlap.map(row => row.openTime)).toEqual(Array.from({ length: 10 }, (_, i) => start + (i + 5) * minute))
+  })
+
+  it('shares recent-history pages at the same minute between chart views', async () => {
+    const { service, sockets } = setup((socket, request) => {
+      if (request.payloadType !== 2137) return
+      socket.reply(request, 2138, { symbolId, period: 1, trendbar: [trendbar(current - 2 * minute)], hasMore: false })
+      return true
+    })
+    const end = current - minute
+    const [left, right] = await Promise.all([
+      service.loadRecentCandles('EURUSD', '1m', end, { count: 1 }),
+      service.loadRecentCandles('EURUSD', '1m', end + 300, { count: 1 }),
+    ])
+    expect(left).toHaveLength(1)
+    expect(right).toEqual(left)
+    expect(sockets[0].sent.filter(request => request.payloadType === 2137)).toHaveLength(1)
+  })
+
+  it('rechecks a cached forming candle when its close boundary arrives', async () => {
+    const open = current - minute
+    let now = current - 100
+    const { service, sockets } = setup((socket, request) => {
+      if (request.payloadType !== 2137) return
+      socket.reply(request, 2138, { symbolId, period: 1, trendbar: [trendbar(open)], hasMore: false })
+      return true
+    }, () => now)
+    expect((await service.loadCandles('trade', 'EURUSD', '1m', open, open))[0].isClosed).toBe(false)
+    now = current
+    expect((await service.loadCandles('trade', 'EURUSD', '1m', open, open))[0].isClosed).toBe(true)
+    expect(sockets[0].sent.filter(request => request.payloadType === 2137)).toHaveLength(2)
+  })
+
   it('uses a native count request across the weekend instead of querying each empty minute window', async () => {
     const weekend = current + 86_400_000
     const { service, sockets } = setup((socket, message) => {
