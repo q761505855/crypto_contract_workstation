@@ -33,7 +33,7 @@ export interface MarketDataRuntime {
 
 export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime {
   const accountSelection = new CTraderAccountSelection()
-  const connection = new CTraderClient(loadCTraderConnection, undefined, accountSelection.choose)
+  const connection = new CTraderClient(loadCTraderConnection, undefined, accountSelection.choose, accountSelection.selected)
   const service = new CTraderMarketService(connection)
   const datafeed = new CTraderDatafeed(service)
   const defaultGitHubClient = new GitHubContentsClient(defaultStorageTarget(), cloudToken)

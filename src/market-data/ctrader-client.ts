@@ -157,6 +157,7 @@ export class CTraderClient {
     private readonly loadConfig: () => Promise<CTraderConnectionConfig>,
     private readonly createSocket: (url: string) => WebSocket = url => new WebSocket(url),
     private readonly chooseAccount?: (accounts: readonly CTraderAccount[], signal: AbortSignal) => Promise<string>,
+    private readonly onAccountSelected?: (accounts: readonly CTraderAccount[], key: string) => void,
   ) {}
 
   get sessionId(): number | undefined {
@@ -249,6 +250,7 @@ export class CTraderClient {
       let connection = await this.openSocket(this.selectedAccount?.isLive ?? false)
       const accounts = await this.listAccounts(connection, config)
       const account = await this.selectAccount(accounts, connection.abort.signal, config.accountId)
+      this.onAccountSelected?.(accounts, account.key)
       if (connection.isLive !== account.isLive) {
         this.end(connection, new Error('正在切换 cTrader 账户环境'))
         connection = await this.openSocket(account.isLive)
@@ -333,8 +335,8 @@ export class CTraderClient {
   }
 
   private async selectAccount(accounts: CTraderAccount[], signal: AbortSignal, legacyAccountId?: number): Promise<CTraderAccount> {
-    const key = this.selectedAccount?.key ?? (accounts.length === 1 ? accounts[0].key
-      : this.chooseAccount ? await this.chooseAccount(accounts, signal)
+    const key = this.selectedAccount?.key ?? (this.chooseAccount ? await this.chooseAccount(accounts, signal)
+      : accounts.length === 1 ? accounts[0].key
         : accounts.find(account => account.id === legacyAccountId)?.key)
     signal.throwIfAborted()
     const account = accounts.find(candidate => candidate.key === key)

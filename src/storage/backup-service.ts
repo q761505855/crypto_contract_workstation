@@ -50,6 +50,7 @@ import {
 } from './market-data-store'
 import { IndexedDbSimulationStateStore } from './simulation-state-store'
 import { ctraderStorage } from './ctrader-storage'
+import { CTRADER_ACCOUNT_KEY, readCTraderAccount, validateCTraderAccount } from '../market-data/ctrader-account-preferences'
 import { CTRADER_PERIODS } from '../chart/chart-config'
 
 export const BACKUP_FILE_TYPE = 'crypto-contract-workstation-backup'
@@ -68,6 +69,7 @@ export interface BackupPreferences {
   binanceRestBaseUrl: string
   favoriteSymbols: string[]
   selectedSymbol?: SymbolInfo
+  ctraderAccount?: string
   chartIndicators?: ChartIndicatorPreferences
   pinnedPeriods?: string[]
   replayStepPeriod?: MarketTimeframe
@@ -200,6 +202,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     ...(item.chartWindowSize === undefined ? {} : { chartWindowSize: validateChartWindowSize(item.chartWindowSize) }),
     ...(item.workspace === undefined ? {} : { workspace: validateWorkspacePreferences(item.workspace) }),
     ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
+    ...(item.ctraderAccount === undefined ? {} : { ctraderAccount: validateCTraderAccount(item.ctraderAccount) }),
     ...(item.chartIndicators === undefined
       ? {}
       : {
@@ -825,6 +828,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
   const favoriteSymbols = readFavoriteSymbols(storage)
   const chartIndicators = loadChartIndicatorPreferences(storage)
   const selectedSymbol = readSelectedSymbol(storage)
+  const ctraderAccount = readCTraderAccount(storage)
   return {
     binanceRestBaseUrl:
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
@@ -836,6 +840,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
     candleType: readCandleType(storage),
     workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
+    ...(ctraderAccount === undefined ? {} : { ctraderAccount }),
     ...(chartIndicators === null ? {} : { chartIndicators }),
   }
 }
@@ -1015,6 +1020,7 @@ export class WorkstationBackupService {
     const fields = {
       chartIndicators: CHART_INDICATORS_PREFERENCE,
       selectedSymbol: SELECTED_SYMBOL_STORAGE_KEY,
+      ctraderAccount: CTRADER_ACCOUNT_KEY,
       pinnedPeriods: PINNED_PERIODS_KEY,
       replayStepPeriod: REPLAY_STEP_PERIOD_KEY,
       showTradeOverlays: SHOW_TRADE_OVERLAYS_KEY,

@@ -31,6 +31,7 @@ import { TimeJumpControl } from '../components/TimeJumpControl'
 import { LiveStatus } from '../components/panels'
 import { AccountStrip, SimulationOrder, SimulationDock, type TradingTab } from '../components/TradingWorkspace'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
+import { WorkspaceTools } from '../components/WorkspaceTools'
 import { PanelToggle } from '../components/PanelToggle'
 import { loadWorkspacePreferences, saveWorkspacePreferences, DEFAULT_WORKSPACE_PREFERENCES, type WorkspacePreferences } from '../workspace/preferences'
 import type { MarketSelection } from '../market-data/models'
@@ -93,7 +94,6 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
   const [chartSizeOpen, setChartSizeOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(false)
-  const [headerExpanded, setHeaderExpanded] = useState(false)
   const [mobile, setMobile] = useState(() => (window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)')?.matches ?? false))
   const [mobilePanel, setMobilePanel] = useState<'order' | 'dock' | null>(null)
   const [dockTab, setDockTab] = useState<TradingTab>('positions')
@@ -445,22 +445,22 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const simulationCurrency = replay.session?.symbol.priceCurrency ?? ''
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
   return (
-    <main ref={shellRef} className={`app-shell workspace-shell${headerExpanded ? ' header-expanded' : ''}`}>
+    <main ref={shellRef} className="app-shell workspace-shell">
       <header className="app-header">
         <h1><span className="desktop-brand">cTrader 行情回放工作站</span><span className="mobile-brand">cTrader 工作站</span></h1>
         <ModeSwitch mode={mode} onChange={changeMode} />
-        <button type="button" className="mobile-header-toggle" aria-expanded={headerExpanded} aria-controls="workspace-header-actions" onClick={() => setHeaderExpanded(current => !current)}>{headerExpanded ? '收起工具 ⌃' : '工具 ⌄'}</button>
-        <div id="workspace-header-actions" className="workspace-nav">
+        <WorkspaceTools>
           {!mobile && <button type="button" onClick={() => setPopupBlocked(openChartWindow() === null)}>打开副图</button>}
-          <button type="button" data-testid="open-data-manager" onClick={() => setDataManagerOpen(true)}>数据管理</button>
           <button type="button" aria-expanded={chartSizeOpen} onClick={() => setChartSizeOpen(true)}>图表尺寸</button>
-          <button type="button" aria-expanded={workspaceMenu} onClick={() => setWorkspaceMenu(true)}>工作区</button>
           <button type="button" className="focus-mode-button" aria-pressed={focusMode} onClick={() => { setFocusMode(current => !current); setMobilePanel(null) }}>{focusMode ? '退出专注' : '专注看图'}</button>
-        </div>
+          <hr />
+          <button type="button" aria-expanded={workspaceMenu} onClick={() => setWorkspaceMenu(true)}>工作区</button>
+          <button type="button" data-testid="open-data-manager" onClick={() => setDataManagerOpen(true)}>数据管理</button>
+          {marketRuntime.accountSelection && <CTraderAccountPicker selection={marketRuntime.accountSelection} busy={simulation.busy} />}
+        </WorkspaceTools>
       </header>
       {popupBlocked && !mobile && <div className="chart-popup-warning" role="alert">浏览器拦截了副图窗口，请允许此站点弹出窗口后重试。</div>}
       {marketRuntime.configSync && <ConfigSyncStatus service={marketRuntime.configSync} />}
-      {marketRuntime.accountSelection && <CTraderAccountPicker selection={marketRuntime.accountSelection} />}
       <div
         data-testid={mode === 'history' ? 'simulation-panel' : 'live-workspace'}
         className={`workspace-content${visible('order') ? '' : ' is-order-hidden'}${focusMode ? ' is-focus-mode' : ''}`}

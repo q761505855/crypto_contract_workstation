@@ -178,6 +178,21 @@ it('validates native periods, cTrader settings and the archived cursor without r
   expect((await target.exportPreferences()).data.preferences?.favoriteSymbols).toEqual(['EURUSD'])
 })
 
+it('round-trips the cTrader account preference and rejects invalid values before writes', async () => {
+  const target = new WorkstationBackupService(`ctrader-account-${crypto.randomUUID()}`, new MemoryPreferences())
+  const archive = await target.exportPreferences()
+  expect(archive.data.preferences).not.toHaveProperty('ctraderAccount')
+  await target.import({ ...archive, data: { preferences: { ...archive.data.preferences!, ctraderAccount: 'live:19' } } })
+  expect((await target.exportPreferences()).data.preferences).toMatchObject({ ctraderAccount: 'live:19' })
+  await target.import(archive)
+  const full = (await target.exportAll()).data
+  expect(full.preferences).toMatchObject({ ctraderAccount: 'live:19' })
+  for (const ctraderAccount of [null, '', false, 0, [], {}, 'live:0', 'demo:-1', 'real:19', 'live:9007199254740992']) {
+    await expect(target.import({ ...archive, data: { preferences: { ...archive.data.preferences!, favoriteSymbols: ['EURUSD'], ctraderAccount } } })).rejects.toThrow('ctraderAccount')
+    expect((await target.exportAll()).data).toEqual(full)
+  }
+})
+
 async function seed(databaseName: string, preferences: MemoryPreferences) {
   preferences.setItem(PINNED_PERIODS_KEY, JSON.stringify(['1m', '1d']))
   preferences.setItem(SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(DEFAULT_SYMBOL))

@@ -322,7 +322,7 @@ export class GitHubSyncService {
       const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
       if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
       if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
-      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'ctraderAccount', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
         if (value[key] !== undefined) preferences[key] = value[key]
       }
     }
@@ -663,6 +663,7 @@ export class GitHubSyncService {
           binanceRestBaseUrl?: unknown
           chartIndicators?: unknown
           selectedSymbol?: unknown
+          ctraderAccount?: unknown
           pinnedPeriods?: unknown
           workspace?: unknown
           candleType?: unknown
@@ -697,6 +698,9 @@ export class GitHubSyncService {
         }
         if (value.selectedSymbol !== undefined) {
           preferences.selectedSymbol = value.selectedSymbol as BackupPreferences['selectedSymbol']
+        }
+        if (value.ctraderAccount !== undefined) {
+          preferences.ctraderAccount = value.ctraderAccount as BackupPreferences['ctraderAccount']
         }
         if (value.chartIndicators !== undefined) {
           preferences.chartIndicators =

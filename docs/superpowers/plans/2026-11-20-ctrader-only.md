@@ -65,4 +65,4 @@
 - [x] Wire the runtime, picker, status, archive controls and static config template.
 - [x] Run `npm run check` (821 tests), `npm run test:e2e` (7 tests), and `npm run test:e2e:pages` (9 tests). Address the independent review findings and run the regressions again.
 - [x] Verify the authorized demo and live accounts with the existing read-only token. Both returned EURUSD historical bars. The demo account returned historical bars and live spot quotes for EURUSD, XAUUSD, US500, BTCUSD, and ETHUSD.
-- [x] Add a picker for multiple accounts, including live accounts, and test selection, endpoint routing, reconnect, and reload. Keep the selection in page memory and the verified credentials in the ignored local development file.
+- [x] Add a picker for multiple accounts, including live accounts, and test selection, endpoint routing, reconnect, and reload. Keep the account environment and ID in application preferences and the verified credentials in the ignored local development file.

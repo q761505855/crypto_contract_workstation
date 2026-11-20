@@ -5,7 +5,7 @@ import { installViewportProbe } from './viewport-probe'
 const config = { clientId: 'test-app', clientSecret: 'test-secret', accessToken: 'test-access', accountId: 17 }
 const minute = 60_000
 
-async function connectFixture(page: Page, multipleAccounts = false, { initialQuote = true } = {}) {
+async function connectFixture(page: Page, multipleAccounts = false, { initialQuote = true, rejectedAccount = 0 } = {}) {
   const messages: { type: number; accountId?: number; period?: number; symbolId?: number; live: boolean }[] = []
   const legacyRequests: string[] = []
   let currentSocket: WebSocketRoute | undefined
@@ -41,7 +41,13 @@ async function connectFixture(page: Page, multipleAccounts = false, { initialQuo
           { ...account, ctidTraderAccountId: 18, traderLogin: 2018 },
           { ...account, ctidTraderAccountId: 19, traderLogin: 2019, isLive: true },
         ] : [account] }); break
-        case 2102: currentAccount = activeAccount = payload.ctidTraderAccountId; response(2103, { ctidTraderAccountId: activeAccount }); break
+        case 2102:
+          if (payload.ctidTraderAccountId === rejectedAccount) response(2142, { errorCode: 'ACCOUNT_ACCESS_DENIED' })
+          else {
+            currentAccount = activeAccount = payload.ctidTraderAccountId
+            response(2103, { ctidTraderAccountId: activeAccount })
+          }
+          break
         case 2112: response(2113, { ...accountPayload, asset: assets }); break
         case 2114: response(2115, { ...accountPayload, symbol: symbols }); break
         case 2116: response(2117, { ...accountPayload, symbol: (payload.symbolId as number[]).map(symbolId => ({
@@ -81,6 +87,7 @@ test('loads cTrader native intervals and keeps cloud sync limited to application
   await expect(page.getByRole('button', { name: '选择周期 2h', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: '选择周期 2m', exact: true }).click()
   await expect.poll(() => messages.some(message => message.type === 2137 && message.period === 2)).toBe(true)
+  await page.getByRole('button', { name: '工具', exact: true }).click()
   await page.getByTestId('open-data-manager').click()
   await expect(page.getByTestId('data-manager')).toContainText('cTrader')
   await expect(page.getByTestId('data-manager').getByRole('button', { name: '下载历史数据' })).toHaveCount(0)
@@ -95,16 +102,18 @@ test('loads cTrader native intervals and keeps cloud sync limited to application
   expect(legacyRequests).toEqual([])
 })
 
-test('connects the chosen demo account and asks again only after reload', async ({ page }) => {
+test('remembers the account on reload and switches accounts from the tools menu', async ({ page }) => {
   const { messages, disconnect } = await connectFixture(page, true)
   await page.goto('./')
   const picker = page.getByRole('dialog', { name: '选择 cTrader 账户' })
+  const tools = page.getByRole('button', { name: '工具', exact: true })
   await expect(picker).toBeVisible()
   const accounts = picker.getByRole('combobox', { name: 'cTrader 账户', exact: true })
   await expect(accounts.getByRole('option', { name: /真实账户.*2019/ })).toHaveCount(1)
   expect(messages.some(message => message.type === 2102 || message.type === 2137)).toBe(false)
   await accounts.press('Escape')
   await expect(picker).toBeHidden()
+  await tools.click()
   await page.getByRole('button', { name: '选择 cTrader 账户', exact: true }).click()
   await accounts.selectOption('demo:18')
   await picker.getByRole('button', { name: '连接账户' }).click()
@@ -118,8 +127,43 @@ test('connects the chosen demo account and asks again only after reload', async 
   await expect(picker).toBeHidden()
 
   await page.reload()
-  await expect(picker).toBeVisible()
-  expect(messages.filter(message => message.type === 2102).map(message => message.accountId)).toEqual([18, 18])
+  await expect.poll(() => messages.filter(message => message.type === 2102).map(message => message.accountId)).toEqual([18, 18, 18])
+  await expect(picker).toBeHidden()
+  const switchAccount = page.getByRole('button', { name: '切换账户', exact: true })
+  await expect(switchAccount).toBeHidden()
+  await tools.click()
+  await switchAccount.click()
+  const switchDialog = page.getByRole('dialog', { name: '切换 cTrader 账户' })
+  const alternatives = switchDialog.getByRole('combobox', { name: 'cTrader 账户', exact: true })
+  await expect(alternatives).toHaveValue('demo:18')
+  await alternatives.selectOption('live:19')
+  await switchDialog.getByRole('button', { name: '连接账户' }).click()
+  await expect.poll(() => messages.filter(message => message.type === 2137).at(-1)).toMatchObject({ live: true, accountId: 19 })
+  await expect(switchDialog).toBeHidden()
+})
+
+test('asks for an account when the remembered preference is no longer authorized', async ({ page }) => {
+  const { messages } = await connectFixture(page, true)
+  await page.addInitScript(() => localStorage.setItem('crypto-contract-workstation:ctrader:marketData.ctraderAccount.v1', '"live:90"'))
+  await page.goto('./')
+  await expect(page.getByRole('dialog', { name: '选择 cTrader 账户' })).toBeVisible()
+  expect(messages.some(message => message.type === 2102)).toBe(false)
+})
+
+test('keeps the switch entry available if the remembered account cannot connect', async ({ page }) => {
+  const { messages } = await connectFixture(page, true, { rejectedAccount: 18 })
+  await page.addInitScript(() => {
+    const key = 'crypto-contract-workstation:ctrader:marketData.ctraderAccount.v1'
+    if (localStorage.getItem(key) === null) localStorage.setItem(key, '"demo:18"')
+  })
+  await page.goto('./')
+  await expect(page.getByRole('contentinfo')).toContainText('cTrader 认证失败')
+  await page.getByRole('button', { name: '工具', exact: true }).click()
+  await page.getByRole('button', { name: '切换账户', exact: true }).click()
+  const picker = page.getByRole('dialog', { name: '切换 cTrader 账户' })
+  await picker.getByRole('combobox').selectOption('live:19')
+  await picker.getByRole('button', { name: '连接账户' }).click()
+  await expect.poll(() => messages.find(message => message.type === 2137)).toMatchObject({ live: true, accountId: 19 })
 })
 
 test('authenticates a selected real account through the live endpoint', async ({ page }) => {
@@ -183,6 +227,7 @@ test('restores explicit empty and legacy settings in the experiment without over
   await connectFixture(page)
   await page.addInitScript(() => localStorage.setItem('marketData.favoriteSymbols', '["ETHUSDT"]'))
   await page.goto('./')
+  await page.getByRole('button', { name: '工具', exact: true }).click()
   await page.getByTestId('open-data-manager').click()
   const preferences = {
     binanceRestBaseUrl: 'https://fapi.binance.com', favoriteSymbols: [], pinnedPeriods: ['2m', '6h'],
@@ -201,6 +246,7 @@ test('restores explicit empty and legacy settings in the experiment without over
   await expect(page.getByRole('button', { name: '快捷周期 6h' })).toHaveCount(0)
   expect(await page.evaluate(() => localStorage.getItem('marketData.favoriteSymbols'))).toBe('["ETHUSDT"]')
 
+  await page.getByRole('button', { name: '工具', exact: true }).click()
   await page.getByTestId('open-data-manager').click()
   const [download] = await Promise.all([
     page.waitForEvent('download'),
@@ -210,6 +256,37 @@ test('restores explicit empty and legacy settings in the experiment without over
   expect(exported.data.preferences).toMatchObject(preferences)
   expect(exported.data).not.toHaveProperty('tradeCandles')
   expect(JSON.stringify(exported)).not.toContain(config.accessToken)
+})
+
+test('shows when an imported account preference needs a refresh and uses it after reload', async ({ page }) => {
+  const { messages } = await connectFixture(page, true)
+  const authAccounts = () => messages.filter(message => message.type === 2102).map(message => message.accountId)
+  const tools = page.getByRole('button', { name: '工具', exact: true })
+  await page.addInitScript(() => {
+    const key = 'crypto-contract-workstation:ctrader:marketData.ctraderAccount.v1'
+    if (localStorage.getItem(key) === null) localStorage.setItem(key, '"demo:18"')
+  })
+  await page.goto('./')
+  await expect.poll(authAccounts).toEqual([18])
+  await tools.click()
+  await page.getByTestId('open-data-manager').click()
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByTestId('import-backup-file').setInputFiles({
+    name: 'account-preferences.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ fileType: 'crypto-contract-workstation-backup', schemaVersion: 1,
+      kind: 'preferences', exportedAt: Date.now(), data: {
+        preferences: { binanceRestBaseUrl: 'https://fapi.binance.com', favoriteSymbols: [], ctraderAccount: 'live:19' },
+      } })),
+  })
+  const manager = page.getByTestId('data-manager')
+  await expect(page.getByTestId('backup-status')).toContainText('刷新页面')
+  await manager.getByTestId('close-data-manager').click()
+  await tools.click()
+  await expect(page.getByRole('navigation', { name: '工作站工具' }).getByRole('status')).toContainText('刷新页面后生效')
+  expect(authAccounts()).toEqual([18])
+  await page.reload()
+  await expect.poll(authAccounts).toEqual([18, 19])
+  await expect(page.getByRole('dialog', { name: '选择 cTrader 账户' })).toBeHidden()
 })
 
 test('replays native minute steps, reveals completed chart bars, and restores a simulated trade', async ({ page }) => {
