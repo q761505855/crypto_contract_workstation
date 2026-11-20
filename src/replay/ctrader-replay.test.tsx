@@ -2,6 +2,7 @@ import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { MarketCandle } from '../market-data/models'
+import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
 import { toChartCandle } from '../market-data/chart-candle'
 import { CTraderReplayDatafeed } from './ctrader-replay-datafeed'
 import type { ReplaySession } from './models'
@@ -31,6 +32,13 @@ const mondayHour = candle(monday, h1, '1.109')
 
 function service(rows: MarketCandle[]) {
   return {
+    getReplayTradingTerms: vi.fn(async (): Promise<CTraderTradingTerms> => ({
+      accountCurrency: 'USD', quoteCurrency: 'USD', quoteToUsd: '1', usdToAccount: '1',
+      lotSize: '100000', minQuantity: '1000', quantityStep: '1000', maxQuantity: '1000000',
+      accountLeverage: 500, leverageTiers: [], marginMode: 'max', stopOutRate: '0.5',
+      stopOutMode: 'smart', stopOutOrder: 'margin', canShort: true, tradingMode: 0, pnlConversionFeeRate: '0',
+      commission: { type: 1, rate: '30', minimumUsd: '0', minimumQuote: '0' },
+    })),
     loadCandles: vi.fn(async (_kind: 'trade', _symbol: string, timeframe: string, from: number, to: number) =>
       rows.filter(row => row.timeframe === timeframe && row.openTime >= from && row.openTime <= to)),
   }

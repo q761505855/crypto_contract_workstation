@@ -29,6 +29,9 @@ export const CTraderMessage = {
   SymbolDetail: 2116,
   SymbolDetailResponse: 2117,
   SymbolChanged: 2120,
+  Trader: 2121,
+  TraderResponse: 2122,
+  TraderUpdated: 2123,
   SubscribeSpots: 2127,
   SubscribeSpotsResponse: 2128,
   UnsubscribeSpots: 2129,
@@ -48,12 +51,16 @@ export const CTraderMessage = {
   AccountDisconnect: 2164,
   SubscribeTrendbarResponse: 2165,
   UnsubscribeTrendbarResponse: 2166,
+  DynamicLeverage: 2177,
+  DynamicLeverageResponse: 2178,
 } as const
 
 const MARKET_REQUESTS = {
   [CTraderMessage.AssetList]: CTraderMessage.AssetListResponse,
   [CTraderMessage.SymbolsList]: CTraderMessage.SymbolsListResponse,
   [CTraderMessage.SymbolDetail]: CTraderMessage.SymbolDetailResponse,
+  [CTraderMessage.Trader]: CTraderMessage.TraderResponse,
+  [CTraderMessage.DynamicLeverage]: CTraderMessage.DynamicLeverageResponse,
   [CTraderMessage.SubscribeSpots]: CTraderMessage.SubscribeSpotsResponse,
   [CTraderMessage.UnsubscribeSpots]: CTraderMessage.UnsubscribeSpotsResponse,
   [CTraderMessage.SubscribeTrendbar]: CTraderMessage.SubscribeTrendbarResponse,

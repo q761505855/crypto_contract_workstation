@@ -238,16 +238,16 @@ export function useSimulationController(
 
   const reducePercent = useCallback(
     async (side: PositionSide, percent: 25 | 50 | 75) => {
-      const position = engineRef.current?.snapshot().positions.find(position => position.side === side)
+      const state = engineRef.current?.snapshot()
+      const position = state?.positions.find(position => position.side === side)
       if (position === null || position === undefined) {
         setError('当前没有持仓')
         return
       }
-      const quantity = new Decimal(position.quantity)
-        .mul(percent)
-        .div(100)
-        .toString()
-      await reduce(side, quantity)
+      const requested = new Decimal(position.quantity).mul(percent).div(100)
+      const terms = state?.config.ctrader
+      const quantity = terms ? requested.div(terms.quantityStep).floor().mul(terms.quantityStep) : requested
+      await reduce(side, quantity.toString())
     },
     [reduce],
   )

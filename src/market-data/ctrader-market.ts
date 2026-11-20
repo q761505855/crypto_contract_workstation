@@ -1,3 +1,5 @@
+import Decimal from 'decimal.js'
+import { validateCTraderTradingTerms, type CTraderTradingTerms } from '../simulation/ctrader-trading'
 import {
   CTraderClient, CTraderMessage, cTraderInteger, cTraderObject, waitForCTraderResult,
   type CTraderPayload,
@@ -20,6 +22,53 @@ interface Instrument {
   id: number
   symbol: MarketSymbol
   details: CTraderPayload
+}
+
+interface TradingAccount {
+  assetId: number
+  accountLeverage: number
+  marginMode: CTraderTradingTerms['marginMode']
+  stopOutMode: CTraderTradingTerms['stopOutMode']
+  stopOutOrder: CTraderTradingTerms['stopOutOrder']
+  swapFree: boolean
+  moneyDigits: number
+}
+
+function specInteger(value: unknown, field: string, minimum = 0): number {
+  const number = cTraderInteger(value)
+  if (number === undefined || number < minimum) throw new Error(`缺少有效的 cTrader ${field}`)
+  return number
+}
+
+function cents(value: unknown, field: string): string {
+  return new Decimal(specInteger(value, field, 1)).div(100).toString()
+}
+
+function specEnum(value: unknown, names: readonly string[], offset = 0): number {
+  const numeric = cTraderInteger(value)
+  if (numeric !== undefined && numeric >= offset && numeric < offset + names.length) return numeric
+  const index = typeof value === 'string' ? names.indexOf(value) : -1
+  if (index >= 0) return index + offset
+  throw new Error('cTrader 返回了未知的交易规格枚举值')
+}
+
+function swapTerms(details: CTraderPayload, account: TradingAccount): CTraderTradingTerms['swap'] {
+  const admin = Number(details.rolloverCommission ?? 0)
+  const long = account.swapFree ? -admin : Number(details.swapLong ?? 0)
+  const short = account.swapFree ? -admin : Number(details.swapShort ?? 0)
+  if (long === 0 && short === 0) return undefined
+  const type = account.swapFree ? 'admin-per-lot' : specEnum(details.swapCalculationType ?? 0, ['PIPS', 'PERCENTAGE']) === 0 ? 'pips' : 'percent'
+  return {
+    type, long: String(long), short: String(short),
+    pipPosition: specInteger(details.pipPosition, '点值精度'),
+    periodHours: specInteger(details.swapPeriod ?? 24, '隔夜结算周期', 1),
+    utcMinute: specInteger(details.swapTime, '隔夜结算时间'),
+    tripleDay: specEnum((account.swapFree ? details.rolloverCommission3Days : details.swapRollover3Days) ?? 0,
+      ['NONE', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY']),
+    skipPeriods: specInteger(account.swapFree ? details.skipRolloverDays ?? 0 : details.skipSWAPPeriods ?? 0, '隔夜免收周期'),
+    weekends: details.chargeSwapAtWeekends === true,
+    moneyDigits: account.moneyDigits,
+  }
 }
 
 interface HistoryLoadOptions {
@@ -219,6 +268,10 @@ export class CTraderMarketService {
   readonly source = 'ctrader'
   private catalog?: Map<string, Instrument>
   private catalogRequest?: Promise<Map<string, Instrument>>
+  private assetNames = new Map<number, string>()
+  private tradingAccount?: { session: number; request: Promise<TradingAccount> }
+  private leverageSession?: number
+  private readonly leverageRequests = new Map<number, Promise<CTraderTradingTerms['leverageTiers']>>()
   private historyQueue = Promise.resolve()
   private nextHistoryRequest = 0
   private readonly history = new Map<string, HistoryRange>()
@@ -236,13 +289,143 @@ export class CTraderMarketService {
     client.onStatus(status => this.connectionChanged(status))
     client.onEvent((type, payload) => {
       if (type === CTraderMessage.Spot) this.onSpot(payload)
-      if (type === CTraderMessage.SymbolChanged) this.catalog = undefined
+      if (type === CTraderMessage.SymbolChanged) {
+        this.catalog = undefined
+        this.leverageRequests.clear()
+      }
+      if (type === CTraderMessage.TraderUpdated) this.tradingAccount = undefined
     })
   }
 
   async getSymbols(options: { forceRefresh?: boolean; signal?: AbortSignal } = {}): Promise<MarketSymbol[]> {
+    if (options.forceRefresh) this.leverageRequests.clear()
     const catalog = await this.getCatalog(options)
     return [...catalog.values()].map(instrument => ({ ...instrument.symbol }))
+  }
+
+  async getReplayTradingTerms(symbol: string, timestamp: number, signal?: AbortSignal): Promise<CTraderTradingTerms> {
+    const session = await this.client.connect(signal)
+    const [{ details, symbol: instrument }, account] = await Promise.all([
+      this.getInstrument(symbol, signal), waitForCTraderResult(this.loadTradingAccount(session), signal),
+    ])
+    const quoteCurrency = instrument.quoteAsset
+    const accountCurrency = this.assetNames.get(account.assetId)
+    if (!quoteCurrency || !accountCurrency) throw new Error('无法读取 cTrader 报价币种或账户币种')
+    const commissionType = specEnum(details.commissionType ?? 1,
+      ['USD_PER_MILLION_USD', 'USD_PER_LOT', 'PERCENTAGE_OF_VALUE', 'QUOTE_CCY_PER_LOT'], 1) as CTraderTradingTerms['commission']['type']
+    const rate = details.preciseTradingCommissionRate === undefined
+      ? new Decimal(specInteger(details.commission ?? 0, '佣金')).div(100)
+      : new Decimal(specInteger(details.preciseTradingCommissionRate, '精确佣金')).div(commissionType === 3 ? 10_000_000 : 100_000_000)
+    const minimum = details.preciseMinCommission === undefined
+      ? new Decimal(specInteger(details.minCommission ?? 0, '最低佣金')).div(100)
+      : new Decimal(specInteger(details.preciseMinCommission, '精确最低佣金')).div(100_000_000)
+    const minType = specEnum(details.minCommissionType ?? 1, ['CURRENCY', 'QUOTE_CURRENCY'], 1)
+    const minCurrency = minType === 2 ? quoteCurrency : text(details.minCommissionAsset) ?? 'USD'
+    const leverageId = specInteger(details.leverageId ?? 0, '杠杆档位 ID')
+    const [leverageTiers, quoteToUsd, usdToAccount, minimumToUsd] = await Promise.all([
+      waitForCTraderResult(this.loadLeverageTiers(session, leverageId), signal),
+      instrument.baseAsset === 'USD' && quoteCurrency !== 'USD' ? 'inverse-price' : this.conversionRate(quoteCurrency, 'USD', timestamp, signal),
+      accountCurrency === quoteCurrency ? '1' : this.conversionRate('USD', accountCurrency, timestamp, signal),
+      minimum.isZero() || minCurrency === quoteCurrency ? '1' : this.conversionRate(minCurrency, 'USD', timestamp, signal),
+    ])
+    const terms: CTraderTradingTerms = {
+      accountCurrency, quoteCurrency, quoteToUsd, usdToAccount,
+      lotSize: cents(details.lotSize, '每手合约大小'), minQuantity: cents(details.minVolume, '最小下单数量'),
+      quantityStep: cents(details.stepVolume, '下单步长'), maxQuantity: cents(details.maxVolume, '最大下单数量'),
+      accountLeverage: account.accountLeverage, leverageTiers, marginMode: account.marginMode,
+      // cTrader Open API exposes the stop-out method, but the level is published by IC Markets.
+      stopOutRate: '0.5', stopOutMode: account.stopOutMode, stopOutOrder: account.stopOutOrder,
+      commission: { type: commissionType, rate: rate.toString(),
+        minimumUsd: minCurrency === quoteCurrency ? '0' : minimum.mul(minimumToUsd).toString(),
+        minimumQuote: minCurrency === quoteCurrency ? minimum.toString() : '0' },
+      canShort: details.enableShortSelling !== false,
+      tradingMode: specEnum(details.tradingMode ?? 0, ['ENABLED', 'DISABLED_WITHOUT_PENDINGS_EXECUTION', 'DISABLED_WITH_PENDINGS_EXECUTION', 'CLOSE_ONLY_MODE']) as CTraderTradingTerms['tradingMode'],
+      pnlConversionFeeRate: new Decimal(specInteger(details.pnlConversionFeeRate ?? 0, '盈亏换汇费')).div(10_000).toString(),
+      protection: {
+        units: specEnum(details.distanceSetIn ?? 1, ['SYMBOL_DISTANCE_IN_POINTS', 'SYMBOL_DISTANCE_IN_PERCENTAGE'], 1) === 1 ? 'points' : 'percent',
+        digits: instrument.pricePrecision,
+        stopLoss: specInteger(details.slDistance ?? 0, '止损最小距离'),
+        takeProfit: specInteger(details.tpDistance ?? 0, '止盈最小距离'),
+      },
+      swap: swapTerms(details, account),
+    }
+    validateCTraderTradingTerms(terms)
+    return terms
+  }
+
+  private loadTradingAccount(session: number): Promise<TradingAccount> {
+    if (this.tradingAccount?.session === session) return this.tradingAccount.request
+    const request = this.client.request(CTraderMessage.Trader, {}, undefined, session).then(payload => {
+      const trader = cTraderObject(payload.trader)
+      if (!trader) throw new Error('cTrader 未返回账户交易规格')
+      if (specEnum(trader.accountType ?? 0, ['HEDGED', 'NETTED', 'SPREAD_BETTING']) !== 0 || trader.isLimitedRisk === true) {
+        throw new Error('当前回放适用于 IC Markets 的标准对冲账户')
+      }
+      return {
+        assetId: specInteger(trader.depositAssetId, '账户币种 ID', 1),
+        accountLeverage: specInteger(trader.leverageInCents, '账户杠杆', 100) / 100,
+        marginMode: (['max', 'sum', 'net'] as const)[specEnum(trader.totalMarginCalculationType ?? 0, ['MAX', 'SUM', 'NET'])]!,
+        stopOutMode: trader.fairStopOut === true ? 'fair' as const : 'smart' as const,
+        stopOutOrder: specEnum(trader.stopOutStrategy ?? 0, ['MOST_MARGIN_USED_FIRST', 'MOST_LOSING_FIRST']) === 1 ? 'loss' as const : 'margin' as const,
+        moneyDigits: specInteger(trader.moneyDigits ?? 2, '账户货币精度'),
+        swapFree: trader.swapFree === true,
+      }
+    }).catch(error => {
+      if (this.tradingAccount?.request === request) this.tradingAccount = undefined
+      throw error
+    })
+    this.tradingAccount = { session, request }
+    return request
+  }
+
+  private loadLeverageTiers(session: number, leverageId: number): Promise<CTraderTradingTerms['leverageTiers']> {
+    if (leverageId === 0) return Promise.resolve([])
+    if (this.leverageSession !== session) {
+      this.leverageRequests.clear()
+      this.leverageSession = session
+    }
+    const cached = this.leverageRequests.get(leverageId)
+    if (cached) return cached
+    const request = this.client.request(CTraderMessage.DynamicLeverage, { leverageId }, undefined, session).then(payload => {
+      const leverage = cTraderObject(payload.leverage)
+      const tiers = objects(leverage?.tiers)
+      if (cTraderInteger(leverage?.leverageId) !== leverageId || tiers.length === 0) throw new Error('cTrader 未返回品种杠杆档位')
+      return tiers.map(tier => ({ upToUsd: cents(tier.volume, '杠杆档位名义金额'),
+        leverage: specInteger(tier.leverage, '品种杠杆档位', 100) / 100 }))
+    }).catch(error => {
+      if (this.leverageRequests.get(leverageId) === request) this.leverageRequests.delete(leverageId)
+      throw error
+    })
+    this.leverageRequests.set(leverageId, request)
+    return request
+  }
+
+  private async conversionRate(from: string, to: string, timestamp: number, signal?: AbortSignal): Promise<string> {
+    if (from === to) return '1'
+    const catalog = await this.getCatalog({ signal })
+    const leg = (base: string, quote: string) => {
+      if (catalog.has(base + quote)) return { symbol: base + quote, inverse: false }
+      if (catalog.has(quote + base)) return { symbol: quote + base, inverse: true }
+      return undefined
+    }
+    const direct = leg(from, to)
+    const indirect = ['USD', 'EUR', 'GBP', 'JPY', 'CHF'].flatMap(via => {
+      const first = via !== from ? leg(from, via) : undefined
+      const second = via !== to ? leg(via, to) : undefined
+      return first && second ? [[first, second]] : []
+    })
+    const paths = direct ? [[direct], ...indirect] : indirect
+    const dayStart = Math.floor(timestamp / DAY) * DAY
+    for (const path of paths) {
+      const rates = await Promise.all(path.map(async ({ symbol, inverse }) => {
+        const bars = await this.loadCandles('trade', symbol, '1d', dayStart - 14 * DAY, dayStart - 1, { signal })
+        const last = bars.filter(bar => bar.isClosed && bar.closeTime < timestamp).at(-1)
+        if (!last) return undefined
+        return inverse ? new Decimal(1).div(last.close) : new Decimal(last.close)
+      }))
+      if (rates.every(rate => rate !== undefined)) return rates.reduce((rate, leg) => rate.mul(leg), new Decimal(1)).toString()
+    }
+    throw new Error(`没有 ${from}→${to} 的历史换汇报价`)
   }
 
   async isMarketOpen(symbol: string, timestamp = this.now(), signal?: AbortSignal): Promise<boolean | null> {
@@ -502,7 +685,12 @@ export class CTraderMarketService {
       this.client.request(CTraderMessage.SymbolsList, { includeArchivedSymbols: false }, undefined, session),
       this.client.request(CTraderMessage.AssetList, {}, undefined, session),
     ])
-    const currencies = new Map(objects(assets.asset).map(asset => [cTraderInteger(asset.assetId), text(asset.name)]))
+    const currencies = new Map<number, string>()
+    for (const asset of objects(assets.asset)) {
+      const id = cTraderInteger(asset.assetId)
+      const currency = text(asset.name)
+      if (id !== undefined && currency !== undefined) currencies.set(id, currency)
+    }
     const symbols = new Map<number, CTraderPayload>()
     for (const light of objects(list.symbol)) {
       const id = cTraderInteger(light.symbolId)
@@ -523,8 +711,8 @@ export class CTraderMarketService {
         result.set(symbol, {
           id, details,
           symbol: {
-            symbol, baseAsset: currencies.get(cTraderInteger(light?.baseAssetId)) ?? symbol,
-            quoteAsset: currencies.get(cTraderInteger(light?.quoteAssetId)) ?? '',
+            symbol, baseAsset: currencies.get(cTraderInteger(light?.baseAssetId) ?? -1) ?? symbol,
+            quoteAsset: currencies.get(cTraderInteger(light?.quoteAssetId) ?? -1) ?? '',
             description: text(light?.description),
             contractType: 'CFD', status: 'TRADING', onboardDate: 0,
             pricePrecision: digits,
@@ -533,6 +721,7 @@ export class CTraderMarketService {
         })
       }
     }
+    this.assetNames = currencies
     return result
   }
 

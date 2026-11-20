@@ -4,6 +4,7 @@ import type { MarketCandle } from '../market-data/models'
 import type { ReplaySession, ReplayTradingConfig } from '../replay/models'
 import { SimulationEngine } from './simulation-engine'
 import { normalizeSimulationStatePrices, type LegacySimulationState } from './models'
+import type { CTraderTradingTerms } from './ctrader-trading'
 
 const ZERO_FEE_CONFIG: ReplayTradingConfig = {
   initialBalance: '10000',
@@ -72,6 +73,66 @@ function DecimalMax(left: string, right: string): string {
 function DecimalMin(left: string, right: string): string {
   return Math.min(Number(left), Number(right)).toString()
 }
+
+const icMarketsTerms: CTraderTradingTerms = {
+  accountCurrency: 'USD', quoteCurrency: 'USD', quoteToUsd: '1', usdToAccount: '1',
+  lotSize: '100', minQuantity: '1', quantityStep: '1', maxQuantity: '1000',
+  accountLeverage: 500, leverageTiers: [{ upToUsd: '1000', leverage: 100 }, { upToUsd: '10000', leverage: 50 }],
+  marginMode: 'max', stopOutRate: '0.5', stopOutMode: 'smart', stopOutOrder: 'margin',
+  commission: { type: 1, rate: '30', minimumUsd: '0', minimumQuote: '0' },
+  canShort: true, tradingMode: 0, pnlConversionFeeRate: '0',
+}
+const IC_MARKETS_CONFIG = { ...ZERO_FEE_CONFIG, maintenanceMarginRate: '0', leverage: 100, ctrader: icMarketsTerms }
+
+describe('IC Markets replay', () => {
+  it('validates lot steps and charges by USD volume using tiered margin and hedged margin rules', () => {
+    const engine = SimulationEngine.create(session(IC_MARKETS_CONFIG))
+    expect(() => engine.previewOpen('long', { lots: '0.015' }, '100')).toThrow(/步长/)
+    const preview = engine.previewOpen('long', { lots: '0.2' }, '100')
+    expect(preview).toMatchObject({ quantity: '20', fee: '0.06', requiredMargin: '30' })
+    engine.open('long', { lots: '0.2' }, candle(0))
+    engine.open('short', { lots: '0.1' }, candle(0))
+    expect(engine.snapshot().account).toMatchObject({ usedMargin: '30', totalFees: '0.09' })
+    expect(() => engine.setLeverage(99)).toThrow(/账户/)
+  })
+
+  it('partially stops out only enough volume to restore account margin', () => {
+    const terms = { ...icMarketsTerms, commission: { ...icMarketsTerms.commission, rate: '0' } }
+    const engine = SimulationEngine.create(session({ ...IC_MARKETS_CONFIG, initialBalance: '100', ctrader: terms }))
+    engine.open('long', { lots: '0.2' }, candle(0))
+    engine.processCandle(candle(60_000, { close: '95.5' }))
+    expect(engine.snapshot()).toMatchObject({
+      positions: [{ quantity: '13', isolatedMargin: '19.5' }],
+      account: { equity: '10', usedMargin: '19.5', totalLiquidationFees: '0' },
+      trades: [{ action: 'open' }, { action: 'liquidation', quantity: '7' }],
+    })
+  })
+
+  it('settles USDJPY exposure and realized P&L in USD using the simulated execution rate', () => {
+    const terms = { ...icMarketsTerms, quoteCurrency: 'JPY', quoteToUsd: 'inverse-price', leverageTiers: [], accountLeverage: 100 }
+    const engine = SimulationEngine.create(session({ ...IC_MARKETS_CONFIG, ctrader: terms }))
+    const trade = engine.open('long', { lots: '0.2' }, candle(0))
+    expect(trade).toMatchObject({ notional: '20', fee: '0.0006' })
+    expect(engine.closeAll('long', candle(60_000, { close: '125' }))).toMatchObject({ realizedPnl: '4', fee: '0.0006' })
+    expect(engine.snapshot().account.walletBalance).toBe('10003.9988')
+  })
+
+  it('charges the triple rollover once and restores its cursor without a duplicate ledger entry', () => {
+    const wednesday = Date.UTC(2026, 0, 7, 21, 59)
+    const terms = { ...icMarketsTerms, swap: { type: 'pips' as const, long: '-1', short: '0',
+      pipPosition: 2, periodHours: 24, utcMinute: 1320, tripleDay: 3, skipPeriods: 0, weekends: false, moneyDigits: 2 } }
+    const saved = session({ ...IC_MARKETS_CONFIG, ctrader: terms })
+    const engine = SimulationEngine.create(saved)
+    engine.open('long', { lots: '0.2' }, candle(wednesday))
+    const next = candle(wednesday + 60_000)
+    engine.processCandle(next)
+    const restored = SimulationEngine.restore(engine.snapshot(), saved)
+    restored.processCandle(next)
+    expect(restored.snapshot().ledger.filter(entry => entry.type === 'swap')).toMatchObject([
+      { amount: '-0.6', timestamp: next.openTime },
+    ])
+  })
+})
 
 describe('SimulationEngine account and position operations', () => {
   it('lets a later quote at the same millisecond trigger a newly set stop', () => {

@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js'
 import type { MarketCandle } from '../market-data/models'
 import type { ReplaySession, ReplayTradingConfig } from '../replay/models'
+import { cTraderCommission, cTraderLeverage, cTraderMargin, cTraderSwap, cTraderTotalMargin, quoteToAccount, sameCTraderTradingTerms, validateCTraderTradingTerms } from './ctrader-trading'
 import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage, normalizeSimulationStatePrices } from './models'
 import type {
   CandleProcessResult,
@@ -90,6 +91,13 @@ export function validateSimulationConfig(
   if (riskRates.greaterThanOrEqualTo(1)) {
     throw new Error('维持保证金率与强平费用率之和必须小于 1')
   }
+  if (config.ctrader !== undefined) {
+    validateCTraderTradingTerms(config.ctrader)
+    if (config.leverage !== cTraderLeverage(config.ctrader) || !riskRates.isZero() ||
+        !new Decimal(config.feeRate).isZero() || new Decimal(config.slippageRate).gte(1)) {
+      throw new Error('IC Markets 回放必须按账户交易规格计算杠杆、佣金和保证金')
+    }
+  }
 }
 
 export function validateAdjustableLeverage(leverage: number): void {
@@ -175,6 +183,9 @@ export class SimulationEngine {
     if (state.sessionId !== session.id) {
       throw new Error('模拟交易状态与回放会话不匹配')
     }
+    if (!sameCTraderTradingTerms(state.config.ctrader, session.tradingConfig.ctrader)) {
+      throw new Error('模拟交易状态与回放会话的 IC Markets 交易规格不匹配')
+    }
     return new SimulationEngine(
       state,
       {
@@ -190,6 +201,7 @@ export class SimulationEngine {
   }
 
   setLeverage(leverage: number): void {
+    if (this.state.config.ctrader) throw new Error('IC Markets 回放杠杆由账户和品种档位决定')
     validateAdjustableLeverage(leverage)
     if (leverage < minimumContractLeverage(this.state)) {
       throw new Error('逐仓有持仓时不能降低杠杆')
@@ -210,14 +222,15 @@ export class SimulationEngine {
       positive(referencePrice, '当前价格'),
       side === 'long' ? 'buy' : 'sell',
     )
-    const { quantity, margin } = this.resolveOrderSize(size, fillPrice)
-    const notional = quantity.mul(fillPrice)
-    const fee = notional.mul(this.state.config.feeRate)
+    const { quantity, margin } = this.resolveOrderSize(side, size, fillPrice)
+    const notional = this.settlement(quantity.mul(fillPrice), fillPrice)
+    const fee = this.commission(quantity, fillPrice)
+    const requiredMargin = this.orderMargin(side, margin)
     const available = decimal(
       this.state.account.availableBalance,
       '可用余额',
     )
-    if (margin.plus(fee).greaterThan(available)) {
+    if (requiredMargin.plus(fee).greaterThan(available)) {
       throw new Error('可用余额不足以支付保证金和手续费')
     }
     const resultingQuantity =
@@ -239,7 +252,7 @@ export class SimulationEngine {
       quantity: text(quantity),
       fillPrice: text(this.roundPrice(fillPrice)),
       notional: text(notional),
-      requiredMargin: text(margin),
+      requiredMargin: text(requiredMargin),
       fee: text(fee),
       estimatedLiquidationPrice: text(
         this.roundPrice(
@@ -262,14 +275,13 @@ export class SimulationEngine {
     const reference = positive(candle.close, '当前 K 线收盘价')
     const tradeSide: TradeSide = side === 'long' ? 'buy' : 'sell'
     const fillPrice = this.marketFillPrice(reference, tradeSide)
-    const { quantity, margin } = this.resolveOrderSize(size, fillPrice)
-    const notional = quantity.mul(fillPrice)
-    const fee = notional.mul(this.state.config.feeRate)
+    const { quantity, margin } = this.resolveOrderSize(side, size, fillPrice)
+    const fee = this.commission(quantity, fillPrice)
     const available = decimal(
       this.state.account.availableBalance,
       '可用余额',
     )
-    if (margin.plus(fee).greaterThan(available)) {
+    if (this.orderMargin(side, margin).plus(fee).greaterThan(available)) {
       throw new Error('可用余额不足以支付保证金和手续费')
     }
 
@@ -283,7 +295,7 @@ export class SimulationEngine {
         quantity: text(quantity),
         entryPrice: text(this.roundPrice(fillPrice)),
         lastPrice: text(this.roundPrice(reference)),
-        notional: text(quantity.mul(reference)),
+        notional: text(this.settlement(quantity.mul(reference), reference)),
         leverage: this.state.config.leverage,
         isolatedMargin: text(margin),
         maintenanceMarginRate:
@@ -297,6 +309,7 @@ export class SimulationEngine {
         riskActiveAfterTime: candle.openTime,
         takeProfitActiveAfterTime: null,
         stopLossActiveAfterTime: null,
+        ...(this.state.config.ctrader?.swap ? { swapCheckedThrough: candle.closeTime, swapPeriods: 0 } : {}),
       }
     } else {
       const oldQuantity = decimal(existing.quantity, '持仓数量')
@@ -340,7 +353,7 @@ export class SimulationEngine {
       price: fillPrice,
       fee,
       liquidationFee: ZERO,
-      slippage: fillPrice.minus(reference).abs().mul(quantity),
+      slippage: this.settlement(fillPrice.minus(reference).abs().mul(quantity), fillPrice),
       realizedPnl: ZERO,
       reason: 'manual',
     })
@@ -357,14 +370,18 @@ export class SimulationEngine {
   ): SimulationTrade {
     const position = this.requirePosition(side)
     const currentQuantity = decimal(position.quantity, '持仓数量')
-    const quantity = this.roundQuantity(
-      positive(quantityValue, '减仓数量'),
-    )
+    const requested = positive(quantityValue, '减仓数量')
+    const quantity = this.roundQuantity(requested)
+    if (this.state.config.ctrader && !requested.eq(quantity)) throw new Error('减仓手数不符合 IC Markets 手数步长')
     if (quantity.lessThanOrEqualTo(0)) throw new Error('按当前精度计算后的减仓数量为 0')
     if (quantity.greaterThan(currentQuantity)) {
       throw new Error('减仓数量不能大于当前持仓数量')
     }
     const isFullClose = quantity.equals(currentQuantity)
+    const terms = this.state.config.ctrader
+    if (terms && !isFullClose && (quantity.lt(terms.minQuantity) || currentQuantity.minus(quantity).lt(terms.minQuantity))) {
+      throw new Error('减仓数量和剩余仓位须满足 IC Markets 最小成交量')
+    }
     const resolvedAction: TradeAction = isFullClose ? 'close' : action
     return this.closeQuantity(
       position,
@@ -401,6 +418,7 @@ export class SimulationEngine {
       ) {
         throw new Error('止盈价格方向不正确')
       }
+      this.requireProtectionDistance('takeProfit', price, currentPrice)
       position.takeProfitPrice = text(price)
       position.takeProfitActiveAfterTime = currentTime
     }
@@ -427,6 +445,7 @@ export class SimulationEngine {
       ) {
         throw new Error('止损价格方向不正确')
       }
+      this.requireProtectionDistance('stopLoss', price, currentPrice)
       position.stopLossPrice = text(price)
       position.stopLossActiveAfterTime = currentTime
     }
@@ -439,9 +458,132 @@ export class SimulationEngine {
     this.recalculate(positive(candle.close, '当前成交价格'), candle.openTime)
   }
 
+  private settlement(value: Decimal, price: Decimal): Decimal {
+    const terms = this.state.config.ctrader
+    return terms ? quoteToAccount(terms, value, price) : value
+  }
+
+  private requireProtectionDistance(kind: 'stopLoss' | 'takeProfit', price: Decimal, reference: Decimal): void {
+    const protection = this.state.config.ctrader?.protection
+    if (!protection) return
+    const specified = new Decimal(protection[kind])
+    const minimum = protection.units === 'points' ? specified.div(10 ** protection.digits) : reference.mul(specified).div(10_000)
+    if (price.minus(reference).abs().lt(minimum)) {
+      throw new Error(`${kind === 'stopLoss' ? '止损' : '止盈'}价格与当前报价的距离小于 IC Markets 要求`)
+    }
+  }
+
+  private commission(quantity: Decimal, price: Decimal): Decimal {
+    const terms = this.state.config.ctrader
+    return terms ? cTraderCommission(terms, quantity, price) : quantity.mul(price).mul(this.state.config.feeRate)
+  }
+
+  private positionPnl(position: SimulationPosition, price: Decimal, quantity: Decimal, realized = false): Decimal {
+    const direction = position.side === 'long' ? 1 : -1
+    const pnl = this.settlement(price.minus(position.entryPrice).mul(quantity).mul(direction), price)
+    const terms = this.state.config.ctrader
+    return terms && realized && terms.quoteCurrency !== terms.accountCurrency
+      ? pnl.minus(pnl.abs().mul(terms.pnlConversionFeeRate)) : pnl
+  }
+
+  private totalMargin(adjustment?: { side: PositionSide; amount: Decimal }): Decimal {
+    const sideMargin = (side: PositionSide) => new Decimal(this.findPosition(side)?.isolatedMargin ?? 0)
+      .plus(adjustment?.side === side ? adjustment.amount : ZERO)
+    const long = sideMargin('long')
+    const short = sideMargin('short')
+    const terms = this.state.config.ctrader
+    return terms ? cTraderTotalMargin(terms, long, short) : long.plus(short)
+  }
+
+  private orderMargin(side: PositionSide, positionMargin: Decimal): Decimal {
+    return this.state.config.ctrader ? Decimal.max(ZERO, this.totalMargin({ side, amount: positionMargin }).minus(this.totalMargin())) : positionMargin
+  }
+
+  private accrueSwap(candle: MarketCandle): void {
+    const terms = this.state.config.ctrader
+    if (!terms?.swap) return
+    const { periodHours, utcMinute, skipPeriods, weekends, tripleDay } = terms.swap
+    const period = periodHours * 3_600_000
+    const offset = utcMinute * 60_000
+    for (const position of this.state.positions) {
+      const last = position.swapCheckedThrough ?? position.openedAt
+      if (last >= candle.closeTime) continue
+      let periods = position.swapPeriods ?? 0
+      const price = new Decimal(position.lastPrice)
+      for (let settlement = (Math.floor((last - offset) / period) + 1) * period + offset;
+        settlement <= candle.closeTime; settlement += period) {
+        const day = (new Date(settlement).getUTCDay() + 6) % 7 + 1
+        if (!weekends && day > 5) continue
+        periods += 1
+        if (periods <= skipPeriods) continue
+        const amount = cTraderSwap(terms, new Decimal(position.quantity), price, position.side, day === tripleDay ? 3 : 1)
+        if (!amount.isZero()) this.applyWalletChange(amount, 'swap', settlement)
+      }
+      position.swapPeriods = periods
+      position.swapCheckedThrough = candle.closeTime
+    }
+  }
+
+  private processStopOut(candle: MarketCandle, riskCheckTime: number): boolean {
+    const terms = this.state.config.ctrader!
+    const eligible = (position: SimulationPosition) => riskCheckTime > position.riskActiveAfterTime
+    let stopped = false
+    for (const sample of new Set([candle.open, candle.low, candle.high])) {
+      const price = positive(sample, '回放报价')
+      while (true) {
+        const margin = this.totalMargin()
+        if (margin.isZero()) break
+        const positions = this.state.positions.map(position => ({ position,
+          pnl: this.positionPnl(position, price, new Decimal(position.quantity)),
+        }))
+        const equity = positions.reduce((value, item) => value.plus(item.pnl), new Decimal(this.state.account.walletBalance))
+        if (equity.gte(margin.mul(terms.stopOutRate))) break
+        const candidate = positions.filter(({ position }) => eligible(position)).sort((left, right) => terms.stopOutOrder === 'loss'
+          ? left.pnl.cmp(right.pnl) : new Decimal(right.position.isolatedMargin).cmp(left.position.isolatedMargin))[0]
+        if (!candidate) break
+        const { position } = candidate
+        const quantity = this.stopOutQuantity(position, price, equity)
+        this.closeQuantity(position, quantity, price, candle.openTime, 'liquidation', 'liquidation', false)
+        stopped = true
+      }
+    }
+    return stopped
+  }
+
+  private stopOutQuantity(position: SimulationPosition, price: Decimal, equity: Decimal): Decimal {
+    const terms = this.state.config.ctrader!
+    const size = new Decimal(position.quantity)
+    if (terms.stopOutMode === 'fair') return size
+    const step = new Decimal(terms.quantityStep)
+    const positionMargin = new Decimal(position.isolatedMargin)
+    let low = new Decimal(terms.minQuantity).div(step).ceil().toNumber()
+    let high = size.minus(terms.minQuantity).div(step).floor().toNumber()
+    if (terms.marginMode === 'net' && positionMargin.gt(0)) {
+      const opposite = this.findPosition(position.side === 'long' ? 'short' : 'long')
+      high = Math.min(high, positionMargin.minus(opposite?.isolatedMargin ?? 0).div(positionMargin).mul(size).div(step).ceil().toNumber())
+    }
+    const restoresMargin = (steps: number) => {
+      const quantity = step.mul(steps)
+      const remaining = this.totalMargin({ side: position.side, amount: positionMargin.mul(quantity).div(size).negated() })
+      const conversionFee = this.positionPnl(position, price, quantity).minus(this.positionPnl(position, price, quantity, true))
+      return equity.minus(this.commission(quantity, price)).minus(conversionFee).gt(remaining.mul(terms.stopOutRate))
+    }
+    if (high < low || !restoresMargin(high)) return size
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2)
+      if (restoresMargin(middle)) high = middle
+      else low = middle + 1
+    }
+    return step.mul(low)
+  }
+
   processCandle(tradeCandle: MarketCandle, sameTimeTick = false): CandleProcessResult {
     let exitAction: TradeAction | null = null
     const riskCheckTime = tradeCandle.openTime + Number(sameTimeTick)
+    if (this.state.config.ctrader) {
+      this.accrueSwap(tradeCandle)
+      if (this.processStopOut(tradeCandle, riskCheckTime)) exitAction = 'liquidation'
+    }
     // Each side is evaluated independently, even if the other side exits on this candle.
     for (const position of [...this.state.positions]) {
       const action = this.processPositionCandle(position, tradeCandle, riskCheckTime)
@@ -456,6 +598,7 @@ export class SimulationEngine {
 
   private processPositionCandle(position: SimulationPosition, tradeCandle: MarketCandle, riskCheckTime: number): TradeAction | null {
     if (
+      !this.state.config.ctrader &&
       riskCheckTime > position.riskActiveAfterTime &&
       this.liquidationTouched(position, tradeCandle)
     ) {
@@ -526,9 +669,47 @@ export class SimulationEngine {
   }
 
   private resolveOrderSize(
+    side: PositionSide,
     size: OrderSizeInput,
     fillPrice: Decimal,
   ): { quantity: Decimal; margin: Decimal } {
+    const terms = this.state.config.ctrader
+    if (terms) {
+      if (terms.tradingMode !== 0 || (side === 'short' && !terms.canShort)) {
+        throw new Error('IC Markets 当前品种规格不允许此方向开仓')
+      }
+      const marginInput = size.margin?.trim()
+      const quantityInput = size.quantity?.trim()
+      const lotsInput = size.lots?.trim()
+      if ([marginInput, quantityInput, lotsInput].filter(Boolean).length !== 1) {
+        throw new Error('保证金金额、数量和手数必须且只能填写一项')
+      }
+      const currentSize = new Decimal(this.findPosition(side)?.quantity ?? 0)
+      const marginFor = (size: Decimal) => cTraderMargin(terms, currentSize.plus(size), fillPrice)
+        .minus(cTraderMargin(terms, currentSize, fillPrice))
+      const step = new Decimal(terms.quantityStep)
+      let quantity: Decimal
+      if (marginInput) {
+        const budget = positive(marginInput, '保证金金额')
+        let low = 0
+        let high = new Decimal(terms.maxQuantity).div(step).floor().toNumber()
+        while (low < high) {
+          const middle = low + Math.ceil((high - low) / 2)
+          if (marginFor(step.mul(middle)).lte(budget)) low = middle
+          else high = middle - 1
+        }
+        quantity = step.mul(low)
+      } else {
+        quantity = lotsInput ? positive(lotsInput, '下单手数').mul(terms.lotSize) : positive(quantityInput!, '下单数量')
+        if (!quantity.mod(step).isZero()) throw new Error(`下单手数必须符合 ${step.div(terms.lotSize).toString()} 手的步长`)
+      }
+      if (quantity.lt(terms.minQuantity) || quantity.gt(terms.maxQuantity)) {
+        const min = new Decimal(terms.minQuantity).div(terms.lotSize)
+        const max = new Decimal(terms.maxQuantity).div(terms.lotSize)
+        throw new Error(`IC Markets 单笔下单范围为 ${min.toString()}–${max.toString()} 手`)
+      }
+      return { quantity, margin: marginFor(quantity) }
+    }
     const hasMargin = size.margin !== undefined && size.margin.trim() !== ''
     const hasQuantity =
       size.quantity !== undefined && size.quantity.trim() !== ''
@@ -576,12 +757,8 @@ export class SimulationEngine {
       : reference
     const oldQuantity = decimal(position.quantity, '持仓数量')
     const entry = decimal(position.entryPrice, '开仓均价')
-    const realized =
-      position.side === 'long'
-        ? fillPrice.minus(entry).mul(quantity)
-        : entry.minus(fillPrice).mul(quantity)
-    const notional = fillPrice.mul(quantity)
-    const fee = notional.mul(this.state.config.feeRate)
+    const realized = this.positionPnl(position, fillPrice, quantity, true)
+    const fee = this.commission(quantity, fillPrice)
     const releasedMargin = decimal(
       position.isolatedMargin,
       '逐仓保证金',
@@ -600,7 +777,7 @@ export class SimulationEngine {
       price: fillPrice,
       fee,
       liquidationFee: ZERO,
-      slippage: fillPrice.minus(reference).abs().mul(quantity),
+      slippage: this.settlement(fillPrice.minus(reference).abs().mul(quantity), fillPrice),
       realizedPnl: realized,
       reason,
     })
@@ -629,6 +806,7 @@ export class SimulationEngine {
           ),
         ),
       )
+      if (action === 'liquidation') this.state.stats.liquidations += 1
     }
     this.state.account.realizedPnl = text(
       decimal(this.state.account.realizedPnl, '累计已实现盈亏').plus(
@@ -648,6 +826,10 @@ export class SimulationEngine {
     reason: TradeReason,
   ): void {
     const quantity = decimal(position.quantity, '持仓数量')
+    if (this.state.config.ctrader) {
+      this.closeQuantity(position, quantity, exitPrice, timestamp, action, reason, false)
+      return
+    }
     const entry = decimal(position.entryPrice, '开仓均价')
     const realized =
       position.side === 'long'
@@ -725,7 +907,7 @@ export class SimulationEngine {
       action: input.action,
       quantity: text(input.quantity),
       price: text(this.roundPrice(input.price)),
-      notional: text(input.quantity.mul(input.price)),
+      notional: text(this.settlement(input.quantity.mul(input.price), input.price)),
       fee: text(input.fee),
       liquidationFee: text(input.liquidationFee),
       slippage: text(input.slippage),
@@ -793,22 +975,17 @@ export class SimulationEngine {
     timestamp: number,
   ): void {
     let unrealized = ZERO
-    let usedMargin = ZERO
     for (const position of this.state.positions) {
       const quantity = decimal(position.quantity, '持仓数量')
-      const entry = decimal(position.entryPrice, '开仓均价')
-      const positionPnl =
-        position.side === 'long'
-          ? lastPrice.minus(entry).mul(quantity)
-          : entry.minus(lastPrice).mul(quantity)
+      const positionPnl = this.positionPnl(position, lastPrice, quantity)
       unrealized = unrealized.plus(positionPnl)
-      usedMargin = usedMargin.plus(decimal(position.isolatedMargin, '逐仓保证金'))
       position.lastPrice = text(this.roundPrice(lastPrice))
-      position.notional = text(quantity.mul(lastPrice))
+      position.notional = text(this.settlement(quantity.mul(lastPrice), lastPrice))
       position.unrealizedPnl = text(positionPnl)
       position.updatedAt = timestamp
     }
     const wallet = decimal(this.state.account.walletBalance, '钱包余额')
+    const usedMargin = this.totalMargin()
     const initial = decimal(
       this.state.account.initialBalance,
       '初始资金',
@@ -816,7 +993,7 @@ export class SimulationEngine {
     this.state.account.unrealizedPnl = text(unrealized)
     this.state.account.usedMargin = text(usedMargin)
     this.state.account.equity = text(wallet.plus(unrealized))
-    this.state.account.availableBalance = text(wallet.minus(usedMargin))
+    this.state.account.availableBalance = text(wallet.plus(this.state.config.ctrader ? unrealized : ZERO).minus(usedMargin))
     const totalReturn = wallet.plus(unrealized).minus(initial)
     this.state.stats.totalReturn = text(totalReturn)
     this.state.stats.totalReturnRate = text(totalReturn.div(initial))
@@ -875,6 +1052,7 @@ export class SimulationEngine {
     entryPrice: Decimal,
     isolatedMargin: Decimal,
   ): Decimal {
+    if (this.state.config.ctrader) return ZERO
     const maintenance = decimal(
       this.state.config.maintenanceMarginRate,
       '维持保证金率',
@@ -939,6 +1117,8 @@ export class SimulationEngine {
   }
 
   private roundQuantity(value: Decimal): Decimal {
+    const terms = this.state.config.ctrader
+    if (terms) return value.div(terms.quantityStep).floor().mul(terms.quantityStep)
     return value.toDecimalPlaces(
       this.quantityPrecision,
       Decimal.ROUND_DOWN,

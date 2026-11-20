@@ -1,6 +1,7 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 import { alignOpenTime, klineCloseBoundary, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
 import type { CTraderReplayStepPeriod } from './step-periods'
+import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
 
 export type ReplaySpeed = 1 | 2 | 5 | 10
 export type ReplayStatus = 'paused' | 'completed'
@@ -12,6 +13,7 @@ export interface ReplayTradingConfig {
   slippageRate: string
   maintenanceMarginRate: string
   liquidationFeeRate: string
+  ctrader?: CTraderTradingTerms
 }
 
 export const DEFAULT_TRADING_CONFIG: ReplayTradingConfig = Object.freeze({
@@ -57,6 +59,8 @@ export interface CreateReplaySessionInput {
   endTime?: number
   speed?: ReplaySpeed
   tradingConfig?: ReplayTradingConfig
+  initialBalance?: string
+  slippageRate?: string
 }
 
 export interface ReplayContext {

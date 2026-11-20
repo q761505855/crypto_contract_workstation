@@ -62,7 +62,12 @@ async function connectFixture(page: Page, multipleAccounts = false, {
         case 2114: response(2115, { ...accountPayload, symbol: symbols }); break
         case 2116: response(2117, { ...accountPayload, symbol: (payload.symbolId as number[]).map(symbolId => ({
           symbolId, digits: symbolId === 10 ? 5 : 2, scheduleTimeZone: 'UTC', schedule: [{ startSecond: 0, endSecond: 604800 }],
+          lotSize: 10000000, minVolume: 100000, stepVolume: 100000, maxVolume: 1000000000,
+          leverageId: 123, commissionType: 1, preciseTradingCommissionRate: 3000000000,
         })) }); break
+        case 2121: response(2122, { trader: { ...accountPayload, depositAssetId: 2, leverageInCents: 50000,
+          totalMarginCalculationType: 0, accountType: 0 } }); break
+        case 2177: response(2178, { ...accountPayload, leverage: { leverageId: 123, tiers: [{ volume: 100000000, leverage: 20000 }] } }); break
         case 2137: {
           const width = [0, 1, 2, 3, 4, 5, 10, 15, 30, 60][Number(payload.period)] ?? 1
           const start = Math.ceil(Number(payload.fromTimestamp) / (minute * width)) * width
@@ -441,6 +446,10 @@ test('replays native minute steps, reveals completed chart bars, and restores a 
   await expect(controls.locator('.replay-start-time')).toContainText((await localInput(jumpAt)).replace('T', ' '))
   await controls.getByRole('button', { name: '回放设置', exact: true }).click()
   const setup = page.getByRole('dialog', { name: '回放会话设置' })
+  await setup.getByText('IC Markets 交易规格', { exact: true }).click()
+  await expect(setup.getByText('30 USD / 百万美元成交额', { exact: true })).toBeVisible()
+  await expect(setup.getByText('200×（按名义金额分档）', { exact: true })).toBeVisible()
+  await expect(setup.getByLabel('手续费率', { exact: true })).toHaveCount(0)
   await setup.getByLabel('回放结束时间').fill(await localInput(jumpAt + 8 * minute))
   await setup.getByRole('button', { name: '开始历史回放', exact: true }).click()
 
@@ -460,9 +469,14 @@ test('replays native minute steps, reveals completed chart bars, and restores a 
   expect(await lastCandle()).toBe(jumpAt)
 
   const trade = page.getByRole('complementary', { name: '模拟下单面板' })
+  await expect(trade.getByRole('spinbutton', { name: '手数', exact: true })).toHaveValue('0.01')
+  await trade.getByRole('button', { name: '计算预估', exact: true }).click()
+  await expect(trade.getByText('0.033015', { exact: true })).toBeVisible()
   await trade.getByRole('button', { name: '开多', exact: true }).click()
   const position = page.getByTestId('position-long')
   await expect(position).toBeVisible()
+  expect(messages.filter(message => message.type === 2121)).toHaveLength(1)
+  expect(messages.filter(message => message.type === 2177)).toHaveLength(1)
   await next.click()
   await expect(controls).toContainText('第 3 步')
   await expect.poll(lastCandle).toBe(jumpAt + 2 * minute)

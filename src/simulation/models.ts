@@ -47,6 +47,8 @@ export interface SimulationPosition {
   riskActiveAfterTime: number
   takeProfitActiveAfterTime: number | null
   stopLossActiveAfterTime: number | null
+  swapCheckedThrough?: number
+  swapPeriods?: number
 }
 
 export interface SimulationTrade {
@@ -72,6 +74,7 @@ export type LedgerEntryType =
   | 'trading_fee'
   | 'realized_pnl'
   | 'liquidation_fee'
+  | 'swap'
 
 export interface SimulationLedgerEntry {
   entryId: string
@@ -148,6 +151,7 @@ export function normalizeSimulationStatePrices(state: StoredSimulationState): Si
 export interface OrderSizeInput {
   margin?: string
   quantity?: string
+  lots?: string
 }
 
 export const MAX_ADJUSTABLE_LEVERAGE = 125

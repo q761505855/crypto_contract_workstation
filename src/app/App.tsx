@@ -217,7 +217,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           stopLossPrice: position.stopLossPrice === null ? null : Number(position.stopLossPrice),
           liquidationPrice: Number(position.liquidationPrice),
           unrealizedPnl: position.unrealizedPnl,
-          estimateRiskPnl: (price: number) => estimateRiskPnl(position, new Decimal(priceText(price)), feeRate).toNumber(),
+          estimateRiskPnl: (price: number) => estimateRiskPnl(position, new Decimal(priceText(price)), feeRate, state.config.ctrader).toNumber(),
           previewEntryRisk,
           onTakeProfitPriceDrag,
           onStopLossPriceDrag,
@@ -425,7 +425,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   }, [])
 
   const chartHeight = mobile ? layout.mobileChartHeight : layout.chartHeight
-  const simulationCurrency = replay.session?.symbol.priceCurrency ?? ''
+  const simulationCurrency = replay.session?.tradingConfig.ctrader?.accountCurrency ?? replay.session?.symbol.priceCurrency ?? ''
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
   return (
     <main ref={shellRef} className="app-shell workspace-shell">
@@ -479,6 +479,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
               {mode === 'history' ? <ReplayControls
                 chartStartTime={chartReplayStartTime}
                 interactionLocked={simulation.busy}
+                market={marketRuntime.service}
                 onJumpToTime={timestamp => jumpChartToTime(timestamp, replay.session === null)}
                 onLocateLatest={locateLatestChartTime}
                 replay={replay}

@@ -178,6 +178,19 @@ it('validates native periods, cTrader settings and the archived cursor without r
   expect((await target.exportPreferences()).data.preferences?.favoriteSymbols).toEqual(['EURUSD'])
 })
 
+it('rejects explicit invalid IC Markets specifications before modifying preferences or sessions', async () => {
+  const target = new WorkstationBackupService(`invalid-ic-markets-${crypto.randomUUID()}`, new MemoryPreferences())
+  const archive = await target.exportAll()
+  const native = { ...session(), symbol: { exchange: 'CTRADER', ticker: 'EURUSD' },
+    marketSource: 'ctrader', cursorTimeframe: '1m', visibleUntil: 60_000 }
+  const invalid = { ...archive, data: { ...archive.data,
+    preferences: { ...archive.data.preferences!, favoriteSymbols: ['XAUUSD'] },
+    sessions: [{ ...native, tradingConfig: { ...native.tradingConfig, ctrader: null } }],
+  } }
+  await expect(target.import(invalid)).rejects.toThrow('IC Markets 回放交易规格无效')
+  expect((await target.exportAll()).data).toEqual(archive.data)
+})
+
 it('round-trips fine replay settings and Tick cursors while validating them before import', async () => {
   const target = new WorkstationBackupService(`ctrader-ticks-${crypto.randomUUID()}`, new MemoryPreferences())
   const archive = await target.exportAll()

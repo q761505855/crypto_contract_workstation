@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isCTraderTimeframe } from '../market-data/intervals'
-import { validateAdjustableLeverage, validateSimulationConfig } from '../simulation/simulation-engine'
+import type { CTraderMarketService } from '../market-data/ctrader-market'
+import { cTraderLeverage } from '../simulation/ctrader-trading'
+import { validateSimulationConfig } from '../simulation/simulation-engine'
 import type { ReplaySessionStore } from '../storage/replay-session-store'
 import { CTraderReplayBars, loadClosedReplayBars, type CTraderReplayMarket } from './ctrader-replay-bars'
 import { CTraderReplayTicks, type ReplayPriceCandle } from './ctrader-replay-ticks'
@@ -9,7 +11,7 @@ import { isCTraderReplayStepPeriod, isFineStepPeriod, type CTraderReplayStepPeri
 import type { ReplayCandleEvent, ReplayCandleListener, ReplayController } from './useReplayController'
 
 interface CTraderReplayRuntime {
-  service: CTraderReplayMarket
+  service: CTraderReplayMarket & Pick<CTraderMarketService, 'getReplayTradingTerms'>
   replaySessions: Omit<ReplaySessionStore, 'getLatestActive'>
 }
 
@@ -185,12 +187,17 @@ export function useCTraderReplayController(
       if (!Number.isSafeInteger(input.startTime) || !Number.isSafeInteger(endTime) || input.startTime >= endTime) {
         throw new Error('回放结束时间必须晚于图表起点')
       }
-      const tradingConfig = input.tradingConfig ?? DEFAULT_TRADING_CONFIG
-      validateAdjustableLeverage(tradingConfig.leverage)
-      validateSimulationConfig(tradingConfig)
       setIsPlaying(false)
       const candle = await history.find(input.symbol.ticker, input.period.text, input.startTime, endTime, 1, signal)
       if (candle === undefined) throw new Error('所选区间没有可用于回放的 cTrader K 线')
+      const ctrader = await service.getReplayTradingTerms(input.symbol.ticker, candle.openTime, signal)
+      const tradingConfig = {
+        initialBalance: input.initialBalance ?? DEFAULT_TRADING_CONFIG.initialBalance,
+        leverage: cTraderLeverage(ctrader), feeRate: '0', slippageRate: input.slippageRate ?? '0',
+        maintenanceMarginRate: '0', liquidationFeeRate: '0', ctrader,
+      }
+      validateSimulationConfig(tradingConfig)
+      signal.throwIfAborted()
       const now = Date.now()
       const next: ReplaySession = {
         schemaVersion: 2,
@@ -215,8 +222,8 @@ export function useCTraderReplayController(
       }
       await activate({ session: next, candle, initial: candle }, signal, true)
     },
-    '正在准备 cTrader 回放 K 线…',
-  ), [activate, history, run])
+    '正在准备回放行情和 IC Markets 交易规格…',
+  ), [activate, history, run, service])
 
   const loadSession = useCallback((id: string) => run('加载回放会话失败', async signal => {
     setIsPlaying(false)

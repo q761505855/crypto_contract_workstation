@@ -267,9 +267,23 @@ describe('GitHubSyncService', () => {
       period: { multiplier: 1, timespan: 'minute', text: '1m' }, startTime: 0, endTime: 59_999,
     }, [{ ...candle(0), symbol: 'EURUSD' }]).snapshot(),
     endTime: 120_000, marketSource: 'ctrader', cursorTimeframe: 'tick', cursorTickIndex: 0,
-    currentTime: 60_123, visibleUntil: 60_124, candleCount: 2, currentIndex: 1, status: 'paused' } as const
+    currentTime: 60_123, visibleUntil: 60_124, candleCount: 2, currentIndex: 1, status: 'paused', hasTrades: true,
+    tradingConfig: {
+      initialBalance: '10000', leverage: 100, feeRate: '0', slippageRate: '0', maintenanceMarginRate: '0', liquidationFeeRate: '0',
+      ctrader: {
+        accountCurrency: 'USD', quoteCurrency: 'USD', quoteToUsd: '1', usdToAccount: '1',
+        lotSize: '100000', minQuantity: '1000', quantityStep: '1000', maxQuantity: '10000000',
+        accountLeverage: 100, leverageTiers: [] as { upToUsd: string; leverage: number }[], marginMode: 'max',
+        stopOutRate: '0.5', stopOutMode: 'smart', stopOutOrder: 'margin', canShort: true, tradingMode: 0,
+        pnlConversionFeeRate: '0', commission: { type: 1, rate: '30', minimumUsd: '0', minimumQuote: '0' },
+        swap: { type: 'pips', long: '-0.79', short: '0.12', pipPosition: 4, periodHours: 24,
+          utcMinute: 1320, tripleDay: 3, skipPeriods: 0, weekends: false, moneyDigits: 2 },
+      },
+    } } as const
     value.data.sessions = [nativeSession]
-    value.data.simulations = [SimulationEngine.create(nativeSession).snapshot()]
+    const engine = SimulationEngine.create(nativeSession)
+    engine.open('long', { lots: '0.01' }, { ...candle(0), symbol: 'EURUSD', close: '1.10', source: 'ctrader' })
+    value.data.simulations = [engine.snapshot()]
     const backups = new MemoryBackupService(value)
     const sync = new GitHubSyncService(backups as unknown as WorkstationBackupService, Date.now, { scope: 'ctrader' })
     const wrongTarget = new MemoryGitHubClient('projects/crypto-contract-workstation')
@@ -299,6 +313,8 @@ describe('GitHubSyncService', () => {
     const beforeInvalidPull = (await target.exportAll()).data
     expect(beforeInvalidPull.preferences).toEqual(value.data.preferences)
     expect(beforeInvalidPull.sessions).toEqual([nativeSession])
+    expect(beforeInvalidPull.simulations).toEqual(value.data.simulations)
+    expect((await target.exportSession(nativeSession.id)).data).toEqual({ sessions: [nativeSession], simulations: value.data.simulations })
     const path = `sessions/${nativeSession.id}.json`
     const invalid = encoder.encode(JSON.stringify({ ...nativeSession, visibleUntil: nativeSession.visibleUntil - 1 }))
     remote.files.get(path)!.bytes = invalid

@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js'
+import { cTraderCommission, quoteToAccount, type CTraderTradingTerms } from './ctrader-trading'
 import type { PositionSide, SimulationPosition } from './models'
 
 export type RiskPriceTarget = 'take-profit' | 'stop-loss'
@@ -24,8 +25,14 @@ export function riskPricePercent(price: Decimal, position: SimulationPosition, t
   return price.div(position.entryPrice).minus(1).mul(100 * riskDirection(position.side, target)).toString()
 }
 
-export function estimateRiskPnl(position: SimulationPosition, price: Decimal, feeRate: string): Decimal {
+export function estimateRiskPnl(position: SimulationPosition, price: Decimal, feeRate: string, terms?: CTraderTradingTerms): Decimal {
   const direction = position.side === 'long' ? 1 : -1
+  if (terms) {
+    const quantity = new Decimal(position.quantity)
+    const pnl = quoteToAccount(terms, price.minus(position.entryPrice).mul(direction).mul(quantity), price)
+    const conversionFee = terms.quoteCurrency === terms.accountCurrency ? new Decimal(0) : pnl.abs().mul(terms.pnlConversionFeeRate)
+    return pnl.minus(conversionFee).minus(cTraderCommission(terms, quantity, price))
+  }
   return price.minus(position.entryPrice).mul(direction).minus(price.mul(feeRate)).mul(position.quantity)
 }
 

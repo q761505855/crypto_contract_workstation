@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Decimal from 'decimal.js'
+import type { CTraderMarketService } from '../market-data/ctrader-market'
 import type { MarketSelection } from '../market-data/models'
 import { CTRADER_TIMEFRAMES } from '../market-data/intervals'
 import type {
@@ -9,12 +11,13 @@ import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil } from '../replay/models'
 import type { ReplayController } from '../replay/useReplayController'
 import { validateReplayStepPeriod } from '../replay/step-preferences'
 import { FINE_STEP_PERIODS, isCTraderReplayStepPeriod, isFineStepPeriod, type ReplayStepPeriod } from '../replay/step-periods'
-import { MAX_ADJUSTABLE_LEVERAGE } from '../simulation/models'
+import { cTraderLeverage, type CTraderTradingTerms } from '../simulation/ctrader-trading'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
 import { formatDisplayTime, formatInputWeekday } from '../format-display-time'
 
 interface ReplayControlsProps {
+  market: Pick<CTraderMarketService, 'getReplayTradingTerms'>
   selection: MarketSelection
   replay: ReplayController<ReplayStepPeriod>
   stepPeriod: ReplayStepPeriod
@@ -30,7 +33,7 @@ interface ReplayControlsProps {
 function sessionName(session: ReplaySession): string {
   return `${session.symbol.ticker} ${session.period.text} · ${formatDisplayTime(
     session.startTime,
-  )}${session.marketSource === 'ctrader' ? '' : ' · 币安存档'}`
+  )}${session.marketSource !== 'ctrader' ? ' · 币安存档' : session.tradingConfig.ctrader ? '' : ' · 旧模拟规则'}`
 }
 
 const HOLD_TO_PLAY_MS = 450
@@ -94,6 +97,7 @@ function NextCandleButton({ replay, disabled, label }: { replay: ReplayControlle
 }
 
 export function ReplayControls({
+  market,
   selection,
   replay,
   stepPeriod,
@@ -112,21 +116,23 @@ export function ReplayControls({
   const [initialBalance, setInitialBalance] = useState(
     DEFAULT_TRADING_CONFIG.initialBalance,
   )
-  const [leverage, setLeverage] = useState(
-    String(DEFAULT_TRADING_CONFIG.leverage),
-  )
-  const [feeRate, setFeeRate] = useState(
-    DEFAULT_TRADING_CONFIG.feeRate,
-  )
-  const [slippageRate, setSlippageRate] = useState(
-    DEFAULT_TRADING_CONFIG.slippageRate,
-  )
-  const [maintenanceMarginRate, setMaintenanceMarginRate] = useState(
-    DEFAULT_TRADING_CONFIG.maintenanceMarginRate,
-  )
-  const [liquidationFeeRate, setLiquidationFeeRate] = useState(
-    DEFAULT_TRADING_CONFIG.liquidationFeeRate,
-  )
+  const [slippageRate, setSlippageRate] = useState('0')
+  const [terms, setTerms] = useState<CTraderTradingTerms | null>(null)
+  const [termsError, setTermsError] = useState('')
+  const ticker = selection.symbol.ticker
+
+  useEffect(() => {
+    if (!settingsOpen || chartStartTime === null) return
+    const request = new AbortController()
+    setTerms(null)
+    setTermsError('')
+    void market.getReplayTradingTerms(ticker, chartStartTime, request.signal).then(result => {
+      if (!request.signal.aborted) setTerms(result)
+    }, (error: unknown) => {
+      if (!request.signal.aborted) setTermsError(error instanceof Error ? error.message : '无法读取交易规格')
+    })
+    return () => request.abort()
+  }, [settingsOpen, ticker, chartStartTime, market])
 
   const selectedSession = replay.sessions.find((session) => session.id === selectedSessionId) ?? replay.sessions[0]
 
@@ -139,7 +145,7 @@ export function ReplayControls({
     void replay.createSession({
       symbol: selection.symbol, period: selection.period, startTime: chartStartTime,
       ...(toText.length === 0 ? {} : { endTime: new Date(toText).getTime() }),
-      tradingConfig: { initialBalance, leverage: Number(leverage), feeRate, slippageRate, maintenanceMarginRate, liquidationFeeRate },
+      initialBalance, slippageRate,
     })
     setSettingsOpen(false)
   }
@@ -171,7 +177,7 @@ export function ReplayControls({
           />
         </label>
         <label className="panel-field">
-          初始资金
+          初始资金{terms ? '（' + terms.accountCurrency + '）' : ''}
           <input
             aria-label="初始资金"
             min="0"
@@ -181,69 +187,26 @@ export function ReplayControls({
             value={initialBalance}
           />
         </label>
-        <label className="panel-field">
-          初始杠杆
-          <input
-            aria-label="初始杠杆"
-            min="1"
-            max={MAX_ADJUSTABLE_LEVERAGE}
-            onChange={(event) => setLeverage(event.target.value)}
-            step="1"
-            type="number"
-            value={leverage}
-          />
-        </label>
         <details className="replay-advanced">
-          <summary>交易参数</summary>
+          <summary>IC Markets 交易规格</summary>
           <div>
+            {terms ? <dl className="detail-list">
+              <div><dt>账户杠杆上限</dt><dd>{terms.accountLeverage}×</dd></div>
+              <div><dt>品种起始杠杆</dt><dd>{cTraderLeverage(terms)}×（按名义金额分档）</dd></div>
+              <div><dt>每手合约单位</dt><dd>{terms.lotSize}</dd></div>
+              <div><dt>最小手数 / 手数步长</dt><dd>{new Decimal(terms.minQuantity).div(terms.lotSize).toString()} / {new Decimal(terms.quantityStep).div(terms.lotSize).toString()}</dd></div>
+              <div><dt>佣金</dt><dd>{terms.commission.type === 3
+                ? new Decimal(terms.commission.rate).mul(100).toString() + '% 名义金额'
+                : terms.commission.rate + (terms.commission.type === 1 ? ' USD / 百万美元成交额' : ' ' + (terms.commission.type === 2 ? 'USD' : terms.quoteCurrency) + ' / 手')}</dd></div>
+              <div><dt>账户强平线</dt><dd>{new Decimal(terms.stopOutRate).mul(100).toString()}% 保证金水平</dd></div>
+              {terms.swap && <div><dt>隔夜调整</dt><dd>多 {terms.swap.long} / 空 {terms.swap.short}（会话规格）</dd></div>}
+            </dl> : <p className="muted-text">{termsError || (chartStartTime === null ? '请先在图表上选定回放起点。' : '正在读取账户和品种规格…')}</p>}
             <label className="panel-field">
-              手续费率
-              <input
-                aria-label="手续费率"
-                min="0"
-                onChange={(event) => setFeeRate(event.target.value)}
-                step="0.0001"
-                type="number"
-                value={feeRate}
-              />
+              额外模拟滑点率
+              <input aria-label="额外模拟滑点率" min="0" max="0.9999" onChange={(event) => setSlippageRate(event.target.value)}
+                step="0.0001" type="number" value={slippageRate} />
             </label>
-            <label className="panel-field">
-              滑点率
-              <input
-                aria-label="滑点率"
-                min="0"
-                onChange={(event) => setSlippageRate(event.target.value)}
-                step="0.0001"
-                type="number"
-                value={slippageRate}
-              />
-            </label>
-            <label className="panel-field">
-              维持保证金率
-              <input
-                aria-label="维持保证金率"
-                min="0"
-                onChange={(event) =>
-                  setMaintenanceMarginRate(event.target.value)
-                }
-                step="0.0001"
-                type="number"
-                value={maintenanceMarginRate}
-              />
-            </label>
-            <label className="panel-field">
-              强平费用率
-              <input
-                aria-label="强平费用率"
-                min="0"
-                onChange={(event) =>
-                  setLiquidationFeeRate(event.target.value)
-                }
-                step="0.0001"
-                type="number"
-                value={liquidationFeeRate}
-              />
-            </label>
+            <p className="muted-text">创建时保存当前券商规格。成交基于历史买价，额外滑点默认 0。</p>
           </div>
         </details>
         {selectedSession && (

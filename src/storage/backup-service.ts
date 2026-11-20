@@ -38,6 +38,7 @@ import { replaySourceTimeframe, type ReplaySession } from '../replay/models'
 import { REPLAY_STEP_PERIOD_KEY, readReplayStepPeriod, validateReplayStepPeriod } from '../replay/step-preferences'
 import { isCTraderReplayStepPeriod, isFineStepPeriod, SECOND_STEP_MS, type ReplayStepPeriod } from '../replay/step-periods'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
+import { sameCTraderTradingTerms, validateCTraderTradingTerms } from '../simulation/ctrader-trading'
 import type {
   SimulationLedgerEntry,
   SimulationState,
@@ -401,6 +402,11 @@ function validateSession(value: unknown, index: number): ReplaySession {
     item.tradingConfig,
     `${field}.tradingConfig`,
   )
+  const ctrader = tradingConfig.ctrader
+  if (ctrader !== undefined) {
+    if (marketSource !== 'ctrader') throw new Error(`${field}.tradingConfig.ctrader 要求 cTrader 会话`)
+    validateCTraderTradingTerms(ctrader)
+  }
   const config = {
     initialBalance: decimalValue(
       tradingConfig.initialBalance,
@@ -431,6 +437,7 @@ function validateSession(value: unknown, index: number): ReplaySession {
       `${field}.tradingConfig.liquidationFeeRate`,
       false,
     ),
+    ...(ctrader === undefined ? {} : { ctrader }),
   }
   validateSimulationConfig(config)
   if (
@@ -553,6 +560,7 @@ function validateLedger(
       'trading_fee',
       'realized_pnl',
       'liquidation_fee',
+      'swap',
     ].includes(String(item.type))
   ) {
     throw new Error(`${field}.type 无效`)
@@ -579,6 +587,8 @@ function validateSimulation(
     decimalValue(account[name], `${field}.account.${name}`),
   )
   const config = record(item.config, `${field}.config`)
+  const ctrader = config.ctrader
+  if (ctrader !== undefined) validateCTraderTradingTerms(ctrader)
   validateSimulationConfig({
     initialBalance: decimalValue(
       config.initialBalance,
@@ -606,6 +616,7 @@ function validateSimulation(
       `${field}.config.liquidationFeeRate`,
       false,
     ),
+    ...(ctrader === undefined ? {} : { ctrader }),
   })
   const trades = arrayValue(item.trades, `${field}.trades`).map(
     (trade, tradeIndex) =>
@@ -700,6 +711,11 @@ function validateSimulation(
       'riskActiveAfterTime',
     ]) {
       nonNegativeInteger(position[name], `${positionField}.${name}`)
+    }
+    if (ctrader?.swap) {
+      nonNegativeInteger(position.swapPeriods, `${positionField}.swapPeriods`)
+      const checked = nonNegativeInteger(position.swapCheckedThrough, `${positionField}.swapCheckedThrough`)
+      if (checked < Number(position.openedAt)) throw new Error(`${positionField}.swapCheckedThrough 早于开仓时间`)
     }
     for (const name of [
       'takeProfitActiveAfterTime',
@@ -819,12 +835,16 @@ export function validateBackupEnvelope(value: unknown, currentIndicators?: Chart
       throw new Error(`${kind} 备份缺少 ${field}`)
     }
   }
-  const sessionIds = new Set((data.sessions ?? []).map((item) => item.id))
+  const sessions = new Map((data.sessions ?? []).map((item) => [item.id, item]))
   for (const simulation of data.simulations ?? []) {
-    if (!sessionIds.has(simulation.sessionId)) {
+    const session = sessions.get(simulation.sessionId)
+    if (session === undefined) {
       throw new Error(
         `模拟状态 ${simulation.sessionId} 缺少对应回放会话`,
       )
+    }
+    if (!sameCTraderTradingTerms(session.tradingConfig.ctrader, simulation.config.ctrader)) {
+      throw new Error(`模拟状态 ${simulation.sessionId} 与会话的 IC Markets 交易规格不匹配`)
     }
   }
   return {

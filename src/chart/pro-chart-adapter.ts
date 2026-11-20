@@ -780,7 +780,9 @@ export class ProChartAdapter implements ChartAdapterPort {
             preview: value => riskText(target, value),
           })
         }
-        line({ id: `${id}-liquidation`, side: 'left', price: position.liquidationPrice, name: `${name}预估强平价`, color: '#f5a65b' })
+        if (position.liquidationPrice > 0) {
+          line({ id: `${id}-liquidation`, side: 'left', price: position.liquidationPrice, name: `${name}预估强平价`, color: '#f5a65b' })
+        }
       }
       overlays.push({
         id: 'simulation-replay-time',
