@@ -1,3 +1,4 @@
+import { ctraderStorage } from '../storage/ctrader-storage'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { Datafeed, SymbolInfo } from '@klinecharts/pro'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -35,7 +36,7 @@ afterEach(() => localStorage.clear())
 
 describe('SymbolPicker', () => {
   it('opens on favorites and supports quick star toggles in both tabs', async () => {
-    localStorage.setItem(
+    ctraderStorage.setItem(
       FAVORITE_SYMBOLS_STORAGE_KEY,
       JSON.stringify(['BTCUSDT']),
     )
@@ -71,7 +72,7 @@ describe('SymbolPicker', () => {
     ).toHaveAttribute('aria-pressed', 'true')
     expect(
       JSON.parse(
-        localStorage.getItem(FAVORITE_SYMBOLS_STORAGE_KEY) ?? '[]',
+        ctraderStorage.getItem(FAVORITE_SYMBOLS_STORAGE_KEY) ?? '[]',
       ),
     ).toEqual(['BTCUSDT', 'ETHUSDT'])
 

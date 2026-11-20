@@ -21,6 +21,7 @@ function ConnectedChart({ connection, period, onSelection }: {
 }) {
   const snapshot = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const [liveStatus, setLiveStatus] = useState(INITIAL_LIVE_STATUS)
+  const [liveReloadKey, setLiveReloadKey] = useState(0)
   const [warning, setWarning] = useState('')
   const [sizeStatus, setSizeStatus] = useState('')
   const [showTradeOverlays, setShowTradeOverlays] = useState(true)
@@ -38,9 +39,11 @@ function ConnectedChart({ connection, period, onSelection }: {
 
   useEffect(() => {
     connection.liveDatafeed.setLiveStatusListener(setLiveStatus)
+    connection.liveDatafeed.setReconnectListener(() => setLiveReloadKey(current => current + 1))
     connection.datafeed.setWarningListener(setWarning)
     return () => {
       connection.liveDatafeed.setLiveStatusListener()
+      connection.liveDatafeed.setReconnectListener()
       connection.datafeed.setWarningListener()
     }
   }, [connection])
@@ -76,6 +79,7 @@ function ConnectedChart({ connection, period, onSelection }: {
         datafeed={connection.datafeed}
         symbol={snapshot.symbol}
         period={period}
+        reloadKey={liveReloadKey}
         simulationOverlays={snapshot.simulationOverlays}
         showTradeOverlays={showTradeOverlays}
         drawingStore={drawingStore}

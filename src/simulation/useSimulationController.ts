@@ -37,7 +37,7 @@ export interface SimulationController {
 }
 
 export function useSimulationController(
-  runtime: MarketDataRuntime,
+  runtime: Pick<MarketDataRuntime, 'simulationStates'>,
   replay: ReplayController,
 ): SimulationController {
   const engineRef = useRef<SimulationEngine | null>(null)
@@ -128,7 +128,7 @@ export function useSimulationController(
       const engine = engineRef.current
       if (engine === null) return
       try {
-        engine.processCandle(event.candle)
+      engine.processCandle(event.candle, event.sameTimeTick)
       } catch (reason) {
         await publish(engine)
         throw reason

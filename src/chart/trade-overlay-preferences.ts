@@ -1,4 +1,5 @@
 import { writePreference } from '../storage/preference-events'
+import { ctraderStorage } from '../storage/ctrader-storage'
 
 export const SHOW_TRADE_OVERLAYS_KEY = 'chart.showTradeOverlays.v1'
 
@@ -7,7 +8,7 @@ export function validateShowTradeOverlays(value: unknown): boolean {
   return value
 }
 
-export function readShowTradeOverlays(storage: Pick<Storage, 'getItem'> = localStorage): boolean {
+export function readShowTradeOverlays(storage: Pick<Storage, 'getItem'> = ctraderStorage): boolean {
   try {
     const saved = storage.getItem(SHOW_TRADE_OVERLAYS_KEY)
     if (saved !== null) return validateShowTradeOverlays(JSON.parse(saved))
@@ -17,6 +18,6 @@ export function readShowTradeOverlays(storage: Pick<Storage, 'getItem'> = localS
   return true
 }
 
-export function saveShowTradeOverlays(value: boolean, storage: Pick<Storage, 'setItem'> = localStorage): void {
+export function saveShowTradeOverlays(value: boolean, storage: Pick<Storage, 'setItem'> = ctraderStorage): void {
   writePreference(storage, SHOW_TRADE_OVERLAYS_KEY, JSON.stringify(validateShowTradeOverlays(value)))
 }

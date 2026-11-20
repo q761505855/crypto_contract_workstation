@@ -7,11 +7,12 @@ export interface MarketSymbol {
   symbol: string
   baseAsset: string
   quoteAsset: string
-  contractType: 'PERPETUAL'
+  contractType: 'PERPETUAL' | 'CFD'
   status: 'TRADING'
   onboardDate: number
   pricePrecision: number
   quantityPrecision: number
+  description?: string
 }
 
 export interface MarketCandle {
@@ -27,7 +28,9 @@ export interface MarketCandle {
   quoteVolume: string
   tradeCount: number
   isClosed: boolean
-  source: 'binance'
+  source: 'binance' | 'ctrader'
+  /** Quote tick count reported by cTrader. It is not exchange trade volume. */
+  tickVolume?: number
 }
 
 export interface MarketSelection {
@@ -61,16 +64,23 @@ export const EMPTY_SERIES_SUMMARY: SeriesSummary = Object.freeze({
   gaps: [],
 })
 
+export function normalizeMarketTicker(value: unknown): string | undefined {
+  if (typeof value !== 'string') return
+  const ticker = value.trim().toUpperCase()
+  if (ticker.length > 0 && !/[\p{Cc}\p{Cf}]/u.test(ticker)) return ticker
+}
+
 export function toSymbolInfo(symbol: MarketSymbol): SymbolInfo {
+  const isCTrader = symbol.contractType === 'CFD'
   return {
-    exchange: 'BINANCE',
-    market: 'USDT-M PERPETUAL',
-    name: `${symbol.baseAsset} / ${symbol.quoteAsset} Perpetual`,
+    exchange: isCTrader ? 'CTRADER' : 'BINANCE',
+    market: isCTrader ? 'cTrader' : 'USDT-M PERPETUAL',
+    name: isCTrader ? symbol.description ?? symbol.symbol : `${symbol.baseAsset} / ${symbol.quoteAsset} Perpetual`,
     shortName: symbol.symbol,
     ticker: symbol.symbol,
     priceCurrency: symbol.quoteAsset,
-    type: 'PERPETUAL',
+    type: symbol.contractType,
     pricePrecision: symbol.pricePrecision,
-    volumePrecision: symbol.quantityPrecision,
+    volumePrecision: isCTrader ? 0 : symbol.quantityPrecision,
   }
 }

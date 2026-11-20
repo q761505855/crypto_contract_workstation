@@ -16,10 +16,7 @@ import {
 
 interface BackupSyncPanelProps {
   runtime: MarketDataRuntime
-  symbol: string
-  timeframe: string
   disabled: boolean
-  onChanged(): Promise<void> | void
 }
 
 function safeFilenamePart(value: string): string {
@@ -46,10 +43,7 @@ function bytes(value: number): string {
 
 export function BackupSyncPanel({
   runtime,
-  symbol,
-  timeframe,
   disabled,
-  onChanged,
 }: BackupSyncPanelProps) {
   const [sessions, setSessions] = useState<ReplaySession[]>([])
   const [sessionId, setSessionId] = useState('')
@@ -64,6 +58,7 @@ export function BackupSyncPanel({
     useState<ConflictResolution>('stop')
   const [selection, setSelection] = useState<SyncSelection>({
     ...ALL_SYNC_SELECTION,
+    marketData: false,
   })
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('已选择默认项目云端；应用配置修改后自动同步，启动时自动检查并恢复云端配置。')
@@ -109,7 +104,7 @@ export function BackupSyncPanel({
       return runtime.defaultGitHubClient
     }
     return new GitHubContentsClient(
-      { owner, repository, branch, ...(isSharedRepository ? { root: defaultTarget.root } : {}) },
+      { owner, repository, branch, root: defaultTarget.root },
       token,
     )
   }
@@ -118,22 +113,6 @@ export function BackupSyncPanel({
     const envelope = await runtime.backups.exportPreferences()
     downloadJson('workstation-preferences.json', envelope)
     setStatus('应用配置已导出。')
-  }
-
-  async function exportMarketData(): Promise<void> {
-    const envelope = await runtime.backups.exportMarketData(
-      symbol,
-      timeframe,
-    )
-    downloadJson(
-      `market-${safeFilenamePart(symbol)}-${safeFilenamePart(
-        timeframe,
-      )}.json`,
-      envelope,
-    )
-    setStatus(
-      `已导出 ${envelope.data.tradeCandles?.length ?? 0} 根普通 K 线。`,
-    )
   }
 
   async function exportSession(): Promise<void> {
@@ -156,11 +135,8 @@ export function BackupSyncPanel({
     const raw = JSON.parse(await file.text()) as unknown
     const report = await runtime.backups.import(raw)
     await refreshSessions()
-    await onChanged()
     setStatus(
-      `导入完成：${report.tradeCandles} 根 K 线，${
-        report.sessions
-      } 个会话，${report.simulations} 个模拟账户。刷新页面以应用恢复的配置和活动会话。`,
+      `导入完成：${report.sessions} 个会话，${report.simulations} 个模拟账户。刷新页面以应用恢复的配置和活动会话。`,
     )
   }
 
@@ -227,7 +203,6 @@ export function BackupSyncPanel({
       addLog(message)
     })
     await refreshSessions()
-    await onChanged()
     setStatus(
       `云端恢复完成：${result.files} 个文件，${bytes(
         result.bytes,
@@ -237,7 +212,6 @@ export function BackupSyncPanel({
   }
 
   const actionDisabled = disabled || busy
-  const isSharedRepository = owner.trim().toLowerCase() === defaultTarget.owner.toLowerCase() && repository.trim().toLowerCase() === defaultTarget.repository.toLowerCase()
   const isDefaultTarget = owner.trim() === defaultTarget.owner && repository.trim() === defaultTarget.repository && branch.trim() === defaultTarget.branch
   const hasCredential = token.trim().length > 0 || (isDefaultTarget && runtime.defaultGitHubClient?.canWrite() === true)
 
@@ -252,13 +226,6 @@ export function BackupSyncPanel({
             type="button"
           >
             导出应用配置
-          </button>
-          <button
-            disabled={actionDisabled}
-            onClick={() => void run(exportMarketData)}
-            type="button"
-          >
-            导出当前行情
           </button>
           <button
             disabled={actionDisabled}
@@ -279,7 +246,7 @@ export function BackupSyncPanel({
             {sessions.map((session) => (
               <option key={session.id} value={session.id}>
                 {session.symbol.ticker} {session.period.text} ·{' '}
-                {formatDisplayTime(session.startTime)}
+                {formatDisplayTime(session.startTime)} · {session.marketSource === 'ctrader' ? 'cTrader' : '旧会话'}
               </option>
             ))}
           </select>
@@ -319,10 +286,10 @@ export function BackupSyncPanel({
       <section>
         <h3>GitHub 公共仓库同步</h3>
         <p className="muted-text">
-          默认项目云端已选中，历史分钟数据下载后自动上传。应用配置修改后自动同步，启动时自动检查云端；下方保留比较、上传和拉取入口。
+          应用配置修改后自动同步，启动时自动检查云端。下方可手动比较、上传或拉取应用配置及回放档案。
           默认连接使用部署凭据；手动 Token 仅保存在当前页面内存。
         </p>
-        <p className="muted-text">{isSharedRepository ? `项目目录：${defaultTarget.root}。同一公共存储仓库的所有分支均使用此项目目录。${isDefaultTarget && hasCredential ? '默认连接可用，无需填写 Token。' : hasCredential ? '已填写手动 Token。' : '当前未配置写入凭据，可填写 Token 后同步。'}` : '手动仓库使用仓库根目录，兼容原有存档。'}</p>
+        <p className="muted-text">项目目录：{defaultTarget.root}。{isDefaultTarget && hasCredential ? '默认连接可用，无需填写 Token。' : hasCredential ? '已填写手动 Token。' : '当前未配置写入凭据，可填写 Token 后同步。'}</p>
         <label>
           用户或组织
           <input
@@ -379,7 +346,6 @@ export function BackupSyncPanel({
           {[
             ['config', '应用配置'],
             ['sessions', '会话与交易'],
-            ['marketData', '历史行情'],
           ].map(([key, label]) => (
             <label key={key}>
               <input

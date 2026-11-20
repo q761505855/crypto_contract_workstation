@@ -74,6 +74,16 @@ function DecimalMin(left: string, right: string): string {
 }
 
 describe('SimulationEngine account and position operations', () => {
+  it('lets a later quote at the same millisecond trigger a newly set stop', () => {
+    const engine = SimulationEngine.create(session())
+    const first = { ...candle(123), timeframe: 'tick', closeTime: 123 }
+    engine.open('long', { margin: '100' }, first)
+    engine.setStopLoss('long', '98', 123)
+    const later = { ...candle(123, { close: '97' }), timeframe: 'tick', closeTime: 123 }
+    expect(engine.processCandle(later, true).exitAction).toBe('stop_loss')
+    expect(engine.snapshot().trades.at(-1)?.timestamp).toBe(123)
+  })
+
   it('changes shared contract leverage and prices new orders with it while preserving allocated margin', () => {
     const engine = SimulationEngine.create(session())
     engine.setLeverage(5)

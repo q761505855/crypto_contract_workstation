@@ -1,524 +1,117 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Period, SymbolInfo } from '@klinecharts/pro'
-import { SUPPORTED_PERIODS } from '../chart/chart-config'
-import type {
-  DownloadProgress,
-  MarketSelection,
-  MarketSymbol,
-  SeriesSummary,
-} from '../market-data/models'
-import {
-  EMPTY_SERIES_SUMMARY,
-  toSymbolInfo,
-} from '../market-data/models'
-import {
-  readFavoriteSymbols,
-  saveFavoriteSymbols,
-} from '../market-data/favorites'
-import { expandHistoryRange } from '../market-data/history-ranges'
-import {
-  saveBaseUrlPreference,
-  type MarketDataRuntime,
-} from '../market-data/runtime'
+import { useEffect, useState } from 'react'
+import { CTRADER_PERIODS } from '../chart/chart-config'
+import { readFavoriteSymbols, saveFavoriteSymbols } from '../market-data/favorites'
+import { toSymbolInfo, type MarketSelection, type MarketSymbol } from '../market-data/models'
+import type { MarketDataRuntime } from '../market-data/runtime'
 import { BackupSyncPanel } from './BackupSyncPanel'
-import { RequestProtection } from './RequestProtection'
 import { DrawingStorage } from './DrawingStorage'
-import { formatDisplayTime, formatInputWeekday, localDateTimeInputValue } from '../format-display-time'
 
 interface DataManagerProps {
   configurationRevision?: number
   open: boolean
   runtime: MarketDataRuntime
   selection: MarketSelection
-  onApplySelection: (selection: MarketSelection) => void
-  onClose: () => void
+  onApplySelection(selection: MarketSelection): void
+  onClose(): void
 }
 
-function parseInputDateTime(value: string): number {
-  return new Date(value).getTime()
-}
-
-function progressText(progress: DownloadProgress): string {
-  return `普通 K 线：第 ${progress.page} 页，本次已接收 ${progress.stored} 根`
-}
-
-function CacheSummary({
-  title,
-  summary,
-}: {
-  title: string
-  summary: SeriesSummary
-}) {
-  return (
-    <div className="cache-summary">
-      <strong>{title}</strong>
-      <span>{summary.count.toLocaleString()} 根</span>
-      <span>
-        {formatDisplayTime(summary.firstOpenTime)} — {formatDisplayTime(summary.lastOpenTime)}
-      </span>
-      <span>
-        {summary.gaps.length === 0
-          ? '已缓存范围内未发现缺口'
-          : `${summary.gaps.length} 个缺失区间`}
-      </span>
-    </div>
-  )
-}
-
-export function DataManager({
-  configurationRevision = 0,
-  open,
-  runtime,
-  selection,
-  onApplySelection,
-  onClose,
-}: DataManagerProps) {
+export function DataManager({ configurationRevision, open, runtime, selection, onApplySelection, onClose }: DataManagerProps) {
   const [symbols, setSymbols] = useState<MarketSymbol[]>([])
   const [symbolText, setSymbolText] = useState(selection.symbol.ticker)
   const [timeframe, setTimeframe] = useState(selection.period.text)
   const [search, setSearch] = useState('')
-  const [initialRange] = useState(() => {
-    const now = new Date(Date.now())
-    return {
-      from: Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
-      to: Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) - 60_000,
-    }
-  })
-  const [fromText, setFromText] = useState(() =>
-    localDateTimeInputValue(initialRange.from),
-  )
-  const [toText, setToText] = useState(() => localDateTimeInputValue(initialRange.to))
-  const [baseUrl, setBaseUrl] = useState(runtime.service.getBaseUrl())
-  const [favorites, setFavorites] = useState<string[]>(readFavoriteSymbols)
-  const [summary, setSummary] = useState<SeriesSummary>(EMPTY_SERIES_SUMMARY)
-  const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState('')
+  const [favorites, setFavorites] = useState(readFavoriteSymbols)
+  const [refresh, setRefresh] = useState(0)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [pendingUploads, setPendingUploads] = useState(() => runtime.service.getPendingUploadCount())
-  const abortRef = useRef<AbortController | null>(null)
-
-  const rangePreview = useMemo(() => {
-    try {
-      const symbol = symbols.find((item) => item.symbol === symbolText)
-      return expandHistoryRange(parseInputDateTime(fromText), parseInputDateTime(toText), Date.now(), symbol?.onboardDate ?? 0)
-    } catch {
-      return null
-    }
-  }, [fromText, toText, symbols, symbolText])
-
-  const visibleSymbols = useMemo(() => {
-    const normalized = search.trim().toUpperCase()
-    return symbols
-      .filter(
-        (symbol) =>
-          symbol.symbol === symbolText ||
-          normalized.length === 0 ||
-          symbol.symbol.includes(normalized) ||
-          symbol.baseAsset.includes(normalized),
-      )
-      .slice(0, 200)
-  }, [search, symbols])
-
-  async function refreshSummary(
-    selectedSymbol = symbolText,
-  ): Promise<void> {
-    if (selectedSymbol.trim().length === 0) {
-      return
-    }
-    setSummary(await runtime.service.inspectSeries('trade', selectedSymbol, '1m'))
-    setPendingUploads(runtime.service.getPendingUploadCount())
-  }
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-    setSymbolText(selection.symbol.ticker)
-    setTimeframe(selection.period.text)
-    setFavorites(readFavoriteSymbols())
-    setBaseUrl(runtime.service.getBaseUrl())
-    setError('')
-    void runtime.service
-      .getSymbols()
-      .then((items) => {
-        setSymbols(items)
-        return refreshSummary(selection.symbol.ticker)
-      })
-      .catch((reason: unknown) => {
-        setError(reason instanceof Error ? reason.message : String(reason))
-      })
-  }, [open, runtime, selection.period.text, selection.symbol.ticker, configurationRevision])
 
   useEffect(() => {
     if (!open) return
-    const timer = window.setInterval(() => setPendingUploads(runtime.service.getPendingUploadCount()), 1000)
-    return () => window.clearInterval(timer)
-  }, [open, runtime])
+    setSymbolText(selection.symbol.ticker)
+    setTimeframe(selection.period.text)
+    setFavorites(readFavoriteSymbols())
+  }, [open, configurationRevision, selection.symbol.ticker, selection.period.text])
 
-  if (!open) {
-    return null
-  }
-
-  function selectedSymbol(): MarketSymbol | undefined {
-    const normalized = symbolText.trim().toUpperCase()
-    return symbols.find((symbol) => symbol.symbol === normalized)
-  }
-
-  function selectedPeriod(): Period | undefined {
-    return SUPPORTED_PERIODS.find((period) => period.text === timeframe)
-  }
-
-  function applySelection(): void {
-    const symbol = selectedSymbol()
-    const period = selectedPeriod()
-    if (symbol === undefined || period === undefined) {
-      setError('请选择列表中的有效交易对和周期')
-      return
-    }
+  useEffect(() => {
+    if (!open) return
+    const abort = new AbortController()
+    setLoading(true)
     setError('')
-    onApplySelection({ symbol: toSymbolInfo(symbol), period })
-    void refreshSummary(symbol.symbol)
-  }
+    void runtime.service.getSymbols({ forceRefresh: refresh > 0, signal: abort.signal }).then(result => {
+      if (!abort.signal.aborted) setSymbols(result)
+    }).catch((reason: unknown) => {
+      if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : '无法读取 cTrader 品种。')
+    }).finally(() => {
+      if (!abort.signal.aborted) setLoading(false)
+    })
+    return () => abort.abort()
+  }, [open, runtime, refresh])
 
-  async function download(): Promise<void> {
-    const symbol = selectedSymbol()
-    const from = parseInputDateTime(fromText)
-    const to = parseInputDateTime(toText)
-    if (symbol === undefined) {
-      setError('请选择列表中的有效交易对')
-      return
-    }
-    if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
-      setError('下载开始时间必须早于结束时间')
-      return
-    }
+  if (!open) return null
 
-    const controller = new AbortController()
-    abortRef.current = controller
-    setBusy(true)
-    setError('')
-    setStatus('正在检查本地缓存和数据缺口…')
-    runtime.service.resetReplayRequests()
-    try {
-      const actual = await runtime.service.prepareHistory(symbol.symbol, from, to, {
-        signal: controller.signal,
-        onProgress: (progress) => setStatus(progressText(progress)),
-        onStatus: setStatus,
-        onWarning: (message) => {
-          if (abortRef.current === controller) setStatus(message)
-        },
-      })
-      await refreshSummary(symbol.symbol)
-      const pending = runtime.service.getPendingUploadCount()
-      setPendingUploads(pending)
-      setStatus(`下载完成：${formatDisplayTime(actual.from)} — ${formatDisplayTime(actual.to)}，1m 数据已写入本地缓存。${pending > 0 ? `已缓存，待上传 ${pending} 个月份。` : runtime.defaultGitHubClient?.canWrite() ? '云端上传已安排。' : '已缓存，连接仓库后可上传。'}`)
-    } catch (reason) {
-      if (reason instanceof DOMException && reason.name === 'AbortError') {
-        setStatus('下载已取消，已经写入的数据会保留。')
-      } else {
-        setError(reason instanceof Error ? reason.message : String(reason))
-      }
-    } finally {
-      abortRef.current = null
-      setPendingUploads(runtime.service.getPendingUploadCount())
-      setBusy(false)
-    }
-  }
-
-  async function retryUploads(): Promise<void> {
-    setBusy(true)
-    setError('')
-    try {
-      await runtime.service.retryPendingUploads()
-      const pending = runtime.service.getPendingUploadCount()
-      setPendingUploads(pending)
-      setStatus(pending > 0 ? `已缓存，待上传 ${pending} 个月份，请检查连接后重试。` : '待上传数据已处理完成。')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setPendingUploads(runtime.service.getPendingUploadCount())
-      setBusy(false)
-    }
-  }
-
-  async function refreshSymbols(): Promise<void> {
-    setBusy(true)
-    setError('')
-    setStatus('正在读取币安合约列表…')
-    try {
-      const items = await runtime.service.getSymbols({ forceRefresh: true })
-      setSymbols(items)
-      setStatus(`已读取 ${items.length} 个正在交易的 USDT 永续合约。`)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  function updateBaseUrl(): void {
-    try {
-      runtime.service.setBaseUrl(baseUrl)
-      saveBaseUrlPreference(runtime.service.getBaseUrl())
-      setBaseUrl(runtime.service.getBaseUrl())
-      setError('')
-      setStatus('行情基础地址已保存。')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    }
-  }
+  const selectedSymbol = symbols.find(item => item.symbol === symbolText)
+  const selectedPeriod = CTRADER_PERIODS.find(period => period.text === timeframe)
+  const visibleSymbols = symbols.filter(item => item.symbol !== symbolText &&
+    `${item.symbol} ${item.baseAsset} ${item.quoteAsset} ${item.description ?? ''}`.toUpperCase().includes(search.trim().toUpperCase()))
 
   function toggleFavorite(): void {
-    const normalized = symbolText.trim().toUpperCase()
-    if (normalized.length === 0) {
-      return
-    }
-    const next = favorites.includes(normalized)
-      ? favorites.filter((item) => item !== normalized)
-      : [...favorites, normalized].sort()
-    setFavorites(next)
+    const next = favorites.includes(symbolText) ? favorites.filter(item => item !== symbolText) : [...favorites, symbolText]
     try {
       saveFavoriteSymbols(next)
-    } catch {
-      // Favorites remain available for the current component session.
-    }
-  }
-
-  async function deleteCache(): Promise<void> {
-    const symbol = selectedSymbol()
-    if (symbol === undefined) {
-      setError('请选择列表中的有效交易对')
-      return
-    }
-    if (
-      !window.confirm(
-        `确认删除 ${symbol.symbol} 1m 的普通 K 线缓存？`,
-      )
-    ) {
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      await runtime.service.deleteSeries('trade', symbol.symbol, '1m')
-      await refreshSummary(symbol.symbol)
-      setStatus('当前交易对的 1m 本地缓存已删除。')
+      setFavorites(next)
+      setError('')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setBusy(false)
+      setError(reason instanceof Error ? reason.message : '收藏保存失败。')
     }
   }
 
   return (
     <>
-      <button
-        aria-label="关闭数据管理"
-        className="drawer-backdrop"
-        onClick={onClose}
-        type="button"
-      />
-      <aside
-        aria-label="数据管理"
-        aria-modal="true"
-        className="data-drawer"
-        data-testid="data-manager"
-        role="dialog"
-      >
+      <button aria-label="关闭数据管理" className="drawer-backdrop" onClick={onClose} type="button" />
+      <aside aria-label="数据管理" aria-modal="true" className="data-drawer" data-testid="data-manager" role="dialog">
         <header>
           <h2>数据管理</h2>
-          <button
-            data-testid="close-data-manager"
-            onClick={onClose}
-            type="button"
-          >
-            关闭
-          </button>
+          <button data-testid="close-data-manager" onClick={onClose} type="button">关闭</button>
         </header>
-        {runtime.requestGuard !== undefined && (
-          <RequestProtection
-            guard={runtime.requestGuard}
-            onResumed={() => {
-              runtime.service.resetReplayRequests()
-              setError('')
-              setStatus('远程请求已恢复；需要数据时请手动刷新或下载。')
-            }}
-          />
-        )}
-
         <section>
-          <h3>行情接口</h3>
-          <label>
-            币安公开 REST 基础地址
-            <input
-              onChange={(event) => setBaseUrl(event.target.value)}
-              spellCheck={false}
-              value={baseUrl}
-            />
-          </label>
-          <div className="button-row">
-            <button disabled={busy} onClick={updateBaseUrl} type="button">
-              保存地址
-            </button>
-            <button disabled={busy} onClick={refreshSymbols} type="button">
-              刷新合约列表
-            </button>
-          </div>
+          <h3>cTrader 行情</h3>
+          <p className="muted-text">网页直连所选 cTrader 账户，按图表或回放周期读取原生 K 线。行情缓存在当前页面。</p>
+          <button disabled={loading} onClick={() => setRefresh(current => current + 1)} type="button">刷新品种列表</button>
+          {loading && <span role="status">正在读取品种…</span>}
+          {error && <p className="data-error" role="alert">{error}</p>}
         </section>
-
         <section>
           <h3>交易对与周期</h3>
-          <label>
-            搜索
-            <input
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="BTC、ETH…"
-              value={search}
-            />
-          </label>
-          <label>
-            交易对
-            <select
-              aria-label="交易对"
-              onChange={(event) => setSymbolText(event.target.value)}
-              value={symbolText}
-            >
-              {!symbols.some((symbol) => symbol.symbol === symbolText) && (
-                <option value={symbolText}>{symbolText}</option>
-              )}
-              {visibleSymbols.map((symbol) => (
-                <option key={symbol.symbol} value={symbol.symbol}>
-                  {symbol.symbol}
-                </option>
-              ))}
+          <label>搜索<input value={search} onChange={event => setSearch(event.target.value)} placeholder="EURUSD、黄金…" /></label>
+          <label>交易对
+            <select aria-label="交易对" value={symbolText} onChange={event => setSymbolText(event.target.value)}>
+              <option value={symbolText}>{symbolText}</option>
+              {visibleSymbols.map(item => <option key={item.symbol} value={item.symbol}>{item.symbol}</option>)}
             </select>
           </label>
-          <label>
-            周期
-            <select
-              onChange={(event) => setTimeframe(event.target.value)}
-              value={timeframe}
-            >
-              {SUPPORTED_PERIODS.map((period) => (
-                <option key={period.text} value={period.text}>
-                  {period.text}
-                </option>
-              ))}
+          <label>周期
+            <select value={timeframe} onChange={event => setTimeframe(event.target.value)}>
+              {CTRADER_PERIODS.map(period => <option key={period.text} value={period.text}>{period.text}</option>)}
             </select>
           </label>
           <div className="button-row">
-            <button onClick={applySelection} type="button">
-              应用到图表
-            </button>
-            <button onClick={toggleFavorite} type="button">
+            <button disabled={!selectedSymbol || !selectedPeriod} type="button" onClick={() => {
+              if (selectedSymbol && selectedPeriod) onApplySelection({ symbol: toSymbolInfo(selectedSymbol), period: selectedPeriod })
+            }}>应用到图表</button>
+            <button disabled={!selectedSymbol && !favorites.includes(symbolText)} onClick={toggleFavorite} type="button">
               {favorites.includes(symbolText) ? '取消收藏' : '收藏'}
             </button>
           </div>
-          {favorites.length > 0 && (
+          {favorites.some(ticker => symbols.some(item => item.symbol === ticker)) && (
             <div className="favorite-symbols" aria-label="收藏交易对">
-              {favorites.map((favorite) => (
-                <button
-                  key={favorite}
-                  onClick={() => setSymbolText(favorite)}
-                  type="button"
-                >
-                  {favorite}
-                </button>
+              {favorites.filter(ticker => symbols.some(item => item.symbol === ticker)).map(ticker => (
+                <button key={ticker} onClick={() => setSymbolText(ticker)} type="button">{ticker}</button>
               ))}
             </div>
           )}
         </section>
-
-        <section>
-          <h3>历史数据区间</h3>
-          <p className="muted-text">固定下载 1m 普通价格数据，图表周期由分钟数据聚合。默认范围为上一个完整 UTC 月。</p>
-          <label>
-            <span>开始时间 {formatInputWeekday(fromText)}</span>
-            <input
-              aria-label="开始时间"
-              onChange={(event) => setFromText(event.target.value)}
-              type="datetime-local"
-              value={fromText}
-            />
-          </label>
-          <label>
-            <span>结束时间 {formatInputWeekday(toText)}</span>
-            <input
-              aria-label="结束时间"
-              onChange={(event) => setToText(event.target.value)}
-              type="datetime-local"
-              value={toText}
-            />
-          </label>
-          <p className="muted-text" data-testid="history-range-preview">
-            {rangePreview ? `实际缓存范围：${formatDisplayTime(rangePreview.from)} — ${formatDisplayTime(rangePreview.to)}（本地时间显示，按 UTC 自然月展开，截止已收盘分钟及上市边界）。` : '请选择有效时间范围；归档按 UTC 自然月展开。'}
-          </p>
-          <div className="button-row download-actions">
-            <button
-              disabled={busy || selectedSymbol() === undefined}
-              onClick={() => void download()}
-              type="button"
-            >
-              下载历史数据
-            </button>
-            {busy && abortRef.current !== null && (
-              <button
-                className="danger-button"
-                onClick={() => abortRef.current?.abort()}
-                type="button"
-              >
-                取消
-              </button>
-            )}
-          </div>
-        </section>
-
-        <section>
-          <h3>本地缓存（1m 分钟源数据）</h3>
-          <CacheSummary summary={summary} title="普通 K 线" />
-          <div className="button-row">
-            <button
-              disabled={busy}
-              onClick={() => void refreshSummary()}
-              type="button"
-            >
-              刷新统计
-            </button>
-            <button
-              className="danger-button"
-              disabled={busy}
-              onClick={() => void deleteCache()}
-              type="button"
-            >
-              删除当前缓存
-            </button>
-          </div>
-          <p className="muted-text">已缓存，待上传：{pendingUploads} 个月份</p>
-          <button disabled={busy || pendingUploads === 0} onClick={() => void retryUploads()} type="button">重试待上传</button>
-        </section>
-
-        {runtime.drawingSync && <DrawingStorage service={runtime.drawingSync} disabled={busy} />}
-
-        <BackupSyncPanel
-          disabled={busy}
-          onChanged={async () => {
-            const items = await runtime.service.getSymbols({
-              forceRefresh: false,
-            })
-            setSymbols(items)
-            await refreshSummary()
-          }}
-          runtime={runtime}
-          symbol={symbolText}
-          timeframe="1m"
-        />
-
-        {status.length > 0 && <p className="data-status">{status}</p>}
-        {error.length > 0 && (
-          <p className="data-error" role="alert">
-            {error}
-          </p>
-        )}
+        {runtime.drawingSync && <DrawingStorage service={runtime.drawingSync} disabled={false} />}
+        <BackupSyncPanel runtime={runtime} disabled={false} />
       </aside>
     </>
   )

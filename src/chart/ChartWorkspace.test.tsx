@@ -1,3 +1,4 @@
+import { ctraderStorage } from '../storage/ctrader-storage'
 import {
   act,
   cleanup,
@@ -68,11 +69,11 @@ describe('ChartWorkspace', () => {
     const adapter = { ...sizingAdapter(), getCandleType: () => type }
     render(<ChartWorkspace createAdapter={() => adapter} />)
     act(() => { type = 'heikin_ashi'; vi.advanceTimersByTime(100) })
-    expect(localStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+    expect(ctraderStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
     expect(screen.queryByText(/提示框、指标、最新价及交易使用真实行情/)).not.toBeInTheDocument()
-    localStorage.setItem('chart.candleType.v1', '"candle_stroke"')
+    ctraderStorage.setItem('chart.candleType.v1', '"candle_stroke"')
     act(() => { vi.advanceTimersByTime(1000); window.dispatchEvent(new Event('beforeunload')) })
-    expect(localStorage.getItem('chart.candleType.v1')).toBe('"candle_stroke"')
+    expect(ctraderStorage.getItem('chart.candleType.v1')).toBe('"candle_stroke"')
   })
   function sizingAdapter(): ChartAdapterPort {
     let height = 160
@@ -127,7 +128,7 @@ describe('ChartWorkspace', () => {
     expect(changeHeight).toHaveBeenLastCalledWith(null)
     fireEvent.change(screen.getByRole('slider', { name: 'RSI 高度' }), { target: { value: '240' } })
     expect(screen.getByText('240 px')).toBeVisible()
-    expect(JSON.parse(localStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual({ ...indicatorPreferences, sub: [{ ...indicatorPreferences.sub[0], height: 240 }] })
+    expect(JSON.parse(ctraderStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual({ ...indicatorPreferences, sub: [{ ...indicatorPreferences.sub[0], height: 240 }] })
   })
 
   it('restores the opener focus when height settings close with Escape or the close button', () => {
@@ -290,7 +291,7 @@ describe('ChartWorkspace', () => {
   })
 
   it('restores saved indicator preferences when mounting the chart', async () => {
-    localStorage.setItem(
+    ctraderStorage.setItem(
       CHART_INDICATORS_PREFERENCE,
       JSON.stringify(indicatorPreferences),
     )
@@ -362,7 +363,7 @@ describe('ChartWorkspace', () => {
 
     expect(
       JSON.parse(
-        localStorage.getItem(CHART_INDICATORS_PREFERENCE) ?? 'null',
+        ctraderStorage.getItem(CHART_INDICATORS_PREFERENCE) ?? 'null',
       ),
     ).toEqual(current)
     unmount()

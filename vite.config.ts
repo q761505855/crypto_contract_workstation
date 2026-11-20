@@ -6,7 +6,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
     base: env.VITE_BASE_PATH || '/',
-    envPrefix: ['VITE_GITHUB_OWNER', 'VITE_GITHUB_REPOSITORY', 'VITE_GITHUB_BRANCH', 'VITE_GITHUB_STORAGE_ROOT'],
+    envPrefix: ['VITE_GITHUB_OWNER', 'VITE_GITHUB_REPOSITORY', 'VITE_GITHUB_BRANCH'],
     plugins: [react(), {
       name: 'published-cloud-connection',
       generateBundle() {
@@ -31,6 +31,6 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: { exclude: ['@klinecharts/pro', 'klinecharts'] },
     // Playwright writes large attachments while Vite runs. Watching those
     // generated files can fail with EBUSY on Windows and restart test pages.
-    server: { watch: { ignored: ['**/test-results/**', '**/test-results-*/**'] } },
+    server: { watch: { ignored: ['**/test-results/**', '**/test-results-*/**', '**/ctrader-connection.local.json'] } },
   }
 })

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { SUPPORTED_PERIODS } from './chart-config'
+import { CTRADER_PERIODS } from './chart-config'
 import { readPinnedPeriods, savePinnedPeriods } from './period-preferences'
 
 interface PeriodSelectorProps {
@@ -38,9 +38,7 @@ export function PeriodSelector({ value, onChange, allowPinning = true }: PeriodS
   }, [open])
 
   function togglePin(text: string): void {
-    const next = SUPPORTED_PERIODS.filter((candidate) =>
-      candidate.text === text ? !pinned.includes(text) : pinned.includes(candidate.text),
-    ).map((candidate) => candidate.text)
+    const next = pinned.includes(text) ? pinned.filter(period => period !== text) : [...pinned, text]
     setPinned(next)
     try {
       savePinnedPeriods(next)
@@ -83,7 +81,7 @@ export function PeriodSelector({ value, onChange, allowPinning = true }: PeriodS
           draggedRef.current = false
         }}
       >
-        {pinned.map((text) => (
+        {CTRADER_PERIODS.filter(period => pinned.includes(period.text)).map(({ text }) => (
           <button
             aria-label={`快捷周期 ${text}`}
             aria-pressed={value === text}
@@ -106,7 +104,7 @@ export function PeriodSelector({ value, onChange, allowPinning = true }: PeriodS
         <div aria-label="选择图表周期" className="period-dropdown" ref={menuRef} role="dialog">
           {allowPinning && <p>选择周期 · ★ 固定到快捷栏</p>}
           <div className="period-options">
-            {SUPPORTED_PERIODS.map(({ text }) => (
+            {CTRADER_PERIODS.map(({ text }) => (
               <div className="period-option" key={text}>
                 <button
                   aria-label={`选择周期 ${text}`}

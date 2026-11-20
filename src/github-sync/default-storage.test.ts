@@ -6,13 +6,14 @@ afterEach(() => vi.unstubAllEnvs())
 describe('default project storage', () => {
   it('uses project-scoped build defaults and disables implicit write clients without a token', () => {
     for (const name of ['OWNER', 'REPOSITORY', 'BRANCH', 'STORAGE_ROOT']) vi.stubEnv(`VITE_GITHUB_${name}`, '')
-    expect(defaultStorageTarget()).toEqual({ owner: 'q761505855', repository: 'personal-cloud-storage', branch: 'main', root: 'projects/crypto-contract-workstation' })
+    expect(defaultStorageTarget()).toEqual({ owner: 'q761505855', repository: 'personal-cloud-storage', branch: 'main', root: 'projects/crypto-contract-workstation/experiments/ctrader' })
     expect(new GitHubContentsClient(defaultStorageTarget()).canWrite()).toBe(false)
   })
-  it('consumes build settings without exposing the credential on the target', () => {
-    vi.stubEnv('VITE_GITHUB_STORAGE_ROOT', 'projects/test')
+  it('honors repository settings while keeping the experiment within its storage path', () => {
+    vi.stubEnv('VITE_GITHUB_STORAGE_ROOT', 'projects/another-project')
+    vi.stubEnv('VITE_GITHUB_BRANCH', 'development')
     const client = new GitHubContentsClient(defaultStorageTarget(), 'test-only')
-    expect(client.getTarget()).toMatchObject({ root: 'projects/test' })
+    expect(client.getTarget()).toMatchObject({ root: 'projects/crypto-contract-workstation/experiments/ctrader', branch: 'development' })
     expect(JSON.stringify(client.getTarget())).not.toContain('test-only')
   })
   it('authenticates with the published Pages credential even when a legacy local token is set', async () => {
@@ -26,7 +27,7 @@ describe('default project storage', () => {
     const client = new GitHubContentsClient(defaultStorageTarget(), token, request)
     await client.testConnection()
     expect(request).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer pages-test-token' }) }))
-    expect(client.getTarget().root).toBe('projects/crypto-contract-workstation')
+    expect(client.getTarget().root).toBe('projects/crypto-contract-workstation/experiments/ctrader')
   })
   it.each([
     null, {}, { schemaVersion: 2, project: 'crypto-contract-workstation', token: 'test' },

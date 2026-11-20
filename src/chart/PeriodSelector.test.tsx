@@ -1,3 +1,4 @@
+import { ctraderStorage } from '../storage/ctrader-storage'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { PeriodSelector } from './PeriodSelector'
@@ -16,7 +17,9 @@ it('provides common shortcuts and keeps every period in the dropdown', () => {
   fireEvent.click(within(shortcuts).getByRole('button', { name: '快捷周期 1h' }))
   expect(onChange).toHaveBeenCalledWith('1h')
   fireEvent.click(screen.getByRole('button', { name: '图表周期' }))
-  expect(screen.getAllByRole('button', { name: /^选择周期 / })).toHaveLength(15)
+  expect(screen.getAllByRole('button', { name: /^选择周期 / })).toHaveLength(14)
+  expect(screen.getByRole('button', { name: '选择周期 2m' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '选择周期 6h' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '选择周期 1M' }))
   expect(onChange).toHaveBeenLastCalledWith('1M')
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -30,7 +33,7 @@ it('pins and unpins without changing the current period and restores saved short
   fireEvent.click(screen.getByRole('button', { name: '取消固定周期 5m' }))
   expect(onChange).not.toHaveBeenCalled()
   expect(screen.getByRole('dialog')).toBeVisible()
-  expect(JSON.parse(localStorage.getItem(PINNED_PERIODS_KEY)!)).toEqual(['15m', '1h', '4h', '1d'])
+  expect(JSON.parse(ctraderStorage.getItem(PINNED_PERIODS_KEY)!)).toEqual(['15m', '1h', '4h', '1d'])
   view.unmount()
   render(<PeriodSelector value="15m" onChange={onChange} />)
   expect(screen.getByRole('button', { name: '快捷周期 1d' })).toBeVisible()
@@ -38,15 +41,15 @@ it('pins and unpins without changing the current period and restores saved short
 })
 
 it('preserves an intentionally empty shortcut list', () => {
-  localStorage.setItem(PINNED_PERIODS_KEY, '[]')
+  ctraderStorage.setItem(PINNED_PERIODS_KEY, '[]')
   render(<PeriodSelector value="15m" onChange={vi.fn()} />)
   expect(within(screen.getByRole('group', { name: '快捷周期' })).queryAllByRole('button')).toHaveLength(0)
   fireEvent.click(screen.getByRole('button', { name: '图表周期' }))
-  expect(screen.getAllByRole('button', { name: /^选择周期 / })).toHaveLength(15)
+  expect(screen.getAllByRole('button', { name: /^选择周期 / })).toHaveLength(14)
 })
 
 it('falls back from corrupt preferences and closes on Escape or an outside press', () => {
-  localStorage.setItem(PINNED_PERIODS_KEY, '{broken')
+  ctraderStorage.setItem(PINNED_PERIODS_KEY, '{broken')
   render(<PeriodSelector value="15m" onChange={vi.fn()} />)
   const trigger = screen.getByRole('button', { name: '图表周期' })
   expect(screen.getByRole('button', { name: '快捷周期 5m' })).toBeVisible()

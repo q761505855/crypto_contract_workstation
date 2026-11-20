@@ -6,7 +6,9 @@ import {
 } from 'react'
 import { findMissingRanges } from '../market-data/gaps'
 import { alignOpenTime, klineCloseBoundary, lastClosedOpenTime, LEGACY_THREE_DAY_TIMEFRAME, nextOpenTime, shiftTimeByPeriod, type MarketTimeframe } from '../market-data/intervals'
-import type { MarketDataRuntime } from '../market-data/runtime'
+import type { MarketDataService } from '../market-data/market-data-service'
+import type { ReplaySessionStore } from '../storage/replay-session-store'
+import type { ReplayDatafeed } from './replay-datafeed'
 import type {
   CreateReplaySessionInput,
   ReplaySession,
@@ -18,6 +20,8 @@ import type { MarketCandle } from '../market-data/models'
 import { validateAdjustableLeverage, validateSimulationConfig } from '../simulation/simulation-engine'
 
 export interface ReplayCandleEvent {
+  /** This quote follows another quote at the same millisecond. */
+  sameTimeTick?: true
   type: 'advance' | 'reset'
   candle: MarketCandle
   /** A later candle in the same step will publish the accumulated state. */
@@ -27,6 +31,12 @@ export interface ReplayCandleEvent {
 export type ReplayCandleListener = (
   event: ReplayCandleEvent,
 ) => void | Promise<void>
+
+export interface LegacyReplayRuntime {
+  service: Pick<MarketDataService, 'loadCandles' | 'loadReplayCandles' | 'resetReplayRequests'>
+  replaySessions: ReplaySessionStore
+  replayDatafeed: Pick<ReplayDatafeed, 'setSessionCandles'>
+}
 
 /** Only complete source bars within this UTC month and the following month. */
 function preparationEnd(currentTime: number, timeframe: string, sessionEnd: number): number {
@@ -48,7 +58,7 @@ function stepBoundary(visibleUntil: number, timeframe: MarketTimeframe, directio
   return shiftTimeByPeriod(visibleUntil - MINUTE, timeframe, direction) + MINUTE
 }
 
-async function loadMinuteSlice(runtime: MarketDataRuntime, symbol: string, from: number, until: number, options: {
+async function loadMinuteSlice(runtime: LegacyReplayRuntime, symbol: string, from: number, until: number, options: {
   signal?: AbortSignal
   onStatus?: (status: string) => void
 } = {}): Promise<MarketCandle[]> {
@@ -60,7 +70,7 @@ async function loadMinuteSlice(runtime: MarketDataRuntime, symbol: string, from:
   return rows
 }
 
-export interface ReplayController {
+export interface ReplayController<StepPeriod = MarketTimeframe> {
   session: ReplaySession | null
   sessions: ReplaySession[]
   busy: boolean
@@ -71,8 +81,8 @@ export interface ReplayController {
   loadSession(id: string): Promise<void>
   deleteSession(id: string): Promise<void>
   endSession(): Promise<void>
-  next(timeframe?: MarketTimeframe): Promise<void>
-  previous(timeframe?: MarketTimeframe): void | Promise<void>
+  next(timeframe?: StepPeriod): Promise<void>
+  previous(timeframe?: StepPeriod): void | Promise<void>
   reset(): Promise<void>
   jumpToEnd(): Promise<void>
   play(): void
@@ -85,7 +95,7 @@ export interface ReplayController {
 }
 
 export function useReplayController(
-  runtime: MarketDataRuntime,
+  runtime: LegacyReplayRuntime,
   stepTimeframe?: MarketTimeframe,
 ): ReplayController {
   const engineRef = useRef<ReplayEngine | null>(null)

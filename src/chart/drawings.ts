@@ -1,5 +1,7 @@
 import type { OverlayCreate } from 'klinecharts'
 
+import { browserStorageKey, ctraderStorage } from '../storage/ctrader-storage'
+
 export const DRAWING_STORAGE_KEY = 'chart.drawings.v1'
 const DRAWINGS_CHANGED = 'workstation:drawings-changed'
 const fixedPoints: Readonly<Record<string, number>> = Object.freeze({
@@ -26,8 +28,9 @@ type DrawingStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export const EMPTY_DRAWINGS: DrawingArchive = { epoch: 'initial', drawings: [] }
 
-export function drawingScope(mode: 'live' | 'history', symbol: string, session: string | null): string {
-  return mode === 'history' && session ? `replay:${session}` : `live:${symbol.toUpperCase()}`
+export function drawingScope(mode: 'live' | 'history', symbol: string, session: string | null, exchange?: string): string {
+  if (mode === 'history' && session) return `replay:${session}`
+  return exchange === 'CTRADER' ? `live:CTRADER:${symbol.toUpperCase()}` : `live:${symbol.toUpperCase()}`
 }
 
 export function isDrawingTool(name: string): boolean {
@@ -127,9 +130,10 @@ export function mergeDrawings(base: DrawingArchive, local: DrawingArchive, remot
 }
 
 export class DrawingStore {
-  constructor(private readonly storage: DrawingStorage = localStorage) {}
+  constructor(private readonly storage: DrawingStorage = ctraderStorage) {}
 
   snapshot = (): string | null => this.storage.getItem(DRAWING_STORAGE_KEY)
+  scopedKey = (key: string): string => browserStorageKey(this.storage, key)
 
   read(raw = this.snapshot()): DrawingState {
     try {
@@ -199,11 +203,13 @@ export class DrawingStore {
   }
 
   subscribe = (listener: () => void): (() => void) => {
-    const fromOtherWindow = (event: StorageEvent) => { if (event.key === DRAWING_STORAGE_KEY || event.key === null) listener() }
-    window.addEventListener(DRAWINGS_CHANGED, listener)
+    const drawingKey = this.scopedKey(DRAWING_STORAGE_KEY)
+    const drawingEvent = this.scopedKey(DRAWINGS_CHANGED)
+    const fromOtherWindow = (event: StorageEvent) => { if (event.key === drawingKey || event.key === null) listener() }
+    window.addEventListener(drawingEvent, listener)
     window.addEventListener('storage', fromOtherWindow)
     return () => {
-      window.removeEventListener(DRAWINGS_CHANGED, listener)
+      window.removeEventListener(drawingEvent, listener)
       window.removeEventListener('storage', fromOtherWindow)
     }
   }
@@ -215,7 +221,7 @@ export class DrawingStore {
     }
     // Chrome can run the drawing windows on different event loops. Keep the
     // local read plus write indivisible, independently of the network lock.
-    if (navigator.locks?.request) await navigator.locks.request('workstation:drawing-storage', apply)
+    if (navigator.locks?.request) await navigator.locks.request(this.scopedKey('workstation:drawing-storage'), apply)
     else apply()
   }
 
@@ -224,6 +230,6 @@ export class DrawingStore {
     const next = JSON.stringify({ local, ...(!sameDrawingData(local, base) ? { base } : {}), cloudBytes })
     if (this.snapshot() === next) return
     this.storage.setItem(DRAWING_STORAGE_KEY, next)
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event(DRAWINGS_CHANGED))
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event(this.scopedKey(DRAWINGS_CHANGED)))
   }
 }

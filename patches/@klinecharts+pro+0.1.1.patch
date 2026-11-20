@@ -43,7 +43,7 @@ index 1cb6404..8a1a4be 100644
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..121be5d 100644
+index 6f78d0e..6c37849 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 @@ -2294,7 +2294,30 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
@@ -777,7 +777,7 @@ index 6f78d0e..121be5d 100644
          break;
        }
      }
-@@ -3475,10 +4020,28 @@ const Dl = (e) => {
+@@ -3475,10 +4020,37 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -786,7 +786,7 @@ index 6f78d0e..121be5d 100644
 -        const _ = L(), [E] = D1(_, f, 1), [r1] = D1(_, E, 500), X = await e.datafeed.getHistoryKLineData(y(), _, r1, E);
 -        n == null || n.applyMoreData(X, X.length > 0), a = !1;
 +    }), A(h), n == null || n.setLoadDataCallback(({ type, data, callback }) => {
-+      if (type !== "forward" || data === null) {
++      if (data === null) {
 +        callback([], false);
 +        return;
 +      }
@@ -795,6 +795,15 @@ index 6f78d0e..121be5d 100644
 +      (async () => {
 +        const current = () => sequence === dataRequestSequence && historySequence === historyRequestSequence;
 +        try {
++          if (type === "backward") {
++            const page = await e.datafeed.getNewerHistory?.(symbol, period, f);
++            if (!current() || n.getDataList().at(-1)?.timestamp !== f) {
++              callback([], true);
++              return;
++            }
++            callback(page?.candles ?? [], page?.hasMore ?? false);
++            return;
++          }
 +          const page = await e.datafeed.getOlderHistory?.(symbol, period, f);
 +          if (!current()) return;
 +          if (page) {
@@ -805,12 +814,12 @@ index 6f78d0e..121be5d 100644
 +          const X = await e.datafeed.getHistoryKLineData(symbol, period, r1, E);
 +          if (current()) callback(X, X.length > 0);
 +        } catch {
-+          if (current()) callback([], true);
++          if (current() || type === "backward") callback([], true);
 +        }
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3503,7 +4066,8 @@ const Dl = (e) => {
+@@ -3503,7 +4075,8 @@ const Dl = (e) => {
                visible: !0,
                indicatorName: f.indicatorName,
                paneId: f.paneId,
@@ -820,7 +829,7 @@ index 6f78d0e..121be5d 100644
              });
              break;
            }
-@@ -3520,25 +4084,33 @@ const Dl = (e) => {
+@@ -3520,25 +4093,33 @@ const Dl = (e) => {
          }
      });
    }), k0(() => {
@@ -867,7 +876,7 @@ index 6f78d0e..121be5d 100644
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3725,7 +4297,7 @@ const Dl = (e) => {
+@@ -3725,7 +4306,7 @@ const Dl = (e) => {
            const f = {};
            h.forEach((v) => {
              const _ = v.key;
@@ -876,7 +885,7 @@ index 6f78d0e..121be5d 100644
            }), n == null || n.setStyles(f);
          }
        });
-@@ -3767,11 +4339,12 @@ const Dl = (e) => {
+@@ -3767,11 +4348,12 @@ const Dl = (e) => {
              calcParams: []
            });
          },
@@ -891,7 +900,7 @@ index 6f78d0e..121be5d 100644
            }, f.paneId);
          }
        });
-@@ -3875,7 +4448,7 @@ class jl {
+@@ -3875,7 +4457,7 @@ class jl {
        this._container = t.container;
      this._container.classList.add("klinecharts-pro"), this._container.setAttribute("data-theme", t.theme ?? "light");
      const n = this;
@@ -900,7 +909,7 @@ index 6f78d0e..121be5d 100644
        ref: (r) => {
          n._chartApi = r;
        },
-@@ -3994,6 +4567,16 @@ class jl {
+@@ -3994,6 +4576,16 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }

@@ -4,9 +4,7 @@ const pagesUrl = 'http://127.0.0.1:4174/crypto_contract_workstation/'
 
 export default defineConfig({
   testDir: './e2e',
-  // Run critical functionality against the build; month-sized cases stay in CI.
-  testMatch: ['pages-smoke.spec.ts', 'app-shell.spec.ts'],
-  grep: /@release/,
+  testMatch: ['pages-smoke.spec.ts', 'ctrader-workstation.spec.ts'],
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkstationBackupService, type BackupPreferences } from '../storage/backup-service'
+import { browserStorageKey, ctraderStorage } from '../storage/ctrader-storage'
 import { savePinnedPeriods } from '../chart/period-preferences'
 import { CONFIG_BASELINE_KEY } from './config-auto-sync'
 import { PREFERENCES_RESTORED } from '../storage/preference-events'
@@ -16,8 +17,7 @@ const base: BackupPreferences = { binanceRestBaseUrl: 'https://fapi.binance.com'
 const running: ConfigAutoSync[] = []
 afterEach(() => { running.splice(0).forEach(service => service.stop()); vi.useRealTimers() })
 
-async function setup(remote: BackupPreferences | null = base) {
-  const storage = new MemoryStorage()
+async function setup(remote: BackupPreferences | null = base, storage: Pick<Storage, 'getItem' | 'setItem'> = new MemoryStorage()) {
   const backups = new WorkstationBackupService(`auto-${crypto.randomUUID()}`, storage)
   let value = structuredClone(remote)
   let fail = false
@@ -58,6 +58,29 @@ describe('automatic configuration sync', () => {
     expect(mergeConfig(before, local, remote)).toEqual({ preferences: local, conflicts: ['chartWindowSize'] })
     expect(mergeConfig(before, local, remote, 'remote').preferences).toEqual(remote)
     expect(mergeConfig(before, local, base).preferences).toEqual(local)
+  })
+  it('keeps cTrader product identity and display precision together across concurrent edits', () => {
+    const before = { ...base, selectedSymbol: { ticker: 'EURUSD', exchange: 'CTRADER', pricePrecision: 5 } }
+    const local = { ...base, selectedSymbol: { ticker: 'XAUUSD', exchange: 'CTRADER', pricePrecision: 2 } }
+    const remote = { ...base, selectedSymbol: { ...before.selectedSymbol, pricePrecision: 4 } }
+    expect(mergeConfig(before, local, remote)).toEqual({ preferences: local, conflicts: ['selectedSymbol'] })
+    expect(mergeConfig(before, local, remote, 'remote').preferences).toEqual(remote)
+  })
+  it('refreshes other tabs for experiment config baselines only', async () => {
+    localStorage.clear()
+    const { auto } = await setup(base, ctraderStorage)
+    await auto.start()
+    const restored = vi.fn()
+    window.addEventListener(PREFERENCES_RESTORED, restored)
+    try {
+      window.dispatchEvent(new StorageEvent('storage', { key: CONFIG_BASELINE_KEY }))
+      expect(restored).not.toHaveBeenCalled()
+      window.dispatchEvent(new StorageEvent('storage', { key: browserStorageKey(ctraderStorage, CONFIG_BASELINE_KEY) }))
+      expect(restored).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener(PREFERENCES_RESTORED, restored)
+      localStorage.clear()
+    }
   })
   it('uploads edits without an explicit sync action and debounces repeated writes', async () => {
     vi.useFakeTimers()

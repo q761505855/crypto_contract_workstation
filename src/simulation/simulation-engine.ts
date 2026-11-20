@@ -439,11 +439,12 @@ export class SimulationEngine {
     this.recalculate(positive(candle.close, '当前成交价格'), candle.openTime)
   }
 
-  processCandle(tradeCandle: MarketCandle): CandleProcessResult {
+  processCandle(tradeCandle: MarketCandle, sameTimeTick = false): CandleProcessResult {
     let exitAction: TradeAction | null = null
+    const riskCheckTime = tradeCandle.openTime + Number(sameTimeTick)
     // Each side is evaluated independently, even if the other side exits on this candle.
     for (const position of [...this.state.positions]) {
-      const action = this.processPositionCandle(position, tradeCandle)
+      const action = this.processPositionCandle(position, tradeCandle, riskCheckTime)
       if (action === 'liquidation' || (action === 'stop_loss' && exitAction !== 'liquidation') || exitAction === null) {
         exitAction = action ?? exitAction
       }
@@ -453,9 +454,9 @@ export class SimulationEngine {
     return { exitAction, warning: null }
   }
 
-  private processPositionCandle(position: SimulationPosition, tradeCandle: MarketCandle): TradeAction | null {
+  private processPositionCandle(position: SimulationPosition, tradeCandle: MarketCandle, riskCheckTime: number): TradeAction | null {
     if (
-      tradeCandle.openTime > position.riskActiveAfterTime &&
+      riskCheckTime > position.riskActiveAfterTime &&
       this.liquidationTouched(position, tradeCandle)
     ) {
       const trigger = decimal(position.liquidationPrice, '预估强平价')
@@ -478,7 +479,7 @@ export class SimulationEngine {
     if (
       position.stopLossPrice !== null &&
       position.stopLossActiveAfterTime !== null &&
-      tradeCandle.openTime > position.stopLossActiveAfterTime &&
+      riskCheckTime > position.stopLossActiveAfterTime &&
       this.stopLossTouched(position, tradeCandle)
     ) {
       const trigger = decimal(position.stopLossPrice, '止损价格')
@@ -501,7 +502,7 @@ export class SimulationEngine {
     if (
       position.takeProfitPrice !== null &&
       position.takeProfitActiveAfterTime !== null &&
-      tradeCandle.openTime > position.takeProfitActiveAfterTime &&
+      riskCheckTime > position.takeProfitActiveAfterTime &&
       this.takeProfitTouched(position, tradeCandle)
     ) {
       const trigger = decimal(position.takeProfitPrice, '止盈价格')

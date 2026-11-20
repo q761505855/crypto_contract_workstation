@@ -1,9 +1,9 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 import type { WorkstationMode } from '../components/ModeSwitch'
 import type { MarketDataRuntime } from '../market-data/runtime'
-import { replayChartNeedsReload, type ReplayDatafeed } from '../replay/replay-datafeed'
+import { ctraderReplayChartNeedsReload, type CTraderReplayDatafeed } from '../replay/ctrader-replay-datafeed'
 import { replayVisibleUntil, type ReplayContext } from '../replay/models'
-import type { BinanceDatafeed } from '../market-data/binance-datafeed'
+import type { CTraderDatafeed } from '../market-data/ctrader-datafeed'
 import { readChartWindowSize, saveChartWindowSize, type ChartWindowSize } from './chart-window-preferences'
 import type { SimulationOverlayState } from './pro-chart-adapter'
 import { drawingScope } from './drawings'
@@ -31,8 +31,8 @@ interface ChartWindowSnapshot {
 }
 
 export interface ChartWindowConnection {
-  datafeed: ReplayDatafeed
-  liveDatafeed: BinanceDatafeed
+  datafeed: CTraderReplayDatafeed
+  liveDatafeed: CTraderDatafeed
   initialPeriod: Period
   setPeriod(period: Period): void
   saveDefaultSize(size: ChartWindowSize): void
@@ -131,7 +131,7 @@ export class ChartWindowHost {
           (replay === null) !== (next === null) ||
           (replay !== null && next !== null && visibleUntil !== null && (
             replay.sessionId !== next.sessionId || visibleUntil < replayVisibleUntil(replay) ||
-            replayChartNeedsReload(replay, next, period.text)
+            ctraderReplayChartNeedsReload(replay, next, period.text)
           ))
         )
         if (state.mode !== 'live') liveDatafeed.setLiveEnabled(false)
@@ -145,7 +145,7 @@ export class ChartWindowHost {
             snapshot.configRevision === state.configRevision && snapshot.simulationOverlays === state.simulationOverlays) return
         snapshot = { symbol: state.symbol, mode: state.mode, visibleUntil, simulationOverlays: state.simulationOverlays,
           chartRevision, configRevision: state.configRevision,
-          drawingScope: drawingScope(state.mode, state.symbol.ticker, next?.sessionId ?? null) }
+          drawingScope: drawingScope(state.mode, state.symbol.ticker, next?.sessionId ?? null, state.symbol.exchange) }
         notify()
       },
       close: () => {

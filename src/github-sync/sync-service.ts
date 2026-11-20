@@ -15,6 +15,7 @@ import {
   type GitHubFile,
   type GitHubSnapshot,
 } from './github-client'
+import { CTRADER_STORAGE_ROOT } from './default-storage'
 
 const MANIFEST_TYPE = 'crypto-contract-workstation-manifest'
 const MANIFEST_VERSION = 1
@@ -280,10 +281,33 @@ export class GitHubSyncService {
   constructor(
     private readonly backups: WorkstationBackupService,
     private readonly now: () => number = Date.now,
+    private readonly options: { scope?: 'ctrader' } = {},
   ) {}
+
+  private get experiment(): boolean {
+    return this.options.scope === 'ctrader'
+  }
+
+  private validateTarget(client: GitHubContentsClient): void {
+    if (this.experiment && client.getTarget().root !== CTRADER_STORAGE_ROOT) {
+      throw new Error('cTrader 云端同步目标必须使用实验命名空间')
+    }
+  }
+
+  private archiveEntries(entries: SyncManifestEntry[]): SyncManifestEntry[] {
+    if (!this.experiment) return entries
+    return entries.filter(entry => {
+      if (entry.category === 'market-data') return false
+      if (entry.category === 'config' && ['config/preferences.json', 'config/favorites.json'].includes(entry.path)) return true
+      if (entry.category === 'session' && /^sessions\/[^/]+\.json$/.test(entry.path)) return true
+      if (entry.category === 'trade' && /^trades\/[^/]+\.json$/.test(entry.path)) return true
+      throw new Error(`远端清单包含不支持的路径：${entry.path}`)
+    })
+  }
 
   /** Read only config files, at one immutable Git snapshot, and validate before applying anything. */
   async readConfig(client: GitHubContentsClient, signal?: AbortSignal): Promise<RemoteConfig> {
+    this.validateTarget(client)
     const snapshot = await client.getSnapshot({ signal })
     const options = { ref: snapshot.commitSha, signal }
     const manifestFile = await client.getFile('manifest.json', options)
@@ -298,7 +322,7 @@ export class GitHubSyncService {
       const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
       if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
       if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
-      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'ctraderAccount', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
         if (value[key] !== undefined) preferences[key] = value[key]
       }
     }
@@ -308,6 +332,7 @@ export class GitHubSyncService {
 
   /** Commit an immutable merged configuration and its manifest without touching other categories. */
   async writeConfig(client: GitHubContentsClient, preferences: BackupPreferences, remote: RemoteConfig): Promise<void> {
+    this.validateTarget(client)
     const validated = validateBackupEnvelope(configurationEnvelope(preferences)).data.preferences!
     const entries = new Map((remote.manifest?.files ?? []).map(entry => [entry.path, entry]))
     const pending: { path: string; bytes: Uint8Array }[] = []
@@ -325,7 +350,8 @@ export class GitHubSyncService {
   async prepare(
     selection: SyncSelection = ALL_SYNC_SELECTION,
   ): Promise<SyncFile[]> {
-    const backup = selection.config && !selection.sessions && !selection.marketData &&
+    const marketSelected = selection.marketData && !this.experiment
+    const backup = selection.config && !selection.sessions && !marketSelected &&
       typeof this.backups.exportPreferences === 'function'
       ? await this.backups.exportPreferences()
       : await this.backups.exportAll()
@@ -389,7 +415,7 @@ export class GitHubSyncService {
       }
       chunk.tradeCandles.push(candle)
     }
-    if (selection.marketData) {
+    if (marketSelected) {
       data.tradeCandles?.forEach(append)
       for (const chunk of [...chunks.values()].sort((left, right) =>
         chunkPath(left).localeCompare(chunkPath(right)),
@@ -416,6 +442,7 @@ export class GitHubSyncService {
     client: GitHubContentsClient,
     selection: SyncSelection = ALL_SYNC_SELECTION,
   ): Promise<SyncComparison> {
+    this.validateTarget(client)
     const local = await this.prepare(selection)
     const remoteFile = await client.getFile('manifest.json')
     if (remoteFile === null) {
@@ -429,7 +456,7 @@ export class GitHubSyncService {
       }
     }
     const remote = manifest(parseJson(remoteFile.bytes, 'manifest.json'))
-    const selectedRemoteFiles = remote.files.filter((file) =>
+    const selectedRemoteFiles = this.archiveEntries(remote.files).filter((file) =>
       categorySelected(file.category, selection),
     )
     const remoteChecksums = new Map(
@@ -461,7 +488,9 @@ export class GitHubSyncService {
     selection: SyncSelection = ALL_SYNC_SELECTION,
     onProgress?: SyncProgress,
   ): Promise<SyncResult> {
+    this.validateTarget(client)
     const localFiles = await this.prepare(selection)
+    if (this.experiment && localFiles.length === 0) return { files: 0, bytes: 0, copiedConflicts: 0, skippedConflicts: 0 }
     const baseline = new Map<string, string | null>()
     const desired = new Map<string, SyncFile>()
     const makeFile = async (path: string, bytes: Uint8Array, category: SyncFile['category']): Promise<SyncFile> => ({
@@ -571,17 +600,20 @@ export class GitHubSyncService {
     client: GitHubContentsClient,
     onProgress?: SyncProgress,
   ): Promise<SyncResult> {
-    const manifestFile = await client.getFile('manifest.json')
+    this.validateTarget(client)
+    const options = this.experiment ? { ref: (await client.getSnapshot()).commitSha } : undefined
+    const manifestFile = await client.getFile('manifest.json', options)
     if (manifestFile === null) {
       throw new Error('远端仓库中没有 manifest.json')
     }
     const remote = manifest(parseJson(manifestFile.bytes, 'manifest.json'))
-    if (remote.files.length === 0) return {files:0,bytes:0,copiedConflicts:0,skippedConflicts:0}
-    const hasConfig = remote.files.some((entry) => entry.category === 'config')
-    const hasSessions = remote.files.some(
+    const files = this.archiveEntries(remote.files)
+    if (files.length === 0) return {files:0,bytes:0,copiedConflicts:0,skippedConflicts:0}
+    const hasConfig = files.some((entry) => entry.category === 'config')
+    const hasSessions = files.some(
       (entry) => entry.category === 'session' || entry.category === 'trade',
     )
-    const hasMarketData = remote.files.some(
+    const hasMarketData = files.some(
       (entry) => entry.category === 'market-data',
     )
     const configOnly = hasConfig && !hasSessions && !hasMarketData
@@ -597,11 +629,11 @@ export class GitHubSyncService {
     const simulations: SimulationState[] = hasSessions
       ? []
       : [...(current.data.simulations ?? [])]
-    const tradeCandles: MarketCandle[] = hasMarketData
+    const tradeCandles: MarketCandle[] = hasMarketData || this.experiment
       ? []
       : [...(current.data.tradeCandles ?? [])]
     const symbols = new Map<string, MarketSymbol>(
-      hasMarketData
+      hasMarketData || this.experiment
         ? []
         : (current.data.symbols ?? []).map((symbol) => [
             symbol.symbol,
@@ -611,10 +643,10 @@ export class GitHubSyncService {
     let bytes = 0
     // Migrated minute chunks may coexist with legacy files. Read legacy first
     // so the project data path wins for overlapping candle identities.
-    const orderedFiles = [...remote.files].sort((left, right) => Number(right.path.startsWith('market-data/')) - Number(left.path.startsWith('market-data/')))
+    const orderedFiles = [...files].sort((left, right) => Number(right.path.startsWith('market-data/')) - Number(left.path.startsWith('market-data/')))
     for (const [index, entry] of orderedFiles.entries()) {
-      onProgress?.(`拉取 ${index + 1}/${remote.files.length}：${entry.path}`)
-      const file = await client.getFile(entry.path)
+      onProgress?.(`拉取 ${index + 1}/${files.length}：${entry.path}`)
+      const file = await client.getFile(entry.path, options)
       if (file === null) {
         throw new Error(`远端清单中的文件不存在：${entry.path}`)
       }
@@ -631,6 +663,7 @@ export class GitHubSyncService {
           binanceRestBaseUrl?: unknown
           chartIndicators?: unknown
           selectedSymbol?: unknown
+          ctraderAccount?: unknown
           pinnedPeriods?: unknown
           workspace?: unknown
           candleType?: unknown
@@ -665,6 +698,9 @@ export class GitHubSyncService {
         }
         if (value.selectedSymbol !== undefined) {
           preferences.selectedSymbol = value.selectedSymbol as BackupPreferences['selectedSymbol']
+        }
+        if (value.ctraderAccount !== undefined) {
+          preferences.ctraderAccount = value.ctraderAccount as BackupPreferences['ctraderAccount']
         }
         if (value.chartIndicators !== undefined) {
           preferences.chartIndicators =
@@ -712,8 +748,10 @@ export class GitHubSyncService {
       },
     }
     const symbolMap = new Map<string, ReplaySession['symbol']>()
-    for (const session of sessions) {
-      symbolMap.set(session.symbol.ticker, session.symbol)
+    if (!this.experiment) {
+      for (const session of sessions) {
+        if (session.marketSource !== 'ctrader') symbolMap.set(session.symbol.ticker, session.symbol)
+      }
     }
     for (const candle of tradeCandles) {
       if (!symbolMap.has(candle.symbol)) {
@@ -747,7 +785,7 @@ export class GitHubSyncService {
     ]
     await this.backups.import(validateBackupEnvelope(backup, current.data.preferences?.chartIndicators), onProgress)
     return {
-      files: remote.files.length,
+      files: files.length,
       bytes,
       copiedConflicts: 0,
       skippedConflicts: 0,

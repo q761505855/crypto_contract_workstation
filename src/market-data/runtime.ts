@@ -1,82 +1,57 @@
-import { BinanceDatafeed } from './binance-datafeed'
-import { MarketDataService } from './market-data-service'
-import {
-  BinanceRestClient,
-  DEFAULT_BASE_URL,
-} from './rest-client'
-import { IndexedDbMarketDataStore } from '../storage/market-data-store'
+import { CTraderClient } from './ctrader-client'
+import { CTraderAccountSelection } from './ctrader-account-selection'
+import { loadCTraderConnection } from './ctrader-connection'
+import { CTraderDatafeed } from './ctrader-datafeed'
+import { CTraderMarketService } from './ctrader-market'
+import { CTraderReplayDatafeed } from '../replay/ctrader-replay-datafeed'
+import { CTRADER_DATABASE_NAME, ctraderStorage } from '../storage/ctrader-storage'
 import { IndexedDbReplaySessionStore } from '../storage/replay-session-store'
 import { IndexedDbSimulationStateStore } from '../storage/simulation-state-store'
-import { ReplayDatafeed } from '../replay/replay-datafeed'
 import { WorkstationBackupService } from '../storage/backup-service'
 import { GitHubSyncService } from '../github-sync/sync-service'
-import { BinanceRequestGuard, createBrowserRequestGuard } from './request-guard'
-import { BinanceArchiveClient } from './archive-client'
 import { defaultStorageTarget } from '../github-sync/default-storage'
 import { GitHubContentsClient } from '../github-sync/github-client'
-import { GitHubHistoryStore } from '../github-sync/history-store'
-import { writePreference } from '../storage/preference-events'
 import type { ConfigAutoSync } from '../github-sync/config-auto-sync'
 import { DrawingStore } from '../chart/drawings'
 import { DrawingAutoSync } from '../github-sync/drawing-auto-sync'
 
-const BASE_URL_PREFERENCE = 'marketData.binanceBaseUrl'
-
 export interface MarketDataRuntime {
-  requestGuard: BinanceRequestGuard
-  datafeed: BinanceDatafeed
-  replayDatafeed: ReplayDatafeed
-  service: MarketDataService
+  accountSelection: CTraderAccountSelection
+  datafeed: CTraderDatafeed
+  replayDatafeed: CTraderReplayDatafeed
+  service: CTraderMarketService
   replaySessions: IndexedDbReplaySessionStore
   simulationStates: IndexedDbSimulationStateStore
   backups: WorkstationBackupService
   githubSync: GitHubSyncService
-  defaultGitHubClient?: GitHubContentsClient
+  defaultGitHubClient: GitHubContentsClient
   configSync?: ConfigAutoSync
   drawings: DrawingStore
   drawingSync: DrawingAutoSync
-}
-
-function savedBaseUrl(): string {
-  try {
-    return localStorage.getItem(BASE_URL_PREFERENCE) ?? DEFAULT_BASE_URL
-  } catch {
-    return DEFAULT_BASE_URL
-  }
+  disposeMarketConnection(): void
 }
 
 export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime {
-  const store = new IndexedDbMarketDataStore()
-  const requestGuard = createBrowserRequestGuard()
-  const client = new BinanceRestClient(savedBaseUrl(), fetch, Date.now, undefined, requestGuard)
+  const accountSelection = new CTraderAccountSelection()
+  const connection = new CTraderClient(loadCTraderConnection, undefined, accountSelection.choose, accountSelection.selected)
+  const service = new CTraderMarketService(connection)
+  const datafeed = new CTraderDatafeed(service)
   const defaultGitHubClient = new GitHubContentsClient(defaultStorageTarget(), cloudToken)
-  const service = new MarketDataService(client, store, {
-    archives: new BinanceArchiveClient(),
-    cloud: new GitHubHistoryStore(defaultGitHubClient),
-    pendingStorage: localStorage,
-  })
-  const datafeed = new BinanceDatafeed(service)
   const drawings = new DrawingStore()
-  const backups = new WorkstationBackupService(undefined, localStorage, Date.now, drawings)
+  const backups = new WorkstationBackupService(CTRADER_DATABASE_NAME, ctraderStorage, Date.now, drawings, { includeMarketHistory: false })
+
   return {
-    requestGuard,
+    accountSelection,
     datafeed,
-    replayDatafeed: new ReplayDatafeed(datafeed, service),
+    replayDatafeed: new CTraderReplayDatafeed(datafeed, service),
     service,
-    replaySessions: new IndexedDbReplaySessionStore(),
-    simulationStates: new IndexedDbSimulationStateStore(),
+    replaySessions: new IndexedDbReplaySessionStore(CTRADER_DATABASE_NAME),
+    simulationStates: new IndexedDbSimulationStateStore(CTRADER_DATABASE_NAME),
     backups,
-    githubSync: new GitHubSyncService(backups),
+    githubSync: new GitHubSyncService(backups, Date.now, { scope: 'ctrader' }),
     defaultGitHubClient,
     drawings,
     drawingSync: new DrawingAutoSync(drawings, defaultGitHubClient),
-  }
-}
-
-export function saveBaseUrlPreference(baseUrl: string): void {
-  try {
-    writePreference(localStorage, BASE_URL_PREFERENCE, baseUrl)
-  } catch {
-    // The current session still uses the value when storage is unavailable.
+    disposeMarketConnection: () => service.dispose(),
   }
 }

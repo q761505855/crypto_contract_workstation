@@ -15,6 +15,7 @@ import { SimulationEngine } from '../simulation/simulation-engine'
 import { IndexedDbMarketDataStore, openWorkstationDatabase } from './market-data-store'
 import { IndexedDbReplaySessionStore } from './replay-session-store'
 import { IndexedDbSimulationStateStore } from './simulation-state-store'
+import { CTRADER_DATABASE_NAME } from './ctrader-storage'
 import {
   BACKUP_FILE_TYPE,
   WorkstationBackupService,
@@ -117,6 +118,115 @@ function session(): ReplaySession {
     updatedAt: 0,
   }
 }
+
+it('validates a legacy full backup and imports only configuration and sessions in the cTrader experiment', async () => {
+  const legacy = new WorkstationBackupService(`legacy-source-${crypto.randomUUID()}`, new MemoryPreferences())
+  const archive = await legacy.exportAll()
+  archive.data.symbols = [symbol()]
+  archive.data.tradeCandles = [candle()]
+  archive.data.sessions = [session()]
+  const databaseName = `ctrader-target-${crypto.randomUUID()}`
+  const target = new WorkstationBackupService(databaseName, new MemoryPreferences(), Date.now, undefined, { includeMarketHistory: false })
+  expect(await target.import(archive)).toMatchObject({ symbols: 0, tradeCandles: 0, sessions: 1 })
+  expect(await new IndexedDbReplaySessionStore(databaseName).get(session().id)).toEqual(session())
+  expect((await target.exportAll()).data).toMatchObject({ tradeCandles: [], symbols: [] })
+  await expect(target.exportMarketData()).rejects.toThrow('行情')
+  archive.data.tradeCandles = [{ ...candle(), close: 'invalid' }]
+  archive.data.preferences!.favoriteSymbols = ['EURUSD']
+  await expect(target.import(archive)).rejects.toThrow('tradeCandles')
+  expect((await target.exportPreferences()).data.preferences?.favoriteSymbols).toEqual([])
+})
+
+it('writes imported replay and simulated trades to the experimental database only', async () => {
+  const legacySessions = new IndexedDbReplaySessionStore()
+  const experimentalSessions = new IndexedDbReplaySessionStore(CTRADER_DATABASE_NAME)
+  const original = { ...session(), id: 'database-isolation', updatedAt: 0 }
+  await legacySessions.put(original)
+  const restored = { ...original, updatedAt: 1 }
+  const simulation = SimulationEngine.create(restored)
+  simulation.open('long', { quantity: '1' }, candle())
+  const archive = { fileType: BACKUP_FILE_TYPE, schemaVersion: 1, kind: 'session', exportedAt: 1,
+    data: { sessions: [restored], simulations: [simulation.snapshot()] } }
+  const target = new WorkstationBackupService(CTRADER_DATABASE_NAME, new MemoryPreferences(), Date.now, undefined, { includeMarketHistory: false })
+  await target.import(archive)
+  expect(await legacySessions.get(restored.id)).toEqual(original)
+  expect(await new IndexedDbSimulationStateStore().load(restored.id)).toBeUndefined()
+  expect(await experimentalSessions.get(restored.id)).toEqual(restored)
+  expect((await new IndexedDbSimulationStateStore(CTRADER_DATABASE_NAME).load(restored.id))?.trades).toHaveLength(1)
+})
+
+it('validates native periods, cTrader settings and the archived cursor without rewriting legacy selections', async () => {
+  const target = new WorkstationBackupService(`ctrader-prefs-${crypto.randomUUID()}`, new MemoryPreferences())
+  const archive = await target.exportAll()
+  archive.data.preferences = {
+    ...archive.data.preferences!, favoriteSymbols: ['EURUSD'], pinnedPeriods: ['2m', '6h'],
+    replayStepPeriod: '10m', selectedSymbol: { exchange: 'CTRADER', ticker: 'XAUUSD' },
+  }
+  const native = { ...session(), id: 'ctrader-replay', symbol: { exchange: 'CTRADER', ticker: 'EURUSD' },
+    endTime: 119_999, visibleUntil: 120_000, marketSource: 'ctrader', cursorTimeframe: '2m' } as const
+  archive.data.sessions = [native]
+  await target.import(archive)
+  expect((await target.exportAll()).data).toMatchObject({ preferences: archive.data.preferences, sessions: [native] })
+  const invalid = { ...archive, data: { ...archive.data, sessions: [{ ...native, cursorTimeframe: '6h' }],
+    preferences: { ...archive.data.preferences!, favoriteSymbols: [] } } }
+  await expect(target.import(invalid)).rejects.toThrow('cursorTimeframe')
+  const malformedBoundary = { ...archive, data: { ...archive.data,
+    sessions: [{ ...native, visibleUntil: native.visibleUntil - 1 }],
+    preferences: { ...archive.data.preferences!, favoriteSymbols: [] } } }
+  await expect(target.import(malformedBoundary)).rejects.toThrow('visibleUntil')
+  expect((await target.exportAll()).data.sessions).toEqual([native])
+  expect((await target.exportPreferences()).data.preferences?.favoriteSymbols).toEqual(['EURUSD'])
+})
+
+it('round-trips fine replay settings and Tick cursors while validating them before import', async () => {
+  const target = new WorkstationBackupService(`ctrader-ticks-${crypto.randomUUID()}`, new MemoryPreferences())
+  const archive = await target.exportAll()
+  const tick = {
+    ...session(), symbol: { exchange: 'CTRADER', ticker: 'EURUSD' }, marketSource: 'ctrader' as const,
+    cursorTimeframe: 'tick' as const, cursorTickIndex: 0, currentTime: 60_123, currentIndex: 1, visibleUntil: 60_124, endTime: 120_000,
+  }
+  for (const replayStepPeriod of ['1s', '5s', '15s', 'tick'] as const) {
+    const data = { ...archive.data, preferences: { ...archive.data.preferences!, replayStepPeriod }, sessions: [tick] }
+    await target.import({ ...archive, data })
+    expect((await target.exportPreferences()).data.preferences).toEqual(data.preferences)
+    expect((await target.exportAll()).data).toMatchObject({ preferences: data.preferences, sessions: [tick] })
+  }
+  const restored = (await target.exportAll()).data
+  const legacyPreferences = { ...restored.preferences }
+  delete legacyPreferences.replayStepPeriod
+  await target.import({ ...archive, kind: 'preferences', data: { preferences: legacyPreferences } })
+  expect((await target.exportPreferences()).data.preferences?.replayStepPeriod).toBe('tick')
+  for (const replayStepPeriod of [null, '', false, 0, '10s']) {
+    await expect(target.import({ ...archive, data: { ...restored, preferences: { ...restored.preferences!, replayStepPeriod } } }))
+      .rejects.toThrow('replayStepPeriod')
+  }
+  for (const cursorTickIndex of [undefined, -1, null, 1.5]) {
+    await expect(target.import({ ...archive, data: { ...restored, sessions: [{ ...tick, cursorTickIndex }] } }))
+      .rejects.toThrow('cursorTickIndex')
+  }
+  const seconds = { ...tick, cursorTimeframe: '5s', cursorTickIndex: undefined, currentTime: 65_000, visibleUntil: 70_000 }
+  await expect(target.import({ ...archive, data: { ...restored, sessions: [{ ...seconds, currentTime: 65_001 }] } }))
+    .rejects.toThrow('visibleUntil')
+  expect((await target.exportAll()).data).toEqual(restored)
+  await target.import({ ...archive, data: { ...restored, sessions: [seconds] } })
+  const { cursorTickIndex: _, ...archivedSeconds } = seconds
+  expect((await target.exportAll()).data.sessions).toEqual([archivedSeconds])
+})
+
+it('round-trips the cTrader account preference and rejects invalid values before writes', async () => {
+  const target = new WorkstationBackupService(`ctrader-account-${crypto.randomUUID()}`, new MemoryPreferences())
+  const archive = await target.exportPreferences()
+  expect(archive.data.preferences).not.toHaveProperty('ctraderAccount')
+  await target.import({ ...archive, data: { preferences: { ...archive.data.preferences!, ctraderAccount: 'live:19' } } })
+  expect((await target.exportPreferences()).data.preferences).toMatchObject({ ctraderAccount: 'live:19' })
+  await target.import(archive)
+  const full = (await target.exportAll()).data
+  expect(full.preferences).toMatchObject({ ctraderAccount: 'live:19' })
+  for (const ctraderAccount of [null, '', false, 0, [], {}, 'live:0', 'demo:-1', 'real:19', 'live:9007199254740992']) {
+    await expect(target.import({ ...archive, data: { preferences: { ...archive.data.preferences!, favoriteSymbols: ['EURUSD'], ctraderAccount } } })).rejects.toThrow('ctraderAccount')
+    expect((await target.exportAll()).data).toEqual(full)
+  }
+})
 
 async function seed(databaseName: string, preferences: MemoryPreferences) {
   preferences.setItem(PINNED_PERIODS_KEY, JSON.stringify(['1m', '1d']))

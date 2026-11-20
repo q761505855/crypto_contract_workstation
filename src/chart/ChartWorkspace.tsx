@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom'
 import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import {
   createChartOptions,
-  DEFAULT_SYMBOL,
-  SUPPORTED_PERIODS,
+  DEFAULT_CTRADER_SYMBOL,
+  DEFAULT_CTRADER_PERIOD,
+  CTRADER_PERIODS,
 } from './chart-config'
 import { DemoDatafeed } from './demo-datafeed'
 import {
@@ -32,15 +33,16 @@ export interface ChartWorkspaceProps {
   onSelectionChange?: (selection: {
     symbol: SymbolInfo
     period: Period
-  }) => void
+  }, userSelectedSymbol?: boolean) => void
   simulationOverlays?: SimulationOverlayState
   showTradeOverlays?: boolean
   jumpRequest?: {
     id: string
     timestamp: number
+    previewReplay: boolean
   } | null
   onJumpComplete?: (timestamp: number | null) => void
-  onRightmostCandleTimeChange?: (timestamp: number | null) => void
+  onReplayStartTimeChange?: (timestamp: number | null) => void
   layoutSettingsOpen?: boolean
   onCloseLayoutSettings?: () => void
   chartHeight?: number | null
@@ -55,15 +57,15 @@ const demoDatafeed = new DemoDatafeed()
 export function ChartWorkspace({
   createAdapter = () => new ProChartAdapter(),
   datafeed = demoDatafeed,
-  symbol = DEFAULT_SYMBOL,
-  period = SUPPORTED_PERIODS[3],
+  symbol = DEFAULT_CTRADER_SYMBOL,
+  period = DEFAULT_CTRADER_PERIOD,
   reloadKey = 0,
   onSelectionChange,
   simulationOverlays,
   showTradeOverlays = true,
   jumpRequest = null,
   onJumpComplete,
-  onRightmostCandleTimeChange,
+  onReplayStartTimeChange,
   layoutSettingsOpen = false,
   onCloseLayoutSettings,
   chartHeight = null,
@@ -335,7 +337,7 @@ export function ChartWorkspace({
     const periodAtJump = adapter.getPeriod().text
     const isCurrent = () => active && adapter.getSymbol().ticker === symbolAtJump && adapter.getPeriod().text === periodAtJump
     void jump
-      .call(adapterRef.current, jumpRequest.timestamp)
+      .call(adapter, jumpRequest.timestamp, jumpRequest.previewReplay)
       .then((timestamp) => {
         if (isCurrent()) onJumpComplete?.(timestamp)
       })
@@ -349,20 +351,20 @@ export function ChartWorkspace({
   }, [jumpRequest?.id, onJumpComplete])
 
   useEffect(() => {
-    if (onRightmostCandleTimeChange === undefined) return
+    if (onReplayStartTimeChange === undefined) return
     const adapter = adapterRef.current
-    if (adapter?.getRightmostVisibleCandleTime === undefined) return
+    if (adapter?.getReplayStartTime === undefined) return
     let previous: number | null | undefined
     const synchronize = () => {
-      const timestamp = adapter.getRightmostVisibleCandleTime?.() ?? null
+      const timestamp = adapter.getReplayStartTime?.() ?? null
       if (timestamp === previous) return
       previous = timestamp
-      onRightmostCandleTimeChange(timestamp)
+      onReplayStartTimeChange(timestamp)
     }
     synchronize()
     const interval = window.setInterval(synchronize, 250)
     return () => window.clearInterval(interval)
-  }, [onRightmostCandleTimeChange])
+  }, [onReplayStartTimeChange])
 
   useEffect(() => {
     if (auxiliary) return
@@ -406,7 +408,7 @@ export function ChartWorkspace({
   }, [])
 
   function selectCompactPeriod(periodText: string): void {
-    const nextPeriod = SUPPORTED_PERIODS.find(
+    const nextPeriod = CTRADER_PERIODS.find(
       (candidate) => candidate.text === periodText,
     )
     if (nextPeriod === undefined) return
@@ -425,7 +427,7 @@ export function ChartWorkspace({
     onSelectionChange?.({
       symbol: nextSymbol,
       period: periodRef.current,
-    })
+    }, true)
   }
 
   function changePriceRangeMode(auto: boolean): void {
@@ -484,7 +486,7 @@ export function ChartWorkspace({
       onDoubleClick={event => event.stopPropagation()}
       onWheel={event => event.stopPropagation()}
     >
-      <span className="price-axis-unit" aria-label="计价单位">{symbol.priceCurrency?.toUpperCase() ?? 'USDT'}</span>
+      <span className="price-axis-unit" aria-label="计价单位">{symbol.priceCurrency?.toUpperCase() ?? '—'}</span>
       <button
         aria-label="自动价格范围"
         aria-pressed={priceRangeAuto}

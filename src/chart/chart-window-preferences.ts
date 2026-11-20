@@ -1,4 +1,5 @@
 import { writePreference } from '../storage/preference-events'
+import { ctraderStorage } from '../storage/ctrader-storage'
 
 export interface ChartWindowSize {
   width: number
@@ -22,7 +23,7 @@ export function validateChartWindowSize(value: unknown): ChartWindowSize {
 
 export function readChartWindowSize(storage?: Pick<Storage, 'getItem'>): ChartWindowSize {
   try {
-    const saved = (storage ?? localStorage).getItem(CHART_WINDOW_SIZE_KEY)
+    const saved = (storage ?? ctraderStorage).getItem(CHART_WINDOW_SIZE_KEY)
     if (saved !== null) return validateChartWindowSize(JSON.parse(saved))
   } catch {
     // Unavailable storage and invalid local values both use the built-in size.
@@ -30,6 +31,6 @@ export function readChartWindowSize(storage?: Pick<Storage, 'getItem'>): ChartWi
   return { ...DEFAULT_CHART_WINDOW_SIZE }
 }
 
-export function saveChartWindowSize(value: ChartWindowSize, storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage): void {
+export function saveChartWindowSize(value: ChartWindowSize, storage: Pick<Storage, 'getItem' | 'setItem'> = ctraderStorage): void {
   writePreference(storage, CHART_WINDOW_SIZE_KEY, JSON.stringify(validateChartWindowSize(value)))
 }

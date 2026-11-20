@@ -9,8 +9,11 @@ export const LEGACY_THREE_DAY_TIMEFRAME = '3d-legacy'
 
 const FIXED_INTERVALS = Object.freeze({
   '1m': 60_000,
+  '2m': 2 * 60_000,
   '3m': 3 * 60_000,
+  '4m': 4 * 60_000,
   '5m': 5 * 60_000,
+  '10m': 10 * 60_000,
   '15m': 15 * 60_000,
   '30m': 30 * 60_000,
   '1h': 3_600_000,
@@ -26,6 +29,17 @@ const FIXED_INTERVALS = Object.freeze({
 type FixedTimeframe = keyof typeof FIXED_INTERVALS
 export type MarketTimeframe = FixedTimeframe | '1w' | '1M'
 
+export const CTRADER_TIMEFRAMES = [
+  '1m', '2m', '3m', '4m', '5m', '10m', '15m', '30m',
+  '1h', '4h', '12h', '1d', '1w', '1M',
+] as const
+
+export type CTraderTimeframe = typeof CTRADER_TIMEFRAMES[number]
+
+export function isCTraderTimeframe(value: string): value is CTraderTimeframe {
+  return (CTRADER_TIMEFRAMES as readonly string[]).includes(value)
+}
+
 const WEEK_INTERVAL = 7 * 86_400_000
 const MONDAY_UTC_ANCHOR = Date.UTC(1970, 0, 5)
 
@@ -35,8 +49,12 @@ export const SUPPORTED_TIMEFRAMES = Object.freeze([
   '1M',
 ])
 
+export const BINANCE_TIMEFRAMES: readonly string[] = Object.freeze([
+  '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M',
+])
+
 export function periodToTimeframe(period: Period): string {
-  if (!SUPPORTED_TIMEFRAMES.includes(period.text)) {
+  if (!BINANCE_TIMEFRAMES.includes(period.text)) {
     throw new Error(`不支持的周期：${period.text}`)
   }
   return period.text

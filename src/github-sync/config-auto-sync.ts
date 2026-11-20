@@ -1,4 +1,5 @@
 import { WorkstationBackupService, type BackupPreferences, validateBackupEnvelope } from '../storage/backup-service'
+import { browserStorageKey } from '../storage/ctrader-storage'
 import { CONFIG_PENDING_KEY, PREFERENCES_CHANGED, PREFERENCES_RESTORED } from '../storage/preference-events'
 import { GitHubConflictError, type GitHubContentsClient } from './github-client'
 import { configurationEnvelope, type GitHubSyncService } from './sync-service'
@@ -16,14 +17,14 @@ function stable(value: unknown): string {
 }
 const equal = (left: unknown, right: unknown) => stable(left) === stable(right)
 
-/** Arrays and the captured window size are whole settings; other objects merge by field. */
+/** A product and its metadata move together, as do arrays and captured window sizes. */
 export function mergeConfig(base: BackupPreferences | undefined, local: BackupPreferences, remote: BackupPreferences, resolution?: 'local' | 'remote', remoteBase = base): { preferences: BackupPreferences; conflicts: string[] } {
   const conflicts: string[] = []
   const merge = (beforeHere: unknown, beforeThere: unknown, here: unknown, there: unknown, path: string): unknown => {
     // Absent remote optional fields are legacy omissions, never deletion commands.
     if (there === undefined) return here
     if (equal(here, there)) return here
-    if (path !== 'chartWindowSize' && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
+    if (path !== 'chartWindowSize' && path !== 'selectedSymbol' && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
       return Object.fromEntries([...new Set([...Object.keys(here), ...Object.keys(there)])].map(key => [
         key, merge(object(beforeHere) ? beforeHere[key] : undefined, object(beforeThere) ? beforeThere[key] : undefined, here[key], there[key], path ? `${path}.${key}` : key),
       ]))
@@ -89,8 +90,9 @@ export class ConfigAutoSync {
 
   private wake = (): void => { if (this.status.phase !== 'conflict') void this.flush() }
   private storageChanged = (event: StorageEvent): void => {
-    if (event.key === CONFIG_PENDING_KEY && event.newValue === 'true') this.schedule(1_000)
-    if (event.key === CONFIG_BASELINE_KEY) {
+    const { storage } = this.options
+    if (event.key === browserStorageKey(storage, CONFIG_PENDING_KEY) && event.newValue === 'true') this.schedule(1_000)
+    if (event.key === browserStorageKey(storage, CONFIG_BASELINE_KEY)) {
       // The baseline is written after the full configuration. A receiving tab
       // must replace its old component state even if storage already equals Git.
       window.dispatchEvent(new CustomEvent(PREFERENCES_RESTORED, { detail: { source: 'cloud' } }))
@@ -119,7 +121,7 @@ export class ConfigAutoSync {
     // Serialize cooperating pages. Git's non-forced ref update still guards
     // independent devices and browsers without Web Locks.
     if (typeof navigator !== 'undefined' && navigator.locks?.request) {
-      await navigator.locks.request('workstation:config-sync', { ifAvailable: true }, async lock => {
+      await navigator.locks.request(browserStorageKey(this.options.storage, 'workstation:config-sync'), { ifAvailable: true }, async lock => {
         if (lock) await this.cycle()
         else this.schedule(1_000)
       })

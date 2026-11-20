@@ -22,6 +22,7 @@ function fixture() {
   const actions = new Map<string, Set<() => void>>()
   const core = {
     getDataList: () => data,
+    getSize: () => ({ width: 800 }),
     getVisibleRange: () => ({ from: 0, to: visibleTo }),
     subscribeAction: (name: string, callback: () => void) => { const set = actions.get(name) ?? new Set(); set.add(callback); actions.set(name, set) },
     unsubscribeAction: (name: string, callback: () => void) => actions.get(name)?.delete(callback),
@@ -141,6 +142,20 @@ describe('chart viewport navigation', () => {
     panTo(panned)
     adapter.setPeriod(period('1m'))
     await vi.waitFor(() => expect(core.scrollToTimestamp).toHaveBeenLastCalledWith(panned, 0))
+  })
+
+  it('previews bars across a month boundary and keeps the selected replay start until panned', async () => {
+    const { adapter, history, core, actions, panTo } = fixture()
+    const target = Date.UTC(2025, 8, 30, 23, 59)
+    await expect(adapter.jumpToTime(target, true)).resolves.toBe(target)
+    expect(history.mock.calls[0][3]).toBeGreaterThan(Date.UTC(2025, 9, 1))
+    expect(core.scrollByDistance).toHaveBeenLastCalledWith(10 - 400, 0)
+    expect(adapter.getReplayStartTime()).toBe(target)
+
+    const panned = Date.UTC(2025, 9, 1, 0, 5)
+    panTo(panned)
+    for (const callback of actions.get('onScroll') ?? []) callback()
+    expect(adapter.getReplayStartTime()).toBe(panned)
   })
 
   it('inherits the original anchor during rapid switches and discards late positioning', async () => {

@@ -19,6 +19,7 @@ describe('drawing archive', () => {
     expect(auxiliary.forScope(drawingScope('history', 'BTCUSDT', 'replay-one'))).toEqual([])
     expect(auxiliary.forScope(drawingScope('history', 'BTCUSDT', null))).toEqual([drawing])
     expect(auxiliary.forScope(drawingScope('live', 'ETHUSDT', null))).toEqual([])
+    expect(auxiliary.forScope(drawingScope('live', 'BTCUSDT', null, 'CTRADER'))).toEqual([])
     await auxiliary.remove(drawing.id)
     expect(main.forScope(drawing.scope)).toEqual([])
   })

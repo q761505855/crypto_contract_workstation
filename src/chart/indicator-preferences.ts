@@ -5,6 +5,7 @@ import { validateMarketSessionStyles } from './market-session-styles'
 import { validateStyleColors } from './colors'
 import { validateRsiLevels } from './rsi'
 import { writePreference } from '../storage/preference-events'
+import { ctraderStorage } from '../storage/ctrader-storage'
 
 export const CHART_INDICATORS_PREFERENCE = 'chart.indicators.v1'
 
@@ -206,7 +207,7 @@ export function validateChartIndicatorPreferences(
 }
 
 export function loadChartIndicatorPreferences(
-  storage: ReadableStorage = localStorage,
+  storage: ReadableStorage = ctraderStorage,
 ): ChartIndicatorPreferences | null {
   const stored = storage.getItem(CHART_INDICATORS_PREFERENCE)
   if (stored === null) return null
@@ -219,7 +220,7 @@ export function loadChartIndicatorPreferences(
 
 export function saveChartIndicatorPreferences(
   preferences: ChartIndicatorPreferences,
-  storage: WritableStorage = localStorage,
+  storage: WritableStorage = ctraderStorage,
 ): void {
   const validated = validateChartIndicatorPreferences(preferences)
   writePreference(storage, CHART_INDICATORS_PREFERENCE, JSON.stringify(validated))
