@@ -34,6 +34,25 @@ interface HistoryRange {
   candles: MarketCandle[]
 }
 
+interface HistoryPage {
+  candles: MarketCandle[]
+  hasMore: boolean
+}
+
+function appendHistoryPage(rows: Map<number, MarketCandle>, page: HistoryPage, start: number, end: number): number {
+  let oldest = Infinity
+  for (const candle of page.candles) {
+    if (candle.openTime > end) continue
+    // Counted responses can include bars before the requested start. They
+    // prove this window has been covered without belonging to its output.
+    oldest = Math.min(oldest, candle.openTime)
+    if (candle.openTime >= start) rows.set(candle.openTime, candle)
+  }
+  if (!page.hasMore) return start - 1
+  if (!Number.isFinite(oldest)) throw new Error('cTrader 历史行情分页没有推进')
+  return Math.max(start, oldest) - 1
+}
+
 interface ActiveTrendbar {
   symbolId: number
   period: number
@@ -216,21 +235,10 @@ export class CTraderMarketService {
       const step = nextOpenTime(0, timeframe)
       const pageSpan = Math.min(step * (HISTORY_PAGE_SIZE - 1), 365 * DAY)
       const start = Math.max(requestedFrom, end - pageSpan)
-      const { candles, hasMore } = await this.getHistoryPage(
+      const page = await this.getHistoryPage(
         instrument, timeframe, Math.max(0, start - 1), end, HISTORY_PAGE_SIZE, signal,
       )
-      let oldest = Infinity
-      for (const candle of candles) {
-        if (candle.openTime < start || candle.openTime > end) continue
-        oldest = Math.min(oldest, candle.openTime)
-        candlesByOpen.set(candle.openTime, candle)
-      }
-      if (hasMore) {
-        if (!Number.isFinite(oldest)) throw new Error('cTrader 历史行情分页没有推进')
-        end = oldest - 1
-      } else {
-        end = start - 1
-      }
+      end = appendHistoryPage(candlesByOpen, page, start, end)
     }
     const candles = [...candlesByOpen.values()].sort((left, right) => left.openTime - right.openTime)
     const nextExpiry = candles.some(candle => !candle.isClosed) ? 2_000 : 60_000
@@ -262,17 +270,10 @@ export class CTraderMarketService {
     for (let page = 0; page < RECENT_HISTORY_MAX_PAGES && end >= 0 && candlesByOpen.size < count; page++) {
       signal?.throwIfAborted()
       const start = Math.max(0, end - span)
-      const { candles, hasMore } = await this.getHistoryPage(
+      const response = await this.getHistoryPage(
         instrument, timeframe, start, end, count - candlesByOpen.size, signal,
       )
-      let oldest = Infinity
-      for (const candle of candles) {
-        if (candle.openTime < start || candle.openTime > end) continue
-        oldest = Math.min(oldest, candle.openTime)
-        candlesByOpen.set(candle.openTime, candle)
-      }
-      if (hasMore && !Number.isFinite(oldest)) throw new Error('cTrader 历史行情分页没有推进')
-      end = (hasMore ? oldest : start) - 1
+      end = appendHistoryPage(candlesByOpen, response, start, end)
     }
     onStatus?.('')
     return [...candlesByOpen.values()].sort((left, right) => left.openTime - right.openTime).slice(-count)
@@ -383,7 +384,7 @@ export class CTraderMarketService {
 
   private async getHistoryPage(
     instrument: Instrument, timeframe: CTraderTimeframe, from: number, to: number, count: number, signal?: AbortSignal,
-  ): Promise<{ candles: MarketCandle[]; hasMore: boolean }> {
+  ): Promise<HistoryPage> {
     const period = cTraderPeriod(timeframe)
     const response = await this.requestHistory({
       symbolId: instrument.id, period, fromTimestamp: from, toTimestamp: to, count,

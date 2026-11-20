@@ -159,6 +159,37 @@ describe('cTrader market', () => {
     }])
   })
 
+  it('keeps in-range bars when a counted page already crosses the requested start', async () => {
+    const period = 15 * minute
+    const start = current - 4 * period
+    const { service, sockets } = setup((socket, message) => {
+      if (message.payloadType !== 2137) return
+      const to = Number(message.payload.toTimestamp)
+      const opens = to === current ? [start - period, start + 2 * period, current] : [start - period]
+      socket.reply(message, 2138, { symbolId, period: 'M15', hasMore: true,
+        trendbar: opens.map(open => trendbar(open, 'M15')) })
+      return true
+    })
+    const candles = await service.loadCandles('trade', 'EURUSD', '15m', start, current)
+    expect(candles.map(candle => candle.openTime)).toEqual([start + 2 * period, current])
+    expect(sockets[0].sent.filter(message => message.payloadType === 2137)).toHaveLength(1)
+  })
+
+  it('looks in the previous window when a recent counted page contains only older bars', async () => {
+    const start = current - 7 * 86_400_000
+    const older = start - minute
+    const { service, sockets } = setup((socket, message) => {
+      if (message.payloadType !== 2137) return
+      socket.reply(message, 2138, { symbolId, period: 'M1', hasMore: true,
+        trendbar: [trendbar(older)] })
+      return true
+    })
+    const candles = await service.loadRecentCandles('EURUSD', '1m', current, { count: 1 })
+    expect(candles.map(candle => candle.openTime)).toEqual([older])
+    expect(sockets[0].sent.filter(message => message.payloadType === 2137).map(frame => frame.payload.toTimestamp))
+      .toEqual([current, start - 1])
+  })
+
   it('respects holiday-aware trading hours in the broker’s timezone', async () => {
     const { service } = setup()
     expect(await service.isMarketOpen('EURUSD', current)).toBe(true)
