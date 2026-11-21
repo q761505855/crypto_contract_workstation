@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import {
@@ -28,6 +28,7 @@ export interface ChartWorkspaceProps {
   createAdapter?: () => ChartAdapterPort
   datafeed?: Datafeed
   symbol?: SymbolInfo
+  symbolLocked?: boolean
   period?: Period
   reloadKey?: number
   onSelectionChange?: (selection: {
@@ -39,10 +40,11 @@ export interface ChartWorkspaceProps {
   jumpRequest?: {
     id: string
     timestamp: number
-    previewReplay: boolean
+    followLatest: boolean
   } | null
   onJumpComplete?: (timestamp: number | null) => void
   onReplayStartTimeChange?: (timestamp: number | null) => void
+  viewportRef?: Ref<{ step(direction: -1 | 1): number | null }>
   layoutSettingsOpen?: boolean
   onCloseLayoutSettings?: () => void
   chartHeight?: number | null
@@ -58,6 +60,7 @@ export function ChartWorkspace({
   createAdapter = () => new ProChartAdapter(),
   datafeed = demoDatafeed,
   symbol = DEFAULT_CTRADER_SYMBOL,
+  symbolLocked = false,
   period = DEFAULT_CTRADER_PERIOD,
   reloadKey = 0,
   onSelectionChange,
@@ -66,6 +69,7 @@ export function ChartWorkspace({
   jumpRequest = null,
   onJumpComplete,
   onReplayStartTimeChange,
+  viewportRef,
   layoutSettingsOpen = false,
   onCloseLayoutSettings,
   chartHeight = null,
@@ -80,6 +84,8 @@ export function ChartWorkspace({
   const synchronizeLayoutRef = useRef<(() => void) | null>(null)
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
+  const symbolLockedRef = useRef(symbolLocked)
+  symbolLockedRef.current = symbolLocked
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
   const [indicatorInfoVisible, setIndicatorInfoVisible] = useState(() => !(window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches ?? false))
   const [paneSizes, setPaneSizes] = useState<{ id: string; label: string; height: number }[]>([])
@@ -104,6 +110,10 @@ export function ChartWorkspace({
   if (adapterRef.current === null) {
     adapterRef.current = createAdapter()
   }
+
+  useImperativeHandle(viewportRef, () => ({
+    step: direction => adapterRef.current?.stepViewport?.(direction) ?? null,
+  }), [])
 
   useEffect(() => {
     if (hostRef.current === null) {
@@ -189,7 +199,7 @@ export function ChartWorkspace({
       ) {
         event.preventDefault()
         event.stopImmediatePropagation()
-        if (!auxiliary) setSymbolPickerOpen(true)
+        if (!auxiliary && !symbolLockedRef.current) setSymbolPickerOpen(true)
       }
     }
     host.addEventListener('click', openSymbolPicker, true)
@@ -337,7 +347,7 @@ export function ChartWorkspace({
     const periodAtJump = adapter.getPeriod().text
     const isCurrent = () => active && adapter.getSymbol().ticker === symbolAtJump && adapter.getPeriod().text === periodAtJump
     void jump
-      .call(adapter, jumpRequest.timestamp, jumpRequest.previewReplay)
+      .call(adapter, jumpRequest.timestamp, jumpRequest.followLatest)
       .then((timestamp) => {
         if (isCurrent()) onJumpComplete?.(timestamp)
       })
@@ -353,10 +363,10 @@ export function ChartWorkspace({
   useEffect(() => {
     if (onReplayStartTimeChange === undefined) return
     const adapter = adapterRef.current
-    if (adapter?.getReplayStartTime === undefined) return
+    if (adapter?.getRightmostVisibleCandleTime === undefined) return
     let previous: number | null | undefined
     const synchronize = () => {
-      const timestamp = adapter.getReplayStartTime?.() ?? null
+      const timestamp = adapter.getRightmostVisibleCandleTime?.() ?? null
       if (timestamp === previous) return
       previous = timestamp
       onReplayStartTimeChange(timestamp)
@@ -510,7 +520,7 @@ export function ChartWorkspace({
           {periodToolbar === null ? periodSelector : createPortal(periodSelector, periodToolbar)}
         </div>
       </div>
-      {symbolPickerOpen ? (
+      {symbolPickerOpen && !symbolLocked ? (
         <SymbolPicker
           currentSymbol={symbolRef.current}
           datafeed={datafeed}

@@ -351,7 +351,12 @@ describe('cTrader replay', () => {
     await act(() => result.current.next('1h'))
     expect(result.current.session).toMatchObject({ status: 'paused', currentTime: monday })
     await act(() => result.current.next('1m'))
-    expect(result.current.session).toMatchObject({ status: 'completed', currentTime: monday + minute })
+    expect(result.current.session).toBeNull()
+    const finished = result.current.sessions[0]
+    expect(finished).toMatchObject({ status: 'completed', active: false, currentTime: monday + minute })
+    await expect(runtime.replaySessions.list()).resolves.toEqual([finished])
+    await act(() => result.current.loadSession(finished.id))
+    expect(result.current.session).toEqual(expect.objectContaining({ status: 'completed', active: false }))
   })
 
   it('drops a chart response that finishes after the replay period is switched', async () => {

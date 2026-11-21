@@ -99,11 +99,6 @@ button:disabled {
   font-size: 17px;
 }
 
-.mode-switch {
-  display: flex;
-  gap: 6px;
-}
-
 .header-actions {
   display: flex;
   align-items: center;
@@ -114,15 +109,8 @@ button:disabled {
   display: none;
 }
 
-.header-actions > button,
-.mode-switch button {
+.header-actions > button {
   padding: 7px 14px;
-}
-
-.mode-switch button[aria-pressed="true"] {
-  color: #081018;
-  border-color: #55b8ff;
-  background: #55b8ff;
 }
 
 .workspace-grid {
@@ -710,10 +698,6 @@ button:disabled {
   font-size: 12px;
 }
 
-.live-time-controls {
-  justify-content: flex-start;
-}
-
 .ledger-details {
   margin-top: 24px;
   padding-top: 16px;
@@ -722,6 +706,7 @@ button:disabled {
 
 .replay-next-button {
   user-select: none;
+  touch-action: manipulation;
   -webkit-touch-callout: none;
 }
 
@@ -1251,16 +1236,7 @@ button:disabled {
     width: 100%;
   }
 
-  .mode-switch {
-    grid-column: 1 / -1;
-  }
-
-  .mode-switch button {
-    flex: 1;
-  }
-
   .header-actions > button,
-  .mode-switch button,
   .replay-controls button,
   .side-panel button,
   .data-drawer button,
@@ -1504,8 +1480,6 @@ button:disabled {
   .workspace-shell .app-header h1 { font-size: 14px; }
   .workspace-shell .desktop-brand { display: none; }
   .workspace-shell .mobile-brand { display: inline; }
-  .workspace-shell .mode-switch { margin-left: auto; gap: 3px; }
-  .workspace-shell .mode-switch button { flex: none; padding: 6px 8px; font-size: 12px; min-height: 36px; }
   .workspace-shell .workspace-tools-panel button { min-height: 42px; }
   .workspace-content, .workspace-content.is-order-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: 'account' 'chart'; }
   .account-strip { gap: 6px 14px; font-size: 11px; padding: 6px 10px; }
@@ -1559,7 +1533,6 @@ button:disabled {
 @media (max-width: 1023px) and (max-height: 520px) {
   .workspace-shell .app-header { flex-wrap: nowrap; padding: 4px 8px; gap: 8px; min-height: 42px; }
   .workspace-shell .app-header h1 { display: none; }
-  .workspace-shell .mode-switch { margin-left: 0; }
   .workspace-shell .workspace-account { display: none; }
   .workspace-shell .replay-controls { min-height: 44px; padding-top: 3px; padding-bottom: 3px; flex-wrap: nowrap; }
   .workspace-shell .replay-position, .workspace-shell .replay-start-time { display: none; }
@@ -1631,9 +1604,6 @@ button:disabled {
 @media (max-width: 767px), (max-width: 1023px) and (max-height: 520px) {
   .workspace-shell .app-header { gap: 4px 6px; padding: 3px 8px; min-height: 40px; background: #0b0f14; }
   .workspace-shell .app-header h1 { display: none; }
-  .workspace-shell .mode-switch { margin-left: 0; }
-  .workspace-shell .mode-switch button { min-height: 32px; padding: 4px 8px; font-size: 11px; border-color: transparent; background: transparent; color: #8f9bab; }
-  .workspace-shell .mode-switch button[aria-pressed=true] { color: #55b8ff; background: rgb(22 119 255 / 12%); }
   .workspace-shell .workspace-tools-trigger { padding: 4px 8px; font-size: 12px; }
   .workspace-shell > .config-sync-status.is-synced { display: none; }
   .workspace-shell:has(.workspace-tools-trigger[aria-expanded=true]) > .config-sync-status.is-synced { display: flex; }

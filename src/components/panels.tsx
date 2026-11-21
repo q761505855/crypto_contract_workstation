@@ -11,7 +11,7 @@ const connectionLabels: Record<
   disconnected: '已断开',
 }
 
-export function LiveStatus({ status }: { status: LiveMarketStatus }) {
+export function LiveStatus({ status, onSwitchAccount }: { status: LiveMarketStatus; onSwitchAccount?: () => void }) {
   return (
     <aside className="side-panel" data-testid="live-status">
       <h2>实时行情</h2>
@@ -55,6 +55,7 @@ export function LiveStatus({ status }: { status: LiveMarketStatus }) {
       {status.warning.length > 0 && (
         <p className="panel-warning">{status.warning}</p>
       )}
+      {onSwitchAccount && <button type="button" onClick={onSwitchAccount}>切换 cTrader 账户</button>}
       <p className="muted-text">此模式不提供任何下单操作。</p>
     </aside>
   )

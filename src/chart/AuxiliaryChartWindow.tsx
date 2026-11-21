@@ -60,12 +60,12 @@ function ConnectedChart({ connection, period, onSelection }: {
     <>
       <header className="auxiliary-chart-status">
         <strong>{snapshot.symbol.ticker}</strong>
-        {snapshot.mode === 'live'
+        {replayTime === null
           ? <span>实时行情 · {connectionLabels[liveStatus.connection]}</span>
-          : <span>{replayTime === null ? '历史模拟 · 等待创建回放' : `历史模拟 · 已回放至 ${replayTime}`}</span>}
+          : <span>历史回放 · 已回放至 {replayTime}</span>}
         {warning && <span role="status">{warning}</span>}
         <div className="auxiliary-chart-size">
-          {snapshot.mode === 'history' && (
+          {replayTime !== null && (
             <button type="button" className="trade-overlays-toggle" aria-pressed={showTradeOverlays}
               onClick={() => setShowTradeOverlays(visible => !visible)}>交易标记</button>
           )}

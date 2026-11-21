@@ -33,6 +33,7 @@ type LoadHistoryPage = (symbol: SymbolInfo, period: Period, edge: number, signal
   Promise<{ candles: KLineData[]; hasMore: boolean } | null>
 
 type BaseDatafeed = Datafeed & {
+  hasLiveTail?: (symbol: SymbolInfo, period: Period) => boolean
   setWarningListener?: (listener?: (message: string) => void) => void
   getOlderHistory?: LoadHistoryPage
   getNewerHistory?: LoadHistoryPage
@@ -95,6 +96,10 @@ export class CTraderReplayDatafeed implements Datafeed {
 
   getReplayContext(): ReplayContext | null {
     return this.context === null ? null : { ...this.context }
+  }
+
+  hasLiveTail(symbol: SymbolInfo, period: Period): boolean {
+    return this.context === null && (this.base.hasLiveTail?.(symbol, period) ?? false)
   }
 
   setReplayContext(context: ReplayContext | null, reloadChart = false): void {

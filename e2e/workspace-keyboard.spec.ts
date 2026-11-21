@@ -27,8 +27,9 @@ test('keeps landscape forms and drawers within the visible viewport when a keybo
   }).toBe(true)
   await expect(dialog.getByRole('button', { name: '关闭回放会话设置' })).toBeInViewport()
   await dialog.getByRole('button', { name: '关闭回放会话设置' }).tap()
-  await page.getByRole('button', { name: '下单', exact: true }).tap()
-  const drawer = page.getByRole('complementary', { name: '模拟下单面板' })
+  await page.getByRole('button', { name: '行情状态', exact: true }).tap()
+  const drawer = page.locator('#workspace-order-content')
+  await expect(drawer.getByTestId('live-status')).toBeVisible()
   const box = (await drawer.boundingBox())!
   expect(box.y).toBeGreaterThanOrEqual(0)
   expect(box.y + box.height).toBeLessThanOrEqual(150)

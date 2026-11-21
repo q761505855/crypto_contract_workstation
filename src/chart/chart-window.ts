@@ -1,5 +1,4 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
-import type { WorkstationMode } from '../components/ModeSwitch'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import { ctraderReplayChartNeedsReload, type CTraderReplayDatafeed } from '../replay/ctrader-replay-datafeed'
 import { compareReplayPositions, replayVisibleUntil, type ReplayContext } from '../replay/models'
@@ -14,7 +13,7 @@ export const CHART_WINDOW_QUERY = 'chart-window'
 interface HostChartState {
   symbol: SymbolInfo
   period: Period
-  mode: WorkstationMode
+  liveEnabled: boolean
   replay: ReplayContext | null
   simulationOverlays: SimulationOverlayState
   configRevision: number
@@ -22,7 +21,6 @@ interface HostChartState {
 
 interface ChartWindowSnapshot {
   symbol: SymbolInfo
-  mode: WorkstationMode
   visibleUntil: number | null
   simulationOverlays: SimulationOverlayState
   chartRevision: number
@@ -127,25 +125,25 @@ export class ChartWindowHost {
         const next = state.replay
         const visibleUntil = next === null ? null : replayVisibleUntil(next)
         const reload = snapshot !== null && (
-          snapshot.mode !== state.mode || snapshot.symbol.ticker !== state.symbol.ticker ||
+          snapshot.symbol.ticker !== state.symbol.ticker ||
           (replay === null) !== (next === null) ||
           (replay !== null && next !== null && (
             replay.sessionId !== next.sessionId || compareReplayPositions(next, replay) < 0 ||
             ctraderReplayChartNeedsReload(replay, next, period.text)
           ))
         )
-        if (state.mode !== 'live') liveDatafeed.setLiveEnabled(false)
+        if (!state.liveEnabled) liveDatafeed.setLiveEnabled(false)
         if (reload) datafeed.dispose()
         datafeed.setReplayContext(next, reload)
-        if (state.mode === 'live') liveDatafeed.setLiveEnabled(true)
+        if (state.liveEnabled) liveDatafeed.setLiveEnabled(true)
         replay = next
         const chartRevision = (snapshot?.chartRevision ?? 0) + Number(reload)
-        if (snapshot?.symbol === state.symbol && snapshot.mode === state.mode &&
+        if (snapshot?.symbol === state.symbol &&
             snapshot.visibleUntil === visibleUntil && snapshot.chartRevision === chartRevision &&
             snapshot.configRevision === state.configRevision && snapshot.simulationOverlays === state.simulationOverlays) return
-        snapshot = { symbol: state.symbol, mode: state.mode, visibleUntil, simulationOverlays: state.simulationOverlays,
+        snapshot = { symbol: state.symbol, visibleUntil, simulationOverlays: state.simulationOverlays,
           chartRevision, configRevision: state.configRevision,
-          drawingScope: drawingScope(state.mode, state.symbol.ticker, next?.sessionId ?? null, state.symbol.exchange) }
+          drawingScope: drawingScope(next === null ? 'live' : 'history', state.symbol.ticker, next?.sessionId ?? null, state.symbol.exchange) }
         notify()
       },
       close: () => {

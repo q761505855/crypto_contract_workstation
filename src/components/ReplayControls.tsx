@@ -31,6 +31,7 @@ interface ReplayControlsProps {
   chartStartTime: number | null
   onJumpToTime: (timestamp: number) => void
   onLocateLatest: () => void
+  onChartStep: (direction: -1 | 1) => void
 }
 
 function sessionName(session: ReplaySession): string {
@@ -60,8 +61,13 @@ function ReplayTradingTerms({ terms, waiting }: { terms?: CTraderTradingTerms; w
   </details>
 }
 
-function NextCandleButton({ replay, disabled, label }: { replay: ReplayController<ReplayStepPeriod>; disabled: boolean; label: string }) {
-  const { next, play, pause } = replay
+function NextCandleButton({ next, play, pause, disabled, label }: {
+  next: () => void | Promise<void>
+  play: () => void
+  pause: () => void
+  disabled: boolean
+  label: string
+}) {
   const [pressing, setPressing] = useState(false)
   const press = useRef<{ pointerId: number; timer: number; playing: boolean } | null>(null)
   const suppressClick = useRef(false)
@@ -131,6 +137,7 @@ export function ReplayControls({
   chartStartTime,
   onJumpToTime,
   onLocateLatest,
+  onChartStep,
 }: ReplayControlsProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedSessionId, setSelectedSessionId] = useState('')
@@ -144,8 +151,22 @@ export function ReplayControls({
   const [walletDraft, setWalletDraft] = useState<string | null>(null)
   const [terms, setTerms] = useState<CTraderTradingTerms | null>(null)
   const [termsError, setTermsError] = useState('')
+  const [viewportSpeed, setViewportSpeed] = useState<ReplaySpeed>(1)
+  const [viewportPlaying, setViewportPlaying] = useState(false)
   const ticker = selection.symbol.ticker
   const session = replay.session
+  const viewportLocked = interactionLocked || chartStartTime === null || session !== null
+  const playViewport = useCallback(() => setViewportPlaying(true), [])
+  const pauseViewport = useCallback(() => setViewportPlaying(false), [])
+  const nextViewportCandle = useCallback(() => onChartStep(1), [onChartStep])
+
+  useEffect(pauseViewport, [pauseViewport, ticker, selection.period.text, viewportLocked])
+  useEffect(() => {
+    if (viewportLocked || !viewportPlaying) return
+    const timer = window.setInterval(nextViewportCandle, 1000 / viewportSpeed)
+    return () => window.clearInterval(timer)
+  }, [nextViewportCandle, viewportLocked, viewportPlaying, viewportSpeed])
+
   const state = session !== null && simulation.state?.sessionId === session.id ? simulation.state : null
   const config = state?.config ?? session?.tradingConfig
   const displayedTerms = session === null ? terms : config?.ctrader
@@ -181,8 +202,10 @@ export function ReplayControls({
   const selectedSession = replay.sessions.find((session) => session.id === selectedSessionId) ?? replay.sessions[0]
 
   useEffect(() => setLeverageDraft(null), [ticker])
+  useEffect(() => setSettingsOpen(false), [session?.id])
 
   function openSettings(): void {
+    if (session === null) pauseViewport()
     setActiveLeverage(null)
     setActiveSlippage(null)
     setWalletDraft(null)
@@ -191,6 +214,7 @@ export function ReplayControls({
 
   function createSession(): void {
     if (!validCreation || chartStartTime === null) return
+    pauseViewport()
     void replay.createSession({
       symbol: selection.symbol, period: selection.period, startTime: chartStartTime,
       initialBalance, slippageRate,
@@ -241,9 +265,9 @@ export function ReplayControls({
     {FINE_STEP_PERIODS.map(period => <option key={period} value={period}>{period === 'tick' ? '逐笔 Tick' : period}</option>)}
     {CTRADER_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
   </select>
-  const speedSelect = <select aria-label="回放速度" disabled={interactionLocked}
-    value={session?.speed}
-    onChange={event => replay.setSpeed(Number(event.target.value) as ReplaySpeed)}>
+  const speedSelect = <select aria-label={session === null ? '播放速度' : '回放速度'} disabled={interactionLocked}
+    value={session?.speed ?? viewportSpeed}
+    onChange={event => (session === null ? setViewportSpeed : replay.setSpeed)(Number(event.target.value) as ReplaySpeed)}>
     {[1, 2, 5, 10].map(speed => <option key={speed} value={speed}>{speed}x</option>)}
   </select>
 
@@ -256,10 +280,19 @@ export function ReplayControls({
   if (session === null) {
     const startLabel = chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(chartStartTime)
     return <section className="replay-controls replay-setup" data-testid="replay-controls">
-      <TimeJumpControl compact disabled={replay.busy} onJump={onJumpToTime} onLocateLatest={onLocateLatest} />
+      <TimeJumpControl compact disabled={interactionLocked}
+        onJump={timestamp => { pauseViewport(); onJumpToTime(timestamp) }}
+        onLocateLatest={() => { pauseViewport(); onLocateLatest() }} />
+      <button type="button" disabled={viewportLocked} onClick={() => { pauseViewport(); onChartStep(-1) }}>上一根</button>
+      <NextCandleButton key={`${ticker}:${selection.period.text}`} disabled={viewportLocked} label="下一根"
+        next={nextViewportCandle} play={playViewport} pause={pauseViewport} />
+      <button type="button" disabled={viewportLocked} onClick={viewportPlaying ? pauseViewport : playViewport}>
+        {viewportPlaying ? '暂停' : '播放'}
+      </button>
+      {speedSelect}
       <span className="replay-start-time">起点：{startLabel}</span>
       <button type="button" onClick={openSettings}>回放设置</button>
-      <button type="button" disabled={replay.busy || !validCreation} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
+      <button type="button" disabled={interactionLocked || !validCreation} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
       {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
       {!settingsOpen && replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
@@ -313,7 +346,7 @@ export function ReplayControls({
         )}
 
         {replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
-        <div className="button-row"><button type="button" onClick={() => setSettingsOpen(false)}>应用设置</button><button type="button" disabled={replay.busy || !validCreation} onClick={createSession}>开始历史回放</button></div>
+        <div className="button-row"><button type="button" onClick={() => setSettingsOpen(false)}>应用设置</button><button type="button" disabled={interactionLocked || !validCreation} onClick={createSession}>开始历史回放</button></div>
       </WorkspaceDialog>
     </section>
   }
@@ -349,7 +382,9 @@ export function ReplayControls({
       </button>
       <NextCandleButton
         key={session.id}
-        replay={replay}
+        next={replay.next}
+        play={replay.play}
+        pause={replay.pause}
         label={stepPeriod === 'tick' ? '下一笔' : '下一根'}
         disabled={interactionLocked || session.status === 'completed'}
       />
@@ -395,7 +430,7 @@ export function ReplayControls({
         <div className="workspace-session-actions">
       <button
         disabled={interactionLocked || session.status === 'completed'}
-        onClick={() => void replay.jumpToEnd()}
+        onClick={() => { setSettingsOpen(false); void replay.jumpToEnd() }}
         type="button"
       >
         跳转结束

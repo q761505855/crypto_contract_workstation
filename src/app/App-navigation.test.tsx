@@ -55,7 +55,7 @@ describe('App locate latest navigation', () => {
     act(() => harness.chart!.onSelectionChange({ symbol: DEFAULT_CTRADER_SYMBOL, period: { text: '1m', multiplier: 1, timespan: 'minute' } }))
     expect(screen.getByRole('contentinfo')).toHaveTextContent('EURUSD · 1m')
     fireEvent.click(screen.getByRole('button', { name: '定位最新' }))
-    expect(harness.chart?.jumpRequest).toMatchObject({ timestamp: Date.UTC(2025, 8, 15, 12, 15) - 1 })
+    expect(harness.chart?.jumpRequest).toMatchObject({ timestamp: Date.UTC(2025, 8, 15, 12, 15) - 1, followLatest: false })
     expect(harness.replay.session).toEqual(before)
     expect(harness.replay.next).not.toHaveBeenCalled()
     expect(harness.replay.jumpToEnd).not.toHaveBeenCalled()
@@ -65,14 +65,12 @@ describe('App locate latest navigation', () => {
     expect(harness.chart?.jumpRequest?.id).not.toBe(first)
   })
 
-  it.each(['history', 'live'] as const)('uses click-time now in %s without a replay boundary', mode => {
-    if (mode === 'live') harness.replay.session = activeSession()
+  it('uses click-time now without a replay boundary', () => {
     render(<App />)
-    if (mode === 'live') fireEvent.click(screen.getByRole('button', { name: '实时行情' }))
     const now = Date.UTC(2026, 10, 5, 14, 32, 20)
     vi.spyOn(Date, 'now').mockReturnValue(now)
     fireEvent.click(screen.getByRole('button', { name: '定位最新' }))
-    expect(harness.chart?.jumpRequest?.timestamp).toBe(now)
+    expect(harness.chart?.jumpRequest).toMatchObject({ timestamp: now, followLatest: true })
   })
 
   it.each(['setup', 'active'] as const)('honors existing %s navigation locks', state => {
@@ -92,6 +90,7 @@ describe('workspace panel collapse controls', () => {
     ['下单面板', 'order'], ['持仓面板', 'dock'],
   ] as const)('retains an inline expand control after collapsing %s', (label, key) => {
     localStorage.clear()
+    harness.replay.session = activeSession()
     render(<App />)
     const collapse = screen.getByRole('button', { name: `收起${label}` })
     expect(collapse).toHaveAttribute('aria-expanded', 'true')
@@ -108,8 +107,8 @@ describe('workspace panel collapse controls', () => {
   it.each(['history', 'live'] as const)('keeps replay and status visible in %s while preserving legacy archive flags', mode => {
     const layout = { schemaVersion: 1, panels: { account: false, order: true, dock: false, replay: false, status: false }, chartHeight: null, mobileChartHeight: null, dockHeight: 220 }
     ctraderStorage.setItem('workspace.layout.v1', JSON.stringify(layout))
+    if (mode === 'history') harness.replay.session = activeSession()
     render(<App />)
-    if (mode === 'live') fireEvent.click(screen.getByRole('button', { name: '实时行情' }))
     expect(screen.getByRole('button', { name: '定位最新' })).toBeVisible()
     expect(screen.getByRole('contentinfo')).toBeVisible()
     expect(screen.queryByRole('button', { name: /(?:展开|收起)(?:回放控制|底部状态)/ })).toBeNull()
@@ -129,7 +128,6 @@ describe('workspace panel collapse controls', () => {
   it('expands the account summary again without opening workspace settings', () => {
     localStorage.clear()
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: '实时行情' }))
     fireEvent.click(screen.getByRole('button', { name: '收起账户摘要' }))
     expect(screen.queryByRole('region', { name: '实时行情摘要' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '展开账户摘要' }))

@@ -26,6 +26,8 @@ export class CTraderDatafeed implements Datafeed {
   private status = INITIAL_LIVE_STATUS
   private historySequence = 0
   private historyCandle?: MarketCandle
+  private latestLiveCandle?: MarketCandle
+  private detachedHistoryKey?: string
   private olderHistoryCursor?: { key: string; before: number; to: number }
   private newerHistoryCursor?: { key: string; after: number; from: number }
   private readonly subscriptions = new Map<string, ChartSubscription>()
@@ -34,6 +36,10 @@ export class CTraderDatafeed implements Datafeed {
 
   createChartView(): CTraderDatafeed {
     return new CTraderDatafeed(this.service)
+  }
+
+  hasLiveTail(symbol: SymbolInfo, period: Period): boolean {
+    return this.liveEnabled && this.detachedHistoryKey !== this.selectionKey(symbol, period)
   }
 
   setSelectionListener(listener?: (selection: MarketSelection) => void): void {
@@ -65,6 +71,7 @@ export class CTraderDatafeed implements Datafeed {
     }
     if (!enabled) {
       this.hasConnected = false
+      this.latestLiveCandle = undefined
       this.publishStatus(INITIAL_LIVE_STATUS)
     }
   }
@@ -87,6 +94,7 @@ export class CTraderDatafeed implements Datafeed {
     const sequence = notifySelection ? ++this.historySequence : this.historySequence
     if (notifySelection) {
       this.olderHistoryCursor = undefined
+      this.newerHistoryCursor = undefined
       this.onSelection?.({ symbol, period })
     }
     const publish = (message: string) => {
@@ -99,9 +107,15 @@ export class CTraderDatafeed implements Datafeed {
       }
       signal?.throwIfAborted()
       if (notifySelection && sequence !== this.historySequence) return []
-      if (notifySelection && end >= Date.now() - 60_000) {
-        const last = candles.at(-1)
-        this.historyCandle = last?.isClosed === false ? last : undefined
+      if (notifySelection && !signal?.aborted) {
+        if (end >= Date.now() - 60_000) {
+          this.detachedHistoryKey = undefined
+          candles = this.mergeLiveCandle(candles, symbol, period, start, end)
+          const last = candles.at(-1)
+          this.historyCandle = last?.isClosed === false ? last : undefined
+        } else if (candles.length > 0) {
+          this.detachedHistoryKey = this.selectionKey(symbol, period)
+        }
       }
       publish('')
       return candles.map(toChartCandle)
@@ -142,19 +156,27 @@ export class CTraderDatafeed implements Datafeed {
   async getNewerHistory(symbol: SymbolInfo, period: Period, after: number, signal?: AbortSignal) {
     const timeframe = CTRADER_TIMEFRAMES.find(value => value === period.text)
     if (!timeframe || !Number.isFinite(after)) return { candles: [], hasMore: false }
-    if (this.liveEnabled) return { candles: [], hasMore: true }
     const key = this.selectionKey(symbol, period)
+    if (this.liveEnabled && this.detachedHistoryKey !== key) return { candles: [], hasMore: true }
+    const sequence = this.historySequence
     const cursor = this.newerHistoryCursor
     const latest = Date.now()
     let from = cursor?.key === key && cursor.after === after ? cursor.from : after + 1
     for (let window = 0; window < NEWER_HISTORY_MAX_WINDOWS && from <= latest; window++) {
       const to = Math.min(latest, shiftOpenTime(from, timeframe, HISTORY_CANDLES) - 1)
-      const candles = await this.service.loadCandles('trade', symbol.ticker, timeframe, from, to, { signal })
+      let candles = await this.service.loadCandles('trade', symbol.ticker, timeframe, from, to, { signal })
       signal?.throwIfAborted()
-      if (this.liveEnabled) return { candles: [], hasMore: true }
-      if (candles.length > 0) {
+      if (sequence !== this.historySequence) return { candles: [], hasMore: true }
+      const hasMore = to < latest
+      if (!hasMore && this.detachedHistoryKey === key) {
+        // Keep the live subscription connected during a distant history jump.
+        // Rejoin its stream only once the intervening history is loaded.
+        candles = this.mergeLiveCandle(candles, symbol, period, from, Date.now())
+        this.detachedHistoryKey = undefined
+      }
+      if (candles.length > 0 || !hasMore) {
         this.newerHistoryCursor = undefined
-        return { candles: candles.map(toChartCandle), hasMore: to < latest }
+        return { candles: candles.map(toChartCandle), hasMore }
       }
       from = to + 1
     }
@@ -189,7 +211,12 @@ export class CTraderDatafeed implements Datafeed {
           ? candle : undefined
       },
       onCandle: candle => {
-        if (active()) subscription.callback(toChartCandle(candle))
+        if (!active()) return
+        if (candle.openTime >= (this.latestLiveCandle?.openTime ?? -1) ||
+            this.latestLiveCandle?.symbol !== candle.symbol || this.latestLiveCandle?.timeframe !== candle.timeframe) {
+          this.latestLiveCandle = candle
+        }
+        if (this.detachedHistoryKey !== key) subscription.callback(toChartCandle(candle))
       },
       onStatus: status => {
         if (active()) this.publishStatus(status)
@@ -202,7 +229,17 @@ export class CTraderDatafeed implements Datafeed {
     if (status.connection === 'connected') this.hasConnected = true
     this.status = status
     this.onLiveStatus?.(status)
-    if (recovered) this.onReconnect?.()
+    if (recovered && this.detachedHistoryKey === undefined) this.onReconnect?.()
+  }
+
+  private mergeLiveCandle(candles: MarketCandle[], symbol: SymbolInfo, period: Period, from: number, to: number): MarketCandle[] {
+    const live = this.latestLiveCandle
+    if (!live || this.selectionKey(symbol, period) !== `${live.symbol.toUpperCase()}:${live.timeframe}` ||
+      live.openTime < from || live.openTime > to) return candles
+    const last = candles.at(-1)
+    if (last === undefined || live.openTime > last.openTime) return [...candles, live]
+    if (live.openTime === last.openTime && !last.isClosed) return [...candles.slice(0, -1), live]
+    return candles
   }
 
   private selectionKey(symbol: SymbolInfo, period: Period): string {

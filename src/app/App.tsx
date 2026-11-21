@@ -18,16 +18,11 @@ import { drawingScope } from '../chart/drawings'
 import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import type { SimulationOverlayState } from '../chart/pro-chart-adapter'
 import { SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR, type SimulationTradeLabel } from '../chart/simulation-price-line'
-import {
-  ModeSwitch,
-  type WorkstationMode,
-} from '../components/ModeSwitch'
 import { DataManager } from '../components/DataManager'
 import { CTraderAccountPicker } from '../components/CTraderAccountPicker'
 import { ConfigSyncStatus } from '../components/ConfigSyncStatus'
 import { PREFERENCES_RESTORED } from '../storage/preference-events'
 import { ReplayControls } from '../components/ReplayControls'
-import { TimeJumpControl } from '../components/TimeJumpControl'
 import { LiveStatus } from '../components/panels'
 import { AccountStrip, SimulationOrder, SimulationDock, type TradingTab } from '../components/TradingWorkspace'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
@@ -88,10 +83,10 @@ const connectionLabels: Record<LiveMarketStatus['connection'], string> = {
 }
 
 export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
-  const [mode, setMode] = useState<WorkstationMode>('history')
   const shellRef = useRef<HTMLElement | null>(null)
   const [layout, setLayout] = useState(loadWorkspacePreferences)
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
+  const [accountSwitchOpen, setAccountSwitchOpen] = useState(false)
   const [chartSizeOpen, setChartSizeOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(false)
   const [mobile, setMobile] = useState(() => (window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)')?.matches ?? false))
@@ -146,10 +141,11 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [chartWindows] = useState(() => new ChartWindowHost(marketRuntime))
   const [popupBlocked, setPopupBlocked] = useState(false)
   const [configEpoch, setConfigEpoch] = useState(0)
-  const [marketSelection, setMarketSelection] = useState<MarketSelection>(() => ({
+  const [liveSelection, setLiveSelection] = useState<MarketSelection>(() => ({
     symbol: activeSymbol(),
     period: DEFAULT_CTRADER_PERIOD,
   }))
+  const [replayPeriod, setReplayPeriod] = useState<{ sessionId: string; period: MarketSelection['period'] } | null>(null)
   const [marketWarning, setMarketWarning] = useState('')
   const [replayHistoryStatus, setReplayHistoryStatus] = useState('')
   const [liveStatus, setLiveStatus] = useState<LiveMarketStatus>({
@@ -158,20 +154,28 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [chartReloadKey, setChartReloadKey] = useState(0)
   const [chartReplayStartTime, setChartReplayStartTime] =
     useState<number | null>(null)
+  const viewportRef = useRef<{ step(direction: -1 | 1): number | null }>(null)
   const [chartJumpRequest, setChartJumpRequest] = useState<{
     id: string
     timestamp: number
-    previewReplay: boolean
+    followLatest: boolean
   } | null>(null)
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
   const [stepPeriod, setStepPeriod] = useState(activeStepPeriod)
   const [showTradeOverlays, setShowTradeOverlays] = useState(readShowTradeOverlays)
   const replay = useCTraderReplayController(marketRuntime, stepPeriod)
+  const mode = replay.session === null ? 'live' : 'history'
+  const sessionId = replay.session?.id
+  const sessionSymbol = replay.session?.symbol
+  const sessionPeriod = replay.session?.period
+  const marketSelection = useMemo<MarketSelection>(() => {
+    if (sessionSymbol === undefined || sessionPeriod === undefined) return liveSelection
+    return { symbol: sessionSymbol, period: replayPeriod && replayPeriod.sessionId === sessionId ? replayPeriod.period : sessionPeriod }
+  }, [liveSelection, replayPeriod, sessionId, sessionPeriod, sessionSymbol])
   const chartWindowsReady = useRef(false)
   const simulationController = useSimulationController(marketRuntime, replay)
   const simulation = { ...simulationController, busy: simulationController.busy || replay.busy }
   const replaySessionRef = useRef(replay.session)
-  const deferredCloudSymbolRef = useRef<MarketSelection['symbol'] | null>(null)
   replaySessionRef.current = replay.session
   useEffect(() => {
     const restored = (event: Event) => {
@@ -182,16 +186,14 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       layoutRef.current = nextLayout
       setLayout(nextLayout)
       setFocusMode(false)
-      const symbol = activeSymbol()
-      if (replaySessionRef.current !== null) deferredCloudSymbolRef.current = symbol
-      else setMarketSelection(current => ({ ...current, symbol }))
+      setLiveSelection(current => ({ ...current, symbol: activeSymbol() }))
       setConfigEpoch(current => current + 1)
     }
     window.addEventListener(PREFERENCES_RESTORED, restored)
     return () => window.removeEventListener(PREFERENCES_RESTORED, restored)
   }, [marketRuntime])
   const simulationOverlays = useMemo<SimulationOverlayState>(() => {
-    const currentTime = mode === 'history' && replay.session
+    const currentTime = replay.session
       ? sessionVisibleUntil(replay.session) - 1
       : null
     const state = simulation.state
@@ -232,7 +234,6 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     }
   }, [
     marketSelection.symbol.pricePrecision,
-    mode,
     replay.session,
     simulation.busy,
     simulation.setStopLoss,
@@ -242,16 +243,16 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
 
   const syncMarketSelection = useCallback((next: MarketSelection, userSelectedSymbol = false): void => {
     const active = replaySessionRef.current
-    if (
-      active !== null &&
-      active.symbol.ticker !== next.symbol.ticker
-    ) {
-      setMarketWarning('回放会话进行中，不能切换交易对。')
-      setChartReloadKey((current) => current + 1)
+    if (active !== null) {
+      if (active.symbol.ticker !== next.symbol.ticker) return
+      setReplayPeriod(current =>
+        current?.sessionId === active.id && current.period.text === next.period.text
+          ? current : { sessionId: active.id, period: next.period },
+      )
       return
     }
-    if (userSelectedSymbol && active === null) saveSelectedSymbol(next.symbol)
-    setMarketSelection((current) =>
+    if (userSelectedSymbol) saveSelectedSymbol(next.symbol)
+    setLiveSelection((current) =>
       !userSelectedSymbol && current.symbol.ticker === next.symbol.ticker &&
       current.period.text === next.period.text
         ? current
@@ -259,22 +260,28 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     )
   }, [])
 
-  const jumpChartToTime = useCallback((timestamp: number, previewReplay = false): void => {
+  const jumpChartToTime = useCallback((timestamp: number, followLatest = false): void => {
     setMarketWarning('')
     setChartJumpRequest({
       id: crypto.randomUUID(),
       timestamp,
-      previewReplay,
+      followLatest,
     })
   }, [])
 
   const locateLatestChartTime = useCallback((): void => {
     const session = replaySessionRef.current
-    const timestamp = mode === 'history' && session !== null
+    const timestamp = session !== null
       ? sessionVisibleUntil(session) - 1
       : Date.now()
-    jumpChartToTime(timestamp)
-  }, [jumpChartToTime, mode])
+    jumpChartToTime(timestamp, session === null)
+  }, [jumpChartToTime])
+
+  const stepChart = useCallback((direction: -1 | 1): void => {
+    const timestamp = viewportRef.current?.step(direction)
+    if (timestamp != null) setChartReplayStartTime(timestamp)
+    setMarketWarning(current => current.startsWith('图表已跳转到 ') ? '' : current)
+  }, [])
 
   const completeChartTimeJump = useCallback(
     (timestamp: number | null): void => {
@@ -328,30 +335,18 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     }
   }, [marketRuntime])
 
-  useEffect(() => {
-    marketRuntime.datafeed.setLiveEnabled(mode === 'live')
-    return () => marketRuntime.datafeed.setLiveEnabled(false)
-  }, [marketRuntime, mode])
+  useEffect(() => () => marketRuntime.datafeed.setLiveEnabled(false), [marketRuntime])
 
-  useEffect(() => {
-    if (replay.session !== null) {
-      const preferred = activeSymbol()
-      if (preferred && preferred.ticker !== replay.session.symbol.ticker) deferredCloudSymbolRef.current = preferred
-      setMarketSelection({
-        symbol: replay.session.symbol,
-        period: replay.session.period,
-      })
-    } else if (deferredCloudSymbolRef.current !== null) {
-      const symbol = deferredCloudSymbolRef.current
-      deferredCloudSymbolRef.current = null
-      setMarketSelection(current => ({ ...current, symbol }))
-    }
-  }, [replay.session?.id])
+  useLayoutEffect(() => {
+    if (sessionId === undefined) setReplayPeriod(null)
+    setMobilePanel(null)
+    setChartJumpRequest(null)
+  }, [sessionId])
 
   useLayoutEffect(() => chartWindows.listen(), [chartWindows])
 
   useLayoutEffect(() => {
-    const activeReplay = mode === 'history' ? replay.session : null
+    const activeReplay = replay.session
     const nextContext: ReplayContext | null =
       activeReplay !== null
         ? {
@@ -367,13 +362,16 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     const previous = previousReplayContextRef.current
     const reloadAfterStep = previous !== null && nextContext !== null &&
       previous.sessionId === nextContext.sessionId && ctraderReplayChartNeedsReload(previous, nextContext, marketSelection.period.text)
+    const liveEnabled = nextContext === null && replay.preparationStatus === ''
+    if (!liveEnabled) marketRuntime.datafeed.setLiveEnabled(false)
     marketRuntime.replayDatafeed.setReplayContext(nextContext, reloadAfterStep)
+    if (liveEnabled) marketRuntime.datafeed.setLiveEnabled(true)
     if (!replay.busy) chartWindowsReady.current = true
     if (chartWindowsReady.current) {
       chartWindows.publish({
         symbol: activeReplay?.symbol ?? marketSelection.symbol,
         period: marketSelection.period,
-        mode,
+        liveEnabled,
         replay: nextContext,
         simulationOverlays,
         configRevision: configEpoch,
@@ -392,15 +390,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       setChartReloadKey((current) => current + 1)
     }
     previousReplayContextRef.current = nextContext
-  }, [chartWindows, configEpoch, marketRuntime, marketSelection, mode, replay.busy, replay.session, simulationOverlays])
-
-  function changeMode(nextMode: WorkstationMode): void {
-    if (nextMode === 'live') {
-      replay.pause()
-    }
-    setMode(nextMode)
-    setMobilePanel(null)
-  }
+  }, [chartWindows, configEpoch, marketRuntime, marketSelection, replay.busy, replay.preparationStatus, replay.session, simulationOverlays])
 
   useLayoutEffect(() => {
     const shell = shellRef.current
@@ -426,13 +416,15 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   }, [])
 
   const chartHeight = mobile ? layout.mobileChartHeight : layout.chartHeight
+  const accounts = marketRuntime.accountSelection?.getSnapshot()
+  const canSwitchAccount = liveStatus.connection === 'disconnected' && !simulation.busy &&
+    accounts?.selectedKey !== undefined && accounts.accounts.length > 1
   const simulationCurrency = replay.session?.tradingConfig.ctrader?.accountCurrency ?? replay.session?.symbol.priceCurrency ?? ''
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
   return (
     <main ref={shellRef} className="app-shell workspace-shell">
       <header className="app-header">
         <h1><span className="desktop-brand">cTrader 行情回放工作站</span><span className="mobile-brand">cTrader 工作站</span></h1>
-        <ModeSwitch mode={mode} onChange={changeMode} />
         <WorkspaceTools>
           {!mobile && <button type="button" onClick={() => setPopupBlocked(openChartWindow() === null)}>打开副图</button>}
           <button type="button" aria-expanded={chartSizeOpen} onClick={() => setChartSizeOpen(true)}>图表尺寸</button>
@@ -440,7 +432,8 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           <hr />
           <button type="button" aria-expanded={workspaceMenu} onClick={() => setWorkspaceMenu(true)}>工作区</button>
           <button type="button" data-testid="open-data-manager" onClick={() => setDataManagerOpen(true)}>数据管理</button>
-          {marketRuntime.accountSelection && <CTraderAccountPicker selection={marketRuntime.accountSelection} busy={simulation.busy} />}
+          {marketRuntime.accountSelection && <CTraderAccountPicker selection={marketRuntime.accountSelection} busy={simulation.busy}
+            switching={accountSwitchOpen} onSwitchingChange={setAccountSwitchOpen} />}
         </WorkspaceTools>
       </header>
       {popupBlocked && !mobile && <div className="chart-popup-warning" role="alert">浏览器拦截了副图窗口，请允许此站点弹出窗口后重试。</div>}
@@ -462,7 +455,9 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
             jumpRequest={chartJumpRequest}
             onJumpComplete={completeChartTimeJump}
             onReplayStartTimeChange={setChartReplayStartTime}
+            viewportRef={viewportRef}
             onSelectionChange={syncMarketSelection}
+            symbolLocked={mode === 'history'}
             period={marketSelection.period}
             reloadKey={chartReloadKey}
             simulationOverlays={simulationOverlays}
@@ -477,12 +472,13 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           />
           <div className="replay-region">
             <div id="workspace-replay-content" className="replay-content">
-              {mode === 'history' ? <ReplayControls
+              <ReplayControls
                 chartStartTime={chartReplayStartTime}
                 interactionLocked={simulation.busy}
                 market={marketRuntime.service}
-                onJumpToTime={timestamp => jumpChartToTime(timestamp, replay.session === null)}
+                onJumpToTime={jumpChartToTime}
                 onLocateLatest={locateLatestChartTime}
+                onChartStep={stepChart}
                 replay={replay}
                 selection={marketSelection}
                 simulation={simulation}
@@ -490,7 +486,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
                 onStepPeriodChange={period => { saveReplayStepPeriod(period); setStepPeriod(period) }}
                 showTradeOverlays={showTradeOverlays}
                 onTradeOverlaysChange={visible => { saveShowTradeOverlays(visible); setShowTradeOverlays(visible) }}
-              /> : <section className="replay-controls live-time-controls"><TimeJumpControl compact onJump={jumpChartToTime} onLocateLatest={locateLatestChartTime} /></section>}
+              />
             </div>
           </div>
         </div>
@@ -498,7 +494,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           <PanelToggle label="下单面板" expanded={false} controls="workspace-order-content" direction="right" showLabel onToggle={() => setPanel('order', true)} />
         </div>
         <div id="workspace-order-content" className="order-region" hidden={!visible('order')} data-mobile-open={mobile && mobilePanel === 'order' || undefined}>
-          {mode === 'history' ? <SimulationOrder session={replay.session} simulation={simulation} onClose={() => mobile ? closeMobilePanel() : setPanel('order', false)} /> : <><header className="panel-heading"><h2>行情状态</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={() => mobile ? closeMobilePanel() : setPanel('order', false)} /></header><LiveStatus status={liveStatus} /></>}
+          {mode === 'history' ? <SimulationOrder session={replay.session} simulation={simulation} onClose={() => mobile ? closeMobilePanel() : setPanel('order', false)} /> : <><header className="panel-heading"><h2>行情状态</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={() => mobile ? closeMobilePanel() : setPanel('order', false)} /></header><LiveStatus status={liveStatus} onSwitchAccount={canSwitchAccount ? () => setAccountSwitchOpen(true) : undefined} /></>}
         </div>
         <div id="workspace-dock-content" className="dock-region" hidden={mode !== 'history' || !visible('dock')} data-mobile-open={mobile && mobilePanel === 'dock' || undefined} data-review={dockTab === 'stats' && simulation.state !== null || undefined}>
           <SimulationDock simulation={simulation} currency={simulationCurrency} pricePrecision={replay.session?.symbol.pricePrecision} tab={dockTab} onTabChange={setDockTab} onClose={() => mobile ? closeMobilePanel() : setPanel('dock', false)} />
@@ -510,7 +506,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       {mobile && mobilePanel && <div className="mobile-panel-backdrop" onClick={closeMobilePanel} aria-hidden="true" />}
       <footer className="status-footer" role="contentinfo">
         <span id="workspace-status-content">{marketSelection.symbol.ticker} · {marketSelection.period.text}{replay.session !== null ? ` · 回放第 ${replay.session.currentIndex + 1} 步` : ''}<span role="status">{[replayHistoryStatus, marketWarning, mode === 'live' ? liveStatus.warning : ''].filter(Boolean).map(message => ` · ${message}`).join('')}</span></span>
-        <span>{mode === 'history' ? '历史训练模拟' : '实时只读'}</span>
+        <span>{mode === 'history' ? '历史回放' : '实时行情'}</span>
       </footer>
       <nav className="mobile-workspace-nav" aria-label="工作台快捷操作">
         <button type="button" aria-pressed={mobilePanel === null} onClick={closeMobilePanel}>看图</button>

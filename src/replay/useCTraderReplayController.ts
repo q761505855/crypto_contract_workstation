@@ -84,11 +84,16 @@ export function useCTraderReplayController(
     return saveQueue.current
   }, [replaySessions])
 
-  const publish = useCallback(async (cursor: ReplayCursor) => {
+  const publish = useCallback(async (cursor: ReplayCursor, finishOnCompletion = false) => {
+    const finished = finishOnCompletion && cursor.session.status === 'completed'
+    if (finished) {
+      updateCursor(cursor, { active: false })
+    }
     const saved = cursor.session
     await queueSave(saved)
     if (cursorRef.current !== cursor || cursor.session !== saved) return
-    setSession(saved)
+    if (finished) cursorRef.current = null
+    setSession(finished ? null : saved)
     remember(saved)
   }, [queueSave, remember])
 
@@ -149,7 +154,7 @@ export function useCTraderReplayController(
       const saved = await replaySessions.list()
       signal.throwIfAborted()
       setSessions(saved)
-      const active = saved.find(item => item.active && item.marketSource === 'ctrader')
+      const active = saved.find(item => item.active && item.status !== 'completed' && item.marketSource === 'ctrader')
       if (active !== undefined) {
         const cursor = await hydrate(active, signal)
         signal.throwIfAborted()
@@ -176,8 +181,9 @@ export function useCTraderReplayController(
       remember(prior.session)
     }
     signal.throwIfAborted()
-    cursorRef.current = cursor
-    setSession(cursor.session)
+    const finished = create && cursor.session.status === 'completed'
+    cursorRef.current = finished ? null : cursor
+    setSession(finished ? null : cursor.session)
     remember(cursor.session)
   }, [queueSave, remember, replaySessions])
 
@@ -190,7 +196,7 @@ export function useCTraderReplayController(
       }
       setIsPlaying(false)
       const candle = await history.find(input.symbol.ticker, input.period.text, input.startTime, endTime, 1, signal)
-      if (candle === undefined) throw new Error('所选区间没有可用于回放的 cTrader K 线')
+      if (candle === undefined) throw new Error('所选区间没有已收盘的 K 线，请将图表移到更早的时间。')
       const ctrader = await service.getReplayTradingTerms(input.symbol.ticker, candle.openTime, signal)
       const tradingConfig = {
         initialBalance: input.initialBalance ?? DEFAULT_TRADING_CONFIG.initialBalance,
@@ -200,6 +206,7 @@ export function useCTraderReplayController(
       validateSimulationConfig(tradingConfig)
       signal.throwIfAborted()
       const now = Date.now()
+      const completed = candle.closeTime === endTime
       const next: ReplaySession = {
         schemaVersion: 2,
         marketSource: 'ctrader',
@@ -214,8 +221,8 @@ export function useCTraderReplayController(
         currentIndex: 0,
         candleCount: 1,
         speed: input.speed ?? 1,
-        status: candle.closeTime === endTime ? 'completed' : 'paused',
-        active: true,
+        status: completed ? 'completed' : 'paused',
+        active: !completed,
         hasTrades: false,
         tradingConfig: { ...tradingConfig },
         createdAt: now,
@@ -232,7 +239,8 @@ export function useCTraderReplayController(
     const saved = await replaySessions.get(id)
     if (saved === undefined) throw new Error('找不到所选回放会话')
     const cursor = await hydrate(saved, signal)
-    updateCursor(cursor, { active: true })
+    // An archived result can be opened explicitly for review or reset.
+    updateCursor(cursor, { active: saved.status !== 'completed' })
     await activate(cursor, signal)
   }, '正在读取会话的 cTrader K 线…'), [activate, hydrate, replaySessions, run])
 
@@ -282,11 +290,11 @@ export function useCTraderReplayController(
     try {
       await notify({ type: 'advance', candle, ...(sameTimeTick ? { sameTimeTick: true } : {}) })
     } catch (reason) {
-      if (!signal.aborted) await publish(cursor)
+      if (!signal.aborted) await publish(cursor, true)
       throw reason
     }
     if (cursor.session.status === 'completed') setIsPlaying(false)
-    return true
+    return cursor.session.status !== 'completed'
   }, [findStep, history, notify, publish])
 
   const next = useCallback((timeframe = stepTimeframe) => run('推进回放失败', async signal => {
@@ -294,7 +302,7 @@ export function useCTraderReplayController(
     if (cursor === null || cursor.session.status === 'completed') return
     await advance(cursor, stepPeriod(cursor.session, timeframe), signal)
     signal.throwIfAborted()
-    await publish(cursor)
+    await publish(cursor, true)
   }), [advance, publish, run, stepTimeframe])
 
   const previous = useCallback((timeframe = stepTimeframe) => run('回退回放失败', async signal => {
@@ -310,6 +318,7 @@ export function useCTraderReplayController(
     )
     signal.throwIfAborted()
     moveCursor(cursor, candle ?? initial, candle === undefined ? 0 : Math.max(1, saved.currentIndex - 1))
+    if (!saved.active && cursor.session.status === 'paused') updateCursor(cursor, { active: true })
     await publish(cursor)
   }), [findStep, publish, run, stepTimeframe])
 
@@ -320,8 +329,8 @@ export function useCTraderReplayController(
     moveCursor(cursor, cursor.initial, 0)
     await notify({ type: 'reset', candle: cursor.initial })
     signal.throwIfAborted()
-    updateCursor(cursor, { hasTrades: false })
-    await publish(cursor)
+    updateCursor(cursor, { hasTrades: false, active: cursor.session.status !== 'completed' })
+    await publish(cursor, true)
   }), [notify, publish, run])
 
   const jumpToEnd = useCallback(() => run('跳转回放失败', async signal => {
@@ -336,7 +345,7 @@ export function useCTraderReplayController(
       // Save the cursor after each durable simulation update.
       await queueSave(cursor.session)
     }
-    await publish(cursor)
+    await publish(cursor, true)
   }, '正在读取剩余的 cTrader K 线…'), [advance, publish, queueSave, run, stepTimeframe])
 
   const setSpeed = useCallback((speed: ReplaySpeed) => {

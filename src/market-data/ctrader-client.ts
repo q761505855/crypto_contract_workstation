@@ -97,9 +97,12 @@ interface Connection {
 class FatalConnectionError extends Error {}
 
 class ServerError extends Error {
+  readonly code: string
+
   constructor(code: unknown) {
     const label = /^(?:[A-Z][A-Z_]{2,34}|[0-9]{1,5})$/.test(String(code)) ? String(code) : 'UNKNOWN'
     super(`cTrader 拒绝了请求（${label}）`)
+    this.code = label
   }
 }
 
@@ -265,6 +268,12 @@ export class CTraderClient {
       }
       const result = await this.send(connection, CTraderMessage.AccountAuth, CTraderMessage.AccountAuthResponse, {
         ctidTraderAccountId: account.id, accessToken: config.accessToken,
+      }).catch((error: unknown) => {
+        if (error instanceof ServerError && (error.code === 'CANT_ROUTE_REQUEST' || error.code === '7')) {
+          const environment = account.isLive ? '真实' : '模拟'
+          throw new FatalConnectionError(`cTrader 无法连接所选${environment}账户（CANT_ROUTE_REQUEST）。可切换其他授权账户，或稍后重试。`)
+        }
+        throw error
       })
       if (cTraderInteger(result.ctidTraderAccountId) !== account.id) {
         throw new FatalConnectionError('cTrader 账户认证返回了不同的账户')

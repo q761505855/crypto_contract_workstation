@@ -29,6 +29,7 @@ function fixture() {
     applyNewData: vi.fn((rows: KLineData[]) => { data = rows; visibleTo = data.length; for (const callback of [...actions.get('onDataReady') ?? []]) callback() }),
     getBarSpace: () => 10,
     scrollToTimestamp: vi.fn((timestamp: number) => { visibleTo = data.findIndex(row => row.timestamp === timestamp) + 1 }),
+    scrollToRealTime: vi.fn(() => { visibleTo = data.length }),
     scrollByDistance: vi.fn(),
     setPriceRangeAuto: vi.fn(),
   } as unknown as Chart
@@ -95,9 +96,10 @@ describe('chart viewport navigation', () => {
     const latest = alignOpenTime(Date.now(), '1m', 'floor')
     wrapped().subscribe({ ticker: 'BTCUSDT' }, period('1m'), candle => core.applyNewData([candle], true))
     emitLive({ ...row(latest), close: 123 })
-    await adapter.jumpToTime(Date.now())
+    await adapter.jumpToTime(Date.now(), true)
     expect(core.getDataList().at(-1)?.close).toBe(123)
-    expect(core.scrollToTimestamp).toHaveBeenLastCalledWith(latest, 0)
+    expect(core.scrollToRealTime).toHaveBeenCalledWith(0)
+    expect(adapter.getRightmostVisibleCandleTime()).toBe(latest)
   })
 
   it('does not carry a previous instrument websocket bar into the newly selected instrument', async () => {
@@ -144,18 +146,17 @@ describe('chart viewport navigation', () => {
     await vi.waitFor(() => expect(core.scrollToTimestamp).toHaveBeenLastCalledWith(panned, 0))
   })
 
-  it('previews bars across a month boundary and keeps the selected replay start until panned', async () => {
-    const { adapter, history, core, actions, panTo } = fixture()
+  it('places the selected candle at the right edge and loads nearby bars across a month boundary', async () => {
+    const { adapter, history, core, panTo } = fixture()
     const target = Date.UTC(2025, 8, 30, 23, 59)
-    await expect(adapter.jumpToTime(target, true)).resolves.toBe(target)
+    await expect(adapter.jumpToTime(target)).resolves.toBe(target)
     expect(history.mock.calls[0][3]).toBeGreaterThan(Date.UTC(2025, 9, 1))
-    expect(core.scrollByDistance).toHaveBeenLastCalledWith(10 - 400, 0)
-    expect(adapter.getReplayStartTime()).toBe(target)
+    expect(core.scrollByDistance).toHaveBeenLastCalledWith(10, 0)
+    expect(adapter.getRightmostVisibleCandleTime()).toBe(target)
 
     const panned = Date.UTC(2025, 9, 1, 0, 5)
     panTo(panned)
-    for (const callback of actions.get('onScroll') ?? []) callback()
-    expect(adapter.getReplayStartTime()).toBe(panned)
+    expect(adapter.getRightmostVisibleCandleTime()).toBe(panned)
   })
 
   it('inherits the original anchor during rapid switches and discards late positioning', async () => {

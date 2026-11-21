@@ -10,10 +10,14 @@ function accountLabel(account: CTraderAccount): string {
   return [account.isLive ? '真实账户' : '模拟账户', account.broker, `账号 ${account.login ?? account.id}`].filter(Boolean).join(' · ')
 }
 
-export function CTraderAccountPicker({ selection, busy }: { selection: CTraderAccountSelection; busy: boolean }) {
+export function CTraderAccountPicker({ selection, busy, switching, onSwitchingChange }: {
+  selection: CTraderAccountSelection
+  busy: boolean
+  switching: boolean
+  onSwitchingChange(open: boolean): void
+}) {
   const { accounts, selectedKey } = useSyncExternalStore(selection.subscribe, selection.getSnapshot)
   const [dismissed, setDismissed] = useState<readonly CTraderAccount[]>()
-  const [switching, setSwitching] = useState(false)
   const [choice, setChoice] = useState('')
   const [error, setError] = useState('')
   const [remembered, setRemembered] = useState(readCTraderAccount)
@@ -29,17 +33,20 @@ export function CTraderAccountPicker({ selection, busy }: { selection: CTraderAc
       window.removeEventListener('storage', storageChanged)
     }
   }, [])
+  useEffect(() => {
+    if (switching) {
+      setChoice(selectedKey ?? '')
+      setError('')
+    }
+  }, [switching, selectedKey])
   const account = accounts.find(item => item.key === choice)
   const restored = selectedKey && remembered !== selectedKey && accounts.some(item => item.key === remembered)
   if (accounts.length === 0) return null
 
   return <>
     {selectedKey && <button type="button" disabled={busy || accounts.length < 2}
-      title={accounts.length < 2 ? '当前只有一个授权账户' : undefined} onClick={() => {
-        setChoice(selectedKey)
-        setError('')
-        setSwitching(true)
-      }}>切换账户</button>}
+      title={accounts.length < 2 ? '当前只有一个授权账户' : undefined}
+      onClick={() => onSwitchingChange(true)}>切换账户</button>}
     {restored && <small className="workspace-tools-note" role="status">已恢复账户选择，刷新页面后生效。</small>}
     {!selectedKey && dismissed === accounts && <button type="button" onClick={() => setDismissed(undefined)}>选择 cTrader 账户</button>}
     <WorkspaceDialog
@@ -47,7 +54,7 @@ export function CTraderAccountPicker({ selection, busy }: { selection: CTraderAc
       title={selectedKey ? '切换 cTrader 账户' : '选择 cTrader 账户'}
       onClose={() => {
         setError('')
-        if (selectedKey) setSwitching(false)
+        if (selectedKey) onSwitchingChange(false)
         else setDismissed(accounts)
       }}
     >
