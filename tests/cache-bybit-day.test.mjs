@@ -1,4 +1,4 @@
-import { gzipSync } from 'node:zlib'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,20 +14,24 @@ describe('Bybit 日成交缓存', () => {
   it('按 UTC 天下载一次，保存带校验和的小时分片', async () => {
     const repository = await mkdtemp(join(tmpdir(), 'bybit-test-'))
     const fetcher = vi.fn(async () => new Response(new Uint8Array(gzipSync(
-      [header, `${utc}.123456,${symbol},Buy,1,600,a`, `${utc + 3600},${symbol},Sell,2,601,b`, ''].join('\n'),
+      [header, `${utc + 3600},${symbol},Sell,2,601,b`, `${utc}.123457,${symbol},Buy,1,599,c`,
+        `${utc}.123456,${symbol},Buy,1,600,a`, ''].join('\n'),
     ))))
     try {
       const first = await cacheBybitDay({ repository, symbol, day, fetcher })
-      expect(first).toMatchObject({ cached: false, rows: 2 })
+      expect(first).toMatchObject({ cached: false, rows: 3 })
       const path = join(repository, archiveRoot, symbol, day)
       expect(JSON.parse(await readFile(join(path, 'manifest.json'), 'utf8'))).toMatchObject({
-        version: 1, symbol, day, rows: 2,
+        version: 1, symbol, day, rows: 3,
         parts: [
-          { file: '00-000.csv.gz', rows: 1, hour: 0, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+          { file: '00-000.csv.gz', rows: 2, hour: 0, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
           { file: '01-000.csv.gz', rows: 1, hour: 1, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
         ],
       })
-      expect(await cacheBybitDay({ repository, symbol, day, fetcher })).toMatchObject({ cached: true, rows: 2 })
+      expect(gunzipSync(await readFile(join(path, '00-000.csv.gz'))).toString()).toBe(
+        `${utc}.123456,a,Buy,600,1\n${utc}.123457,c,Buy,599,1\n`,
+      )
+      expect(await cacheBybitDay({ repository, symbol, day, fetcher })).toMatchObject({ cached: true, rows: 3 })
       expect(fetcher).toHaveBeenCalledTimes(1)
     } finally { await rm(repository, { recursive: true, force: true }) }
   })

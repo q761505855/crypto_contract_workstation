@@ -42,10 +42,11 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
   await mkdir(dirname(target), { recursive: true })
   const staging = await mkdtemp(join(dirname(target), '.bybit-'))
   const parts = []
+  const hours = new Map()
+  const gunzip = createGunzip()
   let rows = 0
   let columns
   let part
-  let previous = -Infinity
   const closePart = async () => {
     if (!part) return
     part.gzip.end()
@@ -60,7 +61,6 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
     part = undefined
   }
   try {
-    const gunzip = createGunzip()
     const transfer = pipeline(Readable.fromWeb(response.body), gunzip)
     // The read loop also sees stream errors; attach a rejection handler immediately.
     void transfer.catch(() => {})
@@ -72,42 +72,65 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
         continue
       }
       if (!line) continue
-      const [timestamp, ticker, side, size, price, id] = columns.map(index => line.split(',')[index])
+      const fields = line.split(',')
+      const [timestamp, ticker, side, size, price, id] = columns.map(index => fields[index])
       const time = Number(timestamp) * 1000
-      if (!(time >= start && time < start + dayMs && time >= previous) || ticker !== symbol ||
+      if (!(time >= start && time < start + dayMs) || ticker !== symbol ||
           !['Buy', 'Sell'].includes(side) || !(Number(size) > 0 && Number(price) > 0) ||
-          !Number.isFinite(Number(size)) || !Number.isFinite(Number(price)) || !id ||
+          !Number.isFinite(Number(size) * Number(price)) || !id ||
           !/^[0-9]+(?:\.\d{1,6})?$/.test(timestamp) || !/^[\w-]+$/.test(id)) {
         throw new Error(`Bybit 成交文件第 ${rows + 2} 行无效：${line.slice(0, 90)}`)
       }
-      previous = time
       const hour = Math.floor((time - start) / hourMs)
-      if (!part || part.hour !== hour || part.written >= maxPartBytes) {
-        const index = part?.hour === hour ? part.index + 1 : 0
-        await closePart()
-        const file = `${String(hour).padStart(2, '0')}-${String(index).padStart(3, '0')}.csv.gz`
-        const gzip = createGzip()
-        const output = createWriteStream(join(staging, file))
-        const done = pipeline(gzip, output)
+      let spool = hours.get(hour)
+      if (!spool) {
+        const path = join(staging, `${hour}.csv`)
+        const output = createWriteStream(path)
+        const done = finished(output)
         void done.catch(() => {})
-        part = { file, gzip, done, hour, index, rows: 0, written: 0 }
+        spool = { path, output, done }
+        hours.set(hour, spool)
       }
-      const record = `${timestamp},${id},${side},${price},${size}\n`
-      if (!part.gzip.write(record)) await once(part.gzip, 'drain')
-      part.written += record.length
-      part.rows++
+      if (!spool.output.write(`${timestamp},${id},${side},${price},${size}\n`)) await once(spool.output, 'drain')
       rows++
     }
     await transfer
-    await closePart()
     if (!rows) throw new Error('Bybit 日归档没有成交')
+    for (const spool of hours.values()) spool.output.end()
+    await Promise.all([...hours.values()].map(spool => spool.done))
+    // Some older exports arrive in reverse order. Sort one hour at a time, retaining
+    // the file's order for trades that carry an identical timestamp.
+    for (const [hour, spool] of [...hours].sort(([a], [b]) => a - b)) {
+      const records = (await readFile(spool.path, 'utf8')).trimEnd().split('\n')
+        .map(line => ({ line, time: Number(line.slice(0, line.indexOf(','))) }))
+      records.sort((a, b) => a.time - b.time)
+      for (const { line } of records) {
+        if (!part || part.written + line.length + 1 > maxPartBytes) {
+          const index = part ? part.index + 1 : 0
+          await closePart()
+          const file = `${String(hour).padStart(2, '0')}-${String(index).padStart(3, '0')}.csv.gz`
+          const gzip = createGzip()
+          const done = pipeline(gzip, createWriteStream(join(staging, file)))
+          void done.catch(() => {})
+          part = { file, gzip, done, hour, index, rows: 0, written: 0 }
+        }
+        if (!part.gzip.write(line + '\n')) await once(part.gzip, 'drain')
+        part.written += line.length + 1
+        part.rows++
+      }
+      await closePart()
+      await rm(spool.path)
+    }
     const manifest = createWriteStream(join(staging, 'manifest.json'))
     manifest.end(JSON.stringify({ version: 1, symbol, day, rows, parts }) + '\n')
     await finished(manifest)
     await rename(staging, target)
     return { target, cached: false, rows }
   } finally {
+    gunzip.destroy()
+    for (const spool of hours.values()) spool.output.destroy()
     part?.gzip.destroy()
+    await Promise.allSettled([...hours.values()].map(spool => spool.done).concat(part?.done ?? []))
     await rm(staging, { recursive: true, force: true })
   }
 }

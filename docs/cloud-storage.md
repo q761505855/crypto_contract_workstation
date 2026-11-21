@@ -86,4 +86,4 @@ Git 月分片可能尚未覆盖整月；创建、恢复回放先复用普通价�
 
 Bybit 归档按 UTC 日获取。通过 GitHub Actions「缓存 Bybit 日成交」选择 SPYUSDT、QQQUSDT、XAUUSDT 或 BTCUSDT 和已结束的 UTC 日期。工作流使用现有的 `CLOUD_STORAGE_TOKEN` 向同一个云端仓库提交，也可以用 `node scripts/cache-bybit-day.mjs SPYUSDT 2026-11-20 <云端仓库的本地检出目录>` 在本地生成需提交的文件。
 
-新的公开缓存只使用 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/<品种>/<UTC日期>/`。每天的原始数据下载一次，转存为保留交易 ID、方向、时间、价格、数量的 gzip 分片。分片按小时读取，大文件进一步拆分，并由当天清单记录每个分片的笔数、大小和 SHA-256。网页通过 GitHub Raw 按需读取并校验。日目录作为一个 Git 提交发布，缓存命中时复用已有文件。缓存独立于应用配置、会话和旧行情清单。
+新的公开缓存只使用 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/<品种>/<UTC日期>/`。每天的原始数据下载一次，按成交时间排序后转存为保留交易 ID、方向、时间、价格、数量的 gzip 分片。分片按小时读取，大文件进一步拆分，并由当天清单记录每个分片的笔数、大小和 SHA-256。网页通过 GitHub Raw 按需读取并校验。日目录作为一个 Git 提交发布，缓存命中时复用已有文件。缓存独立于应用配置、会话和旧行情清单。
