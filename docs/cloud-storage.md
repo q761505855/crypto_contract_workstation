@@ -81,3 +81,9 @@ GitHub API 请求跳过浏览器 HTTP 缓存，确保连续上传时读取最新
 Git 月分片可能尚未覆盖整月；创建、恢复回放先复用普通价格月数据，再只补实际缺口。近 30 个 UTC 自然日内缺失的官方归档可用受限分钟 API 修补，随后合并上传同一月份，保留原数据。回放重置不清空短期月查询缓存；归档 404 结果去重 60 秒，网络错误不记为归档不存在。
 
 这些值属于构建部署信息，不增加浏览器可修改的用户设置；不会在 `BackupPreferences` 中复制 Token。如果后续支持用户修改并记住仓库目标，必须遵守配置存档约定，完成配置的全部本地、JSON 与 GitHub 往返链路。
+
+## Bybit 逐笔成交缓存
+
+Bybit 归档按 UTC 日获取。通过 GitHub Actions「缓存 Bybit 日成交」选择 SPYUSDT、QQQUSDT、XAUUSDT 或 BTCUSDT 和已结束的 UTC 日期。工作流使用现有的 `CLOUD_STORAGE_TOKEN` 向同一个云端仓库提交，也可以用 `node scripts/cache-bybit-day.mjs SPYUSDT 2026-11-20 <云端仓库的本地检出目录>` 在本地生成需提交的文件。
+
+新的公开缓存只使用 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/<品种>/<UTC日期>/`。每天的原始数据下载一次，转存为保留交易 ID、方向、时间、价格、数量的 gzip 分片。分片按小时读取，大文件进一步拆分，并由当天清单记录每个分片的笔数、大小和 SHA-256。网页通过 GitHub Raw 按需读取并校验。日目录作为一个 Git 提交发布，缓存命中时复用已有文件。缓存独立于应用配置、会话和旧行情清单。
