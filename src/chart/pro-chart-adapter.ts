@@ -144,7 +144,7 @@ const createProChart: ChartProFactory = (options) => {
     const { period, confirmedUntil } = indicatorContext()
     return { timeframe: period.text, confirmedUntil }
   })
-  chart = new KLineChartPro(options)
+  chart = new KLineChartPro({ watermark: '', ...options })
   chart.getChart().setXAxisAfterCandle()
   chart.getChart().setPaneOptions({
     id: 'candle_pane',
