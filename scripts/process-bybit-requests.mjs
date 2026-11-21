@@ -14,7 +14,7 @@ function readRequests(git, now) {
   return paths.flatMap(entry => {
     const [index, path] = entry.split('\t')
     if (!path || !index.startsWith('100644 ')) return []
-    const match = /^([A-Z]+)\/(\d{4}-\d\d-\d\d)\.json$/.exec(path.slice(requestRoot.length + 1))
+    const match = /^([A-Z0-9]+)\/(\d{4}-\d\d-\d\d)\.json$/.exec(path.slice(requestRoot.length + 1))
     if (!match) return []
     const [, symbol, day] = match
     try {

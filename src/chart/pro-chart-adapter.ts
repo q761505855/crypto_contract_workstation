@@ -32,7 +32,8 @@ import { registerTtmSqueezeIndicator } from './ttm-squeeze'
 import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
-import { BybitDatafeed } from '../market-data/bybit/datafeed'
+import { CombinedBybitSource } from '../market-data/bybit/combined-source'
+import type { GitHubContentsClient } from '../github-sync/github-client'
 import { OrderFlowChart } from './order-flow-chart'
 import { registerOrderFlow } from './order-flow-renderers'
 import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference } from './market-session-times'
@@ -83,7 +84,8 @@ const formatPnl = new Intl.NumberFormat('zh-CN', {
 
 export interface ChartAdapterPort {
   dispose?(): void
-  mount(options: ChartProOptions): void
+  mount(options: ChartProOptions & { orderFlowCloud?: GitHubContentsClient }): void
+  startVolumeProfile?(): boolean
   getPeriod(): Period
   getSymbol(): SymbolInfo
   setPeriod(period: Period): void
@@ -172,6 +174,8 @@ export class ProChartAdapter implements ChartAdapterPort {
   private candleReadout?: CandleReadout
   private drawings?: DrawingOverlays
   private orderFlow?: OrderFlowChart
+  private source?: CombinedBybitSource
+  private stopCursor?: () => void
   private tradeMarkerGap = 0.08
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
@@ -188,6 +192,10 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.drawings = undefined
     this.orderFlow?.dispose()
     this.orderFlow = undefined
+    this.source?.release()
+    this.source = undefined
+    this.stopCursor?.()
+    this.stopCursor = undefined
     this.cancelHistoryWork()
     this.clearPosition()
     this.priceLabels?.dispose()
@@ -199,7 +207,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.datafeed = null
   }
 
-  mount(options: ChartProOptions): void {
+  mount({ orderFlowCloud, ...options }: ChartProOptions & { orderFlowCloud?: GitHubContentsClient }): void {
     if (this.chart !== null) {
       throw new Error('KLineChart Pro is already mounted.')
     }
@@ -211,16 +219,30 @@ export class ProChartAdapter implements ChartAdapterPort {
         if (property === 'subscribe') return this.subscribeChart.bind(this)
         const value = Reflect.get(target, property, target) as unknown
         if ((property === 'getOlderHistory' || property === 'getNewerHistory') && typeof value === 'function') {
-          return (symbol: SymbolInfo, period: Period, edge: number) =>
-            value.call(target, symbol, period, edge, this.historyAbort.signal)
+          return async (symbol: SymbolInfo, period: Period, edge: number) => {
+            const page = await value.call(target, symbol, period, edge, this.historyAbort.signal)
+            if (page) this.ownLastCandle(page.candles, symbol, period)
+            return page
+          }
         }
         return typeof value === 'function' ? value.bind(target) : value
       },
     })
-    this.chart = this.factory({ ...options, datafeed })
+    const combinedOptions = { ...options, datafeed, orderFlowEnabled: !!orderFlowCloud }
+    this.chart = this.factory(combinedOptions)
     this.coreChart = this.chart.getChart()
-    if (options.datafeed instanceof BybitDatafeed) {
-      this.orderFlow = new OrderFlowChart(this.coreChart, options.datafeed, () => this.getPeriod().text)
+    if (orderFlowCloud) {
+      const feed = options.datafeed as Datafeed & {
+        getReplayContext?(): ReplayContext | null
+        subscribeReplayCursor?(listener: (context: ReplayContext | null) => void): () => void
+      }
+      this.source = new CombinedBybitSource(orderFlowCloud, reset => this.orderFlow?.refresh(reset))
+      this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => {
+        const last = this.requireCoreChart().getDataList().at(-1)
+        return !!last && this.candleOwners.get(last) === this.selectionKey(this.getSymbol(), this.getPeriod())
+      })
+      this.source.select(options.symbol, feed.getReplayContext?.() ?? null)
+      this.stopCursor = feed.subscribeReplayCursor?.(context => this.source?.select(this.getSymbol(), context))
     }
     // Allow a time jump to place even the first available candle at the right edge.
     this.coreChart.setRightMinVisibleBarCount?.(0)
@@ -258,6 +280,10 @@ export class ProChartAdapter implements ChartAdapterPort {
     if (!this.coreChart) return
     this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow)
     this.drawings.setScope(scope)
+  }
+
+  startVolumeProfile(): boolean {
+    return this.drawings?.startVolumeProfile() ?? false
   }
 
   resize(): void {
@@ -406,6 +432,8 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.clearPosition()
     this.viewportAnchor = null
     this.requireChart().setSymbol(symbol)
+    const feed = this.datafeed as (Datafeed & { getReplayContext?(): ReplayContext | null }) | null
+    this.source?.select(symbol, feed?.getReplayContext?.() ?? null)
   }
 
   setPeriod(period: Period): void {
@@ -495,10 +523,6 @@ export class ProChartAdapter implements ChartAdapterPort {
       const range = this.timeWindow(restore.timestamp, period)
       from = range.from
       to = range.to
-    } else if (notifySelection !== false && this.datafeed instanceof BybitDatafeed && this.datafeed.hasLiveTail()) {
-      // The initial chart load rounds its end to the period grid. Bybit's tape
-      // also supplies trades inside that unfinished bar, including after replay.
-      to = Date.now()
     }
     const signal = notifySelection === false ? undefined : this.historyAbort.signal
     let candles: ReturnType<Chart['getDataList']>

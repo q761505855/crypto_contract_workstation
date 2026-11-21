@@ -10,10 +10,11 @@ import {
 import { DemoDatafeed } from './demo-datafeed'
 import {
   loadChartIndicatorPreferences,
-  saveWorkspaceIndicatorPreferences,
+  saveChartIndicatorPreferences,
   type ChartIndicatorPreferences,
 } from './indicator-preferences'
-import { BIG_TRADES } from './order-flow'
+import type { GitHubContentsClient } from '../github-sync/github-client'
+import { bybitMapping } from '../market-data/bybit/trades'
 import {
   ProChartAdapter,
   type ChartAdapterPort,
@@ -53,6 +54,7 @@ export interface ChartWorkspaceProps {
   auxiliary?: boolean
   drawingStore?: DrawingStore
   drawingScope?: string | null
+  orderFlowCloud?: GitHubContentsClient
 }
 
 const demoDatafeed = new DemoDatafeed()
@@ -78,6 +80,7 @@ export function ChartWorkspace({
   auxiliary = false,
   drawingStore,
   drawingScope = null,
+  orderFlowCloud,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const scrollPortRef = useRef<HTMLDivElement | null>(null)
@@ -85,6 +88,7 @@ export function ChartWorkspace({
   const synchronizeLayoutRef = useRef<(() => void) | null>(null)
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
+  const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
@@ -99,16 +103,13 @@ export function ChartWorkspace({
   const symbolRef = useRef(symbol)
   const periodRef = useRef(period)
   const reloadKeyRef = useRef(reloadKey)
-  const orderFlow = symbol.exchange === 'BYBIT'
+  const mapping = orderFlowCloud && bybitMapping(symbol)
   const initialIndicatorPreferencesRef = useRef<
     ChartIndicatorPreferences | null | undefined
   >(undefined)
 
   if (initialIndicatorPreferencesRef.current === undefined) {
-    const preferences = loadChartIndicatorPreferences()
-    initialIndicatorPreferencesRef.current = preferences && !orderFlow ? {
-      ...preferences, main: preferences.main.filter(indicator => indicator.name !== BIG_TRADES),
-    } : preferences
+    initialIndicatorPreferencesRef.current = loadChartIndicatorPreferences()
   }
 
   if (adapterRef.current === null) {
@@ -126,15 +127,15 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     const initialIndicatorPreferences =
       initialIndicatorPreferencesRef.current ?? null
-    adapter?.mount(
-      createChartOptions(
+    adapter?.mount({
+      ...createChartOptions(
         hostRef.current,
         datafeed,
         symbol,
         period,
         initialIndicatorPreferences,
-      ),
-    )
+      ), orderFlowCloud,
+    })
     if (initialIndicatorPreferences !== null) {
       adapter?.applyIndicatorPreferences?.(
         initialIndicatorPreferences,
@@ -144,6 +145,10 @@ export function ChartWorkspace({
     const scrollPort = scrollPortRef.current
     const toolbar = host.querySelector<HTMLElement>('.klinecharts-pro-period-bar')
     setPeriodToolbar(toolbar)
+    const drawingBar = host.querySelector<HTMLElement>('.klinecharts-pro-drawing-bar')
+    const drawingSlot = orderFlowCloud && drawingBar ? document.createElement('div') : null
+    if (drawingSlot) drawingBar?.prepend(drawingSlot)
+    setDrawingToolbar(drawingSlot ?? toolbar)
     const priceAxis = adapter?.getPriceAxisContainer?.() ?? null
     priceAxis?.classList.add('chart-price-axis')
     const synchronizePriceControl = () => {
@@ -213,6 +218,7 @@ export function ChartWorkspace({
       scrollPort?.removeEventListener('wheel', scrollChart, true)
       synchronizeLayoutRef.current = null
       host.removeEventListener('click', openSymbolPicker, true)
+      drawingSlot?.remove()
       adapter?.dispose?.()
     }
   }, [])
@@ -392,7 +398,7 @@ export function ChartWorkspace({
       const serialized = JSON.stringify(preferences)
       if (serialized === previous) return
       previous = serialized
-      saveWorkspaceIndicatorPreferences(preferences, orderFlow)
+      saveChartIndicatorPreferences(preferences)
     }
     const interval = window.setInterval(synchronize, 250)
     window.addEventListener('beforeunload', synchronize)
@@ -467,7 +473,7 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     adapter?.setIndicatorPaneHeight?.(paneId, height)
     const preferences = adapter?.getIndicatorPreferences?.()
-    if (!auxiliary && preferences !== undefined) saveWorkspaceIndicatorPreferences(preferences, orderFlow)
+    if (!auxiliary && preferences !== undefined) saveChartIndicatorPreferences(preferences)
     setPaneSizes(adapter?.getIndicatorPaneSizes?.() ?? [])
     synchronizeLayoutRef.current?.()
     adapter?.resize?.()
@@ -528,10 +534,18 @@ export function ChartWorkspace({
         <SymbolPicker
           currentSymbol={symbolRef.current}
           datafeed={datafeed}
+          orderFlowAvailable={!!orderFlowCloud}
           onClose={() => setSymbolPickerOpen(false)}
           onSelect={selectSymbol}
         />
       ) : null}
+      {orderFlowCloud && drawingToolbar && createPortal(
+        <button type="button" className="chart-volume-profile-tool" aria-label="框选成交分布"
+          title={mapping ? `框选成交分布 · ${mapping.symbol}` : '当前品种暂无 Bybit 成交量'} disabled={!mapping}
+          onClick={() => adapterRef.current?.startVolumeProfile?.()}>
+          <span aria-hidden="true"><i /><i /><i /></span>
+        </button>, drawingToolbar,
+      )}
       {onChartHeightChange !== undefined ? (
         <div
           aria-label="图表高度"

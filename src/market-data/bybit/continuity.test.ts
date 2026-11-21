@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BybitArchive, parseBybitArchivePart } from './archive'
-import { BybitDatafeed } from './datafeed'
+import { CombinedBybitSource } from './combined-source'
+import { GitHubContentsClient } from '../../github-sync/github-client'
 import { BybitLiveTrades, parseBybitSocketTrades } from './live'
-import { BYBIT_HOUR_MS, bybitDayStart, bybitSymbolInfo, type BybitTrade } from './trades'
+import { bybitDayStart, bybitMapping, type BybitTrade } from './trades'
 
 const symbol = 'SPYUSDT'
 const period = { text: '1m', multiplier: 1, timespan: 'minute' } as const
@@ -74,37 +75,34 @@ describe('Bybit 成交连续性', () => {
     } finally { live.close() }
   })
 
-  it('以归档作为已完成小时的来源，并从实时缓存接上后一小时', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(start + BYBIT_HOUR_MS + 60_000)
+  it('同一目录映射 ETF、现货、外汇和加密合约，按 IC 回放游标限制 Bybit 成交', async () => {
+    const ic = { ticker: 'US500', exchange: 'CTRADER' }
+    expect(bybitMapping(ic)).toEqual({ symbol: 'SPYUSDT', relation: 'etf' })
+    expect(bybitMapping({ ...ic, ticker: '1000xSHIB' })?.symbol).toBe('SHIB1000USDT')
+    expect(bybitMapping({ ...ic, ticker: 'EURUSD' })?.symbol).toBe('EURUSDUSDT')
+    expect(bybitMapping({ ...ic, ticker: 'FETUSD' })?.symbol).toBe('FETUSDT')
+    expect(bybitMapping({ ...ic, ticker: 'USDCHF' })).toBeUndefined()
     const archive = new BybitArchive()
-    const first = trade('first', BYBIT_HOUR_MS - 1000)
-    const last = trade('last', BYBIT_HOUR_MS + 500)
-    vi.spyOn(archive, 'loadHour').mockResolvedValueOnce([first]).mockResolvedValueOnce(null)
-    const live = new BybitLiveTrades(symbol, vi.fn())
-    const read = vi.spyOn(live, 'read').mockReturnValue([last])
-    const datafeed = new BybitDatafeed(symbol, archive, live)
+    const first = trade('first', 500)
+    const atCursor = trade('at-cursor', 1000)
+    const latest = trade('next', 1500)
+    vi.spyOn(archive, 'hasDay').mockResolvedValue(true)
+    vi.spyOn(archive, 'loadHour').mockResolvedValue([first, atCursor, latest])
+    const source = new CombinedBybitSource(new GitHubContentsClient({ owner: 'owner', repository: 'store', branch: 'main' }),
+      vi.fn(), archive, () => start + 86_400_000)
+    const cursor = { sessionId: 'ic-session', symbol: ic.ticker, timeframe: '1m', currentTime: start + 1000,
+      visibleUntil: start + 1001, cursorTickIndex: 0 }
     const received: BybitTrade[] = []
-    await datafeed.visitTrades({ fromUs: first.timeUs, untilUs: last.timeUs + 1 }, row => received.push(row))
-    expect(received).toEqual([first, last])
-    expect(read).toHaveBeenCalledExactlyOnceWith((start + BYBIT_HOUR_MS) * 1000, last.timeUs + 1)
-  })
-
-  it('在回放边界前逐笔累加，下一步才显示后续成交', async () => {
-    const archive = new BybitArchive()
-    const first = trade('first', 500, 716, 1)
-    const next = trade('next', 1500, 721, 2)
-    vi.spyOn(archive, 'loadHour').mockResolvedValue([first, next])
-    const datafeed = new BybitDatafeed(symbol, archive, undefined, start, (start + 1000) * 1000)
-    expect(await datafeed.getHistoryKLineData(bybitSymbolInfo(symbol), period, start, start + 60_000)).toEqual([
-      { timestamp: start, open: 716, high: 716, low: 716, close: 716, volume: 1, turnover: 716 },
-    ])
-    const update = vi.fn()
-    datafeed.subscribe(bybitSymbolInfo(symbol), period, update)
-    await datafeed.advance((start + 2000) * 1000)
-    expect(update).toHaveBeenCalledExactlyOnceWith({
-      timestamp: start, open: 716, high: 721, low: 716, close: 721, volume: 3, turnover: 2158,
-    })
+    const scan = () => source.visitTrades({ fromUs: start * 1000, untilUs: (start + 2000) * 1000 },
+      row => received.push(row), new AbortController().signal)
+    source.select(ic, cursor)
+    expect(await scan()).toBe(true)
+    expect(received).toEqual([first])
+    source.select(ic, { ...cursor, currentTime: start + 1800, visibleUntil: start + 1801 })
+    received.length = 0
+    expect(await scan()).toBe(true)
+    expect(received).toEqual([first, atCursor, latest])
+    source.release()
   })
 
   it('保留归档的微秒顺序并拒绝无效数据', () => {
@@ -115,5 +113,26 @@ describe('Bybit 成交连续性', () => {
     ])
     expect(() => parseBybitArchivePart(text, start, 1)).toThrow('笔数')
     expect(() => parseBybitSocketTrades({ topic: 'publicTrade.SPYUSDT', data: [{ s: symbol, T: start, i: 'a', S: 'Buy', p: '-1', v: '1' }] }, symbol)).toThrow('成交格式')
+  })
+
+  it('同日缺档只提交一次后台缓存请求', async () => {
+    const archive = new BybitArchive()
+    vi.spyOn(archive, 'hasDay').mockResolvedValue(false)
+    const cloud = new GitHubContentsClient({ owner: 'owner', repository: 'store', branch: 'main' }, 'test-token')
+    vi.spyOn(cloud, 'getSnapshot').mockResolvedValue({ commitSha: 'commit', treeSha: 'tree' })
+    vi.spyOn(cloud, 'getFile').mockResolvedValue(null)
+    const submit = vi.spyOn(cloud, 'putFile').mockResolvedValue('request')
+    const source = new CombinedBybitSource(cloud, vi.fn(), archive, () => start + 86_400_000)
+    const cursor = { sessionId: 'ic-session', symbol: 'US500', timeframe: '1m', currentTime: start,
+      visibleUntil: start + 1000 }
+    const scan = () => source.visitTrades({ fromUs: start * 1000, untilUs: (start + 1000) * 1000 },
+      vi.fn(), new AbortController().signal)
+    try {
+      source.select({ ticker: 'US500', exchange: 'CTRADER' }, cursor)
+      expect(await scan()).toBe(false)
+      expect(await scan()).toBe(false)
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1))
+      expect(submit.mock.calls[0][0]).toBe('data/bybit-requests/SPYUSDT/2026-11-18.json')
+    } finally { source.release() }
   })
 })

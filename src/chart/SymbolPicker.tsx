@@ -4,6 +4,7 @@ import {
   readFavoriteSymbols,
   saveFavoriteSymbols,
 } from '../market-data/favorites'
+import { bybitMapping } from '../market-data/bybit/trades'
 
 type SymbolPickerTab = 'favorites' | 'all'
 
@@ -12,6 +13,7 @@ interface SymbolPickerProps {
   datafeed: Datafeed
   onClose: () => void
   onSelect: (symbol: SymbolInfo) => void
+  orderFlowAvailable?: boolean
 }
 
 export function SymbolPicker({
@@ -19,6 +21,7 @@ export function SymbolPicker({
   datafeed,
   onClose,
   onSelect,
+  orderFlowAvailable,
 }: SymbolPickerProps) {
   const [tab, setTab] = useState<SymbolPickerTab>('favorites')
   const [search, setSearch] = useState('')
@@ -159,6 +162,7 @@ export function SymbolPicker({
           {!loading &&
             visibleSymbols.map((item) => {
               const favorite = favoriteSet.has(item.ticker)
+              const mapping = orderFlowAvailable && bybitMapping(item)
               return (
                 <div
                   className={
@@ -180,7 +184,10 @@ export function SymbolPicker({
                       <strong>{item.shortName ?? item.ticker}</strong>
                       {item.name ? <small>{item.name}</small> : null}
                     </span>
-                    <small>{item.exchange ?? ''}</small>
+                    {orderFlowAvailable ? <small className="symbol-volume-status" data-supported={!!mapping}
+                      title={mapping ? `Bybit ${mapping.symbol}${mapping.relation === 'direct' ? '' : '（代理）'}` : undefined}>
+                      {mapping ? `${mapping.relation === 'direct' ? '支持成交量' : '支持代理成交量'} · ${mapping.symbol}` : '暂无成交量'}
+                    </small> : <small>{item.exchange ?? ''}</small>}
                   </button>
                   <button
                     aria-label={

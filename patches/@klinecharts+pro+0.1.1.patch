@@ -43,7 +43,7 @@ index 1cb6404..8a1a4be 100644
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..da96bc7 100644
+index 6f78d0e..aeabf26 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 @@ -2294,7 +2294,35 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
@@ -126,29 +126,7 @@ index 6f78d0e..da96bc7 100644
    parallelogram: Nc,
    threeWaves: Bc,
    fiveWaves: Oc,
-@@ -2626,10 +2683,11 @@ function ol(e) {
-     { key: "parallelStraightLine", text: l("parallel_straight_line", e) }
-   ];
- }
--function cl(e) {
-+function cl(e, orderFlow) {
-   return [
-     { key: "circle", text: l("circle", e) },
-     { key: "rect", text: l("rect", e) },
-+    ...(orderFlow ? [{ key: "tradeVolumeProfile", text: l("trade_volume_profile", e) }] : []),
-     { key: "parallelogram", text: l("parallelogram", e) },
-     { key: "triangle", text: l("triangle", e) }
-   ];
-@@ -2675,7 +2733,7 @@ const J = (e) => il[e.name](e.class), fl = /* @__PURE__ */ g('<div class="klinec
-   }, {
-     key: "polygon",
-     icon: i(),
--    list: cl(e.locale),
-+    list: cl(e.locale, e.orderFlow),
-     setter: o
-   }, {
-     key: "fibonacci",
-@@ -2816,7 +2874,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
+@@ -2816,7 +2873,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
          return [(() => {
            const t = L9.cloneNode(!0);
            return m(t, () => l("main_indicator", e.locale)), t;
@@ -157,7 +135,7 @@ index 6f78d0e..da96bc7 100644
            const n = e.mainIndicators.includes(t);
            return (() => {
              const r = $9.cloneNode(!0);
-@@ -2836,7 +2894,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
+@@ -2836,7 +2893,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
          })), (() => {
            const t = L9.cloneNode(!0);
            return m(t, () => l("sub_indicator", e.locale)), t;
@@ -166,7 +144,7 @@ index 6f78d0e..da96bc7 100644
            const n = t in e.subIndicators;
            return (() => {
              const r = $9.cloneNode(!0);
-@@ -2967,6 +3025,7 @@ function x9(e) {
+@@ -2967,6 +3024,7 @@ function x9(e) {
        component: "select",
        dataSource: [
          { key: "candle_solid", text: l("candle_solid", e) },
@@ -174,7 +152,7 @@ index 6f78d0e..da96bc7 100644
          { key: "candle_stroke", text: l("candle_stroke", e) },
          { key: "candle_up_stroke", text: l("candle_up_stroke", e) },
          { key: "candle_down_stroke", text: l("candle_down_stroke", e) },
-@@ -3058,7 +3117,8 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3058,7 +3116,8 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
              case "select": {
                c = d(o5, {
                  style: {
@@ -184,7 +162,7 @@ index 6f78d0e..da96bc7 100644
                  },
                  get value() {
                    return l(C, e.locale);
-@@ -3115,6 +3175,360 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3115,6 +3174,360 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
      return Z(() => G(t, "src", e.url)), t;
    }
  }), bl = {
@@ -545,7 +523,7 @@ index 6f78d0e..da96bc7 100644
    AO: [
      { paramNameKey: "params_1", precision: 0, min: 1, default: 5 },
      { paramNameKey: "params_2", precision: 0, min: 1, default: 34 }
-@@ -3242,9 +3656,92 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3242,9 +3655,92 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
    ]
  }, xl = /* @__PURE__ */ g('<div class="klinecharts-pro-indicator-setting-modal-content"></div>'), kl = /* @__PURE__ */ g("<span></span>"), Al = (e) => {
    const [t, n] = $(B.clone(e.params.calcParams)), r = (a) => bl[a];
@@ -639,7 +617,7 @@ index 6f78d0e..da96bc7 100644
      },
      width: 360,
      get buttons() {
-@@ -3255,7 +3752,20 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3255,7 +3751,20 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
            const a = r(e.params.indicatorName), i = [];
            B.clone(t()).forEach((o, s) => {
              !B.isValid(o) || o === "" ? "default" in a[s] && i.push(a[s].default) : i.push(o);
@@ -661,7 +639,7 @@ index 6f78d0e..da96bc7 100644
          }
        }];
      },
-@@ -3264,15 +3774,18 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3264,15 +3773,18 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
      },
      get children() {
        const a = xl.cloneNode(!0);
@@ -683,7 +661,7 @@ index 6f78d0e..da96bc7 100644
          },
          get precision() {
            return i.precision;
-@@ -3280,11 +3793,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3280,11 +3792,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
          get min() {
            return i.min;
          },
@@ -699,7 +677,7 @@ index 6f78d0e..da96bc7 100644
      }
    });
  }, Ml = /* @__PURE__ */ g('<svg viewBox="0 0 1024 1024"><path d="M945.066667 898.133333l-189.866667-189.866666c55.466667-64 87.466667-149.333333 87.466667-241.066667 0-204.8-168.533333-373.333333-373.333334-373.333333S96 264.533333 96 469.333333 264.533333 842.666667 469.333333 842.666667c91.733333 0 174.933333-34.133333 241.066667-87.466667l189.866667 189.866667c6.4 6.4 14.933333 8.533333 23.466666 8.533333s17.066667-2.133333 23.466667-8.533333c8.533333-12.8 8.533333-34.133333-2.133333-46.933334zM469.333333 778.666667C298.666667 778.666667 160 640 160 469.333333S298.666667 160 469.333333 160 778.666667 298.666667 778.666667 469.333333 640 778.666667 469.333333 778.666667z"></path></svg>'), wl = /* @__PURE__ */ g('<img alt="symbol">'), Sl = /* @__PURE__ */ g("<li><div><span></span></div></li>"), Tl = (e) => {
-@@ -3341,6 +3857,65 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3341,6 +3856,65 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
  };
  q(["click"]);
  const Il = /* @__PURE__ */ g('<i class="icon-close klinecharts-pro-load-icon"></i>'), Nl = /* @__PURE__ */ g('<div class="klinecharts-pro-content"><div class="klinecharts-pro-widget"></div></div>');
@@ -765,7 +743,7 @@ index 6f78d0e..da96bc7 100644
  function V1(e, t, n, r) {
    return t === "VOL" && (r = {
      gap: {
-@@ -3349,6 +3924,7 @@ function V1(e, t, n, r) {
+@@ -3349,6 +3923,7 @@ function V1(e, t, n, r) {
      ...r
    }), (e == null ? void 0 : e.createIndicator({
      name: t,
@@ -773,7 +751,7 @@ index 6f78d0e..da96bc7 100644
      // @ts-expect-error
      createTooltipDataSource: ({
        indicator: a,
-@@ -3359,10 +3935,11 @@ function V1(e, t, n, r) {
+@@ -3359,10 +3934,11 @@ function V1(e, t, n, r) {
          icons: o
        };
      }
@@ -786,7 +764,7 @@ index 6f78d0e..da96bc7 100644
    const [i, o] = $(e.theme), [s, c] = $(e.styles), [C, u] = $(e.locale), [y, p] = $(e.symbol), [L, M] = $(e.period), [P, K] = $(!1), [w, Q] = $([...e.mainIndicators]), [S, A] = $({}), [b, O] = $(!1), [H, t1] = $({
      key: e.timezone,
      text: b9(e.timezone, e.locale)
-@@ -3389,7 +3966,9 @@ const Dl = (e) => {
+@@ -3389,7 +3965,9 @@ const Dl = (e) => {
      setSymbol: p,
      getSymbol: () => y(),
      setPeriod: M,
@@ -797,7 +775,7 @@ index 6f78d0e..da96bc7 100644
    });
    const c1 = () => {
      n == null || n.resize();
-@@ -3405,28 +3984,23 @@ const Dl = (e) => {
+@@ -3405,28 +3983,23 @@ const Dl = (e) => {
          break;
        }
        case "day": {
@@ -834,7 +812,7 @@ index 6f78d0e..da96bc7 100644
          break;
        }
      }
-@@ -3475,10 +4049,37 @@ const Dl = (e) => {
+@@ -3475,10 +4048,37 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -876,7 +854,7 @@ index 6f78d0e..da96bc7 100644
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3503,7 +4104,8 @@ const Dl = (e) => {
+@@ -3503,7 +4103,8 @@ const Dl = (e) => {
                visible: !0,
                indicatorName: f.indicatorName,
                paneId: f.paneId,
@@ -886,7 +864,7 @@ index 6f78d0e..da96bc7 100644
              });
              break;
            }
-@@ -3520,25 +4122,33 @@ const Dl = (e) => {
+@@ -3520,25 +4121,33 @@ const Dl = (e) => {
          }
      });
    }), k0(() => {
@@ -933,15 +911,15 @@ index 6f78d0e..da96bc7 100644
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3654,6 +4264,7 @@ const Dl = (e) => {
+@@ -3654,6 +4263,7 @@ const Dl = (e) => {
      },
      get children() {
        return d(hl, {
-+        get orderFlow() { return y().exchange === "BYBIT"; },
++        get orderFlow() { return e.orderFlowEnabled; },
          get locale() {
            return e.locale;
          },
-@@ -3725,7 +4336,7 @@ const Dl = (e) => {
+@@ -3725,7 +4335,7 @@ const Dl = (e) => {
            const f = {};
            h.forEach((v) => {
              const _ = v.key;
@@ -950,7 +928,7 @@ index 6f78d0e..da96bc7 100644
            }), n == null || n.setStyles(f);
          }
        });
-@@ -3767,11 +4378,12 @@ const Dl = (e) => {
+@@ -3767,11 +4377,12 @@ const Dl = (e) => {
              calcParams: []
            });
          },
@@ -965,15 +943,7 @@ index 6f78d0e..da96bc7 100644
            }, f.paneId);
          }
        });
-@@ -3832,6 +4444,7 @@ const Dl = (e) => {
-       },
-       get children() {
-         return d(yl, {
-+          get orderFlow() { return y().exchange === "BYBIT"; },
-           get locale() {
-             return e.locale;
-           },
-@@ -3875,7 +4488,7 @@ class jl {
+@@ -3875,7 +4486,7 @@ class jl {
        this._container = t.container;
      this._container.classList.add("klinecharts-pro"), this._container.setAttribute("data-theme", t.theme ?? "light");
      const n = this;
@@ -982,7 +952,17 @@ index 6f78d0e..da96bc7 100644
        ref: (r) => {
          n._chartApi = r;
        },
-@@ -3994,6 +4607,16 @@ class jl {
+@@ -3894,6 +4505,9 @@ class jl {
+       get drawingBarVisible() {
+         return t.drawingBarVisible ?? !0;
+       },
++      get orderFlowEnabled() {
++        return t.orderFlowEnabled;
++      },
+       get symbol() {
+         return t.symbol;
+       },
+@@ -3994,6 +4608,16 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }

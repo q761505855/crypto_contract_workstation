@@ -28,10 +28,10 @@ export class VolumeProfileAccumulator {
     }))
   }
 
-  add(trade: BybitTrade): void {
-    if (trade.price < this.low || trade.price > this.high) return
+  add(trade: BybitTrade, price = trade.price): void {
+    if (price < this.low || price > this.high) return
     const index = Math.min(this.rows.length - 1, Math.floor(
-      (trade.price - this.low) / (this.high - this.low) * this.rows.length,
+      (price - this.low) / (this.high - this.low) * this.rows.length,
     ))
     this.rows[index][trade.side] += trade.size
   }

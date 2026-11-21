@@ -230,14 +230,3 @@ export function saveChartIndicatorPreferences(
   const validated = validateChartIndicatorPreferences(preferences)
   writePreference(storage, CHART_INDICATORS_PREFERENCE, JSON.stringify(validated))
 }
-
-export function saveWorkspaceIndicatorPreferences(
-  preferences: ChartIndicatorPreferences,
-  orderFlow: boolean,
-  storage: ReadableStorage & WritableStorage = ctraderStorage,
-): void {
-  const savedBigTrades = !orderFlow && loadChartIndicatorPreferences(storage)?.main.find(item => item.name === BIG_TRADES)
-  saveChartIndicatorPreferences(savedBigTrades ? {
-    ...preferences, main: [...preferences.main, savedBigTrades],
-  } : preferences, storage)
-}

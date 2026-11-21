@@ -56,6 +56,7 @@ function nextNativeClose(bars: readonly MarketCandle[], until: number): number |
 
 export class CTraderReplayDatafeed implements Datafeed {
   private context: ReplayContext | null = null
+  private readonly cursorListeners = new Set<(context: ReplayContext | null) => void>()
   private subscription: Subscription | null = null
   private generation = 0
   private readonly tails = new Map<string, ReplayTail>()
@@ -98,6 +99,11 @@ export class CTraderReplayDatafeed implements Datafeed {
     return this.context === null ? null : { ...this.context }
   }
 
+  subscribeReplayCursor(listener: (context: ReplayContext | null) => void): () => void {
+    this.cursorListeners.add(listener)
+    return () => { this.cursorListeners.delete(listener) }
+  }
+
   hasLiveTail(symbol: SymbolInfo, period: Period): boolean {
     return this.context === null && (this.base.hasLiveTail?.(symbol, period) ?? false)
   }
@@ -107,6 +113,7 @@ export class CTraderReplayDatafeed implements Datafeed {
     const restart = timelineChanged(before, context)
     if (restart || reloadChart) this.invalidateHistory()
     this.context = context === null ? null : { ...context }
+    for (const listener of this.cursorListeners) listener(this.context)
     const subscription = this.subscription
     if (subscription === null) return
     if (before === null && context !== null) {

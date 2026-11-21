@@ -1,14 +1,7 @@
 import type { SymbolInfo } from '@klinecharts/pro'
+import catalog from './instruments.json'
 
-const symbols = {
-  SPYUSDT: { name: '标普 500 ETF 永续', precision: 2, firstDay: '2026-05-14' },
-  QQQUSDT: { name: '纳斯达克 100 ETF 永续', precision: 2, firstDay: '2026-05-07' },
-  XAUUSDT: { name: '黄金永续', precision: 2, firstDay: '2026-03-09' },
-  BTCUSDT: { name: '比特币永续', precision: 2, firstDay: '2020-03-25' },
-}
-
-export type BybitSymbol = keyof typeof symbols
-export const BYBIT_SYMBOLS = Object.keys(symbols) as BybitSymbol[]
+export type BybitSymbol = keyof typeof catalog.firstDays
 export const BYBIT_DAY_MS = 86_400_000
 export const BYBIT_HOUR_MS = 3_600_000
 
@@ -20,16 +13,17 @@ export interface BybitTrade {
   size: number
 }
 
-export function bybitSymbol(value: string): BybitSymbol | undefined {
-  return Object.hasOwn(symbols, value) ? value as BybitSymbol : undefined
-}
+export function bybitFirstDay(symbol: BybitSymbol): string { return catalog.firstDays[symbol] }
+export function bybitCategory(symbol: BybitSymbol): 'spot' | 'linear' { return catalog.spot.includes(symbol) ? 'spot' : 'linear' }
 
-export function bybitSymbolInfo(symbol: BybitSymbol): SymbolInfo {
-  return { ticker: symbol, shortName: symbol, exchange: 'BYBIT', market: 'USDT 永续', type: 'PERPETUAL',
-    name: symbols[symbol].name, priceCurrency: 'USDT', pricePrecision: symbols[symbol].precision, volumePrecision: 3 }
-}
+export interface BybitMapping { symbol: BybitSymbol; relation: 'direct' | 'etf' | 'oil' }
 
-export function bybitFirstDay(symbol: BybitSymbol): string { return symbols[symbol].firstDay }
+export function bybitMapping(symbol: Pick<SymbolInfo, 'ticker' | 'exchange'>): BybitMapping | undefined {
+  const ticker = symbol.ticker.toUpperCase()
+  if (symbol.exchange !== 'CTRADER' || !Object.hasOwn(catalog.links, ticker)) return
+  const [contract, relation] = catalog.links[ticker as keyof typeof catalog.links]
+  return { symbol: contract as BybitSymbol, relation: relation as BybitMapping['relation'] }
+}
 
 export function bybitDay(timestamp: number): string { return new Date(timestamp).toISOString().slice(0, 10) }
 

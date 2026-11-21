@@ -1,6 +1,6 @@
-import { BYBIT_DAY_MS, type BybitSymbol, type BybitTrade, bybitTrade } from './trades'
+import { BYBIT_DAY_MS, type BybitSymbol, type BybitTrade, bybitCategory, bybitTrade } from './trades'
 
-const socketUrl = 'wss://stream.bybit.com/v5/public/linear'
+const socketUrl = 'wss://stream.bybit.com/v5/public/'
 const recentUrl = 'https://api.bybit.com/v5/market/recent-trade'
 const tradeLimit = 150_000
 const recentLimit = 1000
@@ -20,7 +20,8 @@ export function parseBybitSocketTrades(value: unknown, symbol: BybitSymbol): Byb
 
 export async function getBybitRecentTrades(symbol: BybitSymbol, fetcher: typeof fetch = fetch,
   signal?: AbortSignal): Promise<BybitTrade[]> {
-  const params = new URLSearchParams({ category: 'linear', symbol, limit: String(recentLimit) })
+  const category = bybitCategory(symbol)
+  const params = new URLSearchParams({ category, symbol, limit: String(category === 'spot' ? 60 : recentLimit) })
   const response = await fetcher(`${recentUrl}?${params}`, { signal, credentials: 'omit', cache: 'no-store' })
   if (!response.ok) throw new Error(`读取 Bybit 最近成交失败（HTTP ${response.status}）`)
   const result = await response.json()
@@ -89,7 +90,7 @@ export class BybitLiveTrades {
     this.buffer = []
     this.publish(this.failures ? '正在重连' : '连接中')
     let socket: WebSocket
-    try { socket = this.connectSocket(socketUrl) }
+    try { socket = this.connectSocket(socketUrl + bybitCategory(this.symbol)) }
     catch { this.retry(); return }
     this.socket = socket
     this.watchTime = Date.now()

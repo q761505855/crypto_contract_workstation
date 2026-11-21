@@ -12,7 +12,7 @@ const POC = '#ffcc70'
 
 export interface ProfileDisplay { profile?: VolumeProfile; message?: string }
 export interface BubbleDisplay {
-  points: { index: number; offset: number; trade: BybitTrade }[]
+  points: { index: number; offset: number; trade: BybitTrade; price: number }[]
   message?: string
 }
 
@@ -39,7 +39,7 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
   }
   if (message) text(message, x + 4, y + 17, VALUE_AREA)
   if (!profile || !yAxis) return figures
-  text('Delta / 成交量', x + 4, y + (message ? 30 : 17), VALUE_AREA)
+  text('Bybit Delta / 成交量', x + 4, y + (message ? 30 : 17), VALUE_AREA)
   const maxVolume = Math.max(...profile.rows.map(row => row.buy + row.sell))
   const maxDelta = Math.max(...profile.rows.map(row => Math.abs(row.buy - row.sell)))
   const barWidth = Math.min(160, Math.max(10, width * 0.42))
@@ -80,12 +80,12 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding }:
   ctx.beginPath()
   ctx.rect(0, 0, bounding.width, bounding.height)
   ctx.clip()
-  for (const { trade, index, offset } of display.points) {
+  for (const { trade, index, offset, price } of display.points) {
     if (index < visibleRange.from || index >= visibleRange.to) continue
     const radius = tradeBubbleRadius(trade, minimum)
     const color = trade.side === 'buy' ? BUY : SELL
     ctx.beginPath()
-    ctx.arc(xAxis.convertToPixel(index + offset), yAxis.convertToPixel(trade.price), radius, 0, Math.PI * 2)
+    ctx.arc(xAxis.convertToPixel(index + offset), yAxis.convertToPixel(price), radius, 0, Math.PI * 2)
     ctx.fillStyle = color
     ctx.globalAlpha = 0.42
     ctx.fill()

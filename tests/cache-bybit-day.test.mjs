@@ -42,4 +42,16 @@ describe('Bybit 日成交缓存', () => {
     await expect(cacheBybitDay({ repository: '.', symbol, day: '2026-02-31', fetcher })).rejects.toThrow('请选择')
     expect(fetcher).not.toHaveBeenCalled()
   })
+
+  it('归档 Bybit 现货的毫秒时间及小写主动方向', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'bybit-spot-test-'))
+    const fetcher = vi.fn(async () => new Response(new Uint8Array(gzipSync(
+      `id,timestamp,price,volume,side,rpi\n1,${utc * 1000 + 42},0.21,100,sell,0\n`,
+    ))))
+    try {
+      const result = await cacheBybitDay({ repository, symbol: 'FETUSDT', day, fetcher })
+      expect(fetcher.mock.calls[0][0]).toContain(`/spot/FETUSDT/FETUSDT_${day}.csv.gz`)
+      expect(gunzipSync(await readFile(join(result.target, '00-000.csv.gz'))).toString()).toBe(`${utc}.042,1,Sell,0.21,100\n`)
+    } finally { await rm(repository, { recursive: true, force: true }) }
+  })
 })

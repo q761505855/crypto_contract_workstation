@@ -1,219 +1,140 @@
 import { createHash } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
-import { expect, test } from '@playwright/test'
+import { expect, test, type WebSocketRoute } from '@playwright/test'
+import { connectFixture } from './ctrader-fixture'
 import { installViewportProbe } from './viewport-probe'
 
-const archiveDay = '2026-06-18'
-const start = Date.parse(archiveDay)
+const day = '2026-11-20'
+const start = Date.parse(day + 'T14:20:00Z')
 const second = start / 1000
-const part = gzipSync(`${second + 1}.000001,first,Buy,716,36\n${second + 2},second,Sell,717,2\n${second + 65},later,Buy,725,40\n${second + 362},last,Sell,720,3\n`)
-const manifest = {
-  version: 1, symbol: 'SPYUSDT', day: archiveDay, rows: 4,
-  parts: [{ file: '00-000.csv.gz', hour: 0, rows: 4, bytes: part.byteLength,
+const part = gzipSync(`${second + 1},first,Buy,710,40\n${second + 61},next,Sell,711,50\n`)
+const manifest = { version: 1, symbol: 'SPYUSDT', day, rows: 2,
+  parts: [{ file: '14-000.csv.gz', hour: 14, rows: 2, bytes: part.byteLength,
     sha256: createHash('sha256').update(part).digest('hex') }],
 }
 const headers = { 'access-control-allow-origin': '*' }
 
-test('Bybit 工作区接收实时成交并按 UTC 日回放 Git 归档', async ({ page }) => {
+test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', async ({ page }) => {
   const inspect = await installViewportProbe(page)
-  await page.addInitScript(() => {
-    const labels = new Set<string>()
-    Object.assign(window, { bybitProfileLabels: labels })
-    const original = CanvasRenderingContext2D.prototype.fillText
-    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
-      if (/^(POC|VAH|VAL) /.test(text)) labels.add(text.slice(0, 3))
-      if (maxWidth === undefined) original.call(this, text, x, y)
-      else original.call(this, text, x, y, maxWidth)
-    }
-  })
-  const minute = Math.floor(Date.now() / 60_000) * 60_000
-  const now = minute + 20_000
-  await page.clock.setFixedTime(minute + 30_000)
-  let subscriptions = 0
-  await page.route('**/cloud-connection.json', route => route.fulfill({ status: 404, headers }))
-  await page.route('**/ctrader-connection.json', route => route.fulfill({ status: 404, headers }))
-  await page.route('https://api.github.com/**', route => route.fulfill({ status: 404, headers }))
+  await page.clock.setFixedTime(new Date(start + 86_400_000 + 30_000))
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= start - 86_400_000 })
+  await page.route('https://api.bybit.com/**', route => route.fulfill({ headers, json: { retCode: 0, result: { list: [] } } }))
+  await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => socket.onMessage(message => {
+    if (JSON.parse(message.toString()).op === 'subscribe') socket.send(JSON.stringify({ op: 'subscribe', success: true }))
+  }))
   await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => {
     const url = route.request().url()
-    if (url.endsWith(`/${archiveDay}/manifest.json`)) return route.fulfill({ headers, json: manifest })
-    if (url.endsWith(`/${archiveDay}/00-000.csv.gz`)) return route.fulfill({ headers, body: part })
+    if (url.endsWith(`/SPYUSDT/${day}/manifest.json`)) return route.fulfill({ headers, json: manifest })
+    if (url.endsWith(`/SPYUSDT/${day}/14-000.csv.gz`)) return route.fulfill({ headers, body: part })
     return route.fulfill({ status: 404, headers })
   })
-  await page.route('https://api.bybit.com/v5/market/recent-trade?**', route => route.fulfill({ headers,
-    json: { retCode: 0, result: { list: [{ symbol: 'SPYUSDT', execId: 'rest', time: String(now), side: 'Buy', price: '700', size: '1' }] } },
-  }))
-  await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => {
-    socket.onMessage(message => {
-      const event = JSON.parse(message.toString())
-      if (event.op === 'subscribe') {
-        subscriptions++
-        socket.send(JSON.stringify({ op: 'subscribe', success: true }))
-        socket.send(JSON.stringify({ topic: 'publicTrade.SPYUSDT', data: [
-          { T: now, s: 'SPYUSDT', S: 'Buy', v: '1', p: '700', i: 'rest' },
-          { T: now + 10, s: 'SPYUSDT', S: 'Sell', v: '5', p: '701', i: 'socket' },
-        ] }))
-      }
-    })
-  })
   await page.goto('/')
-  await page.getByRole('button', { name: '工具', exact: true }).click()
-  await page.getByRole('button', { name: 'Bybit 逐笔成交' }).click()
-  await expect(page.getByRole('heading', { name: 'Bybit 逐笔成交' })).toBeVisible()
-  await expect.poll(async () => (await inspect()).last).toMatchObject({ close: 701, volume: 6 })
+  const chart = page.getByTestId('chart-host')
+  const symbolButton = chart.locator('.symbol')
+  await symbolButton.click()
+  const picker = page.getByRole('dialog', { name: '选择交易对' })
+  await picker.getByRole('tab', { name: '全部' }).click()
+  await expect(picker.getByTestId('symbol-picker-row-US500')).toContainText('支持代理成交量 · SPYUSDT')
+  await expect(picker.getByTestId('symbol-picker-row-ETHUSD')).toContainText('支持成交量 · ETHUSDT')
+  await expect(picker.getByTestId('symbol-picker-row-USDCHF')).toContainText('暂无成交量')
+  await picker.getByRole('button', { name: '选择 US500', exact: true }).click()
 
-  await page.getByLabel('UTC 日期').fill(archiveDay)
-  await page.getByRole('button', { name: '历史回放', exact: true }).click()
-  await expect.poll(async () => (await inspect()).last).toMatchObject({ close: 717, volume: 38 })
-  await page.getByText('指标', { exact: true }).click()
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByRole('button', { name: '时间定位', exact: true }).click()
+  const inputTime = await page.evaluate(timestamp => {
+    const offset = new Date(timestamp).getTimezoneOffset()
+    return new Date(timestamp - offset * 60_000).toISOString().slice(0, 16)
+  }, start)
+  const locate = page.getByRole('dialog', { name: '图表时间定位' })
+  await locate.getByLabel('图表跳转时间').fill(inputTime)
+  await locate.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect(controls.locator('.replay-start-time')).toContainText(inputTime.replace('T', ' '))
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+
+  await chart.getByText('指标', { exact: true }).click()
   await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
-  const bubbles = () => page.evaluate(() => {
+  const combined = () => page.evaluate(() => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
-    const indicator = coreChart.getIndicatorByPaneId('candle_pane', 'BIG_TRADES') as import('klinecharts').Indicator | null
-    return indicator?.extendData?.points?.map((point: { trade: { id: string } }) => point.trade.id)
+    const panes = coreChart.getIndicatorByPaneId() as Map<string, Map<string, import('klinecharts').Indicator>>
+    const volume = [...panes.values()].find(pane => pane.has('VOL'))?.get('VOL')
+    const bubbles = panes.get('candle_pane')?.get('BIG_TRADES')
+    return { volumeName: volume?.shortName, volume: volume?.result.at(-1)?.volume,
+      points: bubbles?.extendData?.points?.map((point: { trade: { id: string; price: number }; price: number }) =>
+        [point.trade.id, point.trade.price, Math.round(point.price * 1e5) / 1e5]) }
   })
-  await expect.poll(bubbles).toEqual(['first'])
-  await page.getByRole('button', { name: '前进一步' }).click()
-  await expect.poll(async () => (await inspect()).last).toMatchObject({ close: 725, volume: 78 })
-  await expect.poll(bubbles).toEqual(['first', 'later'])
-
-  await page.getByLabel('UTC 起点').fill('00:06')
-  await page.getByRole('button', { name: '历史回放', exact: true }).click()
-  await expect.poll(async () => (await inspect()).last).toMatchObject({ close: 720, volume: 3 })
-  const geometry = page.locator('.klinecharts-pro-drawing-bar > .item').nth(2)
-  await geometry.locator('.icon-arrow').click()
-  await page.getByText('框选成交分布', { exact: true }).click()
-  const locations = await page.evaluate(() => {
+  await expect.poll(async () => (await inspect()).last).toMatchObject({ timestamp: start, open: 1.1002, close: 1.1005 })
+  await expect.poll(combined).toMatchObject({ volumeName: 'Bybit 成交量', volume: 40, points: [['first', 710, 1.1002]] })
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect.poll(combined).toMatchObject({ volume: 50, points: [['first', 710, 1.1002], ['next', 711, 1.1002]] })
+  const tool = chart.locator('.klinecharts-pro-drawing-bar').getByRole('button', { name: '框选成交分布' })
+  await expect(tool).toBeEnabled()
+  await tool.click()
+  const ends = await page.evaluate(start => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
-    coreChart.setPaneOptions({ id: 'candle_pane', gap: { top: 0.24, bottom: 0.24 } })
     const bounds = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
-    const point = (index: number, value: number) => {
-      const coord = coreChart.convertToPixel({ dataIndex: index, value }, { paneId: 'candle_pane' }) as { x: number; y: number }
-      return { x: bounds.left + coord.x, y: bounds.top + coord.y }
+    const index = coreChart.getDataList().findIndex(bar => bar.timestamp === start)
+    const point = (dataIndex: number, value: number) => {
+      const pixel = coreChart.convertToPixel({ dataIndex, value }, { paneId: 'candle_pane' }) as { x: number; y: number }
+      return { x: bounds.left + pixel.x, y: bounds.top + pixel.y }
     }
-    return { first: point(0, 725.5), corner: point(1, 715.5) }
-  })
-  const profile = () => page.evaluate(() => {
+    return [point(index, 1.1006), point(index + 1, 1.1001)]
+  }, start)
+  await page.mouse.click(ends[0].x, ends[0].y)
+  await page.mouse.move(ends[1].x, ends[1].y)
+  await expect.poll(() => page.evaluate(() => {
     const adapter = (window as unknown as { __viewportTestAdapter: {
-      coreChart: import('klinecharts').Chart
-      orderFlow: { profiles: Map<string, unknown> }
-      drawings: { editing?: unknown }
+      coreChart: import('klinecharts').Chart; orderFlow: { profiles: Map<string, unknown> }
     } }).__viewportTestAdapter
     const id = [...adapter.orderFlow.profiles.keys()][0]
-    const overlay = adapter.coreChart.getOverlayById(id) as (import('klinecharts').Overlay & { isDrawing(): boolean }) | null
-    const profile = overlay?.extendData?.profile
-    return profile ? {
-      id, vah: profile.vah, val: profile.val,
-      drawing: overlay?.isDrawing(), editing: adapter.drawings.editing,
-      volume: profile.rows.reduce((sum: number, row: { buy: number; sell: number }) => sum + row.buy + row.sell, 0),
-    } : null
-  })
-  await page.mouse.click(locations.first.x, locations.first.y)
-  await page.mouse.move(locations.corner.x, locations.corner.y)
-  await expect.poll(profile).toMatchObject({ volume: 78 })
-  await expect.poll(() => page.evaluate(() =>
-    [...(window as unknown as { bybitProfileLabels: Set<string> }).bybitProfileLabels].sort(),
-  )).toEqual(['POC', 'VAH', 'VAL'])
-  await page.mouse.click(locations.corner.x, locations.corner.y)
-  await expect.poll(profile, { timeout: 1500 }).toMatchObject({ drawing: false })
-  const actualCorner = await page.evaluate(({ id, targetPrice }) => {
-    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
-    const overlay = coreChart.getOverlayById(id)!
-    const bounds = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
-    const second = overlay.points[1]
-    const toScreen = (point: typeof second) => {
-      const position = coreChart.convertToPixel(point, { paneId: 'candle_pane' }) as { x: number; y: number }
-      return { x: bounds.left + position.x, y: bounds.top + position.y }
-    }
-    const first = toScreen(overlay.points[0])
-    const handle = toScreen(second)
-    return { handle, target: toScreen({ ...second, value: targetPrice }),
-      center: { x: (first.x + handle.x) / 2, y: (first.y + handle.y) / 2 } }
-  }, { id: (await profile())!.id, targetPrice: 722 })
-  await expect.poll(async () => {
-    // KLineCharts creates the interactive handles on the first paint after hover.
-    await page.mouse.move(actualCorner.center.x, actualCorner.center.y)
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
-    await page.mouse.move(actualCorner.handle.x, actualCorner.handle.y)
-    return page.evaluate(() => {
-      const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: {
-        getChartStore(): { getOverlayStore(): { getHoverInstanceInfo(): { figureType: number; figureIndex: number } } }
-      } } }).__viewportTestAdapter
-      const { figureType, figureIndex } = coreChart.getChartStore().getOverlayStore().getHoverInstanceInfo()
-      return { figureType, figureIndex }
-    })
-  }).toEqual({ figureType: 1, figureIndex: 1 })
-  await page.mouse.down()
-  await expect.poll(async () => (await profile())?.editing, { timeout: 1500 }).toBeDefined()
-  await page.mouse.move(actualCorner.target.x, actualCorner.target.y, { steps: 5 })
-  await expect.poll(profile).toMatchObject({ volume: 40 })
-  await page.mouse.up()
-
-  await page.getByRole('button', { name: '回到实时' }).click()
-  await expect.poll(async () => (await inspect()).last).toMatchObject({ close: 701, volume: 6 })
-  expect(subscriptions).toBe(1)
-  await page.getByRole('button', { name: '返回工作站' }).click()
-  await expect(page.getByRole('heading', { name: /cTrader/ })).toBeVisible()
+    const display = adapter.coreChart.getOverlayById(id)?.extendData?.profile
+    return display?.rows.reduce((sum: number, row: { buy: number; sell: number }) => sum + row.buy + row.sell, 0)
+  })).toBe(40)
 })
 
-test('缺少 Bybit 日档时自动申请，发布后直接进入回放', async ({ page }) => {
+test('实时成交只更新映射品种的成交量，切到未匹配品种时恢复报价量', async ({ page }) => {
   const inspect = await installViewportProbe(page)
-  await page.clock.install()
-  const commit = 'b'.repeat(40)
-  let published = false
-  let submissions = 0
-  let request: { type: string; path: string; sha: string; encoding: string; content: string } | undefined
-  await page.route('**/cloud-connection.json', route => route.fulfill({ headers,
-    json: { schemaVersion: 1, project: 'crypto-contract-workstation', token: 'bybit-e2e-token' },
-  }))
-  await page.route('**/ctrader-connection.json', route => route.fulfill({ status: 404, headers }))
-  await page.route('https://api.github.com/**', route => {
-    const path = new URL(route.request().url()).pathname
-    if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers,
-      json: { object: { sha: published ? commit : 'a'.repeat(40) } },
-    })
-    if (path.includes('/git/commits/')) return route.fulfill({ headers, json: { tree: { sha: 'c'.repeat(40) } } })
-    if (path.endsWith(`/data/bybit-requests/SPYUSDT/${archiveDay}.json`)) {
-      if (route.request().method() === 'PUT') {
-        submissions++
-        const payload = route.request().postDataJSON()
-        expect(JSON.parse(Buffer.from(payload.content, 'base64').toString())).toEqual({ version: 1, symbol: 'SPYUSDT', day: archiveDay })
-        expect(payload.branch).toBe('main')
-        request = { type: 'file', path, sha: 'request-sha', encoding: 'base64', content: payload.content }
-        return route.fulfill({ status: 201, headers, json: { content: { sha: request.sha } } })
-      }
-      if (!published && request) return route.fulfill({ headers, json: request })
-    }
-    return route.fulfill({ status: 404, headers })
-  })
-  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => {
-    const url = route.request().url()
-    // The floating branch URL can still return a cached 404 just after publication.
-    if (published && url.includes(`/${commit}/`)) {
-      if (url.endsWith(`/${archiveDay}/manifest.json`)) return route.fulfill({ headers, json: manifest })
-      if (url.endsWith(`/${archiveDay}/00-000.csv.gz`)) return route.fulfill({ headers, body: part })
-    }
-    return route.fulfill({ status: 404, headers })
-  })
-  await page.route('https://api.bybit.com/**', route => route.fulfill({ headers, json: { retCode: 0, result: { list: [] } } }))
-  await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => socket.onMessage(() => {
+  await page.clock.setFixedTime(start + 30_000)
+  await connectFixture(page)
+  let ethereum: WebSocketRoute | undefined
+  await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => socket.onMessage(message => {
+    const { op, args } = JSON.parse(message.toString())
+    if (op !== 'subscribe') return
+    if (args.includes('publicTrade.ETHUSDT')) ethereum = socket
     socket.send(JSON.stringify({ op: 'subscribe', success: true }))
   }))
-
+  await page.route('https://api.bybit.com/**', route => {
+    const isEthereum = new URL(route.request().url()).searchParams.get('symbol') === 'ETHUSDT'
+    return route.fulfill({ headers, json: { retCode: 0, result: { list: isEthereum
+      ? [{ symbol: 'ETHUSDT', execId: 'rest', time: String(start + 10_000), side: 'Buy', price: '1.1', size: '5' }] : [] } } })
+  })
   await page.goto('/')
-  await page.getByRole('button', { name: '工具', exact: true }).click()
-  await page.getByRole('button', { name: 'Bybit 逐笔成交' }).click()
-  await page.getByLabel('UTC 日期').fill(archiveDay)
-  await page.getByRole('button', { name: '历史回放', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('等待后台下载并缓存')
-  await page.getByRole('button', { name: '取消等待' }).click()
-  await page.getByRole('button', { name: '历史回放', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('等待后台下载并缓存')
-  expect(submissions).toBe(1)
-
-  published = true
-  await page.clock.fastForward(13_000)
-  await expect(page.getByRole('status')).toContainText(`${archiveDay} UTC · 历史成交`)
-  await expect.poll(async () => (await inspect()).last).toMatchObject({ close: 717, volume: 38 })
-  expect(submissions).toBe(1)
+  const chart = page.getByTestId('chart-host')
+  const choose = async (ticker: string) => {
+    await chart.locator('.symbol').click()
+    const picker = page.getByRole('dialog', { name: '选择交易对' })
+    await picker.getByRole('tab', { name: '全部' }).click()
+    await picker.getByRole('button', { name: `选择 ${ticker}`, exact: true }).click()
+  }
+  const volume = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const panes = coreChart.getIndicatorByPaneId() as Map<string, Map<string, import('klinecharts').Indicator>>
+    const vol = [...panes.values()].find(pane => pane.has('VOL'))?.get('VOL')
+    return { name: vol?.shortName, value: vol?.result.at(-1)?.volume }
+  })
+  await choose('ETHUSD')
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
+  await expect.poll(volume).toEqual({ name: 'Bybit 成交量', value: 5 })
+  ethereum!.send(JSON.stringify({ topic: 'publicTrade.ETHUSDT', data: [
+    { T: start + 10_000, s: 'ETHUSDT', S: 'Buy', v: '5', p: '1.1', i: 'rest' },
+    { T: start + 20_000, s: 'ETHUSDT', S: 'Sell', v: '8', p: '1.103', i: 'next' },
+  ] }))
+  await expect.poll(volume).toEqual({ name: 'Bybit 成交量', value: 13 })
+  expect((await inspect()).last?.close).toBe(1.1)
+  await choose('USDCHF')
+  await expect.poll(volume).toMatchObject({ name: '报价量' })
+  await expect(chart.getByRole('button', { name: '框选成交分布' })).toBeDisabled()
 })

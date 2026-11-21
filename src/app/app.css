@@ -516,6 +516,8 @@ button:disabled {
   cursor: pointer;
 }
 
+.symbol-picker-select .symbol-volume-status[data-supported="true"] { color: #6bd4b0; }
+
 .symbol-picker-select > span {
   display: grid;
   min-width: 0;

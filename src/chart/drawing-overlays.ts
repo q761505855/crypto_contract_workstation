@@ -38,7 +38,7 @@ export class DrawingOverlays {
       if (Array.isArray(value) || typeof value === 'string' || (value.groupId !== undefined && value.groupId !== GROUP) ||
           !isDrawingTool(value.name)) return this.create.call(chart, value, pane)
       const scope = this.scope
-      if (scope === null || chart.getDataList().length === 0 || (value.name === VOLUME_PROFILE_TOOL && !this.orderFlow)) return null
+      if (scope === null || chart.getDataList().length === 0 || (value.name === VOLUME_PROFILE_TOOL && !this.orderFlow?.supported)) return null
       if (this.draft) chart.removeOverlay(this.draft)
       const id = `drawing-${crypto.randomUUID()}`
       const draft = this.create.call(chart, { ...this.appearance, ...value, groupId: GROUP, id, ...this.callbacks(id, scope) }, PANE)
@@ -62,6 +62,10 @@ export class DrawingOverlays {
       this.scope = scope
     }
     this.refresh()
+  }
+
+  startVolumeProfile(): boolean {
+    return this.chart.createOverlay({ name: VOLUME_PROFILE_TOOL }) !== null
   }
 
   dispose(): void {
@@ -123,6 +127,7 @@ export class DrawingOverlays {
       if (candles.length === 0) return
       for (const drawing of desired.values()) {
         const { id, name, scope, styles } = drawing
+        if (name === VOLUME_PROFILE_TOOL && !this.orderFlow?.supported) continue
         if (this.editing?.id === id) continue
         const existing = this.chart.getOverlayById(id) as CoreOverlay | null
         if (existing && !reproject && sameDrawingData(this.rendered.get(id), drawing)) continue

@@ -8,11 +8,11 @@ import { finished, pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 import { once } from 'node:events'
 import { pathToFileURL } from 'node:url'
+import catalog from '../src/market-data/bybit/instruments.json' with { type: 'json' }
 
 const dayMs = 86_400_000
 const hourMs = 3_600_000
 const maxPartBytes = 16 * 1024 ** 2
-const symbols = new Set(['SPYUSDT', 'QQQUSDT', 'XAUUSDT', 'BTCUSDT'])
 export const archiveRoot = 'projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades'
 
 export class BybitArchiveHttpError extends Error {
@@ -24,7 +24,7 @@ export class BybitArchiveHttpError extends Error {
 
 export function archiveInputs(symbol, day, now = Date.now()) {
   const start = Date.parse(day)
-  if (!symbols.has(symbol) || !/^\d{4}-\d\d-\d\d$/.test(day) || !Number.isFinite(start) ||
+  if (!Object.hasOwn(catalog.firstDays, symbol) || !/^\d{4}-\d\d-\d\d$/.test(day) || !Number.isFinite(start) || day < catalog.firstDays[symbol] ||
       new Date(start).toISOString().slice(0, 10) !== day || start + dayMs > now) {
     throw new Error('请选择支持的 Bybit 品种和已经结束的 UTC 日期')
   }
@@ -43,7 +43,9 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
     return { target, cached: true, rows: cached.rows }
   } catch (error) { if (error.code !== 'ENOENT') throw error }
 
-  const response = await fetcher(`https://public.bybit.com/trading/${symbol}/${symbol}${day}.csv.gz`,
+  const spot = catalog.spot.includes(symbol)
+  const source = spot ? `spot/${symbol}/${symbol}_${day}` : `trading/${symbol}/${symbol}${day}`
+  const response = await fetcher(`https://public.bybit.com/${source}.csv.gz`,
     { signal: AbortSignal.timeout(360_000) })
   if (!response.ok || !response.body) throw new BybitArchiveHttpError(response.status)
   await mkdir(dirname(target), { recursive: true })
@@ -74,13 +76,16 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
     for await (const line of createInterface({ input: gunzip, crlfDelay: Infinity })) {
       if (!columns) {
         const names = line.replace(/^\uFEFF/, '').split(',')
-        columns = ['timestamp', 'symbol', 'side', 'size', 'price', 'trdMatchID'].map(name => names.indexOf(name))
+        const required = spot ? ['timestamp', 'side', 'volume', 'price', 'id'] : ['timestamp', 'side', 'size', 'price', 'trdMatchID', 'symbol']
+        columns = required.map(name => names.indexOf(name))
         if (columns.includes(-1)) throw new Error('Bybit 成交文件缺少必需字段')
         continue
       }
       if (!line) continue
       const fields = line.split(',')
-      const [timestamp, ticker, side, size, price, id] = columns.map(index => fields[index])
+      const [rawTime, rawSide, size, price, id, ticker = symbol] = columns.map(index => fields[index])
+      const timestamp = spot && /^\d+$/.test(rawTime) ? `${rawTime.slice(0, -3)}.${rawTime.slice(-3)}` : rawTime
+      const side = spot ? ({ buy: 'Buy', sell: 'Sell' })[rawSide] : rawSide
       const time = Number(timestamp) * 1000
       if (!(time >= start && time < start + dayMs) || ticker !== symbol ||
           !['Buy', 'Sell'].includes(side) || !(Number(size) > 0 && Number(price) > 0) ||

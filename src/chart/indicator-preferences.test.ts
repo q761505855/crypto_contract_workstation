@@ -5,7 +5,6 @@ import {
   CHART_INDICATORS_PREFERENCE,
   loadChartIndicatorPreferences,
   saveChartIndicatorPreferences,
-  saveWorkspaceIndicatorPreferences,
   validateChartIndicatorPreferences,
 } from './indicator-preferences'
 
@@ -47,16 +46,6 @@ const preferences = {
 }
 
 describe('chart indicator preferences', () => {
-  it('保留其他工作区编辑指标时隐藏的 Bybit 大单设置', () => {
-    const storage = new MemoryStorage()
-    const bigTrades = { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: null }
-    saveWorkspaceIndicatorPreferences({ ...preferences, main: [bigTrades] }, true, storage)
-    saveWorkspaceIndicatorPreferences(preferences, false, storage)
-    expect(loadChartIndicatorPreferences(storage)).toEqual({ ...preferences, main: [...preferences.main, bigTrades] })
-    saveWorkspaceIndicatorPreferences(preferences, true, storage)
-    expect(loadChartIndicatorPreferences(storage)).toEqual(preferences)
-  })
-
   it('defaults to all markets, restores explicit false and retains the settings for legacy archives', () => {
     const storage = new MemoryStorage()
     const legacy = { schemaVersion: 1 as const, main: [{ name: 'MARKET_SESSIONS', calcParams: [], visible: true, styles: null }], sub: [] }
