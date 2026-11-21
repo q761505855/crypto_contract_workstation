@@ -26,7 +26,8 @@ function Harness({ closePrice = candle.close }: { closePrice?: string }) {
     state, busy: false, error: '', clearError() {},
     async preview(side, size) { return engine.previewOpen(side, size, candle.close) },
     async open(side, size) { engine.open(side, size, candle); publish() },
-    async setLeverage(leverage) { engine.setLeverage(leverage); publish(); return true },
+    async setOrderSettings(settings) { engine.setOrderSettings(settings); publish(); return true },
+    async setWalletBalance(value) { engine.setWalletBalance(value, 0); publish(); return true },
     async reduce(side, quantity) { engine.reduce(side, quantity, candle); publish() },
     async reducePercent(side, percent) {
       const position = engine.snapshot().positions.find(position => position.side === side)!

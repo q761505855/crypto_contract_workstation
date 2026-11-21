@@ -283,6 +283,8 @@ describe('GitHubSyncService', () => {
     value.data.sessions = [nativeSession]
     const engine = SimulationEngine.create(nativeSession)
     engine.open('long', { lots: '0.01' }, { ...candle(0), symbol: 'EURUSD', close: '1.10', source: 'ctrader' })
+    engine.setOrderSettings({ leverage: 25, slippageRate: '0.001' })
+    engine.setWalletBalance('0', nativeSession.currentTime)
     value.data.simulations = [engine.snapshot()]
     const backups = new MemoryBackupService(value)
     const sync = new GitHubSyncService(backups as unknown as WorkstationBackupService, Date.now, { scope: 'ctrader' })
@@ -314,7 +316,38 @@ describe('GitHubSyncService', () => {
     expect(beforeInvalidPull.preferences).toEqual(value.data.preferences)
     expect(beforeInvalidPull.sessions).toEqual([nativeSession])
     expect(beforeInvalidPull.simulations).toEqual(value.data.simulations)
-    expect((await target.exportSession(nativeSession.id)).data).toEqual({ sessions: [nativeSession], simulations: value.data.simulations })
+    const sessionArchive = await target.exportSession(nativeSession.id)
+    expect(sessionArchive.data).toEqual({ sessions: [nativeSession], simulations: value.data.simulations })
+    expect(sessionArchive.data.simulations![0].config).toMatchObject({ leverage: 25, slippageRate: '0.001' })
+    expect(sessionArchive.data.simulations![0].account.walletBalance).toBe('0')
+    expect(sessionArchive.data.simulations![0].ledger.at(-1)).toMatchObject({
+      type: 'balance_adjustment', balanceAfter: '0', tradeId: null,
+    })
+    const localStorage = new Map<string, string>()
+    const local = new WorkstationBackupService(`ctrader-json-target-${crypto.randomUUID()}`, {
+      getItem: key => localStorage.get(key) ?? null,
+      setItem: (key, content) => { localStorage.set(key, content) },
+    })
+    await local.import(JSON.parse(JSON.stringify(sessionArchive)))
+    await local.import(JSON.parse(JSON.stringify(await target.exportAll())))
+    expect((await local.exportSession(nativeSession.id)).data).toEqual(sessionArchive.data)
+    for (const config of [
+      ...[undefined, null, 0, 2.5, 101].map(leverage => ({ leverage })),
+      ...[undefined, null, '', '-0.1', '1'].map(slippageRate => ({ slippageRate })),
+    ]) {
+      const invalidArchive = structuredClone(sessionArchive)
+      Object.assign(invalidArchive.data.simulations![0].config, config)
+      await expect(local.import(invalidArchive)).rejects.toThrow(/leverage|杠杆|slippageRate|滑点率/)
+      expect((await local.exportSession(nativeSession.id)).data).toEqual(sessionArchive.data)
+    }
+    for (const adjustment of [
+      { amount: undefined }, { amount: null }, { amount: '0' }, { balanceAfter: '-1' }, { tradeId: 'trade-1' },
+    ]) {
+      const invalidArchive = structuredClone(sessionArchive)
+      Object.assign(invalidArchive.data.simulations![0].ledger.at(-1)!, adjustment)
+      await expect(local.import(invalidArchive)).rejects.toThrow(/ledger/)
+      expect((await local.exportSession(nativeSession.id)).data).toEqual(sessionArchive.data)
+    }
     const path = `sessions/${nativeSession.id}.json`
     const invalid = encoder.encode(JSON.stringify({ ...nativeSession, visibleUntil: nativeSession.visibleUntil - 1 }))
     remote.files.get(path)!.bytes = invalid

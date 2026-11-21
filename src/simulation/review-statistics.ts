@@ -72,15 +72,18 @@ export function buildBalanceCurve(initialBalance: string, ledger: readonly Simul
   let peak = new Decimal(initialBalance)
   let maxDrawdown = new Decimal(0)
   let previous = peak
+  let balanceAdjustments = new Decimal(0)
 
   for (const [index, entry] of ledger.entries()) {
     // An execution can post P&L and costs separately. Plot its final balance once.
     if (entry.tradeId !== null && entry.tradeId === ledger[index + 1]?.tradeId) continue
     const balance = new Decimal(entry.balanceAfter)
+    if (entry.type === 'balance_adjustment') balanceAdjustments = balanceAdjustments.plus(entry.amount)
     if (balance.eq(previous)) continue
 
-    peak = Decimal.max(peak, balance)
-    const drawdown = balance.minus(peak).div(peak)
+    const tradingBalance = balance.minus(balanceAdjustments)
+    peak = Decimal.max(peak, tradingBalance)
+    const drawdown = tradingBalance.minus(peak).div(peak)
     maxDrawdown = Decimal.max(maxDrawdown, drawdown.negated())
     points.push({ timestamp: entry.timestamp, balance: balance.toString(), drawdown: drawdown.toString() })
     previous = balance

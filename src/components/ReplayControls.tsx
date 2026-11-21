@@ -12,14 +12,17 @@ import type { ReplayController } from '../replay/useReplayController'
 import { validateReplayStepPeriod } from '../replay/step-preferences'
 import { FINE_STEP_PERIODS, isCTraderReplayStepPeriod, isFineStepPeriod, type ReplayStepPeriod } from '../replay/step-periods'
 import { cTraderLeverage, type CTraderTradingTerms } from '../simulation/ctrader-trading'
+import { MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage } from '../simulation/models'
+import type { SimulationController } from '../simulation/useSimulationController'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import { TimeJumpControl } from './TimeJumpControl'
-import { formatDisplayTime, formatInputWeekday } from '../format-display-time'
+import { formatDisplayTime } from '../format-display-time'
 
 interface ReplayControlsProps {
   market: Pick<CTraderMarketService, 'getReplayTradingTerms'>
   selection: MarketSelection
   replay: ReplayController<ReplayStepPeriod>
+  simulation: SimulationController
   stepPeriod: ReplayStepPeriod
   onStepPeriodChange: (period: ReplayStepPeriod) => void
   showTradeOverlays: boolean
@@ -37,6 +40,25 @@ function sessionName(session: ReplaySession): string {
 }
 
 const HOLD_TO_PLAY_MS = 450
+
+function ReplayTradingTerms({ terms, waiting }: { terms?: CTraderTradingTerms; waiting?: string }) {
+  return <details className="replay-advanced">
+    <summary>IC Markets 交易规格</summary>
+    <div>
+      {terms ? <dl className="detail-list">
+        <div><dt>账户杠杆上限</dt><dd>{terms.accountLeverage}×</dd></div>
+        <div><dt>品种起始杠杆</dt><dd>{cTraderLeverage(terms)}×（按名义金额分档）</dd></div>
+        <div><dt>每手合约单位</dt><dd>{terms.lotSize}</dd></div>
+        <div><dt>最小手数 / 手数步长</dt><dd>{new Decimal(terms.minQuantity).div(terms.lotSize).toString()} / {new Decimal(terms.quantityStep).div(terms.lotSize).toString()}</dd></div>
+        <div><dt>佣金</dt><dd>{terms.commission.type === 3
+          ? new Decimal(terms.commission.rate).mul(100).toString() + '% 名义金额'
+          : terms.commission.rate + (terms.commission.type === 1 ? ' USD / 百万美元成交额' : ' ' + (terms.commission.type === 2 ? 'USD' : terms.quoteCurrency) + ' / 手')}</dd></div>
+        <div><dt>账户强平线</dt><dd>{new Decimal(terms.stopOutRate).mul(100).toString()}% 保证金水平</dd></div>
+        {terms.swap && <div><dt>隔夜调整</dt><dd>多 {terms.swap.long} / 空 {terms.swap.short}（会话规格）</dd></div>}
+      </dl> : <p className="muted-text">{waiting}</p>}
+    </div>
+  </details>
+}
 
 function NextCandleButton({ replay, disabled, label }: { replay: ReplayController<ReplayStepPeriod>; disabled: boolean; label: string }) {
   const { next, play, pause } = replay
@@ -100,6 +122,7 @@ export function ReplayControls({
   market,
   selection,
   replay,
+  simulation,
   stepPeriod,
   onStepPeriodChange,
   showTradeOverlays,
@@ -110,19 +133,40 @@ export function ReplayControls({
   onLocateLatest,
 }: ReplayControlsProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [actionsOpen, setActionsOpen] = useState(false)
-  const [toText, setToText] = useState('')
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [initialBalance, setInitialBalance] = useState(
     DEFAULT_TRADING_CONFIG.initialBalance,
   )
   const [slippageRate, setSlippageRate] = useState('0')
+  const [leverageDraft, setLeverageDraft] = useState<string | null>(null)
+  const [activeLeverage, setActiveLeverage] = useState<string | null>(null)
+  const [activeSlippage, setActiveSlippage] = useState<string | null>(null)
+  const [walletDraft, setWalletDraft] = useState<string | null>(null)
   const [terms, setTerms] = useState<CTraderTradingTerms | null>(null)
   const [termsError, setTermsError] = useState('')
   const ticker = selection.symbol.ticker
+  const session = replay.session
+  const state = session !== null && simulation.state?.sessionId === session.id ? simulation.state : null
+  const config = state?.config ?? session?.tradingConfig
+  const displayedTerms = session === null ? terms : config?.ctrader
+  const minimumLeverage = session !== null && !displayedTerms && state ? minimumContractLeverage(state) : 1
+  const defaultLeverage = displayedTerms ? cTraderLeverage(displayedTerms) : undefined
+  const maximumLeverage = session === null ? defaultLeverage : defaultLeverage ?? MAX_ADJUSTABLE_LEVERAGE
+  const leverageText = session === null ? leverageDraft ?? (defaultLeverage?.toString() ?? '')
+    : activeLeverage ?? (config?.leverage.toString() ?? '')
+  const slippageText = session === null ? slippageRate : activeSlippage ?? config?.slippageRate ?? '0'
+  const leverage = Number(leverageText)
+  const slippage = Number(slippageText)
+  const validLeverage = (session === null && leverageDraft === null) || leverage === config?.leverage ||
+    (Number.isInteger(leverage) && leverage >= minimumLeverage && (maximumLeverage === undefined || leverage <= maximumLeverage))
+  const validSlippage = slippageText === config?.slippageRate || (slippageText !== '' && slippage >= 0 && slippage < 1)
+  const balance = Number(initialBalance)
+  const validCreation = chartStartTime !== null && validLeverage && validSlippage && Number.isFinite(balance) && balance > 0
+  const walletBalance = Number(walletDraft)
+  const validWalletBalance = walletDraft !== null && walletDraft !== '' && Number.isFinite(walletBalance) && walletBalance >= 0
 
   useEffect(() => {
-    if (!settingsOpen || chartStartTime === null) return
+    if (!settingsOpen || session !== null || chartStartTime === null) return
     const request = new AbortController()
     setTerms(null)
     setTermsError('')
@@ -132,23 +176,76 @@ export function ReplayControls({
       if (!request.signal.aborted) setTermsError(error instanceof Error ? error.message : '无法读取交易规格')
     })
     return () => request.abort()
-  }, [settingsOpen, ticker, chartStartTime, market])
+  }, [settingsOpen, session?.id, ticker, chartStartTime, market])
 
   const selectedSession = replay.sessions.find((session) => session.id === selectedSessionId) ?? replay.sessions[0]
 
-  useEffect(() => {
-    if (replay.session === null) setToText('')
-  }, [replay.session])
+  useEffect(() => setLeverageDraft(null), [ticker])
+
+  function openSettings(): void {
+    setActiveLeverage(null)
+    setActiveSlippage(null)
+    setWalletDraft(null)
+    setSettingsOpen(true)
+  }
 
   function createSession(): void {
-    if (chartStartTime === null) return
+    if (!validCreation || chartStartTime === null) return
     void replay.createSession({
       symbol: selection.symbol, period: selection.period, startTime: chartStartTime,
-      ...(toText.length === 0 ? {} : { endTime: new Date(toText).getTime() }),
       initialBalance, slippageRate,
+      ...(leverageDraft === null ? {} : { leverage }),
     })
     setSettingsOpen(false)
   }
+
+  async function applyOrderSettings(): Promise<void> {
+    if (!state || !validLeverage || !validSlippage || interactionLocked) return
+    if (await simulation.setOrderSettings({ leverage, slippageRate: slippageText })) {
+      setActiveLeverage(current => current === activeLeverage ? null : current)
+      setActiveSlippage(current => current === activeSlippage ? null : current)
+    }
+  }
+
+  async function applyWalletBalance(): Promise<void> {
+    if (!state || walletDraft === null || !validWalletBalance || interactionLocked) return
+    if (await simulation.setWalletBalance(walletDraft)) {
+      setWalletDraft(current => current === walletDraft ? null : current)
+    }
+  }
+
+  const orderFields = <>
+    <div className="replay-leverage-setting">
+      <label className="panel-field">模拟杠杆（×）
+        <input aria-label="杠杆倍率（×）" type="number" inputMode="numeric" step="1" min={minimumLeverage}
+          max={maximumLeverage} value={leverageText}
+          placeholder={session === null ? '按账户和品种规格' : undefined}
+          onChange={event => (session === null ? setLeverageDraft : setActiveLeverage)(event.target.value)} />
+      </label>
+      {defaultLeverage !== undefined && <button type="button" onClick={() => {
+        if (session === null) setLeverageDraft(null)
+        else setActiveLeverage(String(defaultLeverage))
+      }}>使用默认杠杆</button>}
+    </div>
+    {defaultLeverage !== undefined && <p className="muted-text">默认 {defaultLeverage}×。调整后按所选倍率和品种档位计算新增保证金。</p>}
+    <label className="panel-field">额外模拟滑点率
+      <input type="number" inputMode="decimal" min="0" step="any" aria-label="额外模拟滑点率" value={slippageText}
+        onChange={event => (session === null ? setSlippageRate : setActiveSlippage)(event.target.value)} />
+    </label>
+    <p className="muted-text">滑点率需小于 1，0.001 表示 0.1%。</p>
+  </>
+
+  const stepSelect = <select aria-label="步进周期" disabled={interactionLocked}
+    value={isCTraderReplayStepPeriod(stepPeriod) ? stepPeriod : '1m'}
+    onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
+    {FINE_STEP_PERIODS.map(period => <option key={period} value={period}>{period === 'tick' ? '逐笔 Tick' : period}</option>)}
+    {CTRADER_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
+  </select>
+  const speedSelect = <select aria-label="回放速度" disabled={interactionLocked}
+    value={session?.speed}
+    onChange={event => replay.setSpeed(Number(event.target.value) as ReplaySpeed)}>
+    {[1, 2, 5, 10].map(speed => <option key={speed} value={speed}>{speed}x</option>)}
+  </select>
 
   function deleteSelectedSession(session: ReplaySession): void {
     if (window.confirm(`删除本机回放会话「${sessionName(session)}」及其模拟账户、持仓、成交和流水？`)) {
@@ -156,26 +253,17 @@ export function ReplayControls({
     }
   }
 
-  if (replay.session === null) {
+  if (session === null) {
     const startLabel = chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(chartStartTime)
     return <section className="replay-controls replay-setup" data-testid="replay-controls">
       <TimeJumpControl compact disabled={replay.busy} onJump={onJumpToTime} onLocateLatest={onLocateLatest} />
       <span className="replay-start-time">起点：{startLabel}</span>
-      <button type="button" onClick={() => setSettingsOpen(true)}>回放设置</button>
-      <button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
+      <button type="button" onClick={openSettings}>回放设置</button>
+      <button type="button" disabled={replay.busy || !validCreation} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
       {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
       {!settingsOpen && replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
         <p className="muted-text">{selection.symbol.ticker} · {selection.period.text} · 起点：{startLabel}</p>
-        <label className="panel-field">
-          <span>结束（可选） {formatInputWeekday(toText)}</span>
-          <input
-            aria-label="回放结束时间"
-            onChange={(event) => setToText(event.target.value)}
-            type="datetime-local"
-            value={toText}
-          />
-        </label>
         <label className="panel-field">
           初始资金{terms ? '（' + terms.accountCurrency + '）' : ''}
           <input
@@ -187,28 +275,9 @@ export function ReplayControls({
             value={initialBalance}
           />
         </label>
-        <details className="replay-advanced">
-          <summary>IC Markets 交易规格</summary>
-          <div>
-            {terms ? <dl className="detail-list">
-              <div><dt>账户杠杆上限</dt><dd>{terms.accountLeverage}×</dd></div>
-              <div><dt>品种起始杠杆</dt><dd>{cTraderLeverage(terms)}×（按名义金额分档）</dd></div>
-              <div><dt>每手合约单位</dt><dd>{terms.lotSize}</dd></div>
-              <div><dt>最小手数 / 手数步长</dt><dd>{new Decimal(terms.minQuantity).div(terms.lotSize).toString()} / {new Decimal(terms.quantityStep).div(terms.lotSize).toString()}</dd></div>
-              <div><dt>佣金</dt><dd>{terms.commission.type === 3
-                ? new Decimal(terms.commission.rate).mul(100).toString() + '% 名义金额'
-                : terms.commission.rate + (terms.commission.type === 1 ? ' USD / 百万美元成交额' : ' ' + (terms.commission.type === 2 ? 'USD' : terms.quoteCurrency) + ' / 手')}</dd></div>
-              <div><dt>账户强平线</dt><dd>{new Decimal(terms.stopOutRate).mul(100).toString()}% 保证金水平</dd></div>
-              {terms.swap && <div><dt>隔夜调整</dt><dd>多 {terms.swap.long} / 空 {terms.swap.short}（会话规格）</dd></div>}
-            </dl> : <p className="muted-text">{termsError || (chartStartTime === null ? '请先在图表上选定回放起点。' : '正在读取账户和品种规格…')}</p>}
-            <label className="panel-field">
-              额外模拟滑点率
-              <input aria-label="额外模拟滑点率" min="0" max="0.9999" onChange={(event) => setSlippageRate(event.target.value)}
-                step="0.0001" type="number" value={slippageRate} />
-            </label>
-            <p className="muted-text">创建时保存当前券商规格。成交基于历史买价，额外滑点默认 0。</p>
-          </div>
-        </details>
+        {orderFields}
+        <ReplayTradingTerms terms={terms ?? undefined}
+          waiting={termsError || (chartStartTime === null ? '请先在图表上选定回放起点。' : '正在读取账户和品种规格…')} />
         {selectedSession && (
           <>
             <select
@@ -244,12 +313,11 @@ export function ReplayControls({
         )}
 
         {replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
-        <div className="button-row"><button type="button" onClick={() => setSettingsOpen(false)}>应用设置</button><button type="button" disabled={replay.busy || chartStartTime === null} onClick={createSession}>开始历史回放</button></div>
+        <div className="button-row"><button type="button" onClick={() => setSettingsOpen(false)}>应用设置</button><button type="button" disabled={replay.busy || !validCreation} onClick={createSession}>开始历史回放</button></div>
       </WorkspaceDialog>
     </section>
   }
 
-  const session = replay.session
   const native = session.marketSource === 'ctrader'
   const onTick = session.cursorTimeframe === 'tick'
   const currentTime = onTick ? session.currentTime : sessionVisibleUntil(session) - (native ? 0 : 60_000)
@@ -267,12 +335,7 @@ export function ReplayControls({
           ? <span>第 {session.currentIndex + 1} 步</span>
           : <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>}
       </span>
-      <label className="replay-step-period">步进
-        <select aria-label="步进周期" disabled={interactionLocked} value={isCTraderReplayStepPeriod(stepPeriod) ? stepPeriod : '1m'} onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
-          {FINE_STEP_PERIODS.map(period => <option key={period} value={period}>{period === 'tick' ? '逐笔 Tick' : period}</option>)}
-          {CTRADER_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
-        </select>
-      </label>
+      <label className="replay-step-period">步进{stepSelect}</label>
       <button
         disabled={
           interactionLocked ||
@@ -297,25 +360,38 @@ export function ReplayControls({
       >
         {replay.isPlaying ? '暂停' : '播放'}
       </button>
-      <select
-        aria-label="回放速度"
-        disabled={interactionLocked}
-        onChange={(event) =>
-          replay.setSpeed(Number(event.target.value) as ReplaySpeed)
-        }
-        value={session.speed}
-      >
-        {[1, 2, 5, 10].map((speed) => (
-          <option key={speed} value={speed}>
-            {speed}x
-          </option>
-        ))}
-      </select>
+      {speedSelect}
       <button type="button" className="trade-overlays-toggle" aria-pressed={showTradeOverlays}
         onClick={() => onTradeOverlaysChange(!showTradeOverlays)} title={showTradeOverlays ? '隐藏图表交易标记' : '显示图表交易标记'}>交易标记</button>
-      <button type="button" className="replay-settings-actions" onClick={() => setActionsOpen(true)}>回放设置</button>
-      <WorkspaceDialog open={actionsOpen} title="回放会话操作" onClose={() => setActionsOpen(false)}>
-        <p className="muted-text">{session.symbol.ticker} · {formatDisplayTime(session.startTime)} 至 {formatDisplayTime(session.endTime)}</p>
+      <button type="button" className="replay-settings-actions" onClick={openSettings}>回放设置</button>
+      <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
+        <p className="muted-text">{session.symbol.ticker} · {session.period.text} · 起点 {formatDisplayTime(session.startTime)}</p>
+        <dl className="detail-list">
+          <div><dt>初始资金</dt><dd>{session.tradingConfig.initialBalance} {displayedTerms?.accountCurrency ?? session.symbol.priceCurrency}</dd></div>
+          <div><dt>当前进度</dt><dd>{formatDisplayTime(currentTime, undefined, precision)}</dd></div>
+        </dl>
+        <div className="replay-wallet-setting">
+          <label className="panel-field">钱包余额{displayedTerms ? `（${displayedTerms.accountCurrency}）` : ''}
+            <input type="number" inputMode="decimal" min="0" step="any" aria-label="钱包余额" disabled={!state}
+              value={walletDraft ?? state?.account.walletBalance ?? ''} onChange={event => setWalletDraft(event.target.value)} />
+          </label>
+          <button type="button" disabled={interactionLocked || !state || !validWalletBalance}
+            onClick={() => void applyWalletBalance()}>设置余额</button>
+        </div>
+        <p className="muted-text">余额差额计入账户流水，复盘收益与回撤按交易表现计算。</p>
+        {orderFields}
+        <button type="button" disabled={interactionLocked || !state || !validLeverage || !validSlippage ||
+          (activeLeverage === null && activeSlippage === null)} onClick={() => void applyOrderSettings()}>应用交易参数</button>
+        {simulation.error && <p className="panel-error" role="alert">{simulation.error}</p>}
+        {replay.error && <p className="replay-error" role="alert">{replay.error}</p>}
+        {displayedTerms ? <ReplayTradingTerms terms={displayedTerms} /> : <details className="replay-advanced">
+          <summary>会话交易规格</summary>
+          <div><dl className="detail-list">
+            <div><dt>手续费率</dt><dd>{new Decimal(session.tradingConfig.feeRate).mul(100).toString()}%</dd></div>
+            <div><dt>维持保证金率</dt><dd>{new Decimal(session.tradingConfig.maintenanceMarginRate).mul(100).toString()}%</dd></div>
+            <div><dt>强平费率</dt><dd>{new Decimal(session.tradingConfig.liquidationFeeRate).mul(100).toString()}%</dd></div>
+          </dl></div>
+        </details>}
         <div className="workspace-session-actions">
       <button
         disabled={interactionLocked || session.status === 'completed'}
@@ -328,9 +404,10 @@ export function ReplayControls({
         disabled={interactionLocked}
         onClick={() => {
           if (
-            !session.hasTrades ||
-            window.confirm('重置回放会清空当前模拟交易记录，是否继续？')
+            (!session.hasTrades && !state?.ledger.some(entry => entry.type === 'balance_adjustment')) ||
+            window.confirm('重置回放会清空当前模拟交易和余额调整记录，是否继续？')
           ) {
+            setWalletDraft(null)
             void replay.reset()
           }
         }}
@@ -338,16 +415,16 @@ export function ReplayControls({
       >
         重置
       </button>
-      <button onClick={() => { void replay.endSession(); setActionsOpen(false) }} type="button">
+      <button disabled={interactionLocked} onClick={() => { void replay.endSession(); setSettingsOpen(false) }} type="button">
         结束会话
       </button>
         </div>
-        <button type="button" className="dialog-done" onClick={() => setActionsOpen(false)}>完成</button>
+        <button type="button" className="dialog-done" onClick={() => setSettingsOpen(false)}>完成</button>
       </WorkspaceDialog>
       {replay.busy && replay.preparationStatus && (
         <span className="replay-preparation" role="status">{replay.preparationStatus}</span>
       )}
-      {replay.error.length > 0 && (
+      {!settingsOpen && replay.error.length > 0 && (
         <span className="replay-error" role="alert">
           {replay.error}
         </span>

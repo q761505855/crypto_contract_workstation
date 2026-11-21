@@ -92,6 +92,11 @@ interface HistoryPage {
   hasMore: boolean
 }
 
+interface RecentHistoryPage {
+  candles: MarketCandle[]
+  nextTo: number
+}
+
 export interface CTraderTick {
   timestamp: number
   price: string
@@ -275,7 +280,7 @@ export class CTraderMarketService {
   private historyQueue = Promise.resolve()
   private nextHistoryRequest = 0
   private readonly history = new Map<string, HistoryRange>()
-  private readonly recentHistory = new Map<string, CachedCandles>()
+  private readonly recentHistory = new Map<string, RecentHistoryPage & { expires: number }>()
   private readonly historyReads = new Map<string, Promise<void>>()
   private readonly subscriptions = new Set<Subscription>()
   private readonly activeSpots = new Set<number>()
@@ -509,25 +514,32 @@ export class CTraderMarketService {
   }
 
   async loadRecentCandles(
-    symbol: string, timeframe: string, to: number, options: HistoryLoadOptions & { count?: number } = {},
+    symbol: string, timeframe: string, to: number, options?: HistoryLoadOptions & { count?: number },
   ): Promise<MarketCandle[]> {
+    return (await this.loadRecentCandlesPage(symbol, timeframe, to, options)).candles
+  }
+
+  async loadRecentCandlesPage(
+    symbol: string, timeframe: string, to: number, options: HistoryLoadOptions & { count?: number } = {},
+  ): Promise<RecentHistoryPage> {
     const { signal, count = 499, onStatus } = options
     signal?.throwIfAborted()
     if (!isCTraderTimeframe(timeframe)) throw new Error(`cTrader 不支持的原生周期：${timeframe}`)
     if (!Number.isInteger(count) || count < 1 || count > HISTORY_PAGE_SIZE) throw new Error('cTrader K 线数量超出范围')
-    if (!Number.isFinite(to) || to < 0) return []
+    if (!Number.isFinite(to) || to < 0) return { candles: [], nextTo: -1 }
     const latest = Math.floor(Math.min(MAX_TIMESTAMP, to, this.now()) / MINUTE) * MINUTE
     const instrument = await this.getInstrument(symbol, signal)
     const series = `${instrument.id}:${timeframe}`
     return this.queueHistoryRead(series, signal, async () => {
       const key = `${series}:${count}:${latest}`
       const cached = this.recentHistory.get(key)
-      if (cached && cached.expires > this.now()) return cached.candles
+      if (cached && cached.expires > this.now()) return cached
       onStatus?.('正在读取 cTrader 最近的原生 K 线')
       try {
-        const candles = await this.readRecentCandles(instrument, timeframe, latest, count, signal)
-        this.rememberHistory(this.recentHistory, key, 16, { candles, expires: this.historyExpiry(latest, candles) })
-        return candles
+        const page = await this.readRecentCandles(instrument, timeframe, latest, count, signal)
+        const cachedPage = { ...page, expires: this.historyExpiry(latest, page.candles) }
+        this.rememberHistory(this.recentHistory, key, 16, cachedPage)
+        return cachedPage
       } finally {
         onStatus?.('')
       }
@@ -536,7 +548,7 @@ export class CTraderMarketService {
 
   private async readRecentCandles(
     instrument: Instrument, timeframe: CTraderTimeframe, end: number, count: number, signal?: AbortSignal,
-  ): Promise<MarketCandle[]> {
+  ): Promise<RecentHistoryPage> {
     const step = nextOpenTime(0, timeframe)
     // A provider-side count can jump over a closure without requesting each empty chart window.
     const span = Math.min(365 * DAY, Math.max(7 * DAY, 2 * step * count))
@@ -549,7 +561,8 @@ export class CTraderMarketService {
       )
       end = appendHistoryPage(candlesByOpen, response, start, end)
     }
-    return [...candlesByOpen.values()].sort((left, right) => left.openTime - right.openTime).slice(-count)
+    const candles = [...candlesByOpen.values()].sort((left, right) => left.openTime - right.openTime).slice(-count)
+    return { candles, nextTo: end }
   }
 
   private queueHistoryRead<T>(series: string, signal: AbortSignal | undefined, read: () => Promise<T>): Promise<T> {

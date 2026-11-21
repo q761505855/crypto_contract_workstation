@@ -75,6 +75,7 @@ export type LedgerEntryType =
   | 'realized_pnl'
   | 'liquidation_fee'
   | 'swap'
+  | 'balance_adjustment'
 
 export interface SimulationLedgerEntry {
   entryId: string

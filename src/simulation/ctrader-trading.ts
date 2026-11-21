@@ -111,7 +111,7 @@ export function cTraderCommission(terms: CTraderTradingTerms, quantity: Decimal,
   return Decimal.max(fee, new Decimal(minimumUsd).mul(usd), quoteToAccount(terms, new Decimal(minimumQuote), price))
 }
 
-export function cTraderMargin(terms: CTraderTradingTerms, quantity: Decimal, price: Decimal): Decimal {
+export function cTraderMargin(terms: CTraderTradingTerms, quantity: Decimal, price: Decimal, leverageCap = terms.accountLeverage): Decimal {
   const notional = quantity.mul(price).mul(usdPerQuote(terms, price))
   let remaining = notional
   let margin = new Decimal(0)
@@ -119,12 +119,12 @@ export function cTraderMargin(terms: CTraderTradingTerms, quantity: Decimal, pri
   for (const [index, tier] of terms.leverageTiers.entries()) {
     const width = new Decimal(tier.upToUsd).minus(previous)
     const portion = index === terms.leverageTiers.length - 1 ? remaining : Decimal.min(remaining, width)
-    margin = margin.plus(portion.div(Math.min(tier.leverage, terms.accountLeverage)))
+    margin = margin.plus(portion.div(Math.min(tier.leverage, leverageCap)))
     remaining = remaining.minus(portion)
     if (remaining.isZero()) break
     previous = new Decimal(tier.upToUsd)
   }
-  return margin.plus(remaining.div(terms.accountLeverage)).mul(accountPerUsd(terms, price))
+  return margin.plus(remaining.div(leverageCap)).mul(accountPerUsd(terms, price))
 }
 
 export function cTraderTotalMargin(terms: CTraderTradingTerms, long: Decimal, short: Decimal): Decimal {

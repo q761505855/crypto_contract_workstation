@@ -6,6 +6,7 @@ import {
 } from 'react'
 import Decimal from 'decimal.js'
 import type { MarketDataRuntime } from '../market-data/runtime'
+import type { ReplayOrderSettings } from '../replay/models'
 import type {
   OrderPreview,
   OrderSizeInput,
@@ -27,7 +28,8 @@ export interface SimulationController {
     size: OrderSizeInput,
   ): Promise<OrderPreview | null>
   open(side: PositionSide, size: OrderSizeInput): Promise<void>
-  setLeverage(leverage: number): Promise<boolean>
+  setOrderSettings(settings: ReplayOrderSettings): Promise<boolean>
+  setWalletBalance(value: string): Promise<boolean>
   reduce(side: PositionSide, quantity: string): Promise<void>
   reducePercent(side: PositionSide, percent: 25 | 50 | 75): Promise<void>
   closeAll(side: PositionSide): Promise<void>
@@ -42,7 +44,7 @@ export function useSimulationController(
 ): SimulationController {
   const engineRef = useRef<SimulationEngine | null>(null)
   const sessionRef = useRef(replay.session)
-  const saveQueueRef = useRef(Promise.resolve())
+  const saveQueueRef = useRef(Promise.resolve(true))
   const [state, setState] = useState<SimulationState | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -52,13 +54,17 @@ export function useSimulationController(
     (next: SimulationState) => {
       saveQueueRef.current = saveQueueRef.current
         .catch(() => undefined)
-        .then(() => runtime.simulationStates.save(next))
+        .then(async () => {
+          await runtime.simulationStates.save(next)
+          return true
+        })
         .catch((reason: unknown) => {
           setError(
             `自动保存模拟交易失败：${
               reason instanceof Error ? reason.message : String(reason)
             }`,
           )
+          return false
         })
       return saveQueueRef.current
     },
@@ -200,15 +206,14 @@ export function useSimulationController(
     [currentCandle, publish],
   )
 
-  const setLeverage = useCallback(async (leverage: number): Promise<boolean> => {
+  const setOrderSettings = useCallback(async (settings: ReplayOrderSettings): Promise<boolean> => {
     const engine = engineRef.current
     if (engine === null) return false
     setBusy(true)
     try {
-      engine.setLeverage(leverage)
+      engine.setOrderSettings(settings)
       setError('')
-      await publish(engine)
-      return true
+      return await publish(engine)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       return false
@@ -216,6 +221,23 @@ export function useSimulationController(
       setBusy(false)
     }
   }, [publish])
+
+  const setWalletBalance = useCallback(async (value: string): Promise<boolean> => {
+    const engine = engineRef.current
+    if (engine === null) return false
+    setBusy(true)
+    try {
+      const candle = await currentCandle()
+      engine.setWalletBalance(value, candle.openTime)
+      setError('')
+      return await publish(engine)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }, [currentCandle, publish])
 
   const reduce = useCallback(
     async (side: PositionSide, quantity: string) => {
@@ -306,7 +328,8 @@ export function useSimulationController(
     error,
     preview,
     open,
-    setLeverage,
+    setOrderSettings,
+    setWalletBalance,
     reduce,
     reducePercent,
     closeAll,

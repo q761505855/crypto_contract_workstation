@@ -194,7 +194,7 @@ export function useCTraderReplayController(
       const ctrader = await service.getReplayTradingTerms(input.symbol.ticker, candle.openTime, signal)
       const tradingConfig = {
         initialBalance: input.initialBalance ?? DEFAULT_TRADING_CONFIG.initialBalance,
-        leverage: cTraderLeverage(ctrader), feeRate: '0', slippageRate: input.slippageRate ?? '0',
+        leverage: input.leverage ?? cTraderLeverage(ctrader), feeRate: '0', slippageRate: input.slippageRate ?? '0',
         maintenanceMarginRate: '0', liquidationFeeRate: '0', ctrader,
       }
       validateSimulationConfig(tradingConfig)

@@ -485,6 +485,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
                 onLocateLatest={locateLatestChartTime}
                 replay={replay}
                 selection={marketSelection}
+                simulation={simulation}
                 stepPeriod={stepPeriod}
                 onStepPeriodChange={period => { saveReplayStepPeriod(period); setStepPeriod(period) }}
                 showTradeOverlays={showTradeOverlays}

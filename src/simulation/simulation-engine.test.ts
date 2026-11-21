@@ -85,6 +85,34 @@ const icMarketsTerms: CTraderTradingTerms = {
 const IC_MARKETS_CONFIG = { ...ZERO_FEE_CONFIG, maintenanceMarginRate: '0', leverage: 100, ctrader: icMarketsTerms }
 
 describe('IC Markets replay', () => {
+  it('sets a target wallet balance without changing positions or trading returns, including after restore', () => {
+    const replay = session(IC_MARKETS_CONFIG)
+    const engine = SimulationEngine.create(replay)
+    engine.open('long', { lots: '0.05' }, candle(0))
+    const before = engine.snapshot()
+    engine.setWalletBalance('12500', 60_000)
+    const adjusted = engine.snapshot()
+    expect(adjusted.account).toMatchObject({ initialBalance: '10000', walletBalance: '12500', usedMargin: '5', availableBalance: '12495' })
+    expect(adjusted.positions).toEqual(before.positions)
+    expect(adjusted.trades).toEqual(before.trades)
+    expect(adjusted.stats).toEqual(before.stats)
+    expect(adjusted.ledger.at(-1)).toMatchObject({
+      type: 'balance_adjustment', amount: '2500.015', balanceAfter: '12500', timestamp: 60_000, tradeId: null,
+    })
+    const restored = SimulationEngine.restore(adjusted, replay)
+    restored.revalue(candle(60_000))
+    expect(restored.snapshot().stats).toEqual(before.stats)
+    restored.setWalletBalance('0', 60_000)
+    const zero = restored.snapshot()
+    expect(zero.account).toMatchObject({ walletBalance: '0', availableBalance: '-5' })
+    expect(zero.stats).toEqual(before.stats)
+    restored.setWalletBalance('0', 60_000)
+    for (const invalid of ['', '-1', 'NaN', 'Infinity']) {
+      expect(() => restored.setWalletBalance(invalid, 60_000)).toThrow(/钱包余额/)
+    }
+    expect(restored.snapshot()).toEqual(zero)
+  })
+
   it('validates lot steps and charges by USD volume using tiered margin and hedged margin rules', () => {
     const engine = SimulationEngine.create(session(IC_MARKETS_CONFIG))
     expect(() => engine.previewOpen('long', { lots: '0.015' }, '100')).toThrow(/步长/)
@@ -93,7 +121,34 @@ describe('IC Markets replay', () => {
     engine.open('long', { lots: '0.2' }, candle(0))
     engine.open('short', { lots: '0.1' }, candle(0))
     expect(engine.snapshot().account).toMatchObject({ usedMargin: '30', totalFees: '0.09' })
-    expect(() => engine.setLeverage(99)).toThrow(/账户/)
+  })
+
+  it('adjusts cTrader order leverage during an open position and keeps its allocated margin', () => {
+    const replay = session(IC_MARKETS_CONFIG)
+    const engine = SimulationEngine.create(replay)
+    engine.open('long', { lots: '0.05' }, candle(0))
+    expect(engine.snapshot().account.usedMargin).toBe('5')
+    engine.setLeverage(75)
+    expect(engine.snapshot().account.usedMargin).toBe('5')
+    // The add straddles two tiers: 500 / 75 + 500 / 50.
+    expect(Number(engine.previewOpen('long', { lots: '0.1' }, '100').requiredMargin)).toBeCloseTo(500 / 75 + 500 / 50)
+    engine.setLeverage(25)
+    expect(engine.previewOpen('long', { lots: '0.1' }, '100').requiredMargin).toBe('40')
+    expect(engine.previewOpen('long', { margin: '40' }, '100').quantity).toBe('10')
+    engine.open('long', { lots: '0.1' }, candle(60_000))
+    expect(engine.snapshot().account.usedMargin).toBe('45')
+
+    const restored = SimulationEngine.restore(engine.snapshot(), replay)
+    expect(restored.snapshot().config.leverage).toBe(25)
+    expect(() => restored.setLeverage(101)).toThrow(/杠杆.*上限/)
+    const beforeInvalid = restored.snapshot()
+    expect(() => restored.setOrderSettings({ leverage: 100, slippageRate: '1' })).toThrow(/滑点率/)
+    expect(restored.snapshot()).toEqual(beforeInvalid)
+    restored.setOrderSettings({ leverage: 100, slippageRate: '0.001' })
+    expect(restored.previewOpen('long', { lots: '0.1' }, '100').fillPrice).toBe('100.1')
+    restored.setOrderSettings({ leverage: 100, slippageRate: '0' })
+    expect(restored.previewOpen('long', { lots: '0.1' }, '100').requiredMargin).toBe('20')
+    expect(restored.snapshot().account.usedMargin).toBe('45')
   })
 
   it('partially stops out only enough volume to restore account margin', () => {

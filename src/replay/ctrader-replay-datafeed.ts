@@ -172,9 +172,12 @@ export class CTraderReplayDatafeed implements Datafeed {
 
   async getOlderHistory(symbol: SymbolInfo, period: Period, before: number, signal?: AbortSignal) {
     const context = this.context
-    if (context === null) return await this.base.getOlderHistory?.(symbol, period, before, signal) ?? null
-    if (symbol.ticker.toUpperCase() !== context.symbol) return { candles: [], hasMore: true }
     const generation = this.generation
+    if (context === null) {
+      const page = await this.base.getOlderHistory?.(symbol, period, before, signal)
+      return generation === this.generation ? page ?? null : { candles: [], hasMore: true }
+    }
+    if (symbol.ticker.toUpperCase() !== context.symbol) return { candles: [], hasMore: true }
     const key = `${this.key(symbol, period)}:${before}`
     const { bars, hasMore, cursor } = await this.olderPage(context, period, this.olderCursors.get(key) ?? before, signal)
     if (generation !== this.generation) return { candles: [], hasMore: true }

@@ -65,3 +65,17 @@ it('keeps a zero-drawdown starting point when the wallet has no recorded changes
   })
   expect(buildBalanceCurve('100', []).points).toEqual([{ balance: '100', drawdown: '0', timestamp: null }])
 })
+
+it('plots manual wallet changes without counting them in drawdown', () => {
+  const result = buildBalanceCurve('100', [
+    entry('initial_balance', '100', 1),
+    entry('realized_pnl', '80', 2),
+    { ...entry('balance_adjustment', '180', 3), amount: '100' },
+    entry('realized_pnl', '175', 4),
+    { ...entry('balance_adjustment', '0', 5), amount: '-175' },
+  ])
+  expect(result.points.map(point => [point.balance, point.drawdown])).toEqual([
+    ['100', '0'], ['80', '-0.2'], ['180', '-0.2'], ['175', '-0.25'], ['0', '-0.25'],
+  ])
+  expect(result.maxDrawdown).toBe('0.25')
+})

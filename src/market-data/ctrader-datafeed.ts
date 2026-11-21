@@ -26,6 +26,7 @@ export class CTraderDatafeed implements Datafeed {
   private status = INITIAL_LIVE_STATUS
   private historySequence = 0
   private historyCandle?: MarketCandle
+  private olderHistoryCursor?: { key: string; before: number; to: number }
   private newerHistoryCursor?: { key: string; after: number; from: number }
   private readonly subscriptions = new Map<string, ChartSubscription>()
 
@@ -84,7 +85,10 @@ export class CTraderDatafeed implements Datafeed {
     const start = Math.max(0, from, shiftOpenTime(alignOpenTime(end, timeframe, 'floor'), timeframe, 1 - HISTORY_CANDLES))
     if (start > end) return []
     const sequence = notifySelection ? ++this.historySequence : this.historySequence
-    if (notifySelection) this.onSelection?.({ symbol, period })
+    if (notifySelection) {
+      this.olderHistoryCursor = undefined
+      this.onSelection?.({ symbol, period })
+    }
     const publish = (message: string) => {
       if (notifySelection && sequence === this.historySequence && !signal?.aborted) this.onWarning?.(message)
     }
@@ -109,9 +113,30 @@ export class CTraderDatafeed implements Datafeed {
   }
 
   async getOlderHistory(symbol: SymbolInfo, period: Period, before: number, signal?: AbortSignal) {
-    const candles = await this.service.loadRecentCandles(symbol.ticker, period.text, before - 1, { signal })
-    signal?.throwIfAborted()
-    return { candles: candles.map(toChartCandle), hasMore: candles.length > 0 && candles[0].openTime > 0 }
+    const key = this.selectionKey(symbol, period)
+    const cursor = this.olderHistoryCursor
+    const to = cursor?.key === key && cursor.before === before ? cursor.to : before - 1
+    const sequence = this.historySequence
+    const publish = (message: string) => {
+      if (sequence === this.historySequence && !signal?.aborted) this.onWarning?.(message)
+    }
+    publish('正在加载更早的 K 线…')
+    try {
+      const { candles, nextTo } = await this.service.loadRecentCandlesPage(symbol.ticker, period.text, to, { signal })
+      signal?.throwIfAborted()
+      if (sequence !== this.historySequence) return { candles: [], hasMore: true }
+      const hasMore = candles.length > 0 ? candles[0].openTime > 0 : nextTo >= 0
+      this.olderHistoryCursor = candles.length === 0 && hasMore ? { key, before, to: nextTo } : undefined
+      publish(!hasMore ? '已到最早历史数据' : candles.length === 0 ? '此区间无报价，继续向左查看' : '')
+      return { candles: candles.map(toChartCandle), hasMore }
+    } catch (reason) {
+      if (signal?.aborted) {
+        if (sequence === this.historySequence) this.onWarning?.('')
+        throw reason
+      }
+      publish(reason instanceof Error ? reason.message : '更早的 K 线读取失败，可继续向左重试。')
+      return { candles: [], hasMore: true }
+    }
   }
 
   async getNewerHistory(symbol: SymbolInfo, period: Period, after: number, signal?: AbortSignal) {

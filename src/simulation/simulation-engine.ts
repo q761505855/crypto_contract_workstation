@@ -1,6 +1,6 @@
 import Decimal from 'decimal.js'
 import type { MarketCandle } from '../market-data/models'
-import type { ReplaySession, ReplayTradingConfig } from '../replay/models'
+import type { ReplayOrderSettings, ReplaySession, ReplayTradingConfig } from '../replay/models'
 import { cTraderCommission, cTraderLeverage, cTraderMargin, cTraderSwap, cTraderTotalMargin, quoteToAccount, sameCTraderTradingTerms, validateCTraderTradingTerms } from './ctrader-trading'
 import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage, normalizeSimulationStatePrices } from './models'
 import type {
@@ -82,7 +82,7 @@ export function validateSimulationConfig(
     throw new Error('杠杆必须是大于等于 1 的整数')
   }
   nonNegative(config.feeRate, '手续费率')
-  nonNegative(config.slippageRate, '滑点率')
+  const slippageRate = nonNegative(config.slippageRate, '滑点率')
   nonNegative(config.maintenanceMarginRate, '维持保证金率')
   nonNegative(config.liquidationFeeRate, '强平费用率')
   const riskRates = decimal(config.maintenanceMarginRate, '维持保证金率').plus(
@@ -93,9 +93,11 @@ export function validateSimulationConfig(
   }
   if (config.ctrader !== undefined) {
     validateCTraderTradingTerms(config.ctrader)
-    if (config.leverage !== cTraderLeverage(config.ctrader) || !riskRates.isZero() ||
-        !new Decimal(config.feeRate).isZero() || new Decimal(config.slippageRate).gte(1)) {
-      throw new Error('IC Markets 回放必须按账户交易规格计算杠杆、佣金和保证金')
+    const maximum = cTraderLeverage(config.ctrader)
+    if (config.leverage > maximum) throw new Error(`模拟杠杆不能超过当前品种的 ${maximum}× 上限`)
+    if (slippageRate.gte(1)) throw new Error('滑点率必须小于 1')
+    if (!riskRates.isZero() || !new Decimal(config.feeRate).isZero()) {
+      throw new Error('IC Markets 回放必须按账户交易规格计算佣金和保证金')
     }
   }
 }
@@ -108,6 +110,7 @@ export function validateAdjustableLeverage(leverage: number): void {
 
 export class SimulationEngine {
   private state: SimulationState
+  private balanceAdjustments = ZERO
   private readonly pricePrecision: number
   private readonly quantityPrecision: number
 
@@ -117,6 +120,9 @@ export class SimulationEngine {
     private readonly now: () => number,
   ) {
     this.state = normalizeSimulationStatePrices(state)
+    for (const entry of this.state.ledger) {
+      if (entry.type === 'balance_adjustment') this.balanceAdjustments = this.balanceAdjustments.plus(entry.amount)
+    }
     this.pricePrecision = symbolPrecision.price
     this.quantityPrecision = symbolPrecision.quantity
   }
@@ -201,15 +207,35 @@ export class SimulationEngine {
   }
 
   setLeverage(leverage: number): void {
-    if (this.state.config.ctrader) throw new Error('IC Markets 回放杠杆由账户和品种档位决定')
-    validateAdjustableLeverage(leverage)
-    if (leverage < minimumContractLeverage(this.state)) {
-      throw new Error('逐仓有持仓时不能降低杠杆')
+    this.setOrderSettings({ leverage, slippageRate: this.state.config.slippageRate })
+  }
+
+  setOrderSettings({ leverage, slippageRate }: ReplayOrderSettings): void {
+    const previous = this.state.config
+    if (!previous.ctrader && leverage !== previous.leverage) {
+      validateAdjustableLeverage(leverage)
+      if (leverage < minimumContractLeverage(this.state)) {
+        throw new Error('逐仓有持仓时不能降低杠杆')
+      }
     }
-    this.state.config.leverage = leverage
+    if (slippageRate !== previous.slippageRate && nonNegative(slippageRate, '滑点率').gte(1)) {
+      throw new Error('滑点率必须小于 1')
+    }
+    const config = { ...previous, leverage, slippageRate }
+    validateSimulationConfig(config)
+    this.state.config = config
     // Both hedge sides share the contract setting; their allocated collateral is separate.
     for (const position of this.state.positions) position.leverage = leverage
     this.touch()
+  }
+
+  setWalletBalance(value: string, timestamp: number): void {
+    const balance = nonNegative(value, '钱包余额')
+    const adjustment = balance.minus(this.state.account.walletBalance)
+    if (adjustment.isZero()) return
+    this.applyWalletChange(adjustment, 'balance_adjustment', timestamp)
+    this.balanceAdjustments = this.balanceAdjustments.plus(adjustment)
+    this.recalculateAccount(new Decimal(this.state.account.unrealizedPnl))
   }
 
   previewOpen(
@@ -685,8 +711,10 @@ export class SimulationEngine {
         throw new Error('保证金金额、数量和手数必须且只能填写一项')
       }
       const currentSize = new Decimal(this.findPosition(side)?.quantity ?? 0)
-      const marginFor = (size: Decimal) => cTraderMargin(terms, currentSize.plus(size), fillPrice)
-        .minus(cTraderMargin(terms, currentSize, fillPrice))
+      const leverage = this.state.config.leverage
+      const leverageCap = leverage === cTraderLeverage(terms) ? terms.accountLeverage : leverage
+      const marginFor = (size: Decimal) => cTraderMargin(terms, currentSize.plus(size), fillPrice, leverageCap)
+        .minus(cTraderMargin(terms, currentSize, fillPrice, leverageCap))
       const step = new Decimal(terms.quantityStep)
       let quantity: Decimal
       if (marginInput) {
@@ -984,6 +1012,10 @@ export class SimulationEngine {
       position.unrealizedPnl = text(positionPnl)
       position.updatedAt = timestamp
     }
+    this.recalculateAccount(unrealized)
+  }
+
+  private recalculateAccount(unrealized: Decimal): void {
     const wallet = decimal(this.state.account.walletBalance, '钱包余额')
     const usedMargin = this.totalMargin()
     const initial = decimal(
@@ -994,7 +1026,7 @@ export class SimulationEngine {
     this.state.account.usedMargin = text(usedMargin)
     this.state.account.equity = text(wallet.plus(unrealized))
     this.state.account.availableBalance = text(wallet.plus(this.state.config.ctrader ? unrealized : ZERO).minus(usedMargin))
-    const totalReturn = wallet.plus(unrealized).minus(initial)
+    const totalReturn = wallet.plus(unrealized).minus(initial).minus(this.balanceAdjustments)
     this.state.stats.totalReturn = text(totalReturn)
     this.state.stats.totalReturnRate = text(totalReturn.div(initial))
     this.touch()

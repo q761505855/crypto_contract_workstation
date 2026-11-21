@@ -5,7 +5,6 @@ import { displayAmount, displayRate as rate } from '../format-amount'
 import type { ReplaySession } from '../replay/models'
 import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
 import type { PositionSide, OrderPreview, SimulationPosition, SimulationState } from '../simulation/models'
-import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage } from '../simulation/models'
 import { estimateRiskPnl, riskPricePercent, riskTriggerPrice, type RiskInputMode, type RiskPriceTarget } from '../simulation/risk-price'
 import type { SimulationController } from '../simulation/useSimulationController'
 import { WorkspaceDialog } from './WorkspaceDialog'
@@ -50,50 +49,27 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
   const [mode, setMode] = useState<'margin' | 'quantity'>('margin')
   const [value, setValue] = useState('100')
   const [preview, setPreview] = useState<OrderPreview | null>(null)
-  const [leverageDraft, setLeverageDraft] = useState<string | null>(null)
   useEffect(() => { if (requestedSide) { setDirection(requestedSide); setPreview(null) } }, [requestedSide])
   const state = simulation.state
   const terms = session?.tradingConfig.ctrader
   const currency = terms?.accountCurrency ?? session?.symbol.priceCurrency ?? ''
   const minimumLots = terms ? new Decimal(terms.minQuantity).div(terms.lotSize).toString() : undefined
   useEffect(() => {
-    setLeverageDraft(null)
     setPreview(null)
     if (minimumLots !== undefined) { setMode('quantity'); setValue(minimumLots) }
   }, [session?.id, minimumLots])
-  const leverage = Number(leverageDraft)
-  const minimumLeverage = state === null ? 1 : minimumContractLeverage(state)
+  useEffect(() => setPreview(null), [state?.config.leverage, state?.config.slippageRate])
   const canOpen = terms === undefined || (terms.tradingMode === 0 && (direction === 'long' || terms.canShort))
   const size = mode === 'margin' ? { margin: value } : terms ? { lots: value } : { quantity: value }
   const sizeLabel = terms ? '手数' : '仓位数量'
-
-  async function applyLeverage(): Promise<void> {
-    if (await simulation.setLeverage(leverage)) {
-      setPreview(null)
-      setLeverageDraft(null)
-    }
-  }
 
   return <aside className="order-panel side-panel" aria-label="模拟下单面板">
     <header className="panel-heading"><h2>模拟下单</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={onClose} /></header>
     {session === null || state === null ? <p className="muted-text">{simulation.busy ? '正在准备模拟账户…' : '创建历史回放会话后即可进行模拟交易。'}</p> : <>
       <div className="order-context">
         <span>{state.symbol}</span>
-        {terms ? <span>IC Markets · 最高 {state.config.leverage}×</span> : <button type="button" aria-label={`调整杠杆，当前 ${state.config.leverage} 倍`} disabled={simulation.busy} onClick={() => {
-          simulation.clearError()
-          setLeverageDraft(String(state.config.leverage))
-        }}>逐仓 · {state.config.leverage}×</button>}
+        <span>{terms ? '模拟杠杆' : '逐仓'} · {state.config.leverage}×</span>
       </div>
-      <WorkspaceDialog open={leverageDraft !== null} title="调整杠杆" onClose={() => setLeverageDraft(null)}>
-        <p className="muted-text">{state.symbol} 多空共用杠杆。{state.positions.length > 0 && `持仓期间最低可选 ${minimumLeverage}×。`}</p>
-        <label className="panel-field">杠杆倍率（×）
-          <input type="number" inputMode="numeric" min={minimumLeverage} max={MAX_ADJUSTABLE_LEVERAGE} step="1" value={leverageDraft ?? ''}
-            onChange={event => setLeverageDraft(event.target.value)} />
-        </label>
-        {simulation.error && <p className="panel-error" role="alert">{simulation.error}</p>}
-        <button type="button" className="dialog-done" disabled={simulation.busy || !isAdjustableLeverage(leverage) || leverage < minimumLeverage}
-          onClick={() => void applyLeverage()}>确认调整</button>
-      </WorkspaceDialog>
       <div className="segmented-control" aria-label="下单方向">{(['long', 'short'] as const).map(side => <button key={side} type="button" aria-pressed={direction === side} onClick={() => { setDirection(side); setPreview(null) }}>{side === 'long' ? '多' : '空'}</button>)}</div>
       <label className="panel-field">下单方式<select value={mode} onChange={event => {
         const next = event.target.value as typeof mode
@@ -113,7 +89,7 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
       ].map(([label, amount]) => <div key={label}><dt>{label}</dt><dd>{amount}</dd></div>)}</dl>}
       <p className="muted-text">在对应仓位设置止盈止损、减仓或平仓。</p>
     </>}
-    {simulation.error && leverageDraft === null && <p className="panel-error" role="alert">{simulation.error}</p>}
+    {simulation.error && <p className="panel-error" role="alert">{simulation.error}</p>}
   </aside>
 }
 

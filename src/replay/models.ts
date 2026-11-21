@@ -16,6 +16,8 @@ export interface ReplayTradingConfig {
   ctrader?: CTraderTradingTerms
 }
 
+export type ReplayOrderSettings = Pick<ReplayTradingConfig, 'leverage' | 'slippageRate'>
+
 export const DEFAULT_TRADING_CONFIG: ReplayTradingConfig = Object.freeze({
   initialBalance: '10000',
   leverage: 10,
@@ -60,6 +62,7 @@ export interface CreateReplaySessionInput {
   speed?: ReplaySpeed
   tradingConfig?: ReplayTradingConfig
   initialBalance?: string
+  leverage?: number
   slippageRate?: string
 }
 

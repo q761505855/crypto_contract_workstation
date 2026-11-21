@@ -552,8 +552,8 @@ function validateLedger(
   }
   stringValue(item.entryId, `${field}.entryId`)
   finiteNumber(item.timestamp, `${field}.timestamp`)
-  decimalValue(item.amount, `${field}.amount`)
-  decimalValue(item.balanceAfter, `${field}.balanceAfter`)
+  const amount = decimalValue(item.amount, `${field}.amount`)
+  const balance = decimalValue(item.balanceAfter, `${field}.balanceAfter`)
   if (
     ![
       'initial_balance',
@@ -561,12 +561,17 @@ function validateLedger(
       'realized_pnl',
       'liquidation_fee',
       'swap',
+      'balance_adjustment',
     ].includes(String(item.type))
   ) {
     throw new Error(`${field}.type 无效`)
   }
   if (item.tradeId !== null && typeof item.tradeId !== 'string') {
     throw new Error(`${field}.tradeId 无效`)
+  }
+  if (item.type === 'balance_adjustment' &&
+      (new Decimal(amount).isZero() || new Decimal(balance).lt(0) || item.tradeId !== null)) {
+    throw new Error(`${field} 的余额调整无效`)
   }
   return structuredClone(item) as unknown as SimulationLedgerEntry
 }

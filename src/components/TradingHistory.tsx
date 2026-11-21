@@ -9,6 +9,7 @@ const actionLabels: Record<TradeAction, string> = {
 
 const ledgerLabels: Record<LedgerEntryType, string> = {
   initial_balance: '初始资金', realized_pnl: '已实现盈亏', trading_fee: '手续费', liquidation_fee: '强平费用', swap: '隔夜调整',
+  balance_adjustment: '余额调整',
 }
 
 function Amount({ value, currency, digits = 4, signed = false }: {
