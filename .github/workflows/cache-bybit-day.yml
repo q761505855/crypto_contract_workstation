@@ -1,17 +1,8 @@
 name: 缓存 Bybit 日成交
 
 on:
-  workflow_dispatch:
-    inputs:
-      symbol:
-        description: Bybit 永续品种
-        type: choice
-        required: true
-        options: [SPYUSDT, QQQUSDT, XAUUSDT, BTCUSDT]
-      day:
-        description: UTC 日期（YYYY-MM-DD）
-        type: string
-        required: true
+  schedule:
+    - cron: '2-57/5 * * * *'
 
 permissions:
   contents: read
@@ -26,25 +17,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
       - uses: actions/checkout@v6
         with:
           repository: q761505855/personal-cloud-storage
           ref: main
           token: ${{ secrets.CLOUD_STORAGE_TOKEN }}
           path: cloud-storage
-      - name: 下载并提交日成交归档
-        env:
-          BYBIT_SYMBOL: ${{ inputs.symbol }}
-          BYBIT_DAY: ${{ inputs.day }}
+          sparse-checkout: projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: 处理网页提交的日成交缓存请求
         run: |
-          node scripts/cache-bybit-day.mjs "$BYBIT_SYMBOL" "$BYBIT_DAY" cloud-storage
           git -C cloud-storage config user.name "github-actions[bot]"
           git -C cloud-storage config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C cloud-storage add -- "projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/$BYBIT_SYMBOL/$BYBIT_DAY"
-          if git -C cloud-storage diff --cached --quiet; then exit 0; fi
-          git -C cloud-storage commit -m "缓存 Bybit ${BYBIT_SYMBOL} ${BYBIT_DAY} 日成交"
-          git -C cloud-storage pull --rebase origin main
-          git -C cloud-storage push origin HEAD:main
+          node scripts/process-bybit-requests.mjs cloud-storage

@@ -423,7 +423,8 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     accounts?.selectedKey !== undefined && accounts.accounts.length > 1
   const simulationCurrency = replay.session?.tradingConfig.ctrader?.accountCurrency ?? replay.session?.symbol.priceCurrency ?? ''
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
-  if (bybitOpen) return <BybitWorkspace onClose={() => setBybitOpen(false)} drawings={marketRuntime.drawings} preferenceEpoch={configEpoch} />
+  if (bybitOpen) return <BybitWorkspace onClose={() => setBybitOpen(false)} drawings={marketRuntime.drawings}
+    cloud={marketRuntime.defaultGitHubClient} preferenceEpoch={configEpoch} />
 
   return (
     <main ref={shellRef} className="app-shell workspace-shell">

@@ -3,7 +3,9 @@ import type { Period } from '@klinecharts/pro'
 import { ChartWorkspace } from '../chart/ChartWorkspace'
 import { CTRADER_PERIODS } from '../chart/chart-config'
 import type { DrawingStore } from '../chart/drawings'
+import type { GitHubContentsClient } from '../github-sync/github-client'
 import { BybitArchive } from '../market-data/bybit/archive'
+import { ensureBybitDay } from '../market-data/bybit/archive-requests'
 import { BybitDatafeed } from '../market-data/bybit/datafeed'
 import { BybitLiveTrades, type BybitLiveStatus } from '../market-data/bybit/live'
 import { BYBIT_DAY_MS, BYBIT_SYMBOLS, bybitDay, bybitDayStart, bybitFirstDay, bybitSymbol,
@@ -12,7 +14,6 @@ import './bybit-workspace.css'
 
 const minutesInDay = 1440
 const chartPeriod = CTRADER_PERIODS.find(item => item.text === '5m')!
-const workflowUrl = 'https://github.com/q761505855/crypto_contract_workstation/actions/workflows/cache-bybit-day.yml'
 
 interface View {
   symbol: BybitSymbol
@@ -40,12 +41,13 @@ function useFeed(view: View, archive: BybitArchive) {
   return { feed, reload, status, warning, setWarning, refresh: () => setReload(value => value + 1) }
 }
 
-export function BybitWorkspace({ onClose, drawings, preferenceEpoch }: {
+export function BybitWorkspace({ onClose, drawings, cloud, preferenceEpoch }: {
   onClose(): void
   drawings: DrawingStore
+  cloud: GitHubContentsClient
   preferenceEpoch: number
 }) {
-  const [archive] = useState(() => new BybitArchive())
+  const [archive] = useState(() => new BybitArchive(cloud.getTarget()))
   const [view, setView] = useState<View>({ symbol: 'SPYUSDT' })
   const [viewVersion, setViewVersion] = useState(0)
   const [day, setDay] = useState(() => bybitDay(Date.now() - BYBIT_DAY_MS * 2))
@@ -57,43 +59,53 @@ export function BybitWorkspace({ onClose, drawings, preferenceEpoch }: {
   const [period, setPeriod] = useState<Period>(chartPeriod)
   const [stepSeconds, setStepSeconds] = useState(60)
   const request = useRef<AbortController | null>(null)
-  const operation = useRef(0)
+  const historyRequest = useRef<AbortController | null>(null)
   const { feed, reload, status, warning, setWarning, refresh } = useFeed(view, archive)
   const instrument = useMemo(() => bybitSymbolInfo(view.symbol), [view.symbol])
   const history = view.day !== undefined
 
+  function stopWaiting() {
+    historyRequest.current?.abort()
+    historyRequest.current = null
+    setLoading(false)
+    setHistoryStatus('')
+  }
+
   function changeView(next: View) {
-    operation.current++
+    stopWaiting()
     request.current?.abort()
     request.current = null
-    setLoading(false)
     setPlaying(false)
     setPosition(next.startUs)
-    setHistoryStatus('')
     setView(next)
     setViewVersion(version => version + 1)
   }
 
   async function openHistory() {
+    if (historyRequest.current) return
     const symbol = view.symbol
-    const key = ++operation.current
+    const controller = new AbortController()
+    historyRequest.current = controller
     setLoading(true)
     setPlaying(false)
-    setHistoryStatus('')
+    setHistoryStatus('正在检查日归档…')
     try {
       const start = bybitDayStart(day)
       const selected = Date.parse(`${day}T${time}:00Z`)
       if (!Number.isFinite(selected) || selected < start || selected >= start + BYBIT_DAY_MS) throw new Error('请输入有效 UTC 时间')
-      const available = await archive.hasDay(symbol, day)
-      if (key !== operation.current) return
-      if (!available) {
-        setHistoryStatus(`${symbol} ${day} 尚未缓存，请先运行按日缓存，待 GitHub 发布后重试。`)
-        return
-      }
+      await ensureBybitDay(archive, cloud, symbol, day, message => {
+        if (!controller.signal.aborted) setHistoryStatus(message)
+      }, controller.signal)
+      controller.signal.throwIfAborted()
       changeView({ symbol, day, startUs: (selected + 60_000) * 1000 })
     } catch (error) {
-      if (key === operation.current) setHistoryStatus(error instanceof Error ? error.message : '无法读取历史成交')
-    } finally { if (key === operation.current) setLoading(false) }
+      if (!controller.signal.aborted) setHistoryStatus(error instanceof Error ? error.message : '无法读取历史成交')
+    } finally {
+      if (historyRequest.current === controller) {
+        historyRequest.current = null
+        setLoading(false)
+      }
+    }
   }
 
   async function step(seconds: number) {
@@ -120,7 +132,7 @@ export function BybitWorkspace({ onClose, drawings, preferenceEpoch }: {
     return () => clearInterval(timer)
   })
 
-  useEffect(() => () => { operation.current++; request.current?.abort() }, [])
+  useEffect(() => () => { historyRequest.current?.abort(); request.current?.abort() }, [])
 
   return <main className="bybit-workspace">
     <header className="bybit-header">
@@ -135,11 +147,11 @@ export function BybitWorkspace({ onClose, drawings, preferenceEpoch }: {
     </header>
     <section className="bybit-controls" aria-label="Bybit 数据和回放">
       <label>UTC 日期 <input type="date" value={day} min={bybitFirstDay(view.symbol)}
-        max={bybitDay(Date.now() - BYBIT_DAY_MS)} onChange={event => setDay(event.target.value)} /></label>
-      <label>UTC 起点 <input type="time" value={time} onChange={event => setTime(event.target.value)} /></label>
+        max={bybitDay(Date.now() - BYBIT_DAY_MS)} onChange={event => { stopWaiting(); setDay(event.target.value) }} /></label>
+      <label>UTC 起点 <input type="time" value={time} onChange={event => { stopWaiting(); setTime(event.target.value) }} /></label>
       <button type="button" disabled={loading} onClick={() => void openHistory()}>历史回放</button>
+      {loading && <button type="button" onClick={stopWaiting}>取消等待</button>}
       <button type="button" disabled={!history} onClick={() => changeView({ symbol: view.symbol })}>回到实时</button>
-      <a href={workflowUrl} target="_blank" rel="noreferrer">缓存日归档</a>
       {history && <div className="bybit-replay-controls">
         <label>步进 <select value={stepSeconds} onChange={event => setStepSeconds(Number(event.target.value))}>
           <option value="1">1 秒</option><option value="60">1 分钟</option>
@@ -160,7 +172,7 @@ export function BybitWorkspace({ onClose, drawings, preferenceEpoch }: {
         <span>{new Date((position ?? feed.currentUs) / 1000).toISOString().slice(0, 19).replace('T', ' ')} UTC</span>
       </div>}
     </section>
-    <div className="bybit-status" role="status">{[loading ? '正在检查日归档…' : history ? `${view.day} UTC · 历史成交` : status,
+    <div className="bybit-status" role="status">{[history ? `${view.day} UTC · 历史成交` : status,
       historyStatus, warning].filter(Boolean).join(' · ')}</div>
     <div className="bybit-chart">
       <ChartWorkspace key={`${viewVersion}:${preferenceEpoch}`} datafeed={feed}

@@ -155,3 +155,65 @@ test('Bybit 工作区接收实时成交并按 UTC 日回放 Git 归档', async (
   await page.getByRole('button', { name: '返回工作站' }).click()
   await expect(page.getByRole('heading', { name: /cTrader/ })).toBeVisible()
 })
+
+test('缺少 Bybit 日档时自动申请，发布后直接进入回放', async ({ page }) => {
+  const inspect = await installViewportProbe(page)
+  await page.clock.install()
+  const commit = 'b'.repeat(40)
+  let published = false
+  let submissions = 0
+  let request: { type: string; path: string; sha: string; encoding: string; content: string } | undefined
+  await page.route('**/cloud-connection.json', route => route.fulfill({ headers,
+    json: { schemaVersion: 1, project: 'crypto-contract-workstation', token: 'bybit-e2e-token' },
+  }))
+  await page.route('**/ctrader-connection.json', route => route.fulfill({ status: 404, headers }))
+  await page.route('https://api.github.com/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers,
+      json: { object: { sha: published ? commit : 'a'.repeat(40) } },
+    })
+    if (path.includes('/git/commits/')) return route.fulfill({ headers, json: { tree: { sha: 'c'.repeat(40) } } })
+    if (path.endsWith(`/data/bybit-requests/SPYUSDT/${archiveDay}.json`)) {
+      if (route.request().method() === 'PUT') {
+        submissions++
+        const payload = route.request().postDataJSON()
+        expect(JSON.parse(Buffer.from(payload.content, 'base64').toString())).toEqual({ version: 1, symbol: 'SPYUSDT', day: archiveDay })
+        expect(payload.branch).toBe('main')
+        request = { type: 'file', path, sha: 'request-sha', encoding: 'base64', content: payload.content }
+        return route.fulfill({ status: 201, headers, json: { content: { sha: request.sha } } })
+      }
+      if (!published && request) return route.fulfill({ headers, json: request })
+    }
+    return route.fulfill({ status: 404, headers })
+  })
+  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => {
+    const url = route.request().url()
+    // The floating branch URL can still return a cached 404 just after publication.
+    if (published && url.includes(`/${commit}/`)) {
+      if (url.endsWith(`/${archiveDay}/manifest.json`)) return route.fulfill({ headers, json: manifest })
+      if (url.endsWith(`/${archiveDay}/00-000.csv.gz`)) return route.fulfill({ headers, body: part })
+    }
+    return route.fulfill({ status: 404, headers })
+  })
+  await page.route('https://api.bybit.com/**', route => route.fulfill({ headers, json: { retCode: 0, result: { list: [] } } }))
+  await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => socket.onMessage(() => {
+    socket.send(JSON.stringify({ op: 'subscribe', success: true }))
+  }))
+
+  await page.goto('/')
+  await page.getByRole('button', { name: '工具', exact: true }).click()
+  await page.getByRole('button', { name: 'Bybit 逐笔成交' }).click()
+  await page.getByLabel('UTC 日期').fill(archiveDay)
+  await page.getByRole('button', { name: '历史回放', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('等待后台下载并缓存')
+  await page.getByRole('button', { name: '取消等待' }).click()
+  await page.getByRole('button', { name: '历史回放', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('等待后台下载并缓存')
+  expect(submissions).toBe(1)
+
+  published = true
+  await page.clock.fastForward(13_000)
+  await expect(page.getByRole('status')).toContainText(`${archiveDay} UTC · 历史成交`)
+  await expect.poll(async () => (await inspect()).last).toMatchObject({ close: 717, volume: 38 })
+  expect(submissions).toBe(1)
+})

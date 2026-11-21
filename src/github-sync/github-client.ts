@@ -214,6 +214,7 @@ export class GitHubContentsClient {
     bytes: Uint8Array,
     message: string,
     expectedSha?: string,
+    signal?: AbortSignal,
   ): Promise<string> {
     const encodedPath = this.scopedPath(path)
     this.requireToken()
@@ -238,9 +239,11 @@ export class GitHubContentsClient {
           method: 'PUT',
           headers: this.headers(),
           body: JSON.stringify(body),
+          signal,
         },
       )
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw error
       throw new Error('无法连接 GitHub API，请检查网络')
     }
     if (response.status === 409 || response.status === 422) {

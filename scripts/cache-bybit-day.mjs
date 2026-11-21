@@ -15,10 +15,17 @@ const maxPartBytes = 16 * 1024 ** 2
 const symbols = new Set(['SPYUSDT', 'QQQUSDT', 'XAUUSDT', 'BTCUSDT'])
 export const archiveRoot = 'projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades'
 
-export function archiveInputs(symbol, day) {
+export class BybitArchiveHttpError extends Error {
+  constructor(status) {
+    super(`Bybit 日归档暂不可用（HTTP ${status}）`)
+    this.status = status
+  }
+}
+
+export function archiveInputs(symbol, day, now = Date.now()) {
   const start = Date.parse(day)
   if (!symbols.has(symbol) || !/^\d{4}-\d\d-\d\d$/.test(day) || !Number.isFinite(start) ||
-      new Date(start).toISOString().slice(0, 10) !== day || start + dayMs > Date.now()) {
+      new Date(start).toISOString().slice(0, 10) !== day || start + dayMs > now) {
     throw new Error('请选择支持的 Bybit 品种和已经结束的 UTC 日期')
   }
   return start
@@ -38,7 +45,7 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
 
   const response = await fetcher(`https://public.bybit.com/trading/${symbol}/${symbol}${day}.csv.gz`,
     { signal: AbortSignal.timeout(360_000) })
-  if (!response.ok || !response.body) throw new Error(`Bybit 日归档暂不可用（HTTP ${response.status}）`)
+  if (!response.ok || !response.body) throw new BybitArchiveHttpError(response.status)
   await mkdir(dirname(target), { recursive: true })
   const staging = await mkdtemp(join(dirname(target), '.bybit-'))
   const parts = []

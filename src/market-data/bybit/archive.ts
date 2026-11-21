@@ -19,7 +19,7 @@ interface ArchiveManifest {
   parts: ArchivePart[]
 }
 
-const BYBIT_ARCHIVE_ROOT = 'data/bybit-trades'
+export const BYBIT_ARCHIVE_ROOT = 'data/bybit-trades'
 const ARCHIVE_PART_MAX = 17 * 1024 ** 2
 
 function manifest(value: unknown, symbol: BybitSymbol, day: string): ArchiveManifest {
@@ -73,26 +73,28 @@ export function parseBybitArchivePart(text: string, partStart: number, rows: num
 }
 
 export class BybitArchive {
-  private readonly manifests = new Map<string, Promise<ArchiveManifest | null>>()
+  private readonly manifests = new Map<string, Promise<{ meta: ArchiveManifest; root: string } | null>>()
   private readonly hours = new Map<string, Promise<BybitTrade[]>>()
-  private readonly root: string
 
-  constructor(target: GitHubRepositoryTarget = defaultStorageTarget(), private readonly fetcher: typeof fetch = fetch,
-    private readonly now = Date.now) {
-    this.root = 'https://raw.githubusercontent.com/' +
-      [target.owner, target.repository, target.branch, ...(target.root ?? '').split('/').filter(Boolean)]
-        .map(encodeURIComponent).join('/') + '/' + BYBIT_ARCHIVE_ROOT
+  constructor(private readonly target: GitHubRepositoryTarget = defaultStorageTarget(),
+    private readonly fetcher: typeof fetch = fetch, private readonly now = Date.now) {}
+
+  private archiveRoot(ref: string): string {
+    const { owner, repository, root } = this.target
+    return 'https://raw.githubusercontent.com/' + [owner, repository, ref, ...(root ?? '').split('/').filter(Boolean)]
+      .map(encodeURIComponent).join('/') + '/' + BYBIT_ARCHIVE_ROOT
   }
 
-  private getManifest(symbol: BybitSymbol, day: string): Promise<ArchiveManifest | null> {
+  private getManifest(symbol: BybitSymbol, day: string, ref?: string) {
     const path = `${symbol}/${day}`
     const cached = this.manifests.get(path)
     if (cached) return cached
     const pending = (async () => {
-      const response = await this.fetcher.call(globalThis, `${this.root}/${path}/manifest.json`, { signal: AbortSignal.timeout(20_000), cache: 'no-store', credentials: 'omit' })
+      const root = this.archiveRoot(ref ?? this.target.branch)
+      const response = await this.fetcher.call(globalThis, `${root}/${path}/manifest.json`, { signal: AbortSignal.timeout(20_000), cache: 'no-store', credentials: 'omit' })
       if (response.status === 404) return null
       if (!response.ok) throw new Error(`读取 Bybit 日成交清单失败（HTTP ${response.status}）`)
-      return manifest(await response.json(), symbol, day)
+      return { meta: manifest(await response.json(), symbol, day), root }
     })()
     this.manifests.set(path, pending)
     if (this.manifests.size > 128) this.manifests.delete(this.manifests.keys().next().value!)
@@ -101,17 +103,17 @@ export class BybitArchive {
     return pending
   }
 
-  async hasDay(symbol: BybitSymbol, day: string): Promise<boolean> {
+  async hasDay(symbol: BybitSymbol, day: string, ref?: string): Promise<boolean> {
     return bybitDayStart(day) + BYBIT_DAY_MS <= this.now() && day >= bybitFirstDay(symbol) &&
-      (await this.getManifest(symbol, day)) !== null
+      (await this.getManifest(symbol, day, ref)) !== null
   }
 
   async loadHour(symbol: BybitSymbol, start: number): Promise<BybitTrade[] | null> {
     if (start % BYBIT_HOUR_MS !== 0) throw new Error('Bybit 归档小时无效')
     const day = bybitDay(start)
     if (bybitDayStart(day) + BYBIT_DAY_MS > this.now() || day < bybitFirstDay(symbol)) return null
-    const meta = await this.getManifest(symbol, day)
-    if (!meta) return null
+    const archive = await this.getManifest(symbol, day)
+    if (!archive) return null
     const key = `${symbol}/${start}`
     const cached = this.hours.get(key)
     if (cached) {
@@ -120,17 +122,17 @@ export class BybitArchive {
       return cached
     }
     const hour = new Date(start).getUTCHours()
-    const pending = this.readParts(symbol, day, start, meta.parts.filter(part => part.hour === hour))
+    const pending = this.readParts(`${archive.root}/${symbol}/${day}`, start, archive.meta.parts.filter(part => part.hour === hour))
     this.hours.set(key, pending)
     if (this.hours.size > 6) this.hours.delete(this.hours.keys().next().value!)
     void pending.catch(() => { if (this.hours.get(key) === pending) this.hours.delete(key) })
     return pending
   }
 
-  private async readParts(symbol: BybitSymbol, day: string, start: number, parts: ArchivePart[]): Promise<BybitTrade[]> {
+  private async readParts(root: string, start: number, parts: ArchivePart[]): Promise<BybitTrade[]> {
     const trades: BybitTrade[] = []
     for (const part of parts) {
-      const response = await this.fetcher.call(globalThis, `${this.root}/${symbol}/${day}/${part.file}`, { signal: AbortSignal.timeout(45_000) })
+      const response = await this.fetcher.call(globalThis, `${root}/${part.file}`, { signal: AbortSignal.timeout(45_000) })
       if (!response.ok) throw new Error(`Bybit 成交分片读取失败（HTTP ${response.status}）`)
       const buffer = await response.arrayBuffer()
       if (buffer.byteLength !== part.bytes || await sha256(buffer) !== part.sha256) {
