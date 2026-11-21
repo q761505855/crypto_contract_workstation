@@ -433,6 +433,80 @@ test('plays and pauses the live chart with the button or a hold on the next cand
   await expect(controls.getByLabel('步进周期')).toHaveCount(0)
 })
 
+test('saves individual market session toggles and restores them from an application archive', async ({ page }) => {
+  await connectFixture(page)
+  await page.addInitScript(() => {
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (text === '\ue902' && this.canvas.closest('[data-pane-id="candle_pane"]')) {
+        const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        Object.assign(window, { marketSessionGear: { x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio } })
+      }
+      if (maxWidth === undefined) fillText.call(this, text, x, y)
+      else fillText.call(this, text, x, y, maxWidth)
+    }
+  })
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  const openSettings = async () => {
+    const showInfo = page.getByRole('button', { name: '显示主图指标信息', exact: true })
+    if (await showInfo.isVisible()) await showInfo.click()
+    await expect(async () => {
+      const gear = await page.evaluate(() => (window as unknown as { marketSessionGear?: { x: number; y: number } }).marketSessionGear)
+      expect(gear).toBeDefined()
+      await page.mouse.click(gear!.x + 3, gear!.y + 3)
+      await expect(settings).toBeVisible({ timeout: 400 })
+    }).toPass({ timeout: 5000 })
+  }
+  const tokyo = settings.getByRole('checkbox', { name: '显示东京' })
+  const london = settings.getByRole('checkbox', { name: '显示伦敦' })
+  const newYork = settings.getByRole('checkbox', { name: '显示纽约' })
+  const confirm = page.getByText('确定', { exact: true })
+  const readVisibility = () => page.evaluate(() => {
+    const key = 'crypto-contract-workstation:ctrader:chart.indicators.v1'
+    return JSON.parse(localStorage.getItem(key) ?? 'null')?.main.find((indicator: { name: string }) =>
+      indicator.name === 'MARKET_SESSIONS')?.styles?.sessionVisibility
+  })
+
+  await page.goto('./')
+  await expect(page.getByRole('contentinfo')).toContainText('EURUSD')
+  await page.getByText('指标', { exact: true }).click()
+  const indicatorList = page.locator('.klinecharts-pro-indicator-modal-list')
+  await indicatorList.getByText('市场开收盘', { exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await openSettings()
+  for (const checkbox of [tokyo, london, newYork]) await expect(checkbox).toBeChecked()
+  await london.uncheck()
+  await confirm.click()
+  await expect.poll(readVisibility).toEqual([true, false, true])
+
+  await page.reload()
+  await openSettings()
+  await expect(tokyo).toBeChecked()
+  await expect(london).not.toBeChecked()
+  await expect(newYork).toBeChecked()
+  await confirm.click()
+  await page.getByRole('button', { name: '工具', exact: true }).click()
+  await page.getByTestId('open-data-manager').click()
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '导出应用配置' }).click(),
+  ])
+  const archive = JSON.parse(await readFile((await download.path())!, 'utf8'))
+  const indicator = archive.data.preferences.chartIndicators.main.find((setting: { name: string }) => setting.name === 'MARKET_SESSIONS')
+  expect(indicator.styles.sessionVisibility).toEqual([true, false, true])
+  indicator.styles.sessionVisibility = [false, false, false]
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByTestId('import-backup-file').setInputFiles({
+    name: 'market-session-preferences.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)),
+  })
+  await expect(page.getByTestId('backup-status')).toContainText('刷新页面')
+  await page.reload()
+  await openSettings()
+  for (const checkbox of [tokyo, london, newYork]) await expect(checkbox).not.toBeChecked()
+  expect(await readVisibility()).toEqual([false, false, false])
+})
+
 test('restores explicit empty and legacy settings in the experiment without overwriting production preferences', async ({ page }) => {
   await connectFixture(page)
   await page.addInitScript(() => localStorage.setItem('marketData.favoriteSymbols', '["ETHUSDT"]'))

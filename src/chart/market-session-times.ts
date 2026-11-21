@@ -27,6 +27,9 @@ export const SESSION_MARKETS = {
   london: { name: '伦敦', index: 1 },
   newYork: { name: '纽约', index: 2 },
 } as const
+
+export type MarketSessionVisibility = readonly [boolean, boolean, boolean]
+export const DEFAULT_MARKET_SESSION_VISIBILITY: MarketSessionVisibility = [true, true, true]
 type MarketCalendar = {
   id: MarketId
   timezone: string
@@ -126,9 +129,10 @@ export function marketSessionWindows(from: number, to: number): MarketSessionWin
   return windows
 }
 
-export function marketSessionForecast(reference: number) {
+export function marketSessionForecast(reference: number, visibility = DEFAULT_MARKET_SESSION_VISIBILITY) {
   const oneDayLater = reference + DAY
-  const sessions = marketSessionWindows(reference, oneDayLater).filter(session => session.open > reference)
+  const sessions = marketSessionWindows(reference, oneDayLater)
+    .filter(session => session.open > reference && visibility[SESSION_MARKETS[session.market].index])
   return {
     sessions,
     end: Math.max(oneDayLater, ...sessions.map(session => session.close)),

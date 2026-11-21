@@ -115,7 +115,7 @@ function indicator(
   if (item.name === MARKET_SESSIONS) validateMarketSessionStyles(validatedStyles)
   if (item.name === 'RSI' || item.name === MARKET_SESSIONS) {
     const prior = previous.find(setting => setting.name === item.name)?.styles
-    const keys = item.name === 'RSI' ? ['rsiLevels', 'rsiLines'] : ['sessionFills', 'sessionLines']
+    const keys = item.name === 'RSI' ? ['rsiLevels', 'rsiLines'] : ['sessionVisibility', 'sessionFills', 'sessionLines']
     for (const key of keys) {
       const incoming = validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles) ? validatedStyles : null
       if (incoming?.[key] === undefined && prior && typeof prior === 'object' && !Array.isArray(prior) && prior[key] !== undefined) {

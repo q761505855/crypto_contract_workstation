@@ -11,18 +11,19 @@ export function drawMarketSessions(
   { timeframe, confirmedUntil }: SessionContext,
 ): boolean {
   if (kLineDataList.length === 0 || !isMarketSessionTimeframe(timeframe)) return true
+  const { sessionVisibility, sessionFills, sessionLines } = marketSessionStyles(indicator.styles)
+  if (!sessionVisibility.some(Boolean)) return true
 
   const left = drawingTimeAt(kLineDataList, Math.max(0, visibleRange.realFrom), timeframe)
   const right = drawingTimeAt(kLineDataList, visibleRange.realTo, timeframe)
   const { width, height } = bounding
   const reference = marketSessionReference(kLineDataList.at(-1)!.timestamp, confirmedUntil, timeframe)
   const sessions = marketSessionWindows(Math.min(left, reference), Math.min(reference, right))
-    .filter(session => session.close > left)
+    .filter(session => session.close > left && sessionVisibility[SESSION_MARKETS[session.market].index])
   if (right > reference) {
-    sessions.push(...marketSessionForecast(reference).sessions.filter(session => session.open <= right && session.close > left))
+    sessions.push(...marketSessionForecast(reference, sessionVisibility).sessions.filter(session => session.open <= right && session.close > left))
   }
   if (sessions.length === 0) return true
-  const { sessionFills, sessionLines } = marketSessionStyles(indicator.styles)
   const xAt = (time: number) => xAxis.convertToPixel(drawingIndexAt(kLineDataList, time, timeframe))
 
   ctx.save()

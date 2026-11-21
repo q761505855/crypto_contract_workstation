@@ -64,6 +64,9 @@ describe('market session windows', () => {
       expect(next!.closed).toBe('周末休市')
       expect(next!.close).toBeLessThanOrEqual(forecast.end)
     }
+    const londonOnly = marketSessionForecast(reference, [false, true, false])
+    expect(londonOnly.sessions.map(session => session.market)).toEqual(['london'])
+    expect(londonOnly.end).toBe(Date.parse('2026-10-25T16:30Z'))
   })
 
   it('loads older lead times and removes them from the current configuration', () => {
@@ -98,5 +101,31 @@ describe('market session windows', () => {
     expect(moveTo.mock.calls).toEqual([[90.5, 0], [480.5, 0]])
     expect(fillText.mock.calls.map(([label]) => label)).toEqual(['东京开盘', '东京收盘'])
     expect(setLineDash.mock.calls.every(([dash]) => dash.length === 0)).toBe(true)
+  })
+
+  it.each([
+    { visibility: [true, false, true], fills: 3, lines: 4,
+      labels: ['东京开盘', '东京收盘', '纽约开盘', '纽约收盘', '东京周末休市'] },
+    { visibility: [false, false, false], fills: 0, lines: 0, labels: [] },
+  ])('draws only enabled markets in historical and future periods ($visibility)', ({ visibility, fills, lines, labels }) => {
+    const base = Date.parse('2026-11-20T00:00Z')
+    const hour = 3_600_000
+    const ctx = {
+      save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(),
+      fillRect: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(),
+      measureText: () => ({ width: 32 }), fillText: vi.fn(), strokeText: vi.fn(),
+    }
+    const params = {
+      ctx,
+      indicator: { styles: { sessionVisibility: visibility } },
+      kLineDataList: Array.from({ length: 13 }, (_, index) => ({ timestamp: base + index * hour })),
+      visibleRange: { realFrom: 0, realTo: 38 },
+      bounding: { width: 380, height: 180 },
+      xAxis: { convertToPixel: (index: number) => index * 10 },
+    } as unknown as IndicatorDrawParams
+    drawMarketSessions(params, { timeframe: '1h', confirmedUntil: base + 12 * hour })
+    expect(ctx.fillRect).toHaveBeenCalledTimes(fills)
+    expect(ctx.stroke).toHaveBeenCalledTimes(lines)
+    expect(ctx.fillText.mock.calls.map(([label]) => label)).toEqual(labels)
   })
 })

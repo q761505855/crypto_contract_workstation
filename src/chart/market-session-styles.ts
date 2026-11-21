@@ -1,4 +1,5 @@
 import { isChartColor } from './colors'
+import { DEFAULT_MARKET_SESSION_VISIBILITY, type MarketSessionVisibility } from './market-session-times'
 
 type SessionLineStyle = {
   style: 'solid' | 'dashed' | 'dotted'
@@ -6,11 +7,13 @@ type SessionLineStyle = {
 }
 
 type SessionStyles = {
+  sessionVisibility?: MarketSessionVisibility
   sessionFills?: [{ color: string }, { color: string }, { color: string }]
   sessionLines?: [SessionLineStyle]
 }
 
 export const MARKET_SESSION_STYLES: Required<SessionStyles> = {
+  sessionVisibility: DEFAULT_MARKET_SESSION_VISIBILITY,
   sessionFills: [{ color: '#f5bb5538' }, { color: '#57b5fc38' }, { color: '#ce83ef38' }],
   sessionLines: [{ style: 'solid', size: 1 }],
 }
@@ -18,6 +21,12 @@ export const MARKET_SESSION_STYLES: Required<SessionStyles> = {
 export function validateMarketSessionStyles(styles: unknown): void {
   if (styles === null) return
   if (typeof styles !== 'object' || Array.isArray(styles)) throw new Error('MARKET_SESSIONS.styles 无效')
+  if ('sessionVisibility' in styles) {
+    const visibility = styles.sessionVisibility
+    if (!Array.isArray(visibility) || visibility.length !== 3 || [...visibility].some(value => typeof value !== 'boolean')) {
+      throw new Error('MARKET_SESSIONS.styles.sessionVisibility 必须包含东京、伦敦、纽约的三个布尔值')
+    }
+  }
   if ('sessionFills' in styles) {
     const fills = styles.sessionFills
     if (!Array.isArray(fills) || fills.length !== 3 || !fills.every(fill => fill && isChartColor(fill.color))) {
@@ -37,6 +46,7 @@ export function validateMarketSessionStyles(styles: unknown): void {
 export function marketSessionStyles(styles: unknown): Required<SessionStyles> {
   const configured = styles as SessionStyles | null | undefined
   return {
+    sessionVisibility: configured?.sessionVisibility ?? MARKET_SESSION_STYLES.sessionVisibility,
     sessionFills: configured?.sessionFills ?? MARKET_SESSION_STYLES.sessionFills,
     sessionLines: configured?.sessionLines ?? MARKET_SESSION_STYLES.sessionLines,
   }

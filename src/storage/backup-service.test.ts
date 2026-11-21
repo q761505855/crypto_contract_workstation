@@ -7,6 +7,7 @@ import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
 import {
   CHART_INDICATORS_PREFERENCE,
   type ChartIndicatorPreferences,
+  type JsonValue,
 } from '../chart/indicator-preferences'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
 import { SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
@@ -279,6 +280,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
       { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
       { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
+        sessionVisibility: [true, false, true],
         sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
         sessionLines: [{ style: 'solid', size: 0 }],
       } },
@@ -572,10 +574,17 @@ describe('WorkstationBackupService', () => {
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
     const invalid = indicatorPreferences()
-    invalid.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = { sessionLines: [] }
-    archive.data.preferences!.chartIndicators = invalid
-    await expect(target.import(archive)).rejects.toThrow(/MARKET_SESSIONS/)
-    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
+    const invalidStyles: JsonValue[] = [
+      { sessionLines: [] }, { sessionVisibility: null }, { sessionVisibility: [] }, { sessionVisibility: [false, 0, true] },
+    ]
+    const before = (await target.exportAll()).data
+    archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    for (const styles of invalidStyles) {
+      invalid.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = styles
+      archive.data.preferences!.chartIndicators = invalid
+      await expect(target.import(archive)).rejects.toThrow(/MARKET_SESSIONS/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
   })
 
   it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS'])('rejects illegal %s configuration before writing any preferences or market data', async name => {

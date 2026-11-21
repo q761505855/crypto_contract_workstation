@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { PIVOTS_DEFAULT_PARAMS } from './pivots'
+import { marketSessionStyles } from './market-session-styles'
 import {
   CHART_INDICATORS_PREFERENCE,
   loadChartIndicatorPreferences,
@@ -45,6 +46,28 @@ const preferences = {
 }
 
 describe('chart indicator preferences', () => {
+  it('defaults to all markets, restores explicit false and retains the settings for legacy archives', () => {
+    const storage = new MemoryStorage()
+    const legacy = { schemaVersion: 1 as const, main: [{ name: 'MARKET_SESSIONS', calcParams: [], visible: true, styles: null }], sub: [] }
+    const value = {
+      ...legacy, main: [{ ...legacy.main[0], styles: { sessionVisibility: [false, false, false] } }],
+    }
+    expect(marketSessionStyles(validateChartIndicatorPreferences(legacy).main[0].styles).sessionVisibility)
+      .toEqual([true, true, true])
+    saveChartIndicatorPreferences(value, storage)
+    expect(loadChartIndicatorPreferences(storage)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy, value)).toEqual(value)
+  })
+
+  it.each([
+    { value: null }, { value: [] }, { value: [true, false] }, { value: [true, 0, false] },
+    { value: [true, 'false', false] }, { value: { tokyo: true, london: false, newYork: false } },
+  ])('rejects invalid per-market visibility $value', ({ value }) => {
+    expect(() => validateChartIndicatorPreferences({ ...preferences, main: [{
+      name: 'MARKET_SESSIONS', calcParams: [], visible: true, styles: { sessionVisibility: value },
+    }] })).toThrow(/sessionVisibility/)
+  })
+
   it('round-trips pivot group colors and explicit false and migrates old per-level settings', () => {
     const storage = new MemoryStorage()
     const legacy = [...PIVOTS_DEFAULT_PARAMS.slice(0, 30)]

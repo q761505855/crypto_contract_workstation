@@ -33,6 +33,7 @@ import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
 import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference } from './market-session-times'
+import { marketSessionStyles } from './market-session-styles'
 import { readChartHistory } from '../market-data/indicator-history'
 import { replayConfirmedUntil, replayVisibleUntil, type ReplayContext } from '../replay/models'
 import { validateCandleType, type ChartCandleType } from './candle-preferences'
@@ -257,15 +258,16 @@ export class ProChartAdapter implements ChartAdapterPort {
     const chart = this.coreChart
     if (!chart?.setFutureTimeAxis) return
     const indicator = chart.getIndicatorByPaneId?.('candle_pane', MARKET_SESSIONS) as Indicator | null
+    const { sessionVisibility } = marketSessionStyles(indicator?.styles)
     const timeframe = this.getPeriod().text
     const last = chart.getDataList().at(-1)
-    if (!indicator?.visible || !isMarketSessionTimeframe(timeframe) || !last) {
+    if (!indicator?.visible || !sessionVisibility.some(Boolean) || !isMarketSessionTimeframe(timeframe) || !last) {
       chart.setFutureTimeAxis(0, 0)
       return
     }
     const replayEnd = this.replayHistoryEnd()
     const reference = marketSessionReference(last.timestamp, replayEnd === undefined ? Date.now() : replayEnd + 1, timeframe)
-    chart.setFutureTimeAxis(nextOpenTime(last.timestamp, timeframe) - last.timestamp, marketSessionForecast(reference).end)
+    chart.setFutureTimeAxis(nextOpenTime(last.timestamp, timeframe) - last.timestamp, marketSessionForecast(reference, sessionVisibility).end)
   }
 
   needsMorePaneSpace(height: number): boolean {
