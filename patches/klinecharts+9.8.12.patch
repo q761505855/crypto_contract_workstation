@@ -31,7 +31,7 @@ index db8d576..2efa656 100644
 @@ -847,0 +854 @@
 +	setFutureTimeAxis: (interval: number, end: number) => void;
 diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
-index 86b1dce..1bab390 100644
+index 86b1dce..d09727d 100644
 --- a/node_modules/klinecharts/dist/index.esm.js
 +++ b/node_modules/klinecharts/dist/index.esm.js
 @@ -179,6 +179,7 @@ var CandleTooltipRectPosition;
@@ -575,7 +575,7 @@ index 86b1dce..1bab390 100644
      XAxisImp.prototype.getAutoSize = function () {
          var styles = this.getParent().getChart().getStyles();
          var xAxisStyles = styles.xAxis;
-@@ -12085,12 +12191,18 @@ var SyntheticEvent = /** @class */ (function () {
+@@ -12085,16 +12191,26 @@ var SyntheticEvent = /** @class */ (function () {
          {
              var boundTouchMoveWithDownHandler_1 = this._touchMoveHandler.bind(this);
              var boundTouchEndHandler_1 = this._touchEndHandler.bind(this);
@@ -594,7 +594,27 @@ index 86b1dce..1bab390 100644
              this._clearLongTapTimeout();
              this._longTapTimeoutId = setTimeout(this._longTapHandler.bind(this, downEvent), 500 /* Delay.LongTap */);
          }
-@@ -12375,6 +12487,9 @@ var Event = /** @class */ (function () {
+         this._processEvent(this._makeCompatEvent(downEvent, touch), this._handler.touchStartEvent);
++        if (this._tapTimeoutId !== null &&
++            this._mouseTouchMoveWithDownInfo(this._getCoordinate(touch), this._tapCoordinate).manhattanDistance >= 30) {
++            this._resetTapTimeout();
++        }
+         if (this._tapTimeoutId === null) {
+             this._tapCount = 0;
+             this._tapTimeoutId = setTimeout(this._resetTapTimeout.bind(this), 500 /* Delay.ResetClick */);
+@@ -12135,6 +12251,11 @@ var SyntheticEvent = /** @class */ (function () {
+             return;
+         }
+         this._processEvent(this._makeCompatEvent(downEvent), this._handler.mouseDownEvent);
++        if (this._clickTimeoutId !== null &&
++            this._mouseTouchMoveWithDownInfo(this._getCoordinate(downEvent), this._clickCoordinate).manhattanDistance >= 5) {
++            // A fast click on a different chart point starts an independent click.
++            this._resetClickTimeout();
++        }
+         if (this._clickTimeoutId === null) {
+             this._clickCount = 0;
+             this._clickTimeoutId = setTimeout(this._resetClickTimeout.bind(this), 500 /* Delay.ResetClick */);
+@@ -12375,6 +12496,9 @@ var Event = /** @class */ (function () {
          // 用来记录捏合缩放的尺寸
          this._pinchScale = 1;
          this._mouseDownWidget = null;
@@ -604,7 +624,7 @@ index 86b1dce..1bab390 100644
          this._prevYAxisRange = null;
          this._xAxisStartScaleCoordinate = null;
          this._xAxisStartScaleDistance = 0;
-@@ -12416,12 +12531,32 @@ var Event = /** @class */ (function () {
+@@ -12416,12 +12540,32 @@ var Event = /** @class */ (function () {
          container.addEventListener('keydown', this._boundKeyBoardDownEvent);
      }
      Event.prototype.pinchStartEvent = function () {
@@ -637,7 +657,7 @@ index 86b1dce..1bab390 100644
          if ((pane === null || pane === void 0 ? void 0 : pane.getId()) !== PaneIdConstants.X_AXIS && (widget === null || widget === void 0 ? void 0 : widget.getName()) === WidgetNameConstants.MAIN) {
              var event_1 = this._makeWidgetEvent(e, widget);
              var zoomScale = (scale - this._pinchScale) * 5;
-@@ -12438,13 +12573,30 @@ var Event = /** @class */ (function () {
+@@ -12438,13 +12582,30 @@ var Event = /** @class */ (function () {
          return true;
      };
      Event.prototype.mouseWheelVertEvent = function (e, scale) {
@@ -669,7 +689,7 @@ index 86b1dce..1bab390 100644
          return false;
      };
      Event.prototype.mouseDownEvent = function (e) {
-@@ -12707,6 +12859,14 @@ var Event = /** @class */ (function () {
+@@ -12707,6 +12868,14 @@ var Event = /** @class */ (function () {
      };
      Event.prototype.touchStartEvent = function (e) {
          var _a = this._findWidgetByEvent(e), pane = _a.pane, widget = _a.widget;
@@ -684,7 +704,7 @@ index 86b1dce..1bab390 100644
          if (widget !== null) {
              var event_8 = this._makeWidgetEvent(e, widget);
              var name_7 = widget.getName();
-@@ -12727,6 +12887,14 @@ var Event = /** @class */ (function () {
+@@ -12727,6 +12896,14 @@ var Event = /** @class */ (function () {
                      }
                      this._flingStartTime = new Date().getTime();
                      this._startScrollCoordinate = { x: event_8.x, y: event_8.y };
@@ -699,7 +719,7 @@ index 86b1dce..1bab390 100644
                      chartStore.getTimeScaleStore().startScroll();
                      this._touchZoomed = false;
                      if (this._touchCoordinate !== null) {
-@@ -12758,8 +12926,28 @@ var Event = /** @class */ (function () {
+@@ -12758,8 +12935,28 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchMoveEvent = function (e) {
@@ -729,7 +749,7 @@ index 86b1dce..1bab390 100644
          if (widget !== null) {
              var event_9 = this._makeWidgetEvent(e, widget);
              var name_8 = widget.getName();
-@@ -12778,8 +12966,31 @@ var Event = /** @class */ (function () {
+@@ -12778,8 +12975,31 @@ var Event = /** @class */ (function () {
                          tooltipStore.setCrosshair({ x: event_9.x, y: event_9.y, paneId: pane === null || pane === void 0 ? void 0 : pane.getId() });
                      }
                      else {
@@ -762,7 +782,7 @@ index 86b1dce..1bab390 100644
                              var distance = event_9.x - this._startScrollCoordinate.x;
                              chartStore.getTimeScaleStore().scroll(distance);
                          }
-@@ -12800,8 +13011,15 @@ var Event = /** @class */ (function () {
+@@ -12800,8 +13020,15 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchEndEvent = function (e) {
@@ -779,7 +799,7 @@ index 86b1dce..1bab390 100644
          if (widget !== null) {
              var event_10 = this._makeWidgetEvent(e, widget);
              var name_9 = widget.getName();
-@@ -12935,14 +13153,6 @@ var Event = /** @class */ (function () {
+@@ -12935,14 +13162,6 @@ var Event = /** @class */ (function () {
          }
          var widget = null;
          if (pane !== null) {
@@ -794,7 +814,7 @@ index 86b1dce..1bab390 100644
              if (widget === null) {
                  var yAxisWidget = pane.getYAxisWidget();
                  if (yAxisWidget !== null) {
-@@ -12953,6 +13163,14 @@ var Event = /** @class */ (function () {
+@@ -12953,6 +13172,14 @@ var Event = /** @class */ (function () {
                      }
                  }
              }
@@ -809,7 +829,7 @@ index 86b1dce..1bab390 100644
          }
          return { pane: pane, widget: widget };
      };
-@@ -13088,6 +13306,7 @@ var ChartImp = /** @class */ (function () {
+@@ -13088,6 +13315,7 @@ var ChartImp = /** @class */ (function () {
              default: {
                  for (var i = this._drawPanes.length - 1; i > -1; i--) {
                      var p = this._drawPanes[i];
@@ -817,7 +837,7 @@ index 86b1dce..1bab390 100644
                      var prevP = this._drawPanes[i - 1];
                      if ((p === null || p === void 0 ? void 0 : p.getOptions().position) === "bottom" /* PanePosition.Bottom */ &&
                          (prevP === null || prevP === void 0 ? void 0 : prevP.getOptions().position) !== "bottom" /* PanePosition.Bottom */) {
-@@ -13143,6 +13362,19 @@ var ChartImp = /** @class */ (function () {
+@@ -13143,6 +13371,19 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype._measurePaneHeight = function () {
          var _this = this;
          var _a;
@@ -837,7 +857,7 @@ index 86b1dce..1bab390 100644
          var totalHeight = Math.floor(this._container.clientHeight);
          var separatorSize = this._chartStore.getStyles().separator.size;
          var xAxisHeight = this._xAxisPane.getAxisComponent().getAutoSize();
-@@ -13320,6 +13552,10 @@ var ChartImp = /** @class */ (function () {
+@@ -13320,6 +13561,10 @@ var ChartImp = /** @class */ (function () {
          var _this = this;
          var actionStore = this._chartStore.getActionStore();
          if (actionStore.has(ActionType.OnCrosshairChange)) {
@@ -848,7 +868,7 @@ index 86b1dce..1bab390 100644
              var indicatorData_1 = {};
              this._drawPanes.forEach(function (pane) {
                  var id = pane.getId();
-@@ -13332,9 +13568,7 @@ var ChartImp = /** @class */ (function () {
+@@ -13332,9 +13577,7 @@ var ChartImp = /** @class */ (function () {
                  });
                  indicatorData_1[id] = paneIndicatorData;
              });
@@ -859,7 +879,7 @@ index 86b1dce..1bab390 100644
          }
      };
      ChartImp.prototype.getDom = function (paneId, position) {
-@@ -13427,6 +13661,19 @@ var ChartImp = /** @class */ (function () {
+@@ -13427,6 +13670,19 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getPriceVolumePrecision = function () {
          return this._chartStore.getPrecision();
      };
@@ -879,7 +899,7 @@ index 86b1dce..1bab390 100644
      ChartImp.prototype.setTimezone = function (timezone) {
          this._chartStore.setOptions({ timezone: timezone });
          this._xAxisPane.getAxisComponent().buildTicks(true);
-@@ -13435,6 +13682,14 @@ var ChartImp = /** @class */ (function () {
+@@ -13435,6 +13691,14 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getTimezone = function () {
          return this._chartStore.getTimeScaleStore().getTimezone();
      };

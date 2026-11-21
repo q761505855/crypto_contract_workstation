@@ -1,6 +1,7 @@
 import type { OverlayCreate } from 'klinecharts'
 
 import { browserStorageKey, ctraderStorage } from '../storage/ctrader-storage'
+import { VOLUME_PROFILE_TOOL } from './order-flow'
 
 export const DRAWING_STORAGE_KEY = 'chart.drawings.v1'
 const DRAWINGS_CHANGED = 'workstation:drawings-changed'
@@ -8,6 +9,7 @@ const fixedPoints: Readonly<Record<string, number>> = Object.freeze({
   horizontalStraightLine: 1, verticalStraightLine: 1, priceLine: 1,
   horizontalRayLine: 2, horizontalSegment: 2, verticalRayLine: 2, verticalSegment: 2,
   straightLine: 2, rayLine: 2, segment: 2, arrow: 2, circle: 2, rect: 2,
+  [VOLUME_PROFILE_TOOL]: 2,
   priceChannelLine: 3, parallelStraightLine: 3, parallelogram: 3, triangle: 3,
   fibonacciLine: 2, fibonacciSegment: 2, fibonacciCircle: 2, fibonacciSpiral: 2,
   fibonacciSpeedResistanceFan: 2, fibonacciExtension: 3, gannBox: 2,

@@ -2,7 +2,8 @@
   display: flex;
   flex-direction: column;
   width: 100%;
-  min-height: 100dvh;
+  height: 100dvh;
+  min-height: 560px;
   background: #10151d;
   color: #e4ebf4;
 }
@@ -43,9 +44,28 @@
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  min-height: 65dvh;
+  min-height: 360px;
 }
-.bybit-chart > section {
+.bybit-chart .chart-workspace {
+  display: flex;
+  flex-direction: column;
   flex: 1;
-  min-height: 65dvh;
+  min-height: 0;
+}
+.bybit-chart .chart-surface,
+.bybit-chart .chart-host {
+  height: 100%;
+  min-height: 0;
+}
+.bybit-trade-tooltip {
+  position: absolute;
+  z-index: 8;
+  border: 1px solid #597698;
+  border-radius: 4px;
+  background: #182331;
+  color: #ecf2f8;
+  font-size: 12px;
+  padding: 4px 7px;
+  white-space: nowrap;
+  pointer-events: none;
 }

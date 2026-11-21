@@ -84,6 +84,7 @@ function backup(): BackupEnvelope {
       schemaVersion: 1,
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
+        { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: null },
         { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#12345600', size: 0 }] } },
         { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
         { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {

@@ -6,6 +6,7 @@ import { validateStyleColors } from './colors'
 import { validateRsiLevels } from './rsi'
 import { writePreference } from '../storage/preference-events'
 import { ctraderStorage } from '../storage/ctrader-storage'
+import { BIG_TRADES, bigTradeMinimum } from './order-flow'
 
 export const CHART_INDICATORS_PREFERENCE = 'chart.indicators.v1'
 
@@ -83,6 +84,10 @@ function indicator(
   }
   let calcParams = item.calcParams
   if (item.name === MARKET_SESSIONS) calcParams = normalizeMarketSessionParams(calcParams)
+  if (item.name === BIG_TRADES) {
+    if (calcParams.length !== 1) throw new Error(`${field}.calcParams 必须包含最低成交额`)
+    bigTradeMinimum(calcParams[0])
+  }
   if (item.name === 'KC' || item.name === 'TTM_SQUEEZE') {
     const params = item.calcParams
     if (params.length !== 3 || params.some(entry => typeof entry !== 'number' || !Number.isFinite(entry) || entry <= 0) ||
@@ -224,4 +229,15 @@ export function saveChartIndicatorPreferences(
 ): void {
   const validated = validateChartIndicatorPreferences(preferences)
   writePreference(storage, CHART_INDICATORS_PREFERENCE, JSON.stringify(validated))
+}
+
+export function saveWorkspaceIndicatorPreferences(
+  preferences: ChartIndicatorPreferences,
+  orderFlow: boolean,
+  storage: ReadableStorage & WritableStorage = ctraderStorage,
+): void {
+  const savedBigTrades = !orderFlow && loadChartIndicatorPreferences(storage)?.main.find(item => item.name === BIG_TRADES)
+  saveChartIndicatorPreferences(savedBigTrades ? {
+    ...preferences, main: [...preferences.main, savedBigTrades],
+  } : preferences, storage)
 }

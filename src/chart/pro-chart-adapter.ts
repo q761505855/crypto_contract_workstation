@@ -32,6 +32,9 @@ import { registerTtmSqueezeIndicator } from './ttm-squeeze'
 import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
+import { BybitDatafeed } from '../market-data/bybit/datafeed'
+import { OrderFlowChart } from './order-flow-chart'
+import { registerOrderFlow } from './order-flow-renderers'
 import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference } from './market-session-times'
 import { marketSessionStyles } from './market-session-styles'
 import { readChartHistory } from '../market-data/indicator-history'
@@ -127,6 +130,7 @@ const createProChart: ChartProFactory = (options) => {
   registerKeltnerIndicator()
   registerTtmSqueezeIndicator()
   registerTtmWaveIndicators()
+  registerOrderFlow()
   let chart: ChartPro | undefined
   const indicatorContext = () => {
     const replay = (options.datafeed as Datafeed & {
@@ -167,6 +171,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private priceLabels?: SimulationPriceLabels
   private candleReadout?: CandleReadout
   private drawings?: DrawingOverlays
+  private orderFlow?: OrderFlowChart
   private tradeMarkerGap = 0.08
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
@@ -181,6 +186,8 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.candleReadout = undefined
     this.drawings?.dispose()
     this.drawings = undefined
+    this.orderFlow?.dispose()
+    this.orderFlow = undefined
     this.cancelHistoryWork()
     this.clearPosition()
     this.priceLabels?.dispose()
@@ -212,6 +219,9 @@ export class ProChartAdapter implements ChartAdapterPort {
     })
     this.chart = this.factory({ ...options, datafeed })
     this.coreChart = this.chart.getChart()
+    if (options.datafeed instanceof BybitDatafeed) {
+      this.orderFlow = new OrderFlowChart(this.coreChart, options.datafeed, () => this.getPeriod().text)
+    }
     // Allow a time jump to place even the first available candle at the right edge.
     this.coreChart.setRightMinVisibleBarCount?.(0)
     this.coreChart.setCustomApi?.({
@@ -246,7 +256,7 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   setDrawingScope(store: DrawingStore, scope: string | null): void {
     if (!this.coreChart) return
-    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text)
+    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow)
     this.drawings.setScope(scope)
   }
 
@@ -485,6 +495,10 @@ export class ProChartAdapter implements ChartAdapterPort {
       const range = this.timeWindow(restore.timestamp, period)
       from = range.from
       to = range.to
+    } else if (notifySelection !== false && this.datafeed instanceof BybitDatafeed && this.datafeed.hasLiveTail()) {
+      // The initial chart load rounds its end to the period grid. Bybit's tape
+      // also supplies trades inside that unfinished bar, including after replay.
+      to = Date.now()
     }
     const signal = notifySelection === false ? undefined : this.historyAbort.signal
     let candles: ReturnType<Chart['getDataList']>

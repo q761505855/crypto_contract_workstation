@@ -10,9 +10,10 @@ import {
 import { DemoDatafeed } from './demo-datafeed'
 import {
   loadChartIndicatorPreferences,
-  saveChartIndicatorPreferences,
+  saveWorkspaceIndicatorPreferences,
   type ChartIndicatorPreferences,
 } from './indicator-preferences'
+import { BIG_TRADES } from './order-flow'
 import {
   ProChartAdapter,
   type ChartAdapterPort,
@@ -98,13 +99,16 @@ export function ChartWorkspace({
   const symbolRef = useRef(symbol)
   const periodRef = useRef(period)
   const reloadKeyRef = useRef(reloadKey)
+  const orderFlow = symbol.exchange === 'BYBIT'
   const initialIndicatorPreferencesRef = useRef<
     ChartIndicatorPreferences | null | undefined
   >(undefined)
 
   if (initialIndicatorPreferencesRef.current === undefined) {
-    initialIndicatorPreferencesRef.current =
-      loadChartIndicatorPreferences()
+    const preferences = loadChartIndicatorPreferences()
+    initialIndicatorPreferencesRef.current = preferences && !orderFlow ? {
+      ...preferences, main: preferences.main.filter(indicator => indicator.name !== BIG_TRADES),
+    } : preferences
   }
 
   if (adapterRef.current === null) {
@@ -388,7 +392,7 @@ export function ChartWorkspace({
       const serialized = JSON.stringify(preferences)
       if (serialized === previous) return
       previous = serialized
-      saveChartIndicatorPreferences(preferences)
+      saveWorkspaceIndicatorPreferences(preferences, orderFlow)
     }
     const interval = window.setInterval(synchronize, 250)
     window.addEventListener('beforeunload', synchronize)
@@ -463,7 +467,7 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     adapter?.setIndicatorPaneHeight?.(paneId, height)
     const preferences = adapter?.getIndicatorPreferences?.()
-    if (!auxiliary && preferences !== undefined) saveChartIndicatorPreferences(preferences)
+    if (!auxiliary && preferences !== undefined) saveWorkspaceIndicatorPreferences(preferences, orderFlow)
     setPaneSizes(adapter?.getIndicatorPaneSizes?.() ?? [])
     synchronizeLayoutRef.current?.()
     adapter?.resize?.()

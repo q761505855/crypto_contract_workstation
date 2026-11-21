@@ -16,6 +16,17 @@ export interface TradeRange {
   untilUs: number
 }
 
+function firstTradeAt(trades: readonly BybitTrade[], timeUs: number): number {
+  let low = 0
+  let high = trades.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (trades[middle].timeUs < timeUs) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
 export function addTradeToBar(bar: KLineData | undefined, timestamp: number, trade: BybitTrade): KLineData {
   const { price, size } = trade
   const notional = price * size
@@ -28,7 +39,7 @@ export function addTradeToBar(bar: KLineData | undefined, timestamp: number, tra
 
 export class BybitDatafeed implements Datafeed {
   private cursorUs?: number
-  private readonly listeners = new Set<() => void>()
+  private readonly listeners = new Set<(reset: boolean) => void>()
   private unsubscribeLive?: () => void
   private subscription?: { timeframe: string; callback: DatafeedSubscribeCallback; last?: KLineData }
   private readonly draftBars = new Map<string, { bar: KLineData; untilUs: number }>()
@@ -43,6 +54,7 @@ export class BybitDatafeed implements Datafeed {
   }
 
   get currentUs(): number { return this.cursorUs ?? (Date.now() + 1) * 1000 }
+  get tradeCursorUs(): number { return this.cursorUs ?? (this.live?.lastTradeUs ?? Date.now() * 1000) + 1 }
   hasLiveTail(): boolean { return this.cursorUs === undefined }
   getReplayContext(): ReplayContext | null {
     if (this.cursorUs === undefined) return null
@@ -61,26 +73,24 @@ export class BybitDatafeed implements Datafeed {
         this.liveUpdates.clear()
         this.draftBars.clear()
         this.onRebuild()
-        this.emit()
+        this.emit(true)
         return
       }
       this.pushTrades(trades)
       if (this.frame === undefined) this.frame = setTimeout(() => this.flush(), 125)
     })
-    this.live.open()
   }
 
   dispose(): void {
     this.isDisposed = true
     this.unsubscribeLive?.()
     this.unsubscribeLive = undefined
-    this.live?.close()
     clearTimeout(this.frame)
     this.frame = undefined
     this.liveUpdates.clear()
   }
 
-  subscribeTrades(listener: () => void): () => void {
+  subscribeTrades(listener: (reset: boolean) => void): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
@@ -101,10 +111,8 @@ export class BybitDatafeed implements Datafeed {
       const archived = await this.archive.loadHour(this.symbol, hour)
       signal?.throwIfAborted()
       if (archived !== null) {
-        for (const trade of archived) {
-          if (trade.timeUs >= hi) break
-          if (trade.timeUs >= lo) accept(trade)
-        }
+        const last = firstTradeAt(archived, hi)
+        for (let index = firstTradeAt(archived, lo); index < last; index++) accept(archived[index])
       } else if (this.live) {
         if (this.live.gap || (this.live.coverageStartUs ?? Infinity) > lo) complete = false
         for (const trade of this.live.read(lo, hi)) accept(trade)
@@ -143,11 +151,9 @@ export class BybitDatafeed implements Datafeed {
   }
 
   async getOlderHistory(_symbol: SymbolInfo, period: Period, before: number, signal?: AbortSignal) {
-    const end = this.dayStart ?? Math.min(before - 1, Date.now())
-    const start = this.dayStart !== undefined ? Math.max(end, before - BYBIT_HOUR_MS * 3) : before - BYBIT_HOUR_MS * 3
+    const start = Math.max(this.dayStart ?? 0, alignOpenTime(before - BYBIT_HOUR_MS * 3, period.text, 'floor'))
     if (start >= before) return { candles: [], hasMore: false }
-    const { bars, complete } = await this.collectBars(period.text,
-      Math.max(end === this.dayStart ? end : 0, alignOpenTime(start, period.text, 'floor')) * 1000, before * 1000, signal)
+    const { bars, complete } = await this.collectBars(period.text, start * 1000, before * 1000, signal)
     return { candles: bars, hasMore: bars.length > 0 && complete && (this.dayStart === undefined || start > this.dayStart) }
   }
 
@@ -178,7 +184,7 @@ export class BybitDatafeed implements Datafeed {
     this.draftBars.clear()
     this.liveUpdates.clear()
     if (this.subscription) this.subscription.last = undefined
-    this.emit()
+    this.emit(true)
   }
 
   private async collectBars(timeframe: string, fromUs: number, untilUs: number, signal?: AbortSignal) {
@@ -222,5 +228,5 @@ export class BybitDatafeed implements Datafeed {
     this.emit()
   }
 
-  private emit(): void { for (const listener of this.listeners) listener() }
+  private emit(reset = false): void { for (const listener of this.listeners) listener(reset) }
 }

@@ -38,7 +38,8 @@ describe('Bybit 成交连续性', () => {
     const sockets: SocketFixture[] = []
     const status = vi.fn()
     const a = trade('a', 1000), b = trade('b', 2000), c = trade('c', 3000), d = trade('d', 4000), e = trade('e', 5000)
-    const recent = vi.fn().mockResolvedValueOnce([a, b]).mockResolvedValueOnce([c, d]).mockResolvedValueOnce([trade('z', 9000)])
+    const sameTime = trade('same-time', 3000)
+    const recent = vi.fn().mockResolvedValueOnce([a, b]).mockResolvedValueOnce([c, sameTime, d]).mockResolvedValueOnce([trade('z', 9000)])
     const live = new BybitLiveTrades(symbol, status, () => {
       const socket = new SocketFixture()
       sockets.push(socket)
@@ -51,13 +52,17 @@ describe('Bybit 成交连续性', () => {
       await vi.advanceTimersByTimeAsync(0)
       expect(live.read(0, Infinity).map(item => item.id)).toEqual(['a', 'b', 'c'])
       expect(status).toHaveBeenLastCalledWith('实时逐笔')
+      const changed = vi.fn()
+      live.subscribe(changed)
+      sockets[0].trades(c, sameTime)
+      expect(changed).toHaveBeenLastCalledWith([a, b, c, sameTime], true)
 
       sockets[0].close()
       await vi.advanceTimersByTimeAsync(1000)
       sockets[1].acknowledge()
       sockets[1].trades(d, e)
       await vi.advanceTimersByTimeAsync(0)
-      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['a', 'b', 'c', 'd', 'e'])
+      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['a', 'b', 'c', 'same-time', 'd', 'e'])
       expect(status).toHaveBeenLastCalledWith('实时逐笔')
 
       sockets[1].close()
@@ -65,7 +70,7 @@ describe('Bybit 成交连续性', () => {
       sockets[2].acknowledge()
       await vi.advanceTimersByTimeAsync(0)
       expect(status).toHaveBeenLastCalledWith('逐笔有缺口')
-      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['z'])
+      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['a', 'b', 'c', 'same-time', 'd', 'e', 'z'])
     } finally { live.close() }
   })
 

@@ -24,21 +24,30 @@ function useFeed(view: View, archive: BybitArchive) {
   const [status, setStatus] = useState<BybitLiveStatus>('连接中')
   const [warning, setWarning] = useState('')
   const [reload, setReload] = useState(0)
-  const feed = useMemo(() => new BybitDatafeed(view.symbol, archive,
-    view.day ? undefined : new BybitLiveTrades(view.symbol, setStatus),
+  const live = useMemo(() => new BybitLiveTrades(view.symbol, setStatus), [view.symbol])
+  const feed = useMemo(() => new BybitDatafeed(view.symbol, archive, view.day ? undefined : live,
     view.day ? bybitDayStart(view.day) : undefined, view.startUs, setWarning, () => setReload(value => value + 1)),
-  [archive, view])
+  [archive, live, view])
   useEffect(() => {
     setWarning('')
     feed.start()
     return () => feed.dispose()
   }, [feed])
+  useEffect(() => {
+    live.open()
+    return () => live.close()
+  }, [live])
   return { feed, reload, status, warning, setWarning, refresh: () => setReload(value => value + 1) }
 }
 
-export function BybitWorkspace({ onClose, drawings }: { onClose(): void; drawings: DrawingStore }) {
+export function BybitWorkspace({ onClose, drawings, preferenceEpoch }: {
+  onClose(): void
+  drawings: DrawingStore
+  preferenceEpoch: number
+}) {
   const [archive] = useState(() => new BybitArchive())
   const [view, setView] = useState<View>({ symbol: 'SPYUSDT' })
+  const [viewVersion, setViewVersion] = useState(0)
   const [day, setDay] = useState(() => bybitDay(Date.now() - BYBIT_DAY_MS * 2))
   const [time, setTime] = useState('00:00')
   const [historyStatus, setHistoryStatus] = useState('')
@@ -62,6 +71,7 @@ export function BybitWorkspace({ onClose, drawings }: { onClose(): void; drawing
     setPosition(next.startUs)
     setHistoryStatus('')
     setView(next)
+    setViewVersion(version => version + 1)
   }
 
   async function openHistory() {
@@ -147,13 +157,13 @@ export function BybitWorkspace({ onClose, drawings }: { onClose(): void; drawing
             setPosition(next)
             refresh()
           }} /></label>
-        <span>{new Date((position ?? feed.currentUs) / 1000).toISOString().slice(11, 19)} UTC</span>
+        <span>{new Date((position ?? feed.currentUs) / 1000).toISOString().slice(0, 19).replace('T', ' ')} UTC</span>
       </div>}
     </section>
     <div className="bybit-status" role="status">{[loading ? '正在检查日归档…' : history ? `${view.day} UTC · 历史成交` : status,
       historyStatus, warning].filter(Boolean).join(' · ')}</div>
     <div className="bybit-chart">
-      <ChartWorkspace key={`${view.symbol}:${view.day ?? 'live'}`} datafeed={feed}
+      <ChartWorkspace key={`${viewVersion}:${preferenceEpoch}`} datafeed={feed}
         symbol={instrument} symbolLocked period={period} reloadKey={reload}
         drawingStore={drawings} drawingScope={`live:BYBIT:${view.symbol}`}
         onSelectionChange={selection => setPeriod(selection.period)} />

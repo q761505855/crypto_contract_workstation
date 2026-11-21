@@ -278,6 +278,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
         styles: { lines: [{ color: '#f00' }] },
       },
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
+      { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: null },
       { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
       { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
         sessionVisibility: [true, false, true],
@@ -587,7 +588,7 @@ describe('WorkstationBackupService', () => {
     }
   })
 
-  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
+  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS', 'BIG_TRADES'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
     const storage = new MemoryPreferences()
     storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
     const databaseName = `bad-indicator-${crypto.randomUUID()}`

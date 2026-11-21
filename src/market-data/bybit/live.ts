@@ -74,6 +74,7 @@ export class BybitLiveTrades {
   }
 
   get coverageStartUs(): number | undefined { return this.start || undefined }
+  get lastTradeUs(): number | undefined { return this.tape.at(-1)?.timeUs }
   get gap(): boolean { return this.needsRepair || this.waiting || this.paused }
 
   subscribe(listener: (trades: readonly BybitTrade[], rebuilt: boolean) => void): () => void {
@@ -168,12 +169,6 @@ export class BybitLiveTrades {
     // The live feed and REST can overlap at startup. If the market traded
     // between REST and the active socket this remains inside the overlap window.
     const discontinuity = lost && !!last
-    if (discontinuity) {
-      this.start = fresh[0]?.timeUs ?? 0
-      this.tape = []
-    } else if (!last) {
-      this.start = fresh[0]?.timeUs ?? 0
-    }
     this.needsRepair ||= requestFailed || discontinuity
     this.buffer = []
     this.waiting = false
@@ -191,7 +186,9 @@ export class BybitLiveTrades {
     })
     if (!fresh.length) return
     if (!this.start) this.start = fresh[0].timeUs
-    const rebuilt = !!this.tape.length && fresh[0].timeUs < this.tape.at(-1)!.timeUs
+    // A range reader may already have consumed this millisecond. Rebuild even
+    // on a tie so another trade stamped at the same time is included.
+    const rebuilt = !!this.tape.length && fresh[0].timeUs <= this.tape.at(-1)!.timeUs
     if (rebuilt) this.replace(mergeBybitTrades(this.tape, fresh))
     else {
       this.tape.push(...fresh)
