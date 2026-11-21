@@ -89,7 +89,7 @@ export class BybitArchive {
     const cached = this.manifests.get(path)
     if (cached) return cached
     const pending = (async () => {
-      const response = await this.fetcher(`${this.root}/${path}/manifest.json`, { signal: AbortSignal.timeout(20_000) })
+      const response = await this.fetcher.call(globalThis, `${this.root}/${path}/manifest.json`, { signal: AbortSignal.timeout(20_000), cache: 'no-store', credentials: 'omit' })
       if (response.status === 404) return null
       if (!response.ok) throw new Error(`读取 Bybit 日成交清单失败（HTTP ${response.status}）`)
       return manifest(await response.json(), symbol, day)
@@ -130,7 +130,7 @@ export class BybitArchive {
   private async readParts(symbol: BybitSymbol, day: string, start: number, parts: ArchivePart[]): Promise<BybitTrade[]> {
     const trades: BybitTrade[] = []
     for (const part of parts) {
-      const response = await this.fetcher(`${this.root}/${symbol}/${day}/${part.file}`, { signal: AbortSignal.timeout(45_000) })
+      const response = await this.fetcher.call(globalThis, `${this.root}/${symbol}/${day}/${part.file}`, { signal: AbortSignal.timeout(45_000) })
       if (!response.ok) throw new Error(`Bybit 成交分片读取失败（HTTP ${response.status}）`)
       const buffer = await response.arrayBuffer()
       if (buffer.byteLength !== part.bytes || await sha256(buffer) !== part.sha256) {

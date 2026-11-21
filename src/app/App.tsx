@@ -19,6 +19,7 @@ import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-ove
 import type { SimulationOverlayState } from '../chart/pro-chart-adapter'
 import { SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR, type SimulationTradeLabel } from '../chart/simulation-price-line'
 import { DataManager } from '../components/DataManager'
+import { BybitWorkspace } from '../components/BybitWorkspace'
 import { CTraderAccountPicker } from '../components/CTraderAccountPicker'
 import { ConfigSyncStatus } from '../components/ConfigSyncStatus'
 import { PREFERENCES_RESTORED } from '../storage/preference-events'
@@ -137,6 +138,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     return () => document.removeEventListener('keydown', keydown)
   }, [mobile, mobilePanel])
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
+  const [bybitOpen, setBybitOpen] = useState(false)
   const [marketRuntime] = useState(() => runtime ?? createMarketDataRuntime())
   const [chartWindows] = useState(() => new ChartWindowHost(marketRuntime))
   const [popupBlocked, setPopupBlocked] = useState(false)
@@ -421,11 +423,14 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     accounts?.selectedKey !== undefined && accounts.accounts.length > 1
   const simulationCurrency = replay.session?.tradingConfig.ctrader?.accountCurrency ?? replay.session?.symbol.priceCurrency ?? ''
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
+  if (bybitOpen) return <BybitWorkspace onClose={() => setBybitOpen(false)} drawings={marketRuntime.drawings} />
+
   return (
     <main ref={shellRef} className="app-shell workspace-shell">
       <header className="app-header">
         <h1><span className="desktop-brand">cTrader 行情回放工作站</span><span className="mobile-brand">cTrader 工作站</span></h1>
         <WorkspaceTools>
+          <button type="button" onClick={() => { replay.pause(); setBybitOpen(true) }}>Bybit 逐笔成交</button>
           {!mobile && <button type="button" onClick={() => setPopupBlocked(openChartWindow() === null)}>打开副图</button>}
           <button type="button" aria-expanded={chartSizeOpen} onClick={() => setChartSizeOpen(true)}>图表尺寸</button>
           <button type="button" className="focus-mode-button" aria-pressed={focusMode} onClick={() => { setFocusMode(current => !current); setMobilePanel(null) }}>{focusMode ? '退出专注' : '专注看图'}</button>

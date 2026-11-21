@@ -1,0 +1,51 @@
+.bybit-workspace {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100dvh;
+  background: #10151d;
+  color: #e4ebf4;
+}
+.bybit-header,
+.bybit-controls,
+.bybit-replay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.bybit-header,
+.bybit-controls,
+.bybit-status {
+  padding: 8px 12px;
+}
+.bybit-header h1 {
+  font-size: 1rem;
+  margin: 0;
+}
+.bybit-controls input,
+.bybit-controls select,
+.bybit-header select {
+  background-color: #1b2431;
+  color: inherit;
+  border: 1px solid #43516a;
+  border-radius: 4px;
+}
+.bybit-controls a {
+  color: #9cc3ff;
+}
+.bybit-status {
+  min-height: 32px;
+  color: #b5c7e0;
+  font-size: 0.85rem;
+}
+.bybit-chart {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 65dvh;
+}
+.bybit-chart > section {
+  flex: 1;
+  min-height: 65dvh;
+}

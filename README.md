@@ -173,3 +173,9 @@ npm run preview
 
 - [cTrader 设计](docs/superpowers/specs/2026-11-20-ctrader-only-market-data-design.md)
 - [实现计划](docs/superpowers/plans/2026-11-20-ctrader-only.md)
+
+## Bybit 逐笔成交
+
+从「工具 → Bybit 逐笔成交」打开独立行情工作区，选择标普 500 ETF、纳斯达克 100 ETF、黄金或比特币的 Bybit USDT 永续。实时通过公开逐笔 WebSocket 接收，启动和重连期间并行缓冲实时消息，按成交 ID 合并最近成交接口（最多 1000 笔）。如果缺口超出接口范围，图上提示，待对应 UTC 日归档补齐。已完整缓存的日归档按原始成交时间读取，浏览器只加载需要的小时。
+
+历史回放前先在「缓存日归档」运行指定品种及 UTC 日期的 GitHub 工作流，待其完成后选择相同日期和 UTC 起点。工作流也可用本地脚本运行，参见 [云端缓存约定](docs/cloud-storage.md)。可拖动回放进度，或按秒、分钟步进。K 线从逐笔成交生成，使用截至当前回放位置已经发生的成交。Bybit 回放界面与 cTrader 模拟账户各自使用所属市场的行情。
