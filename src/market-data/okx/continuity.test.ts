@@ -85,6 +85,25 @@ describe('OKX 成交来源', () => {
     expect(firstOkxHistoryDay(Date.parse('2024-05-31T00:00:01Z'))).toBe(Date.parse('2024-03-01'))
   })
 
+  it('只有官方清单覆盖完整 UTC 日时才走归档，兼容黄金更名', async () => {
+    const day = '2026-01-14'
+    const files = ['XAUT-USDT-SWAP-trades-2026-01-14.zip', 'XAUT-USDT-SWAP-trades-2026-01-15.zip',
+      'XAU-USDT-SWAP-trades-2026-01-15.zip']
+    const result = (names: string[]) => Response.json({ code: '0', data: [{ details: [{ groupDetails:
+      names.map(filename => ({ filename })),
+    }] }] })
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(result(files.slice(0, 2))).mockResolvedValueOnce(result(files))
+    const okx = new OkxArchive(undefined, fetcher)
+    const gold = orderFlowMapping({ ...symbol, ticker: 'XAUUSD' })!.okx!
+    const signal = new AbortController().signal
+    expect(await okx.hasSourceDay(gold, day, signal)).toBe(false)
+    expect(await okx.hasSourceDay(gold, day, signal)).toBe(true)
+    const query = new URL(String(fetcher.mock.calls[0][0])).searchParams
+    expect(query.get('instFamilyList')).toBe('XAUT-USDT,XAU-USDT')
+    expect(Number(query.get('begin'))).toBe(Date.parse('2026-01-14T00:00:00+08:00'))
+    expect(Number(query.get('end'))).toBe(Date.parse('2026-01-15T00:00:00+08:00'))
+  })
+
   it('优先使用 OKX，确认无成交的小时保持为空，缺档才读取 Bybit', async () => {
     const okx = new OkxArchive()
     const bybit = new BybitArchive()

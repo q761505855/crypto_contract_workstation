@@ -1,5 +1,5 @@
 import { openDB, type DBSchema } from 'idb'
-import { BYBIT_HOUR_MS, bybitDay, type BybitTrade } from '../bybit/trades'
+import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, type BybitTrade } from '../bybit/trades'
 import { defaultStorageTarget } from '../../github-sync/default-storage'
 import type { GitHubRepositoryTarget } from '../../github-sync/github-client'
 import { BybitArchive } from '../bybit/archive'
@@ -29,7 +29,7 @@ export class OkxArchive {
   private readonly missing = new Map<string, number>()
   private readonly reads = new Map<string, Promise<BybitTrade[]>>()
 
-  constructor(target: GitHubRepositoryTarget = defaultStorageTarget(), fetcher: typeof fetch = fetch, now = Date.now) {
+  constructor(target: GitHubRepositoryTarget = defaultStorageTarget(), private readonly fetcher: typeof fetch = fetch, now = Date.now) {
     this.cloud = new BybitArchive<string>(target, fetcher, now, { root: 'data/okx-trades',
       firstDay: () => '2021-09-01', allowEmpty: true })
   }
@@ -37,6 +37,27 @@ export class OkxArchive {
   async hasCloudDay(instrument: OkxInstrument, day: string, ref?: string): Promise<boolean> {
     if (day < instrument.firstDay) return false
     return this.cloud.hasDay(instrument.symbol, day, ref)
+  }
+
+  async hasSourceDay(instrument: OkxInstrument, day: string, signal: AbortSignal): Promise<boolean> {
+    const start = bybitDayStart(day)
+    const next = bybitDay(start + BYBIT_DAY_MS)
+    const symbols = (date: string) => {
+      if (instrument.symbol !== 'XAU-USDT-SWAP' || date > '2026-01-15') return [instrument.symbol]
+      return date === '2026-01-15' ? ['XAUT-USDT-SWAP', instrument.symbol] : ['XAUT-USDT-SWAP']
+    }
+    // The source files are cut at UTC+8. A UTC day spans two files.
+    const families = new Set([day, next].flatMap(symbols).map(symbol => symbol.replace(/-SWAP$/, '')))
+    const query = new URLSearchParams({ module: '1', instType: 'SWAP', dateAggrType: 'daily', instFamilyList: [...families].join(','),
+      begin: String(start - offset), end: String(start + BYBIT_DAY_MS - offset) })
+    const response = await this.fetcher.call(globalThis, `https://www.okx.com/api/v5/public/market-data-history?${query}`,
+      { credentials: 'omit', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]) })
+    if (!response.ok) return false
+    const result: { code?: string; data?: { details: { groupDetails: { filename: string }[] }[] }[] } = await response.json()
+    if (result.code !== '0' || !Array.isArray(result.data)) return false
+    const files = new Set(result.data.flatMap(group => group.details.flatMap(item =>
+      item.groupDetails.map(file => file.filename))))
+    return [day, next].every(date => symbols(date).every(symbol => files.has(`${symbol}-trades-${date}.zip`)))
   }
 
   async hasHour(instrument: OkxInstrument, start: number): Promise<boolean> {

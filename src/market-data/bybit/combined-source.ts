@@ -313,6 +313,7 @@ export class CombinedBybitSource {
     const unavailable: string[] = []
     const firstRest = instrument ? Math.max(from, earliest, bybitDayStart(instrument.firstDay)) : to + BYBIT_DAY_MS
     const recentDays = this.orderedDays(firstRest, to, pivot)
+    const progressFor = (start: number) => (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${total} 天 · ${message}`)
     const cachedDays = new Map<number, Promise<boolean>>()
     const checkCachedDay = (start: number): Promise<boolean> => {
       if (!instrument || start >= today) return Promise.resolve(false)
@@ -334,7 +335,7 @@ export class CombinedBybitSource {
     const load = async (start: number, useRest: boolean) => {
       signal.throwIfAborted()
       const day = bybitDay(start)
-      const progress = (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${total} 天 · ${message}`)
+      const progress = progressFor(start)
       try {
         if (instrument && useRest) {
           if (start < today) {
@@ -389,6 +390,24 @@ export class CombinedBybitSource {
     }
     const loadRecent = async () => {
       for (const start of recentDays) {
+        if (instrument && start < today && this.cloud.canWrite()) {
+          if (await checkCachedDay(start)) continue
+          const progress = progressFor(start)
+          const day = bybitDay(start)
+          progress(`正在检查 OKX ${day} UTC 官方日档…`)
+          const listed = await this.okxArchive.hasSourceDay(instrument, day, signal).catch(() => false)
+          signal.throwIfAborted()
+          if (listed) {
+            fallbacks.push((async () => {
+              const ready = await this.requestOkxDay(mapping.symbol, instrument, start, progress, signal).catch(() => false)
+              signal.throwIfAborted()
+              if (ready) counts['OKX 日档']++
+              else if (await load(start, true) === false) await load(start, false)
+            })())
+            if (fallbacks.length === 8) await Promise.all(fallbacks.splice(0))
+            continue
+          }
+        }
         if (await load(start, true) !== false) continue
         if (from === to) { await load(start, false); return }
         fallbacks.push(load(start, false).then(() => undefined))
@@ -463,6 +482,15 @@ export class CombinedBybitSource {
     }
   }
 
+  private async requestOkxDay(symbol: string, instrument: NonNullable<OrderFlowMapping['okx']>, start: number,
+    progress: (message: string) => void, signal: AbortSignal): Promise<boolean> {
+    const day = bybitDay(start)
+    const ready = await ensureTradeDay('OKX', ref => this.okxArchive.hasCloudDay(instrument, day, ref),
+      this.cloud, instrument.symbol, day, progress, signal, () => this.wakeWorker('okx-trades-requested'))
+    if (ready) this.markDownloaded(symbol, start, 'OKX 日档')
+    return ready
+  }
+
   private async downloadArchive(mapping: OrderFlowMapping, start: number, progress: (message: string) => void,
     signal: AbortSignal): Promise<ArchiveVenue> {
     const instrument = mapping.okx
@@ -471,11 +499,7 @@ export class CombinedBybitSource {
     let primaryError: unknown
     if (instrument && day >= instrument.firstDay) {
       try {
-        if (await ensureTradeDay('OKX', published, this.cloud, instrument.symbol, day, progress, signal,
-          () => this.wakeWorker('okx-trades-requested'))) {
-          this.markDownloaded(mapping.symbol, start, 'OKX 日档')
-          return 'OKX 日档'
-        }
+        if (await this.requestOkxDay(mapping.symbol, instrument, start, progress, signal)) return 'OKX 日档'
       } catch (error) {
         signal.throwIfAborted()
         primaryError = error

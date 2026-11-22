@@ -49,8 +49,19 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
       ...Array.from({ length: 98 }, (_, index) => trade(String(198 - index), -60_000 - index, '1'))]
     return route.fulfill({ headers, json: { code: '0', data } })
   })
-  const day = '2026-11-19'
+  const day = '2027-02-18'
   const recentDay = '2027-02-19'
+  let officialChecks = 0
+  await page.route('https://www.okx.com/api/v5/public/market-data-history?*', route => {
+    officialChecks++
+    const query = new URL(route.request().url()).searchParams
+    expect(query.get('instFamilyList')).toBe('US500-USDT')
+    expect(query.get('begin')).toBe(String(Date.parse(`${day}T00:00:00+08:00`)))
+    expect(query.get('end')).toBe(String(Date.parse(`${recentDay}T00:00:00+08:00`)))
+    return route.fulfill({ headers, json: { code: '0', data: [{ details: [{ groupDetails:
+      [day, recentDay].map(date => ({ filename: `${instrument}-trades-${date}.zip` })),
+    }] }] } })
+  })
   const archiveParts = new Map([day, recentDay].map(date => [date,
     gzipSync(`${Date.parse(date + 'T19:00:00Z') / 1000},100,Buy,1.1002,11\n`)]))
   const requested: unknown[] = []
@@ -103,6 +114,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await expect.poll(() => live).toBeDefined()
   expect(historyRequests).toBe(0)
   expect(archiveRequests).toBe(0)
+  expect(officialChecks).toBe(0)
   live!.send(JSON.stringify({ arg: { channel: 'trades-all', instId: instrument }, data: [trade('200', 15_000, '8')] }))
   await expect.poll(volume).toBe(8)
 
@@ -125,6 +137,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await expect.poll(volume).toBe(15)
   expect(historyRequests).toBe(2)
   expect(archiveRequests).toBeGreaterThan(0)
+  expect(officialChecks).toBe(0)
   expect(bybitRequests).toBe(0)
   expect(dispatched).toBe(false)
   expect(requested).toHaveLength(0)
@@ -137,22 +150,25 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   expect(await readArchivedTrade(recentDay)).toMatchObject({ id: '100', venue: 'OKX', size: 11 })
 
   await chart.getByRole('button', { name: '下载成交数据' }).click()
-  await dialog.getByLabel('锚点日期').fill('2026-11-19')
+  await dialog.getByLabel('锚点日期').fill(day)
   await dialog.getByLabel('往前天数').fill('0')
   await dialog.getByLabel('往后天数').fill('0')
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
   await expect.poll(() => dispatched).toBe(true)
+  expect(officialChecks).toBe(1)
+  expect(historyRequests).toBe(2)
   expect(requested).toEqual([{ version: 1, day, symbol: instrument, requestedManually: true }])
   published = true
   await page.clock.fastForward(13_000)
   await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
   expect(await readArchivedTrade(day)).toMatchObject({ id: '100', venue: 'OKX', size: 11 })
   await chart.getByRole('button', { name: '下载成交数据' }).click()
-  await dialog.getByLabel('锚点日期').fill('2026-11-19')
+  await dialog.getByLabel('锚点日期').fill(day)
   await dialog.getByLabel('往前天数').fill('0')
   await dialog.getByLabel('往后天数').fill('0')
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
   await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
   expect(requested).toHaveLength(1)
   expect(historyRequests).toBe(2)
+  expect(officialChecks).toBe(1)
 })
