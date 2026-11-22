@@ -187,3 +187,65 @@ test('最新 BTCUSD 的 15m 图扩大可见日期后申请 UTC 日档并唤醒�
   await expect.poll(() => dispatched).toBe(1)
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
 })
+
+test('日档待补齐时，较小的实时大单仍能和早期大单一起显示', async ({ page }) => {
+  const now = Date.parse('2026-11-22T02:00:30Z')
+  const archivedSecond = Date.parse(day + 'T23:50:00Z') / 1000
+  const archivedRows = 400
+  const archivePart = gzipSync(Array.from({ length: archivedRows }, (_, index) =>
+    `${archivedSecond}.${String(index).padStart(3, '0')},archive-${index},Buy,1.1,100000\n`).join(''))
+  await page.clock.setFixedTime(now)
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= start })
+  await installViewportProbe(page)
+  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => {
+    const url = route.request().url()
+    if (url.endsWith(`/BTCUSDT/${day}/manifest.json`)) return route.fulfill({ headers, json: {
+      version: 1, symbol: 'BTCUSDT', day, rows: archivedRows,
+      parts: [{ file: '23-000.csv.gz', hour: 23, rows: archivedRows, bytes: archivePart.byteLength,
+        sha256: createHash('sha256').update(archivePart).digest('hex') }],
+    } })
+    if (url.endsWith(`/BTCUSDT/${day}/23-000.csv.gz`)) return route.fulfill({ headers, body: archivePart })
+    return route.fulfill({ headers, status: 404 })
+  })
+  await page.route('https://api.bybit.com/**', route => {
+    const btc = new URL(route.request().url()).searchParams.get('symbol') === 'BTCUSDT'
+    return route.fulfill({ headers, json: { retCode: 0, result: { list: btc
+      ? [{ symbol: 'BTCUSDT', execId: 'below-minimum', time: String(now - 20_000), side: 'Buy', price: '1.1', size: '10' }] : [] } } })
+  })
+  let bitcoin: WebSocketRoute | undefined
+  await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => socket.onMessage(message => {
+    const { op, args } = JSON.parse(message.toString())
+    if (op !== 'subscribe') return
+    if (args.includes('publicTrade.BTCUSDT')) bitcoin = socket
+    socket.send(JSON.stringify({ op: 'subscribe', success: true }))
+  }))
+  await page.goto('/')
+  const chart = page.getByTestId('chart-host')
+  await chart.locator('.symbol').click()
+  const picker = page.getByRole('dialog', { name: '选择交易对' })
+  await picker.getByRole('tab', { name: '全部' }).click()
+  await picker.getByRole('button', { name: '选择 BTCUSD', exact: true }).click()
+  await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
+  await page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    coreChart.setBarSpace(3)
+  })
+  await chart.getByText('指标', { exact: true }).click()
+  await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  const bubbleIds = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const indicator = coreChart.getIndicatorByPaneId('candle_pane', 'BIG_TRADES') as import('klinecharts').Indicator | null
+    return (indicator?.extendData?.points ?? []).map((point: { trade: { id: string } }) => point.trade.id) as string[]
+  })
+  await expect.poll(async () => (await bubbleIds()).length).toBe(360)
+  expect((await bubbleIds()).every(id => id.startsWith('archive-'))).toBe(true)
+  await expect.poll(() => !!bitcoin).toBe(true)
+  bitcoin!.send(JSON.stringify({ topic: 'publicTrade.BTCUSDT', data: [
+    { T: now - 10_000, s: 'BTCUSDT', S: 'Sell', v: '25000', p: '1.1', i: 'live-trade' },
+  ] }))
+  await expect.poll(async () => {
+    const ids = await bubbleIds()
+    return [ids.length, new Set(ids).size, ids[0], ids.slice(1).every(id => id.startsWith('archive-'))]
+  }).toEqual([360, 360, 'live-trade', true])
+})

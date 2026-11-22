@@ -27,6 +27,8 @@ interface BubbleRequest {
   cursor: number
   minimum: number
   trades: BybitTrade[]
+  groupSize: number
+  strongestByGroup: Map<number, BybitTrade>
   timeframe: string
   chartStart: number
   operation?: AbortController
@@ -295,8 +297,10 @@ export class OrderFlowChart {
     const indicator = this.chart.getIndicatorByPaneId(CANDLE_PANE, BIG_TRADES) as Indicator | null | undefined
     const candles = this.chart.getDataList()
     const { from, to } = this.chart.getVisibleRange()
-    const first = candles[Math.max(0, from)]
-    const last = candles[Math.min(candles.length, to) - 1]
+    const firstIndex = Math.max(0, from)
+    const endIndex = Math.min(candles.length, to)
+    const first = candles[firstIndex]
+    const last = candles[endIndex - 1]
     const showBubbles = !!indicator?.visible
     const showVolume = this.showVolume(this.bubbles?.volumes)
     if (!this.supported || (!showBubbles && !showVolume) || !first || !last) {
@@ -311,11 +315,13 @@ export class OrderFlowChart {
     const untilUs = Math.min(this.feed.tradeCursorUs, nextOpenTime(last.timestamp, timeframe) * 1000)
     const minimum = Number(indicator?.calcParams[0] ?? DEFAULT_BIG_TRADE_NOTIONAL)
     const chartStart = candles[0].timestamp
+    const groupSize = showBubbles ? Math.max(1, Math.ceil((endIndex - firstIndex) / maxBubbles)) : 1
     let request = this.bubbles
     if (!request || request.minimum !== minimum || request.fromUs !== fromUs || request.cursor > untilUs ||
-        request.timeframe !== timeframe || request.chartStart !== chartStart || request.showBubbles !== showBubbles) {
+        request.timeframe !== timeframe || request.chartStart !== chartStart || request.showBubbles !== showBubbles ||
+        request.groupSize !== groupSize) {
       request?.operation?.abort()
-      request = { fromUs, cursor: fromUs, minimum, trades: [], complete: true, timeframe, chartStart,
+      request = { fromUs, cursor: fromUs, minimum, trades: [], groupSize, strongestByGroup: new Map(), complete: true, timeframe, chartStart,
         volumes: new Map(), barPrices: new Map(), showBubbles }
       this.bubbles = request
       this.showBubbles({ points: [], message: '读取可见成交…' })
@@ -326,16 +332,21 @@ export class OrderFlowChart {
     const current = request
     const candlesByTime = new Map(candles.map((candle, index) => [candle.timestamp, index]))
     const strongest = [...current.trades]
+    const strongestByGroup = new Map(current.strongestByGroup)
     const volumes = new Map(current.volumes)
     const project = this.projectPrices(candles, timeframe, current.barPrices)
     function reduceBubbles() { strongest.sort((a, b) => notional(b) - notional(a)); strongest.length = Math.min(strongest.length, maxBubbles) }
     try {
       const complete = await this.feed.visitTrades({ fromUs: current.cursor, untilUs, cache: 'viewport' }, trade => {
         const bar = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')
-        if (!candlesByTime.has(bar)) return
+        const index = candlesByTime.get(bar)
+        if (index === undefined) return
         volumes.set(bar, (volumes.get(bar) ?? 0) + trade.size)
         project(trade, bar)
         if (showBubbles && notional(trade) >= minimum) {
+          const group = Math.floor((index - firstIndex) / groupSize)
+          const leader = strongestByGroup.get(group)
+          if (!leader || notional(trade) > notional(leader)) strongestByGroup.set(group, trade)
           strongest.push(trade)
           if (strongest.length >= maxBubbles * 4) reduceBubbles()
         }
@@ -344,12 +355,19 @@ export class OrderFlowChart {
       if (this.bubbles !== current || this.chart.getDataList()[0]?.timestamp !== chartStart) return
       reduceBubbles()
       current.trades = strongest
+      current.strongestByGroup = strongestByGroup
       current.volumes = volumes
       this.showVolume(volumes)
       current.complete &&= complete
       current.cursor = untilUs
+      // Reserve one bubble per time group before using the remaining chart capacity.
+      const selected = new Set(strongestByGroup.values())
+      for (const trade of strongest) {
+        if (selected.size === maxBubbles) break
+        selected.add(trade)
+      }
       const points: BubbleDisplay['points'] = []
-      for (const trade of strongest.reverse()) {
+      for (const trade of [...selected].sort((a, b) => notional(a) - notional(b))) {
         const timestamp = trade.timeUs / 1000
         const barStart = alignOpenTime(timestamp, timeframe, 'floor')
         const index = candlesByTime.get(barStart)
