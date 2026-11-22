@@ -73,7 +73,9 @@ export function parseBybitArchivePart(text: string, partStart: number, rows: num
 }
 
 export class BybitArchive {
-  private readonly manifests = new Map<string, Promise<{ meta: ArchiveManifest; root: string } | null>>()
+  private readonly manifests = new Map<string, { meta: ArchiveManifest; root: string }>()
+  private readonly manifestReads = new Map<string, Promise<{ meta: ArchiveManifest; root: string } | null>>()
+  private readonly missing = new Map<string, number>()
   private readonly hours = new Map<string, Promise<BybitTrade[]>>()
 
   constructor(private readonly target: GitHubRepositoryTarget = defaultStorageTarget(),
@@ -85,22 +87,33 @@ export class BybitArchive {
       .map(encodeURIComponent).join('/') + '/' + BYBIT_ARCHIVE_ROOT
   }
 
-  private getManifest(symbol: BybitSymbol, day: string, ref?: string) {
+  private async getManifest(symbol: BybitSymbol, day: string, ref?: string) {
     const path = `${symbol}/${day}`
     const cached = this.manifests.get(path)
     if (cached) return cached
+    if (!ref && (this.missing.get(path) ?? 0) > this.now()) return null
+    const root = this.archiveRoot(ref ?? this.target.branch)
+    const url = `${root}/${path}/manifest.json`
+    const ongoing = this.manifestReads.get(url)
+    if (ongoing) return ongoing
     const pending = (async () => {
-      const root = this.archiveRoot(ref ?? this.target.branch)
-      const response = await this.fetcher.call(globalThis, `${root}/${path}/manifest.json`, { signal: AbortSignal.timeout(20_000), cache: 'no-store', credentials: 'omit' })
-      if (response.status === 404) return null
+      const response = await this.fetcher.call(globalThis, url, { signal: AbortSignal.timeout(20_000), cache: 'no-store', credentials: 'omit' })
+      if (response.status === 404) {
+        if (!ref && !this.manifests.has(path)) {
+          this.missing.set(path, this.now() + 30_000)
+          if (this.missing.size > 256) this.missing.delete(this.missing.keys().next().value!)
+        }
+        return null
+      }
       if (!response.ok) throw new Error(`读取 Bybit 日成交清单失败（HTTP ${response.status}）`)
-      return { meta: manifest(await response.json(), symbol, day), root }
+      const archive = { meta: manifest(await response.json(), symbol, day), root }
+      this.manifests.set(path, archive)
+      this.missing.delete(path)
+      if (this.manifests.size > 128) this.manifests.delete(this.manifests.keys().next().value!)
+      return archive
     })()
-    this.manifests.set(path, pending)
-    if (this.manifests.size > 128) this.manifests.delete(this.manifests.keys().next().value!)
-    void pending.then(result => { if (!result && this.manifests.get(path) === pending) this.manifests.delete(path) },
-      () => { if (this.manifests.get(path) === pending) this.manifests.delete(path) })
-    return pending
+    this.manifestReads.set(url, pending)
+    try { return await pending } finally { this.manifestReads.delete(url) }
   }
 
   async hasDay(symbol: BybitSymbol, day: string, ref?: string): Promise<boolean> {

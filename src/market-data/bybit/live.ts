@@ -48,7 +48,7 @@ export class BybitLiveTrades {
   private buffer: BybitTrade[] = []
   private tape: BybitTrade[] = []
   private ids = new Set<string>()
-  private listeners = new Set<(trades: readonly BybitTrade[], rebuilt: boolean) => void>()
+  private listeners = new Set<(trades: readonly BybitTrade[], rebuilt: boolean, fromUs?: number) => void>()
   private failures = 0
   private waiting = true
   private needsRepair = false
@@ -78,7 +78,7 @@ export class BybitLiveTrades {
   get lastTradeUs(): number | undefined { return this.tape.at(-1)?.timeUs }
   get gap(): boolean { return this.needsRepair || this.waiting || this.paused }
 
-  subscribe(listener: (trades: readonly BybitTrade[], rebuilt: boolean) => void): () => void {
+  subscribe(listener: (trades: readonly BybitTrade[], rebuilt: boolean, fromUs?: number) => void): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
@@ -189,8 +189,10 @@ export class BybitLiveTrades {
     if (!this.start) this.start = fresh[0].timeUs
     // A range reader may already have consumed this millisecond. Rebuild even
     // on a tie so another trade stamped at the same time is included.
-    const rebuilt = !!this.tape.length && fresh[0].timeUs <= this.tape.at(-1)!.timeUs
-    if (rebuilt) this.replace(mergeBybitTrades(this.tape, fresh))
+    const previous = this.tape.at(-1)?.timeUs ?? -Infinity
+    const first = fresh[0].timeUs
+    const rebuilt = first <= previous
+    if (first < previous) this.replace(mergeBybitTrades(this.tape, fresh))
     else {
       this.tape.push(...fresh)
       if (this.tape.length > tradeLimit) {
@@ -199,7 +201,7 @@ export class BybitLiveTrades {
         this.start = this.tape[0].timeUs
       }
     }
-    this.emit(rebuilt ? this.tape : fresh, rebuilt)
+    this.emit(rebuilt ? this.tape : fresh, rebuilt, first)
   }
 
   private replace(trades: BybitTrade[]): void {
@@ -210,8 +212,8 @@ export class BybitLiveTrades {
     if (this.tape[0]) this.start = this.tape[0].timeUs
   }
 
-  private emit(trades: readonly BybitTrade[], rebuilt: boolean): void {
-    for (const listener of this.listeners) listener(trades, rebuilt)
+  private emit(trades: readonly BybitTrade[], rebuilt: boolean, fromUs?: number): void {
+    for (const listener of this.listeners) listener(trades, rebuilt, fromUs)
   }
 
   private publish(status: BybitLiveStatus): void {

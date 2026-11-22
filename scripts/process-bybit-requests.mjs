@@ -6,7 +6,7 @@ import { archiveInputs, archiveRoot, BybitArchiveHttpError, cacheBybitDay } from
 
 export const requestRoot = archiveRoot.replace(/bybit-trades$/, 'bybit-requests')
 const attemptLimit = 4
-const jobLimit = 3
+const jobLimit = 8
 const hour = 3_600_000
 
 function readRequests(git, now) {
@@ -29,7 +29,7 @@ function readRequests(git, now) {
           !Number.isSafeInteger(retryAt) || retryAt > now) return []
       return [{ path, symbol, day, start, attempts, retryAt }]
     } catch { return [] }
-  }).sort((a, b) => a.retryAt - b.retryAt)
+  }).sort((a, b) => a.retryAt - b.retryAt || b.day.localeCompare(a.day))
 }
 
 function push(git) {

@@ -84,6 +84,6 @@ Git 月分片可能尚未覆盖整月；创建、恢复回放先复用普通价�
 
 ## Bybit 逐笔成交缓存
 
-Bybit 归档按 UTC 日获取。IC 主图的成交量指标读取回放游标所在日时，先查该 IC 品种映射的 Bybit 日档。已结束的 UTC 日缺失归档时，通过现有云端连接创建 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json`。同品种同日共用一个请求。GitHub Actions 每 5 分钟检查队列，使用现有 `CLOUD_STORAGE_TOKEN` 下载所申请的日期并发布。暂时失败时自动重试。归档就绪后主图自动刷新成交量指标。较早的可见日使用已有归档，随回放进度申请新的日期。
+Bybit 归档按 UTC 日获取。确认框选后会申请区间内已结束的 UTC 日档，主图一周以内的可见范围和回放游标所在日也会自动补齐。缺失时通过现有云端连接创建 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json`。同品种同日共用一个请求。页面写入请求后直接触发 GitHub Actions，另保留定时扫描和失败重试。后台使用现有 `CLOUD_STORAGE_TOKEN` 下载所申请的日期并发布。归档就绪后主图自动刷新成交量指标。Bybit 尚未发布日档的区间使用已收到的实时成交并显示数据覆盖缺口。
 
 归档只写入 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/<品种>/<UTC日期>/`。原始数据按成交时间排序后转存为保留交易 ID、方向、时间、价格、数量的 gzip 分片。分片按小时读取，大文件进一步拆分，并由当天清单记录每个分片的笔数、大小和 SHA-256。完整归档与请求移除在同一 Git 提交发布，非强制推送。网页通过 GitHub Raw 读取，刚发布的归档以同一个提交读取清单和分片，避开分支地址暂时缓存的 404。日档和下载请求属于行情缓存运行数据，独立于配置、存档、会话和旧行情清单。无云端写权限时仍可读取已有公开缓存。

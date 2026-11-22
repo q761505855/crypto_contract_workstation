@@ -1,8 +1,10 @@
 name: 缓存 Bybit 日成交
 
 on:
+  repository_dispatch:
+    types: [bybit-trades-requested]
   schedule:
-    - cron: '2-57/5 * * * *'
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
 
 permissions:
   contents: read
@@ -14,7 +16,7 @@ concurrency:
 jobs:
   archive:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
       - uses: actions/checkout@v6

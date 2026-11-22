@@ -120,7 +120,7 @@ export class OrderFlowChart {
     this.schedule()
   }
 
-  setProfile(id: string, points: readonly DrawingPoint[]): void {
+  setProfile(id: string, points: readonly DrawingPoint[], preview = false): void {
     const [first, last] = points
     if (!first || !last) return
     const low = Math.min(first.value, last.value)
@@ -133,10 +133,12 @@ export class OrderFlowChart {
     const fromUs = Math.min(first.timestamp, last.timestamp) * 1000
     const untilUs = (Math.max(first.timestamp, last.timestamp) + 1) * 1000
     const existing = this.profiles.get(id)
-    if (existing?.low === low && existing.high === high && existing.range.fromUs === fromUs && existing.range.untilUs === untilUs) return
+    const cache = preview ? undefined : 'selection'
+    if (existing?.low === low && existing.high === high && existing.range.fromUs === fromUs &&
+        existing.range.untilUs === untilUs && existing.range.cache === cache) return
     this.removeProfile(id)
     this.profiles.set(id, {
-      range: { fromUs, untilUs }, low, high, cursor: fromUs, complete: true,
+      range: { fromUs, untilUs, cache }, low, high, cursor: fromUs, complete: true,
       accumulator: new VolumeProfileAccumulator(low, high),
     })
     this.showProfile(id, { message: '读取区间成交…' })
@@ -220,7 +222,7 @@ export class OrderFlowChart {
       const fromUs = request.cursor === request.range.fromUs && this.feed.mapping?.relation === 'etf'
         ? alignOpenTime(request.cursor / 1000, timeframe, 'floor') * 1000 : request.cursor
       const project = this.projectPrices(this.chart.getDataList(), timeframe, request.prices ??= new Map())
-      const complete = await this.feed.visitTrades({ fromUs, untilUs }, trade => {
+      const complete = await this.feed.visitTrades({ fromUs, untilUs, cache: request.range.cache }, trade => {
         const price = project(trade)
         if (price !== undefined && trade.timeUs >= request.cursor) request.accumulator.add(trade, price)
       }, operation.signal)
@@ -328,7 +330,7 @@ export class OrderFlowChart {
     const project = this.projectPrices(candles, timeframe, current.barPrices)
     function reduceBubbles() { strongest.sort((a, b) => notional(b) - notional(a)); strongest.length = Math.min(strongest.length, maxBubbles) }
     try {
-      const complete = await this.feed.visitTrades({ fromUs: current.cursor, untilUs }, trade => {
+      const complete = await this.feed.visitTrades({ fromUs: current.cursor, untilUs, cache: 'viewport' }, trade => {
         const bar = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')
         if (!candlesByTime.has(bar)) return
         volumes.set(bar, (volumes.get(bar) ?? 0) + trade.size)

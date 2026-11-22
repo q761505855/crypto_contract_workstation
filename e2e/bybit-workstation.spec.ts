@@ -138,3 +138,52 @@ test('实时成交只更新映射品种的成交量，切到未匹配品种时�
   await expect.poll(volume).toMatchObject({ name: '报价量' })
   await expect(chart.getByRole('button', { name: '框选成交分布' })).toBeDisabled()
 })
+
+test('最新 BTCUSD 的 15m 图扩大可见日期后申请 UTC 日档并唤醒缓存工作流', async ({ page }) => {
+  const dayMs = 86_400_000
+  const now = Date.parse('2026-11-22T02:00:30Z')
+  await page.clock.setFixedTime(now)
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= now - 7 * dayMs })
+  await installViewportProbe(page)
+  await page.route('**/cloud-connection.json', route => route.fulfill({ headers,
+    json: { schemaVersion: 1, project: 'crypto-contract-workstation', token: 'cache-test-token' },
+  }))
+  const requested: string[] = []
+  let dispatched = 0
+  const files = new Map<string, string>()
+  await page.route('https://api.github.com/**', route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'POST' && path === '/repos/q761505855/crypto_contract_workstation/dispatches') {
+      expect(request.postDataJSON()).toEqual({ event_type: 'bybit-trades-requested' })
+      dispatched++
+      return route.fulfill({ headers, status: 204 })
+    }
+    if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers, json: { object: { sha: 'test-commit' } } })
+    if (path.endsWith('/git/commits/test-commit')) return route.fulfill({ headers, json: { tree: { sha: 'test-tree' } } })
+    const entry = /\/bybit-requests\/BTCUSDT\/(\d{4}-\d\d-\d\d)\.json$/.exec(path)
+    if (entry && request.method() === 'PUT') {
+      requested.push(entry[1])
+      files.set(path, request.postDataJSON().content)
+      return route.fulfill({ headers, status: 201, json: { content: { sha: 'test-file' } } })
+    }
+    if (entry && files.has(path)) return route.fulfill({ headers, json: { type: 'file', path, sha: 'test-file',
+      encoding: 'base64', content: files.get(path) } })
+    return route.fulfill({ headers, status: 404, body: '' })
+  })
+  await page.goto('/')
+  await page.getByTestId('chart-host').locator('.symbol').click()
+  const picker = page.getByRole('dialog', { name: '选择交易对' })
+  await picker.getByRole('tab', { name: '全部' }).click()
+  await picker.getByRole('button', { name: '选择 BTCUSD', exact: true }).click()
+  await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
+  await page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    coreChart.setBarSpace(3)
+  })
+  await expect.poll(() => requested).toEqual(expect.arrayContaining(['2026-11-20', '2026-11-21']))
+  expect(requested).not.toContain('2026-11-22')
+  expect(new Set(requested).size).toBe(requested.length)
+  await expect.poll(() => dispatched).toBe(1)
+  await expect(page.getByRole('contentinfo')).toContainText('实时行情')
+})

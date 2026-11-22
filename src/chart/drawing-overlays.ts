@@ -200,8 +200,9 @@ export class DrawingOverlays {
     if (overlay.name !== VOLUME_PROFILE_TOOL || !this.orderFlow) return
     queueMicrotask(() => {
       if (this.disposed || !this.chart.getOverlayById(overlay.id)) return
+      if (this.draft !== overlay.id && this.editing?.id !== overlay.id) return
       const points = this.readPoints(overlay)
-      if (points) this.orderFlow?.setProfile(overlay.id, points)
+      if (points) this.orderFlow?.setProfile(overlay.id, points, true)
     })
   }
 

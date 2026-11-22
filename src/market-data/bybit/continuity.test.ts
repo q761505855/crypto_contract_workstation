@@ -56,7 +56,7 @@ describe('Bybit 成交连续性', () => {
       const changed = vi.fn()
       live.subscribe(changed)
       sockets[0].trades(c, sameTime)
-      expect(changed).toHaveBeenLastCalledWith([a, b, c, sameTime], true)
+      expect(changed).toHaveBeenLastCalledWith([a, b, c, sameTime], true, sameTime.timeUs)
 
       sockets[0].close()
       await vi.advanceTimersByTimeAsync(1000)

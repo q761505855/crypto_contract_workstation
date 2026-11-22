@@ -3,6 +3,7 @@ import type { BybitArchive } from './archive'
 import { BYBIT_DAY_MS, bybitDayStart, bybitFirstDay, type BybitSymbol } from './trades'
 
 const pollMs = 12_000
+const writes = new WeakMap<GitHubContentsClient, Promise<unknown>>()
 const readOptions = (signal: AbortSignal) => ({ signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) })
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {
@@ -20,17 +21,19 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-function requestState(file: GitHubFile, symbol: BybitSymbol, day: string): 'awaiting-source' | 'retrying' | 'failed' | 'unavailable' | undefined {
+function requestRecord(file: GitHubFile, symbol: BybitSymbol, day: string): {
+  state?: 'awaiting-source' | 'retrying' | 'failed' | 'unavailable'; retryAt?: number
+} {
   const record = JSON.parse(new TextDecoder().decode(file.bytes))
   if (record?.version !== 1 || record.symbol !== symbol || record.day !== day ||
       (record.state !== undefined && !['awaiting-source', 'retrying', 'failed', 'unavailable'].includes(record.state))) {
     throw new Error('Bybit 日归档请求无效')
   }
-  return record.state
+  return record
 }
 
 export async function ensureBybitDay(archive: BybitArchive, client: GitHubContentsClient, symbol: BybitSymbol, day: string,
-  status: (message: string) => void, signal: AbortSignal): Promise<void> {
+  status: (message: string) => void, signal: AbortSignal, wake: () => void): Promise<void> {
   if (day < bybitFirstDay(symbol) || bybitDayStart(day) + BYBIT_DAY_MS > Date.now()) {
     throw new Error('请选择该品种已结束的 UTC 日期')
   }
@@ -45,33 +48,45 @@ export async function ensureBybitDay(archive: BybitArchive, client: GitHubConten
   // A branch-level Raw 404 can be stale. Check the current commit before enqueueing.
   if (await published()) return
   let file = await client.getFile(path, readOptions(signal))
-  for (let attempt = 0; !file || requestState(file, symbol, day) === 'failed'; attempt++) {
-    if (!client.canWrite()) throw new Error('自动缓存需要可用的云端连接，已缓存的日期仍可回放')
-    status(`正在申请下载 ${symbol} ${day} UTC 日档…`)
-    try {
-      await client.putFile(path, input, `申请缓存 Bybit ${symbol} ${day} 日成交`, file?.sha, readOptions(signal).signal)
-      file = null
-      break
-    } catch (error) {
-      if (!(error instanceof GitHubConflictError)) throw error
-      file = await client.getFile(path, readOptions(signal))
-      if (!file && await published()) return
-      if (!file || requestState(file, symbol, day) === 'failed') {
-        if (attempt === 2) throw error
-        await wait(600, signal)
+  if (!file || requestRecord(file, symbol, day).state === 'failed') {
+    const previous = writes.get(client) ?? Promise.resolve()
+    const write = previous.then(async () => {
+      signal.throwIfAborted()
+      if (!client.canWrite()) throw new Error('自动缓存需要可用的云端连接，已缓存的日期仍可回放')
+      for (let attempt = 0; ; attempt++) {
+        status(`正在申请下载 ${symbol} ${day} UTC 日档…`)
+        try {
+          await client.putFile(path, input, `申请缓存 Bybit ${symbol} ${day} 日成交`, file?.sha, readOptions(signal).signal)
+          return null
+        } catch (error) {
+          if (!(error instanceof GitHubConflictError)) throw error
+          file = await client.getFile(path, readOptions(signal))
+          if (file && requestRecord(file, symbol, day).state !== 'failed') return file
+          if (!file && await published()) return undefined
+          if (attempt === 2) throw error
+          await wait(600, signal)
+        }
       }
-    }
+    })
+    writes.set(client, write.catch(() => undefined))
+    const result = await write
+    if (result === undefined) return
+    file = result
   }
 
   for (;;) {
     signal.throwIfAborted()
     if (file) {
-      const state = requestState(file, symbol, day)
+      const { state, retryAt } = requestRecord(file, symbol, day)
       if (state === 'unavailable') throw new Error(`Bybit 未提供 ${symbol} ${day} UTC 逐笔归档`)
       if (state === 'failed') throw new Error(`${symbol} ${day} UTC 日档下载多次失败，请稍后再试`)
-      status(state === 'awaiting-source' ? '等待 Bybit 发布当日逐笔归档…' : state === 'retrying'
+      if (!state || (typeof retryAt === 'number' && Date.now() >= retryAt)) wake()
+      status(state === 'awaiting-source' ? `${day} UTC 日档等待 Bybit 发布…` : state === 'retrying'
         ? '日档下载遇到临时错误，后台将继续重试…' : `等待后台下载并缓存 ${symbol} ${day} UTC 日档…`)
-    } else status(`等待后台下载并缓存 ${symbol} ${day} UTC 日档…`)
+    } else {
+      wake()
+      status(`等待后台下载并缓存 ${symbol} ${day} UTC 日档…`)
+    }
     await wait(pollMs, signal)
     try {
       file = await client.getFile(path, readOptions(signal))

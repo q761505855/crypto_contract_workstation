@@ -117,6 +117,12 @@ export class GitHubContentsClient {
 
   canWrite(): boolean { return this.#token.trim().length > 0 }
 
+  async dispatchRepositoryEvent(owner: string, repository: string, eventType: string, signal?: AbortSignal): Promise<void> {
+    this.requireToken()
+    const repo = `${validateSegment(owner, 'GitHub 用户或组织')}/${validateSegment(repository, 'GitHub 仓库名')}`
+    await this.request(`/repos/${repo}/dispatches`, { method: 'POST', body: JSON.stringify({ event_type: eventType }), signal }, 'repository')
+  }
+
   async testConnection(): Promise<GitHubRepositoryInfo> {
     const payload = await this.request(
       `/repos/${encodeURIComponent(this.target.owner)}/${encodeURIComponent(
@@ -330,6 +336,6 @@ export class GitHubContentsClient {
     if (!response.ok) {
       throw responseError(response.status, context)
     }
-    return response.json()
+    return response.status === 204 ? undefined : response.json()
   }
 }
