@@ -1,5 +1,5 @@
 import { defaultStorageTarget } from '../../github-sync/default-storage'
-import type { GitHubRepositoryTarget } from '../../github-sync/github-client'
+import { GitHubContentsClient, type GitHubRepositoryTarget } from '../../github-sync/github-client'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, bybitFirstDay, bybitTrade,
   bybitTradeTime, type BybitSymbol, type BybitTrade } from './trades'
 
@@ -22,11 +22,6 @@ interface ArchiveManifest {
 export const BYBIT_ARCHIVE_ROOT = 'data/bybit-trades'
 const ARCHIVE_PART_MAX = 17 * 1024 ** 2
 
-function mirrorPartUrl(rawUrl: string): string {
-  const [owner, repository, ref, ...file] = new URL(rawUrl).pathname.slice(1).split('/')
-  return `https://testingcf.jsdelivr.net/gh/${owner}/${repository}@${ref}/${file.join('/')}`
-}
-
 function manifest(value: unknown, symbol: string, day: string, allowEmpty: boolean): ArchiveManifest {
   const item = value as Partial<ArchiveManifest> | null
   if (!item || item.version !== 1 || item.symbol !== symbol || item.day !== day ||
@@ -48,11 +43,6 @@ function manifest(value: unknown, symbol: string, day: string, allowEmpty: boole
   }
   if (rows !== item.rows) throw new Error('Bybit 日成交笔数无效')
   return item as ArchiveManifest
-}
-
-async function sha256(buffer: ArrayBuffer): Promise<string> {
-  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buffer)),
-    byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function* archivePartTrades(text: string, partStart: number, rows: number): Generator<BybitTrade> {
@@ -82,22 +72,19 @@ export function parseBybitArchivePart(text: string, partStart: number, rows: num
 }
 
 export class BybitArchive<Symbol extends string = BybitSymbol> {
-  private readonly manifests = new Map<string, { meta: ArchiveManifest; root: string }>()
-  private readonly manifestReads = new Map<string, Promise<{ meta: ArchiveManifest; root: string } | null>>()
+  private readonly client: GitHubContentsClient
+  private readonly manifests = new Map<string, { meta: ArchiveManifest; ref: string }>()
+  private readonly manifestReads = new Map<string, Promise<{ meta: ArchiveManifest; ref: string } | null>>()
   private readonly missing = new Map<string, number>()
   private readonly hours = new Map<string, Promise<BybitTrade[]>>()
   private readonly compressed = new Map<string, Promise<ArrayBuffer>>()
   private readonly waiting: (() => void)[] = []
   private downloading = 0
 
-  constructor(private readonly target: GitHubRepositoryTarget = defaultStorageTarget(),
-    private readonly fetcher: typeof fetch = fetch, private readonly now = Date.now,
-    private readonly source = { root: BYBIT_ARCHIVE_ROOT, firstDay: (symbol: Symbol) => bybitFirstDay(symbol as BybitSymbol), allowEmpty: false }) {}
-
-  private archiveRoot(ref: string): string {
-    const { owner, repository, root } = this.target
-    return 'https://raw.githubusercontent.com/' + [owner, repository, ref, ...(root ?? '').split('/').filter(Boolean)]
-      .map(encodeURIComponent).join('/') + '/' + this.source.root
+  constructor(target: GitHubRepositoryTarget | GitHubContentsClient = defaultStorageTarget(),
+    fetcher: typeof fetch = fetch, private readonly now = Date.now,
+    private readonly source = { root: BYBIT_ARCHIVE_ROOT, firstDay: (symbol: Symbol) => bybitFirstDay(symbol as BybitSymbol), allowEmpty: false }) {
+    this.client = target instanceof GitHubContentsClient ? target : new GitHubContentsClient(target, '', fetcher)
   }
 
   private async getManifest(symbol: Symbol, day: string, ref?: string) {
@@ -105,28 +92,28 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
     const cached = this.manifests.get(path)
     if (cached) return cached
     if (!ref && (this.missing.get(path) ?? 0) > this.now()) return null
-    const root = this.archiveRoot(ref ?? this.target.branch)
-    const url = `${root}/${path}/manifest.json`
-    const ongoing = this.manifestReads.get(url)
+    const key = `${ref ?? ''}:${path}`
+    const ongoing = this.manifestReads.get(key)
     if (ongoing) return ongoing
     const pending = (async () => {
-      const response = await this.fetcher.call(globalThis, url, { signal: AbortSignal.timeout(20_000), cache: 'no-store', credentials: 'omit' })
-      if (response.status === 404) {
+      const signal = AbortSignal.timeout(20_000)
+      const file = await this.client.getPublicFile(`${this.source.root}/${path}/manifest.json`, { ref, signal })
+      if (!file) {
         if (!ref && !this.manifests.has(path)) {
           this.missing.set(path, this.now() + 30_000)
           if (this.missing.size > 256) this.missing.delete(this.missing.keys().next().value!)
         }
         return null
       }
-      if (!response.ok) throw new Error(`读取日成交清单失败（HTTP ${response.status}）`)
-      const archive = { meta: manifest(await response.json(), symbol, day, this.source.allowEmpty), root }
+      const value: unknown = JSON.parse(new TextDecoder().decode(file.bytes))
+      const archive = { meta: manifest(value, symbol, day, this.source.allowEmpty), ref: file.ref }
       this.manifests.set(path, archive)
       this.missing.delete(path)
       if (this.manifests.size > 128) this.manifests.delete(this.manifests.keys().next().value!)
       return archive
     })()
-    this.manifestReads.set(url, pending)
-    try { return await pending } finally { this.manifestReads.delete(url) }
+    this.manifestReads.set(key, pending)
+    try { return await pending } finally { this.manifestReads.delete(key) }
   }
 
   async hasDay(symbol: Symbol, day: string, ref?: string): Promise<boolean> {
@@ -134,21 +121,21 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
       (await this.getManifest(symbol, day, ref)) !== null
   }
 
-  private async hourParts(symbol: Symbol, start: number): Promise<{ root: string; parts: ArchivePart[] } | null> {
+  private async hourParts(symbol: Symbol, start: number): Promise<{ root: string; ref: string; parts: ArchivePart[] } | null> {
     if (start % BYBIT_HOUR_MS !== 0) throw new Error('Bybit 归档小时无效')
     const day = bybitDay(start)
     if (bybitDayStart(day) + BYBIT_DAY_MS > this.now() || day < this.source.firstDay(symbol)) return null
     const archive = await this.getManifest(symbol, day)
     if (!archive) return null
     const hour = new Date(start).getUTCHours()
-    return { root: `${archive.root}/${symbol}/${day}`, parts: archive.meta.parts.filter(part => part.hour === hour) }
+    return { root: `${this.source.root}/${symbol}/${day}`, ref: archive.ref, parts: archive.meta.parts.filter(part => part.hour === hour) }
   }
 
   async prefetchHour(symbol: Symbol, start: number): Promise<boolean> {
     if (this.hours.has(`${symbol}/${start}`)) return true
     const files = await this.hourParts(symbol, start)
     if (!files) return false
-    for (const part of files.parts) await this.compressedPart(`${files.root}/${part.file}`, part)
+    for (const part of files.parts) await this.compressedPart(`${files.root}/${part.file}`, files.ref, part)
     return true
   }
 
@@ -163,32 +150,29 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
       this.hours.set(key, cached)
       return cached
     }
-    const pending = this.readParts(files.root, start, files.parts, contractValue)
+    const pending = this.readParts(files.root, files.ref, start, files.parts, contractValue)
     this.hours.set(key, pending)
     if (this.hours.size > 6) this.hours.delete(this.hours.keys().next().value!)
     void pending.catch(() => { if (this.hours.get(key) === pending) this.hours.delete(key) })
     return pending
   }
 
-  private compressedPart(url: string, part: ArchivePart): Promise<ArrayBuffer> {
-    const existing = this.compressed.get(url)
+  private compressedPart(path: string, ref: string, part: ArchivePart): Promise<ArrayBuffer> {
+    const key = `${ref}:${path}`
+    const existing = this.compressed.get(key)
     if (existing) return existing
-    const pending = this.downloadPart(url, part)
-    this.compressed.set(url, pending)
+    const pending = this.downloadPart(path, ref, part)
+    this.compressed.set(key, pending)
     if (this.compressed.size > 8) this.compressed.delete(this.compressed.keys().next().value!)
-    void pending.catch(() => { if (this.compressed.get(url) === pending) this.compressed.delete(url) })
+    void pending.catch(() => { if (this.compressed.get(key) === pending) this.compressed.delete(key) })
     return pending
   }
 
-  private async downloadPart(url: string, part: ArchivePart): Promise<ArrayBuffer> {
+  private async downloadPart(path: string, ref: string, part: ArchivePart): Promise<ArrayBuffer> {
     if (this.downloading < 4) this.downloading++
     else await new Promise<void>(resolve => this.waiting.push(resolve))
     try {
-      try {
-        return await this.readVerifiedPart(mirrorPartUrl(url), part, 15_000)
-      } catch {
-        return await this.readVerifiedPart(url, part, 45_000)
-      }
+      return await this.client.getPublicVerifiedFile(path, ref, part)
     } finally {
       const next = this.waiting.shift()
       if (next) next()
@@ -196,23 +180,14 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
     }
   }
 
-  private async readVerifiedPart(url: string, part: ArchivePart, timeout: number): Promise<ArrayBuffer> {
-    const response = await this.fetcher.call(globalThis, url, { signal: AbortSignal.timeout(timeout), credentials: 'omit' })
-    if (!response.ok) throw new Error(`逐笔成交分片读取失败（HTTP ${response.status}）`)
-    const buffer = await response.arrayBuffer()
-    if (buffer.byteLength !== part.bytes || await sha256(buffer) !== part.sha256) {
-      throw new Error(`逐笔成交分片校验失败：${part.file}`)
-    }
-    return buffer
-  }
-
-  private async readParts(root: string, start: number, parts: ArchivePart[], contractValue?: number): Promise<BybitTrade[]> {
+  private async readParts(root: string, ref: string, start: number, parts: ArchivePart[], contractValue?: number): Promise<BybitTrade[]> {
     const trades: BybitTrade[] = []
     for (const part of parts) {
-      const url = `${root}/${part.file}`
-      const pending = this.compressedPart(url, part)
+      const path = `${root}/${part.file}`
+      const key = `${ref}:${path}`
+      const pending = this.compressedPart(path, ref, part)
       const buffer = await pending
-      if (this.compressed.get(url) === pending) this.compressed.delete(url)
+      if (this.compressed.get(key) === pending) this.compressed.delete(key)
       const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))
       const text = await new Response(stream).text()
       let yieldAt = performance.now() + 10

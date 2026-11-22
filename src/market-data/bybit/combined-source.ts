@@ -64,8 +64,8 @@ export class CombinedBybitSource {
   private pendingLiveUpdate?: ReturnType<typeof setTimeout>
 
   constructor(private readonly cloud: GitHubContentsClient, private readonly changed: (reset?: boolean, affected?: TradeRange) => void,
-    private readonly archive = new BybitArchive(cloud.getTarget()), private readonly now = Date.now,
-    private readonly okxArchive = new OkxArchive(cloud.getTarget(), fetch, now)) {}
+    private readonly archive = new BybitArchive(cloud), private readonly now = Date.now,
+    private readonly okxArchive = new OkxArchive(cloud, fetch, now)) {}
 
   get mapping(): OrderFlowMapping | undefined { return this.active }
   get replaying(): boolean { return this.context !== null }

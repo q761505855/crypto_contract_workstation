@@ -1,5 +1,8 @@
+import { CloudFileHttpError, cloudFileSha256, downloadGitFile, gitBlobSha, githubRawUrl } from './cloud-file-download'
+
 const GITHUB_API_BASE = 'https://api.github.com'
 const GITHUB_API_VERSION = '2026-03-10'
+const gitSha = /^[a-f0-9]{40}$/i
 
 type FetchLike = typeof fetch
 
@@ -25,6 +28,10 @@ export interface GitHubFile {
   sha: string
   bytes: Uint8Array
 }
+
+interface PublicFileRead { ref: string; file?: GitHubFile | null; expected?: { sha: string; size: number } }
+interface PublicTreeEntry { path: string; type?: string; mode?: string; sha?: string; size?: number }
+interface PublicTree { entries: Map<string, PublicTreeEntry>; complete: boolean }
 
 export class GitHubConflictError extends Error {
   constructor(
@@ -95,6 +102,8 @@ function responseError(status: number, context: 'repository' | 'file'): Error {
 export class GitHubContentsClient {
   private readonly target: GitHubRepositoryTarget
   readonly #token: string
+  private readonly publicTrees = new Map<string, Promise<PublicTree>>()
+  private pendingReadHead?: Promise<string>
 
   constructor(
     target: GitHubRepositoryTarget,
@@ -153,7 +162,10 @@ export class GitHubContentsClient {
   }
 
   async getFile(path: string, options: GitHubReadOptions = {}): Promise<GitHubFile | null> {
+    const publicRead = await this.readPublicFile(path, options)
+    if (publicRead?.file !== undefined) return publicRead.file
     const encodedPath = this.scopedPath(path)
+    const ref = publicRead?.ref ?? options.ref ?? this.target.branch
     let response: Response
     try {
       response = await this.fetcher.call(
@@ -163,7 +175,7 @@ export class GitHubContentsClient {
         )}/${encodeURIComponent(
           this.target.repository,
         )}/contents/${encodedPath}?ref=${encodeURIComponent(
-          options.ref ?? this.target.branch,
+          ref,
         )}`,
         {
           method: 'GET',
@@ -176,7 +188,7 @@ export class GitHubContentsClient {
       if (options.signal?.aborted) throw error
       throw new Error('无法连接 GitHub API，请检查网络')
     }
-    if (response.status === 404) return null
+    if (response.status === 404 && !publicRead?.expected) return null
     if (!response.ok) {
       throw responseError(response.status, 'file')
     }
@@ -199,7 +211,7 @@ export class GitHubContentsClient {
     let bytes: Uint8Array
     if (payload.encoding === 'none' || (typeof payload.size === 'number' && payload.size > 1_048_576)) {
       const raw = await this.fetcher.call(globalThis,
-        `${GITHUB_API_BASE}${this.repoPath()}/contents/${encodedPath}?ref=${encodeURIComponent(options.ref ?? this.target.branch)}`,
+        `${GITHUB_API_BASE}${this.repoPath()}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
         { method: 'GET', cache: 'no-store', headers: { ...this.headers(), Accept: 'application/vnd.github.raw+json' }, signal: options.signal })
       if (!raw.ok) throw responseError(raw.status, 'file')
       bytes = new Uint8Array(await raw.arrayBuffer())
@@ -207,12 +219,103 @@ export class GitHubContentsClient {
       if (typeof payload.content !== 'string') throw new Error(`GitHub 文件 ${path} 响应格式无效`)
       bytes = base64ToBytes(payload.content)
     }
+    const expected = publicRead?.expected
+    if (expected && (payload.sha !== expected.sha || bytes.byteLength !== expected.size || await gitBlobSha(bytes) !== expected.sha)) {
+      throw new Error(`GitHub 文件 ${path} 内容校验失败`)
+    }
     options.signal?.throwIfAborted()
     return {
       path,
       sha: payload.sha,
       bytes,
     }
+  }
+
+  async getPublicFile(path: string, options: GitHubReadOptions = {}): Promise<{ ref: string; bytes: Uint8Array } | null> {
+    const read = await this.readPublicFile(path, options)
+    if (read?.file === null) return null
+    if (read?.file) return { ref: read.ref, bytes: read.file.bytes }
+    if (read?.expected) throw new Error(`GitHub 文件 ${path} 下载或校验失败`)
+    const ref = read?.ref ?? options.ref ?? this.target.branch
+    try {
+      const bytes = await downloadGitFile(this.rawUrl(path, ref), this.fetcher, { signal: options.signal })
+      return { ref, bytes: new Uint8Array(bytes) }
+    } catch (error) {
+      if (error instanceof CloudFileHttpError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  getPublicVerifiedFile(path: string, ref: string, { bytes, sha256 }: { bytes: number; sha256: string }): Promise<ArrayBuffer> {
+    return downloadGitFile(this.rawUrl(path, ref), this.fetcher, {
+      integrity: { bytes, validate: async buffer => await cloudFileSha256(buffer) === sha256 },
+    })
+  }
+
+  private rawUrl(path: string, ref: string): string {
+    return githubRawUrl(this.target.owner, this.target.repository, ref, this.scopedPath(path))
+  }
+
+  /** The anonymous tree identifies public files and pins their Git blob hashes. */
+  private async readPublicFile(path: string, options: GitHubReadOptions): Promise<PublicFileRead | undefined> {
+    this.scopedPath(path)
+    const scoped = this.target.root ? `${this.target.root}/${path}` : path
+    const { signal } = options
+    let ref: string | undefined
+    let expected: PublicFileRead['expected']
+    try {
+      signal?.throwIfAborted()
+      const commit = options.ref ?? await this.currentReadHead()
+      if (!gitSha.test(commit)) return
+      ref = commit
+      const tree = await this.publicTree(commit)
+      signal?.throwIfAborted()
+      const entry = tree.entries.get(scoped)
+      if (!entry) return tree.complete ? { ref, file: null } : { ref }
+      if (entry.type !== 'blob' || (entry.mode !== '100644' && entry.mode !== '100755') ||
+          typeof entry.sha !== 'string' || !gitSha.test(entry.sha) || typeof entry.size !== 'number' ||
+          !Number.isSafeInteger(entry.size) || entry.size < 0) return { ref }
+      const { sha, size } = entry
+      expected = { sha, size }
+      const bytes = await downloadGitFile(this.rawUrl(path, commit), this.fetcher, {
+        integrity: { bytes: size, validate: async buffer => await gitBlobSha(buffer) === sha },
+        signal, mirrorTimeout: size < 1_048_576 ? 4_000 : 15_000,
+      })
+      return { ref, file: { path, sha, bytes: new Uint8Array(bytes) } }
+    } catch {
+      signal?.throwIfAborted()
+      return ref ? { ref, expected } : undefined
+    }
+  }
+
+  private currentReadHead(): Promise<string> {
+    if (!this.pendingReadHead) {
+      this.pendingReadHead = this.branchHead(AbortSignal.timeout(5_000)).finally(() => { this.pendingReadHead = undefined })
+    }
+    return this.pendingReadHead
+  }
+
+  private publicTree(ref: string): Promise<PublicTree> {
+    const cached = this.publicTrees.get(ref)
+    if (cached) return cached
+    const pending = (async () => {
+      const response = await this.fetcher.call(globalThis, `${GITHUB_API_BASE}${this.repoPath()}/git/trees/${ref}?recursive=1`, {
+        credentials: 'omit', signal: AbortSignal.timeout(6_000),
+      })
+      if (!response.ok) throw responseError(response.status, 'repository')
+      const payload: { tree?: PublicTreeEntry[]; truncated?: boolean } = await response.json()
+      if (!Array.isArray(payload.tree)) throw new Error('GitHub 文件索引无效')
+      const entries = new Map<string, PublicTreeEntry>()
+      const prefix = this.target.root ? `${this.target.root}/` : ''
+      for (const entry of payload.tree) {
+        if (typeof entry?.path === 'string' && entry.path.startsWith(prefix)) entries.set(entry.path, entry)
+      }
+      return { entries, complete: payload.truncated === false }
+    })()
+    this.publicTrees.set(ref, pending)
+    if (this.publicTrees.size > 4) this.publicTrees.delete(this.publicTrees.keys().next().value!)
+    void pending.catch(() => { if (this.publicTrees.get(ref) === pending) this.publicTrees.delete(ref) })
+    return pending
   }
 
   async putFile(
@@ -267,12 +370,17 @@ export class GitHubContentsClient {
     return payload.content.sha
   }
 
-  async getSnapshot(options: { signal?: AbortSignal } = {}): Promise<GitHubSnapshot> {
-    const ref = await this.request(`${this.repoPath()}/git/ref/heads/${encodeURIComponent(this.target.branch)}`, { method: 'GET', signal: options.signal }, 'file') as { object?: { sha?: unknown } }
+  private async branchHead(signal?: AbortSignal): Promise<string> {
+    const ref = await this.request(`${this.repoPath()}/git/ref/heads/${encodeURIComponent(this.target.branch)}`, { method: 'GET', signal }, 'file') as { object?: { sha?: unknown } }
     if (typeof ref.object?.sha !== 'string') throw new Error('GitHub 分支响应格式无效')
-    const commit = await this.request(`${this.repoPath()}/git/commits/${encodeURIComponent(ref.object.sha)}`, { method: 'GET', signal: options.signal }, 'file') as { tree?: { sha?: unknown } }
+    return ref.object.sha
+  }
+
+  async getSnapshot(options: { signal?: AbortSignal } = {}): Promise<GitHubSnapshot> {
+    const sha = await this.branchHead(options.signal)
+    const commit = await this.request(`${this.repoPath()}/git/commits/${encodeURIComponent(sha)}`, { method: 'GET', signal: options.signal }, 'file') as { tree?: { sha?: unknown } }
     if (typeof commit.tree?.sha !== 'string') throw new Error('GitHub 提交响应格式无效')
-    return { commitSha: ref.object.sha, treeSha: commit.tree.sha }
+    return { commitSha: sha, treeSha: commit.tree.sha }
   }
 
   async commitFiles(files: readonly { path: string; bytes: Uint8Array }[], message: string, snapshot: GitHubSnapshot): Promise<void> {

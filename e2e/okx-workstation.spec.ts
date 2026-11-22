@@ -15,6 +15,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   let live: WebSocketRoute | undefined
   let bybitRequests = 0
   let historyRequests = 0
+  let historyProbes = 0
   let archiveRequests = 0
   await page.route('https://api.bybit.com/**', route => {
     if (new URL(route.request().url()).searchParams.get('symbol') === 'SPYUSDT') bybitRequests++
@@ -38,8 +39,14 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   const apiPage = new Promise<void>(resolve => { finishApiPage = resolve })
   await page.route('https://www.okx.com/api/v5/market/history-trades?*', async route => {
     const query = new URL(route.request().url()).searchParams
-    historyRequests++
     expect(query.get('instId')).toBe(instrument)
+    // The live clock can advance between capturing the chart anchor and starting the download.
+    if (query.get('limit') === '1') {
+      historyProbes++
+      expect(Number(query.get('after'))).toBeGreaterThanOrEqual(start + 30_000)
+      return route.fulfill({ headers, json: { code: '0', data: [trade('201', 20_000, '2')] } })
+    }
+    historyRequests++
     if (query.get('type') === '1') {
       await apiPage
       return route.fulfill({ headers, json: { code: '0', data: [] } })
@@ -64,6 +71,14 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   })
   const archiveParts = new Map([day, recentDay].map(date => [date,
     gzipSync(`${Date.parse(date + 'T19:00:00Z') / 1000},100,Buy,1.1002,11\n`)]))
+  const manifestFor = (date: string, part: Buffer) => JSON.stringify({
+    version: 1, day: date, symbol: instrument, rows: 1, parts: [{
+      file: '19-000.csv.gz', hour: 19, rows: 1, bytes: part.length, sha256: createHash('sha256').update(part).digest('hex'),
+    }],
+  })
+  const initialCommit = 'a'.repeat(40)
+  const archiveCommit = 'b'.repeat(40)
+  const mirrorManifests: string[] = []
   const mirrorReads: string[] = []
   const rawParts: string[] = []
   const requested: unknown[] = []
@@ -72,8 +87,14 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await page.route('https://testingcf.jsdelivr.net/gh/**/okx-trades/**', route => {
     const url = route.request().url()
     for (const [date, part] of archiveParts) {
+      const ref = date === day ? archiveCommit : initialCommit
+      if (url.endsWith(`/${instrument}/${date}/manifest.json`)) {
+        expect(new URL(url).pathname).toContain(`/personal-cloud-storage@${ref}/`)
+        mirrorManifests.push(date)
+        return route.fulfill({ headers, body: manifestFor(date, part) })
+      }
       if (!url.endsWith(`/${instrument}/${date}/19-000.csv.gz`)) continue
-      expect(new URL(url).pathname).toContain(`/personal-cloud-storage@${date === day ? 'test-commit' : 'main'}/`)
+      expect(new URL(url).pathname).toContain(`/personal-cloud-storage@${ref}/`)
       mirrorReads.push(date)
       if (date === recentDay) return route.fulfill({ headers, body: part })
       const wrong = Buffer.from(part)
@@ -87,11 +108,6 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
     const url = route.request().url()
     for (const [date, part] of archiveParts) {
       if (date === day && !published) continue
-      if (url.endsWith(`/${instrument}/${date}/manifest.json`)) return route.fulfill({ headers, json: {
-        version: 1, day: date, symbol: instrument, rows: 1, parts: [{
-          file: '19-000.csv.gz', hour: 19, rows: 1, bytes: part.length, sha256: createHash('sha256').update(part).digest('hex'),
-        }],
-      } })
       if (url.endsWith(`/${instrument}/${date}/19-000.csv.gz`)) {
         rawParts.push(date)
         return route.fulfill({ headers, body: part })
@@ -107,8 +123,18 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
       dispatched = true
       return route.fulfill({ headers, status: 204 })
     }
-    if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers, json: { object: { sha: 'test-commit' } } })
-    if (path.endsWith('/git/commits/test-commit')) return route.fulfill({ headers, json: { tree: { sha: 'test-tree' } } })
+    if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers, json: { object: { sha: published ? archiveCommit : initialCommit } } })
+    if (path.endsWith(`/git/trees/${initialCommit}`) || path.endsWith(`/git/trees/${archiveCommit}`)) {
+      const dates = path.endsWith(archiveCommit) ? [recentDay, day] : [recentDay]
+      return route.fulfill({ headers, json: { truncated: false, tree: dates.map(date => {
+        const content = manifestFor(date, archiveParts.get(date)!)
+        const size = Buffer.byteLength(content)
+        return { path: `projects/crypto-contract-workstation/experiments/ctrader/data/okx-trades/${instrument}/${date}/manifest.json`,
+          type: 'blob', mode: '100644', size, sha: createHash('sha1').update(`blob ${size}\0`).update(content).digest('hex') }
+      }) } })
+    }
+    if (path.endsWith(`/git/commits/${initialCommit}`) || path.endsWith(`/git/commits/${archiveCommit}`))
+      return route.fulfill({ headers, json: { tree: { sha: 'test-tree' } } })
     if (request.method() === 'PUT' && path.endsWith(`/okx-requests/${instrument}/${day}.json`)) {
       requested.push(JSON.parse(Buffer.from(request.postDataJSON().content, 'base64').toString()))
       return route.fulfill({ status: 201, headers, json: { content: { sha: 'test-file' } } })
@@ -131,6 +157,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   })
   await expect.poll(() => live).toBeDefined()
   expect(historyRequests).toBe(0)
+  expect(historyProbes).toBe(0)
   expect(archiveRequests).toBe(0)
   expect(officialChecks).toBe(0)
   live!.send(JSON.stringify({ arg: { channel: 'trades-all', instId: instrument }, data: [trade('200', 15_000, '8')] }))
@@ -142,6 +169,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await expect(dialog.getByText('2027-02-19 至 2027-02-20')).toBeVisible()
   await expect(dialog.getByText('未来日期已跳过', { exact: false })).toBeVisible()
   expect(historyRequests).toBe(0)
+  expect(historyProbes).toBe(0)
   expect(archiveRequests).toBe(0)
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
   try {
@@ -154,7 +182,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await expect(chart.getByRole('status')).toContainText('OKX 接口 1 天 · OKX 日档 1 天')
   await expect.poll(volume).toBe(15)
   expect(historyRequests).toBe(2)
-  expect(archiveRequests).toBeGreaterThan(0)
+  expect(archiveRequests).toBe(0)
   expect(officialChecks).toBe(0)
   expect(bybitRequests).toBe(0)
   expect(dispatched).toBe(false)
@@ -167,6 +195,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   }, Date.parse(`${date}T19:00:00Z`))
   expect(await readArchivedTrade(recentDay)).toMatchObject({ id: '100', venue: 'OKX', size: 11 })
   expect(mirrorReads).toEqual([recentDay])
+  expect(mirrorManifests).toEqual([recentDay])
   expect(rawParts).toEqual([])
 
   await chart.getByRole('button', { name: '下载成交数据' }).click()
@@ -183,7 +212,9 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
   expect(await readArchivedTrade(day)).toMatchObject({ id: '100', venue: 'OKX', size: 11 })
   expect(mirrorReads).toEqual([recentDay, day])
+  expect(mirrorManifests).toEqual([recentDay, day])
   expect(rawParts).toEqual([day])
+  expect(archiveRequests).toBe(1)
   await chart.getByRole('button', { name: '下载成交数据' }).click()
   await dialog.getByLabel('锚点日期').fill(day)
   await dialog.getByLabel('往前天数').fill('0')

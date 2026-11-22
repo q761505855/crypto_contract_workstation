@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import {
   GitHubConflictError,
   GitHubContentsClient,
@@ -9,6 +10,10 @@ function jsonResponse(value: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+function blobSha(text: string): string {
+  return createHash('sha1').update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest('hex')
 }
 
 describe('GitHubContentsClient', () => {
@@ -48,14 +53,65 @@ describe('GitHubContentsClient', () => {
   })
 
   it('allows public scoped reads and rejects traversal and unauthenticated writes', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ type: 'file', path: 'projects/app/manifest.json', sha: 'a', encoding: 'base64', content: btoa('{}') }))
+    const fetcher = vi.fn<typeof fetch>(async input => String(input).includes('/git/ref/') ? new Response(null, { status: 404 }) :
+      jsonResponse({ type: 'file', path: 'projects/app/manifest.json', sha: 'a', encoding: 'base64', content: btoa('{}') }))
     const client = new GitHubContentsClient({ owner: 'alice', repository: 'backup', branch: 'main', root: 'projects/app' }, '', fetcher)
     expect((await client.getFile('manifest.json'))?.path).toBe('manifest.json')
-    expect(String(fetcher.mock.calls[0][0])).toContain('/contents/projects/app/manifest.json?')
+    expect(String(fetcher.mock.calls[1][0])).toContain('/contents/projects/app/manifest.json?')
     expect(fetcher.mock.calls[0][1]?.headers).not.toHaveProperty('Authorization')
     for (const path of ['../x', 'a\\b', '/x', 'a/%2e%2e/x']) await expect(client.getFile(path)).rejects.toThrow()
     await expect(client.putFile('x', new Uint8Array(), 'write')).rejects.toThrow(/Token/)
-    expect(fetcher).toHaveBeenCalledOnce()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('pins public files to the latest commit and retries an invalid mirror response on GitHub Raw', async () => {
+    const first = 'a'.repeat(40)
+    const second = 'b'.repeat(40)
+    const path = 'projects/app/config/preferences.json'
+    let head = first
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/git/ref/heads/')) return jsonResponse({ object: { sha: head } })
+      if (url.includes('/git/trees/')) {
+        expect(init?.credentials).toBe('omit')
+        expect(init?.headers).toBeUndefined()
+        const content = url.includes(first) ? 'before' : 'after'
+        return jsonResponse({ truncated: false, tree: [{ path, type: 'blob', mode: '100644', sha: blobSha(content), size: content.length }] })
+      }
+      expect(init?.credentials).toBe('omit')
+      expect(init?.headers).toBeUndefined()
+      if (url === `https://testingcf.jsdelivr.net/gh/alice/backup@${first}/${path}`) return new Response('before')
+      if (url === `https://testingcf.jsdelivr.net/gh/alice/backup@${second}/${path}`) return new Response('WRONG')
+      if (url === `https://raw.githubusercontent.com/alice/backup/${second}/${path}`) return new Response('after')
+      throw new Error(`Unexpected request ${url}`)
+    })
+    const client = new GitHubContentsClient({ owner: 'alice', repository: 'backup', branch: 'main', root: 'projects/app' }, 'token', fetcher)
+    const text = new TextDecoder()
+    expect(text.decode((await client.getFile('config/preferences.json'))?.bytes)).toBe('before')
+    head = second
+    const updated = await client.getFile('config/preferences.json')
+    expect(text.decode(updated?.bytes)).toBe('after')
+    expect(updated?.sha).toBe(blobSha('after'))
+    expect(await client.getFile('missing.json', { ref: second })).toBeNull()
+    expect(fetcher).toHaveBeenCalledTimes(7)
+  })
+
+  it('downloads private files through the authenticated GitHub API', async () => {
+    const commit = 'c'.repeat(40)
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/git/trees/')) {
+        expect(init?.credentials).toBe('omit')
+        expect(init?.headers).toBeUndefined()
+        return new Response(null, { status: 404 })
+      }
+      expect(url).toContain(`/contents/drawings.json?ref=${commit}`)
+      expect(init?.headers).toMatchObject({ Authorization: 'Bearer token' })
+      return jsonResponse({ type: 'file', path: 'drawings.json', sha: blobSha('{}'), encoding: 'base64', content: btoa('{}') })
+    })
+    const client = new GitHubContentsClient({ owner: 'alice', repository: 'backup', branch: 'main' }, 'token', fetcher)
+    expect(new TextDecoder().decode((await client.getFile('drawings.json', { ref: commit }))?.bytes)).toBe('{}')
+    expect(fetcher).toHaveBeenCalledTimes(2)
   })
 
   it('uses the authenticated raw contents API for large files at the same immutable ref', async () => {
@@ -119,6 +175,7 @@ describe('GitHubContentsClient', () => {
   it('reads and updates base64 file contents with the expected SHA', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
       .mockResolvedValueOnce(
         jsonResponse({
           type: 'file',
@@ -148,7 +205,7 @@ describe('GitHubContentsClient', () => {
       ),
     ).resolves.toBe('new-sha')
 
-    const [, putInit] = fetcher.mock.calls[1]
+    const [, putInit] = fetcher.mock.calls[2]
     expect(JSON.parse(String(putInit?.body))).toEqual({
       message: 'Update settings',
       content: btoa('updated'),

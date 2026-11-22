@@ -1,7 +1,7 @@
 import { openDB, type DBSchema } from 'idb'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, type BybitTrade } from '../bybit/trades'
 import { defaultStorageTarget } from '../../github-sync/default-storage'
-import type { GitHubRepositoryTarget } from '../../github-sync/github-client'
+import type { GitHubContentsClient, GitHubRepositoryTarget } from '../../github-sync/github-client'
 import { BybitArchive } from '../bybit/archive'
 import { compareTrades, okxTrade, type OkxInstrument } from './trades'
 
@@ -29,7 +29,7 @@ export class OkxArchive {
   private readonly missing = new Map<string, number>()
   private readonly reads = new Map<string, Promise<BybitTrade[]>>()
 
-  constructor(target: GitHubRepositoryTarget = defaultStorageTarget(), private readonly fetcher: typeof fetch = fetch, now = Date.now) {
+  constructor(target: GitHubRepositoryTarget | GitHubContentsClient = defaultStorageTarget(), private readonly fetcher: typeof fetch = fetch, now = Date.now) {
     this.cloud = new BybitArchive<string>(target, fetcher, now, { root: 'data/okx-trades',
       firstDay: () => '2021-09-01', allowEmpty: true })
   }
