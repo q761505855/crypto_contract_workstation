@@ -3,6 +3,11 @@ import { isChartColor } from './colors'
 
 export const VOLUME_PROFILE_TOOL = 'tradeVolumeProfile'
 export const BIG_TRADES = 'BIG_TRADES'
+export type BigTradeMode = 'aggregate' | 'volume'
+
+export function bigTradeMode(styles: unknown): BigTradeMode {
+  return (styles as { bubbleMode?: unknown } | null | undefined)?.bubbleMode === 'aggregate' ? 'aggregate' : 'volume'
+}
 export const DEFAULT_BIG_TRADE_NOTIONAL = 25_000
 const DEFAULT_BIG_TRADE_COLORS = ['#49d4ae6b', '#ff827e6b', '#49d4aee6', '#ff827ee6'] as const
 
@@ -17,6 +22,9 @@ export function bigTradeColors(styles: unknown) {
 export function validateBigTradeStyles(styles: unknown): void {
   if (styles === null) return
   if (typeof styles !== 'object' || Array.isArray(styles)) throw new Error('BIG_TRADES.styles 无效')
+  if ('bubbleMode' in styles && styles.bubbleMode !== 'aggregate' && styles.bubbleMode !== 'volume') {
+    throw new Error('BIG_TRADES.styles.bubbleMode 必须是 aggregate 或 volume')
+  }
   if ('bubbleColors' in styles) {
     const colors = styles.bubbleColors
     if (!Array.isArray(colors) || colors.length !== DEFAULT_BIG_TRADE_COLORS.length ||

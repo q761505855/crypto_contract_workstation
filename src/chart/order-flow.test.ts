@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { validateDrawings } from './drawings'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
-import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator, bigTradeColors } from './order-flow'
+import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator, bigTradeColors, bigTradeMode } from './order-flow'
+import { AccumulatedHour, displayedTradeBubbles, includeHour, type TradeBar } from './order-flow-bars'
 import { drawVolumeProfile } from './order-flow-renderers'
 import type { BybitTrade } from '../market-data/bybit/trades'
 
@@ -56,6 +57,47 @@ describe('Bybit 成交指标', () => {
       expect(() => validateChartIndicatorPreferences({ ...settings, main: [{ ...settings.main[0], styles: { bubbleColors } }] }))
         .toThrow(/BIG_TRADES.*bubbleColors/)
     }
+  })
+
+  it('气泡模式默认逐笔，旧档缺少模式时沿用本机选择', () => {
+    const legacy = { schemaVersion: 1, main: [{ name: BIG_TRADES, calcParams: [0], visible: false, styles: {} }], sub: [] }
+    expect(bigTradeMode(validateChartIndicatorPreferences(legacy).main[0].styles)).toBe('volume')
+    const aggregate = { ...legacy, main: [{ ...legacy.main[0], styles: { bubbleMode: 'aggregate' } }] }
+    expect(validateChartIndicatorPreferences(legacy, validateChartIndicatorPreferences(aggregate))).toEqual(aggregate)
+    const volume = { ...legacy, main: [{ ...legacy.main[0], styles: { bubbleMode: 'volume' } }] }
+    expect(validateChartIndicatorPreferences(volume, validateChartIndicatorPreferences(aggregate))).toEqual(volume)
+    for (const bubbleMode of [null, '', 0, false, [], {}, 'Aggregate']) {
+      expect(() => validateChartIndicatorPreferences({ ...legacy, main: [{ ...legacy.main[0], styles: { bubbleMode } }] }))
+        .toThrow(/BIG_TRADES.*bubbleMode/)
+    }
+  })
+
+  it('Aggregate 只合并当前可见范围内同交易所、同毫秒、同价同向的成交', () => {
+    const samples = new AccumulatedHour()
+    const first = { ...trade(100, 2, 'buy'), id: 'first' }
+    const second = { ...first, id: 'second', timeUs: 1100 }
+    const otherTrades = [
+      { ...second, id: 'sell', side: 'sell' as const },
+      { ...second, id: 'different-price', price: 101 },
+      { ...second, id: 'okx', venue: 'OKX' as const },
+      { ...second, id: 'next-ms', timeUs: 2000 },
+    ]
+    for (const row of [first, second, ...otherTrades]) samples.add(row, 0, 0)
+    const read = (cursor: number) => {
+      const bar: TradeBar = { cursor, volume: 0, pointRanges: [], complete: true }
+      // Two separate data ranges may contribute to the same millisecond.
+      includeHour(bar, samples, 0, 0, Math.min(1100, cursor))
+      if (cursor > 1100) includeHour(bar, samples, 0, 1100, cursor)
+      return bar
+    }
+    expect([...displayedTradeBubbles(read(1100), 'aggregate', 300)]).toEqual([])
+    const bar = read(3000)
+    expect([...displayedTradeBubbles(bar, 'aggregate', 300)]).toEqual([{ trade: { ...first, size: 4 }, count: 2 }])
+    expect([...displayedTradeBubbles(bar, 'aggregate', 401)]).toEqual([])
+    expect([...displayedTradeBubbles(bar, 'aggregate', 0)].map(point => point.trade.id))
+      .toEqual(['first', ...otherTrades.map(row => row.id)])
+    expect([...displayedTradeBubbles(bar, 'volume', 0)].map(point => point.trade)).toEqual([first, second, ...otherTrades])
+    expect(bar.volume).toBe(12)
   })
 
   it('成交量和 Delta 横条使用半透明颜色，保留价位线', () => {

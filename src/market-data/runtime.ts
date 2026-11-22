@@ -15,13 +15,16 @@ import { GitHubContentsClient } from '../github-sync/github-client'
 import type { ConfigAutoSync } from '../github-sync/config-auto-sync'
 import { DrawingStore } from '../chart/drawings'
 import { DrawingAutoSync } from '../github-sync/drawing-auto-sync'
+import { OkxMarketService } from './okx/market'
+import type { PriceSource } from './price-source-preferences'
 
 export interface MarketDataRuntime {
   accountSelection: CTraderAccountSelection
   datafeed: CTraderDatafeed
   replayDatafeed: CTraderReplayDatafeed
   replayTicks: CTraderReplayTicks
-  service: CTraderMarketService
+  service: CTraderMarketService | OkxMarketService
+  forPriceSource(source: PriceSource): MarketDataRuntime
   replaySessions: IndexedDbReplaySessionStore
   simulationStates: IndexedDbSimulationStateStore
   backups: WorkstationBackupService
@@ -43,7 +46,7 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
   const drawings = new DrawingStore()
   const backups = new WorkstationBackupService(CTRADER_DATABASE_NAME, ctraderStorage, Date.now, drawings, { includeMarketHistory: false })
 
-  return {
+  const runtime: MarketDataRuntime = {
     accountSelection,
     datafeed,
     replayDatafeed: new CTraderReplayDatafeed(datafeed, service, replayTicks),
@@ -56,6 +59,16 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
     defaultGitHubClient,
     drawings,
     drawingSync: new DrawingAutoSync(drawings, defaultGitHubClient),
-    disposeMarketConnection: () => service.dispose(),
+    forPriceSource: source => {
+      if (source === 'ctrader') return runtime
+      const market = okx ??= new OkxMarketService()
+      const live = new CTraderDatafeed(market)
+      const ticks = new CTraderReplayTicks(market)
+      return { ...runtime, service: market, datafeed: live, replayTicks: ticks,
+        replayDatafeed: new CTraderReplayDatafeed(live, market, ticks) }
+    },
+    disposeMarketConnection: () => { service.dispose(); okx?.dispose() },
   }
+  let okx: OkxMarketService | undefined
+  return runtime
 }

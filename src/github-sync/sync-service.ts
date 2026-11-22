@@ -322,7 +322,7 @@ export class GitHubSyncService {
       const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
       if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
       if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
-      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'ctraderAccount', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'okxSelectedSymbol', 'ctraderAccount', 'priceSource', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
         if (value[key] !== undefined) preferences[key] = value[key]
       }
     }
@@ -663,7 +663,9 @@ export class GitHubSyncService {
           binanceRestBaseUrl?: unknown
           chartIndicators?: unknown
           selectedSymbol?: unknown
+          okxSelectedSymbol?: unknown
           ctraderAccount?: unknown
+          priceSource?: unknown
           pinnedPeriods?: unknown
           workspace?: unknown
           candleType?: unknown
@@ -701,6 +703,12 @@ export class GitHubSyncService {
         }
         if (value.ctraderAccount !== undefined) {
           preferences.ctraderAccount = value.ctraderAccount as BackupPreferences['ctraderAccount']
+        }
+        if (value.priceSource !== undefined) {
+          preferences.priceSource = value.priceSource as BackupPreferences['priceSource']
+        }
+        if (value.okxSelectedSymbol !== undefined) {
+          preferences.okxSelectedSymbol = value.okxSelectedSymbol as BackupPreferences['okxSelectedSymbol']
         }
         if (value.chartIndicators !== undefined) {
           preferences.chartIndicators =
@@ -750,7 +758,9 @@ export class GitHubSyncService {
     const symbolMap = new Map<string, ReplaySession['symbol']>()
     if (!this.experiment) {
       for (const session of sessions) {
-        if (session.marketSource !== 'ctrader') symbolMap.set(session.symbol.ticker, session.symbol)
+        if (session.marketSource === undefined || session.marketSource === 'binance') {
+          symbolMap.set(session.symbol.ticker, session.symbol)
+        }
       }
     }
     for (const candle of tradeCandles) {

@@ -1,10 +1,11 @@
 import { registerIndicator, registerOverlay, type IndicatorDrawParams, type IndicatorTooltipData,
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
-import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, type VolumeProfile } from './order-flow'
+import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, bigTradeMode,
+  type BigTradeMode, type VolumeProfile } from './order-flow'
 import type { TradeRange } from '../market-data/bybit/combined-source'
 import type { BybitTrade } from '../market-data/bybit/trades'
 import { drawingIndexAt } from './drawing-coordinates'
-import { tradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
+import { displayedTradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { nextOpenTime } from '../market-data/intervals'
 
 export const CANDLE_PANE = 'candle_pane'
@@ -15,6 +16,7 @@ const POC = '#ffcc70'
 export interface ProfileDisplay { profile?: VolumeProfile; message?: string }
 export interface BubbleDisplay {
   bars?: ReadonlyMap<number, TradeBar>
+  mode?: BigTradeMode
   updating?: TradeRange
   timeframe?: string
   projectToCandle?: boolean
@@ -43,7 +45,7 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
   const width = right - x
   const figures: OverlayFigure[] = [{
     type: 'rect', attrs: { x, y, width, height },
-    styles: { style: 'stroke_fill', color: 'rgba(99,145,208,0.07)', borderColor: 'rgba(151,184,226,0.65)', borderSize: 1 },
+    styles: { style: 'stroke_fill' },
   }]
   const { profile, message } = overlay.extendData as ProfileDisplay ?? {}
   const text = (label: string, labelX: number, labelY: number, color: string) => {
@@ -87,7 +89,8 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
 
 function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, kLineDataList }: IndicatorDrawParams): boolean {
   const display = indicator.extendData as BubbleDisplay | undefined
-  if (!display?.timeframe || (!display.bars?.size && !display.updating)) return true
+  const mode = bigTradeMode(indicator.styles)
+  if (!display?.timeframe || display.mode !== mode || (!display.bars?.size && !display.updating)) return true
   const minimum = indicator.calcParams[0] as number
   const colors = bigTradeColors(indicator.styles)
   ctx.save()
@@ -124,7 +127,7 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
     const bar = display.bars?.get(candle.timestamp)
     if (!bar?.firstPrice) continue
     const end = nextOpenTime(candle.timestamp, display.timeframe)
-    for (const point of tradeBubbles(bar)) {
+    for (const point of displayedTradeBubbles(bar, mode, minimum)) {
       const { trade } = point
       const radius = tradeBubbleRadius(trade, minimum)
       const y = yAxis.convertToPixel(tradeBubblePrice(trade, bar, candle.open, display.projectToCandle))
@@ -143,12 +146,15 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
 }
 
 export function registerOrderFlow(): void {
-  registerOverlay({ name: VOLUME_PROFILE_TOOL, totalStep: 3, needDefaultPointFigure: true, createPointFigures: drawVolumeProfile })
+  registerOverlay({
+    name: VOLUME_PROFILE_TOOL, totalStep: 3, needDefaultPointFigure: true, createPointFigures: drawVolumeProfile,
+    styles: { rect: { color: 'rgba(99,145,208,0.07)', borderColor: 'rgba(151,184,226,0.65)', borderSize: 1 } },
+  })
   registerIndicator({
     name: BIG_TRADES, shortName: bigTradesTitle, calcParams: [DEFAULT_BIG_TRADE_NOTIONAL], figures: [],
     calc: () => [], draw: drawBigTrades,
     createTooltipDataSource: ({ indicator, defaultStyles }): IndicatorTooltipData => ({
-      name: bigTradesTitle, calcParamsText: `${indicator.calcParams[0]} USDT`,
+      name: bigTradesTitle, calcParamsText: `${bigTradeMode(indicator.styles) === 'aggregate' ? 'Aggregate' : 'Volume'} · ${indicator.calcParams[0]} USDT`,
       icons: defaultStyles.tooltip.icons.filter(icon => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
       values: indicator.extendData
         ? ((indicator.extendData as BubbleDisplay).message ? [{ title: '', value: (indicator.extendData as BubbleDisplay).message! }] : [])

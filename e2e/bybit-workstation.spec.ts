@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
   }))
 })
 
-test('大单气泡样式保存后可刷新恢复，也支持配置导出和导入', async ({ page }) => {
+test('大单气泡模式和样式保存后可刷新恢复，也支持配置导出和导入', async ({ page }) => {
   await connectFixture(page)
   await page.addInitScript(() => {
     const fillText = CanvasRenderingContext2D.prototype.fillText
@@ -43,6 +43,7 @@ test('大单气泡样式保存后可刷新恢复，也支持配置导出和导�
   const chart = page.getByTestId('chart-host')
   const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
   const buyFill = settings.getByLabel('主动买入填充', { exact: true })
+  const bubbleMode = settings.getByLabel('气泡模式', { exact: true })
   const buyTransparency = settings.getByLabel('主动买入填充透明度')
   const confirm = page.getByText('确定', { exact: true })
   const openSettings = async () => {
@@ -61,15 +62,18 @@ test('大单气泡样式保存后可刷新恢复，也支持配置导出和导�
   await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
   await openSettings()
+  await expect(bubbleMode).toHaveValue('volume')
   await expect(buyFill).toHaveValue('#49d4ae')
   await expect(buyTransparency).toHaveValue('58')
   await buyFill.fill('#123456')
+  await bubbleMode.selectOption('aggregate')
   await buyTransparency.fill('100')
   await settings.getByLabel('主动卖出描边透明度').fill('0')
   await confirm.click()
 
   await page.reload()
   await openSettings()
+  await expect(bubbleMode).toHaveValue('aggregate')
   await expect(buyFill).toHaveValue('#123456')
   await expect(buyTransparency).toHaveValue('100')
   await expect(settings.getByLabel('主动卖出描边透明度')).toHaveValue('0')
@@ -83,9 +87,11 @@ test('大单气泡样式保存后可刷新恢复，也支持配置导出和导�
   ])
   const archive = JSON.parse(await readFile((await download.path())!, 'utf8'))
   const styles = archive.data.preferences.chartIndicators.main.find((setting: { name: string }) => setting.name === 'BIG_TRADES').styles
+  expect(styles.bubbleMode).toBe('aggregate')
   expect(styles.bubbleColors.map(({ color }: { color: string }) => color))
     .toEqual(['#12345600', '#ff827e6b', '#49d4aee6', '#ff827e'])
   styles.bubbleColors[0].color = '#654321'
+  styles.bubbleMode = 'volume'
   page.once('dialog', dialog => dialog.accept())
   await page.getByTestId('import-backup-file').setInputFiles({
     name: 'big-trades-style.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)),
@@ -93,6 +99,7 @@ test('大单气泡样式保存后可刷新恢复，也支持配置导出和导�
   await expect(page.getByTestId('backup-status')).toContainText('刷新页面')
   await page.reload()
   await openSettings()
+  await expect(bubbleMode).toHaveValue('volume')
   await expect(buyFill).toHaveValue('#654321')
   await expect(buyTransparency).toHaveValue('0')
 })
@@ -481,7 +488,7 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   let releasePart!: () => void
   const firstPart = new Promise<void>(resolve => { releasePart = resolve })
   const archivePart = gzipSync(Array.from({ length: archivedRows }, (_, index) =>
-    `${archivedSecond}.${String(index).padStart(3, '0')},archive-${index},Buy,1.1,100000\n`).join(''))
+    `${archivedSecond}.${String(index).padStart(6, '0')},archive-${index},Buy,1.1,100000\n`).join(''))
   await page.clock.setFixedTime(now)
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= start })
   await installViewportProbe(page)
@@ -595,4 +602,25 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   await loadArchive()
   await expect.poll(async () => (await bubbleIds()).length).toBe(400)
   expect(partReads).toBe(reads)
+
+  await page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    coreChart.overrideIndicator({ name: 'BIG_TRADES', calcParams: [150_000], styles: { bubbleMode: 'aggregate' } }, 'candle_pane')
+  })
+  const timestamp = Math.floor(archivedSecond / (15 * 60)) * (15 * 60 * 1000)
+  await expect(async () => {
+    const position = await page.evaluate(stamp => {
+      const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+      const indicator = coreChart.getIndicatorByPaneId('candle_pane', 'BIG_TRADES') as import('klinecharts').Indicator
+      if (indicator.extendData?.mode !== 'aggregate' || !indicator.extendData.bars?.get(stamp)?.pointRanges.length) return null
+      const pane = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
+      const point = coreChart.convertToPixel({ timestamp: stamp, value: 1.1 }, { paneId: 'candle_pane' }) as { x: number; y: number }
+      return { x: pane.left + point.x, y: pane.top + point.y }
+    }, timestamp)
+    expect(position).toBeTruthy()
+    await page.mouse.move(position!.x, position!.y)
+    await expect(chart.locator('.bybit-trade-tooltip')).toContainText('400 笔', { timeout: 500 })
+  }).toPass({ timeout: 10_000 })
+  // A filtered Volume cache cannot supply below-threshold trades for Aggregate.
+  expect(partReads).toBe(reads + 1)
 })

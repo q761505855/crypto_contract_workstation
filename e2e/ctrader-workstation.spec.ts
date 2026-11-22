@@ -6,6 +6,131 @@ import { config, connectFixture } from './ctrader-fixture'
 
 const minute = 60_000
 
+test('edits, locks, unlocks and deletes a selected drawing', async ({ page }) => {
+  const now = Date.UTC(2026, 10, 20, 14, 45, 30)
+  await page.clock.setFixedTime(now)
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= now - 180 * 15 * minute })
+  const probe = await installViewportProbe(page)
+  await page.goto('./')
+  await expect(page.getByTestId('chart-host').locator('canvas').first()).toBeVisible()
+  await page.waitForFunction(() => '__viewportTestAdapter' in window)
+  await expect.poll(async () => (await probe()).timestamps.length).toBeGreaterThan(0)
+
+  const id = await page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    return coreChart.createOverlay({ name: 'horizontalStraightLine' }) as string
+  })
+  expect(id).toMatch(/^drawing-/)
+  const detail = () => page.evaluate(id => {
+    const adapter = (window as unknown as { __viewportTestAdapter?: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    if (!adapter) return null
+    const { coreChart } = adapter
+    const drawing = coreChart.getOverlayById(id)
+    const bounds = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
+    const point = drawing?.points[0]
+    const x = bounds.left + Math.round(bounds.width * 0.67)
+    const y = point ? bounds.top + (coreChart.convertToPixel(point, { paneId: 'candle_pane' }) as { y: number }).y
+      : bounds.top + Math.round(bounds.height * 0.55)
+    return { x, y, exists: !!drawing, value: point?.value, locked: drawing?.lock, style: drawing?.styles?.line }
+  }, id)
+
+  const start = (await detail())!
+  await page.mouse.click(start.x, start.y)
+  const toolbar = page.getByRole('group', { name: '选中绘图控制栏' })
+  await expect(toolbar).toBeVisible()
+  await toolbar.getByLabel('绘图颜色').fill('#ff5533')
+  await toolbar.getByLabel('绘图线宽').selectOption('3')
+  await toolbar.getByLabel('绘图线型').selectOption('dashed')
+  await toolbar.getByRole('button', { name: '锁定绘图', exact: true }).click()
+  await expect.poll(detail).toMatchObject({ locked: true, style: { color: '#ff5533', size: 3, style: 'dashed' } })
+
+  await page.reload()
+  await page.waitForFunction(() => '__viewportTestAdapter' in window)
+  await expect.poll(detail).toMatchObject({ locked: true, style: { color: '#ff5533', size: 3, style: 'dashed' } })
+  await expect(toolbar).toHaveCount(0)
+  const locked = (await detail())!
+  const latest = (await probe()).rightmost!
+  await page.mouse.move(locked.x, locked.y)
+  await page.mouse.down()
+  await expect(toolbar).toHaveCount(0)
+  await page.mouse.move(locked.x + 180, locked.y, { steps: 6 })
+  await page.mouse.up()
+  await expect.poll(async () => (await probe()).rightmost ?? latest, { timeout: 3_000 }).toBeLessThan(latest)
+  await expect(toolbar).toHaveCount(0)
+  expect((await detail())?.value).toBe(locked.value)
+
+  const restored = (await detail())!
+  await page.mouse.click(restored.x, restored.y)
+  await expect(toolbar.getByRole('button', { name: '解锁绘图', exact: true })).toBeEnabled()
+  const drag = async () => {
+    await page.mouse.move(restored.x, restored.y)
+    await page.mouse.down()
+    await page.mouse.move(restored.x, restored.y + 25, { steps: 5 })
+    await page.mouse.up()
+  }
+  await drag()
+  expect((await detail())?.value).toBe(restored.value)
+  await toolbar.getByRole('button', { name: '解锁绘图', exact: true }).click()
+  await expect.poll(detail).toMatchObject({ locked: false })
+  await drag()
+  await expect.poll(async () => (await detail())?.value).not.toBe(restored.value)
+  await page.mouse.click(restored.x, restored.y - 25)
+  await expect(toolbar).toHaveCount(0)
+  const moved = (await detail())!
+  await page.mouse.click(moved.x, moved.y)
+  await toolbar.getByRole('button', { name: '删除绘图' }).click()
+  await expect(toolbar).toHaveCount(0)
+  await expect.poll(detail).toMatchObject({ exists: false })
+})
+
+test.describe('绘图触屏操作', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } })
+
+  test('拖过锁定绘图平移图表，轻点才选中', async ({ page }) => {
+    const now = Date.UTC(2026, 10, 20, 14, 45, 30)
+    const candleStart = now - 30_000
+    await page.clock.setFixedTime(now)
+    await connectFixture(page, false, { historyAvailable: stamp => stamp >= now - 180 * 15 * minute })
+    const probe = await installViewportProbe(page)
+    await page.addInitScript(timestamp => {
+      const saved = { epoch: 'initial', drawings: [{ id: 'drawing-touch-locked',
+        scope: 'live:CTRADER:EURUSD', name: 'horizontalStraightLine', locked: true,
+        points: [{ timestamp, value: 1.10035 }] }] }
+      localStorage.setItem('crypto-contract-workstation:ctrader:chart.drawings.v1', JSON.stringify({
+        local: saved, base: saved, cloudBytes: null,
+      }))
+    }, candleStart)
+    await page.goto('./')
+    await page.waitForFunction(() => {
+      const adapter = (window as unknown as { __viewportTestAdapter?: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+      return adapter?.coreChart.getOverlayById('drawing-touch-locked')?.lock === true
+    })
+    const point = () => page.evaluate(() => {
+      const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+      const bounds = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
+      const anchor = coreChart.getOverlayById('drawing-touch-locked')!.points[0]
+      const pixel = coreChart.convertToPixel(anchor, { paneId: 'candle_pane' }) as { y: number }
+      return { x: Math.round(bounds.left + bounds.width * 0.28), y: Math.round(bounds.top + pixel.y), value: anchor.value }
+    })
+    const start = await point()
+    const latest = (await probe()).rightmost!
+    const toolbar = page.getByRole('group', { name: '选中绘图控制栏' })
+    const client = await page.context().newCDPSession(page)
+    await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: start.x, y: start.y }] })
+    for (const dx of [20, 50, 90, 150]) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start.x + dx, y: start.y }] })
+    }
+    await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await expect.poll(async () => (await probe()).rightmost ?? latest, { timeout: 3_000 }).toBeLessThan(latest)
+    await expect(toolbar).toHaveCount(0)
+
+    const next = await point()
+    expect(next.value).toBe(start.value)
+    await page.touchscreen.tap(next.x, next.y)
+    await expect(toolbar.getByRole('button', { name: '解锁绘图', exact: true })).toBeEnabled()
+  })
+})
+
 test('loads cTrader native intervals and keeps cloud sync limited to application archives', async ({ page }) => {
   const { messages, legacyRequests } = await connectFixture(page)
   await page.goto('./')

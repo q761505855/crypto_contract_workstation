@@ -2,6 +2,7 @@ import Decimal from 'decimal.js'
 import type { MarketCandle } from '../market-data/models'
 import type { ReplayOrderSettings, ReplaySession, ReplayTradingConfig } from '../replay/models'
 import { cTraderCommission, cTraderLeverage, cTraderMargin, cTraderSwap, cTraderTotalMargin, quoteToAccount, sameCTraderTradingTerms, validateCTraderTradingTerms } from './ctrader-trading'
+import { okxMaximumLeverage, okxRiskTier, sameOkxTradingTerms, validateOkxTradingTerms, type OkxReplayRisk } from './okx-trading'
 import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage, normalizeSimulationStatePrices } from './models'
 import type {
   CandleProcessResult,
@@ -90,6 +91,14 @@ export function validateSimulationConfig(
   )
   if (riskRates.greaterThanOrEqualTo(1)) {
     throw new Error('维持保证金率与强平费用率之和必须小于 1')
+  }
+  if (config.okx !== undefined) {
+    validateOkxTradingTerms(config.okx)
+    if (config.ctrader !== undefined || config.leverage > okxMaximumLeverage(config.okx) ||
+        slippageRate.gte(1) || !new Decimal(config.maintenanceMarginRate).eq(config.okx.tiers[0].maintenanceMarginRate) ||
+        config.okx.tiers.some(tier => new Decimal(tier.maintenanceMarginRate).plus(config.liquidationFeeRate).gte(1))) {
+      throw new Error('OKX 模拟杠杆、滑点或维持保证金率与合约规格不符')
+    }
   }
   if (config.ctrader !== undefined) {
     validateCTraderTradingTerms(config.ctrader)
@@ -192,6 +201,11 @@ export class SimulationEngine {
     if (!sameCTraderTradingTerms(state.config.ctrader, session.tradingConfig.ctrader)) {
       throw new Error('模拟交易状态与回放会话的 IC Markets 交易规格不匹配')
     }
+    if (!sameOkxTradingTerms(state.config.okx, session.tradingConfig.okx) || (state.config.okx &&
+        (state.config.feeRate !== session.tradingConfig.feeRate ||
+          state.config.liquidationFeeRate !== session.tradingConfig.liquidationFeeRate))) {
+      throw new Error('模拟交易状态与回放会话的 OKX 交易规格不匹配')
+    }
     return new SimulationEngine(
       state,
       {
@@ -213,9 +227,13 @@ export class SimulationEngine {
   setOrderSettings({ leverage, slippageRate }: ReplayOrderSettings): void {
     const previous = this.state.config
     if (!previous.ctrader && leverage !== previous.leverage) {
-      validateAdjustableLeverage(leverage)
+      if (!previous.okx) validateAdjustableLeverage(leverage)
       if (leverage < minimumContractLeverage(this.state)) {
         throw new Error('逐仓有持仓时不能降低杠杆')
+      }
+      if (previous.okx && this.state.positions.some(position =>
+        leverage > (okxRiskTier(previous.okx!, new Decimal(position.quantity))?.maxLeverage ?? 0))) {
+        throw new Error('杠杆超过 OKX 当前持仓档位上限')
       }
     }
     if (slippageRate !== previous.slippageRate && nonNegative(slippageRate, '滑点率').gte(1)) {
@@ -336,6 +354,7 @@ export class SimulationEngine {
         takeProfitActiveAfterTime: null,
         stopLossActiveAfterTime: null,
         ...(this.state.config.ctrader?.swap ? { swapCheckedThrough: candle.closeTime, swapPeriods: 0 } : {}),
+        ...(this.state.config.okx ? { fundingCheckedThrough: candle.closeTime } : {}),
       }
     } else {
       const oldQuantity = decimal(existing.quantity, '持仓数量')
@@ -399,6 +418,8 @@ export class SimulationEngine {
     const requested = positive(quantityValue, '减仓数量')
     const quantity = this.roundQuantity(requested)
     if (this.state.config.ctrader && !requested.eq(quantity)) throw new Error('减仓手数不符合 IC Markets 手数步长')
+    const okx = this.state.config.okx
+    if (okx && !requested.eq(quantity)) throw new Error('减仓张数不符合 OKX 下单步长')
     if (quantity.lessThanOrEqualTo(0)) throw new Error('按当前精度计算后的减仓数量为 0')
     if (quantity.greaterThan(currentQuantity)) {
       throw new Error('减仓数量不能大于当前持仓数量')
@@ -407,6 +428,10 @@ export class SimulationEngine {
     const terms = this.state.config.ctrader
     if (terms && !isFullClose && (quantity.lt(terms.minQuantity) || currentQuantity.minus(quantity).lt(terms.minQuantity))) {
       throw new Error('减仓数量和剩余仓位须满足 IC Markets 最小成交量')
+    }
+    if (okx && !isFullClose) {
+      const minimum = new Decimal(okx.minContracts).mul(okx.contractValue)
+      if (quantity.lt(minimum) || currentQuantity.minus(quantity).lt(minimum)) throw new Error('减仓和剩余仓位须满足 OKX 最小张数')
     }
     const resolvedAction: TradeAction = isFullClose ? 'close' : action
     return this.closeQuantity(
@@ -603,30 +628,53 @@ export class SimulationEngine {
     return step.mul(low)
   }
 
-  processCandle(tradeCandle: MarketCandle, sameTimeTick = false): CandleProcessResult {
+  processCandle(tradeCandle: MarketCandle, sameTimeTick = false, okxRisk?: OkxReplayRisk): CandleProcessResult {
     let exitAction: TradeAction | null = null
     const riskCheckTime = tradeCandle.openTime + Number(sameTimeTick)
     if (this.state.config.ctrader) {
       this.accrueSwap(tradeCandle)
       if (this.processStopOut(tradeCandle, riskCheckTime)) exitAction = 'liquidation'
     }
+    if (this.state.config.okx && okxRisk) this.accrueFunding(tradeCandle, okxRisk)
     // Each side is evaluated independently, even if the other side exits on this candle.
     for (const position of [...this.state.positions]) {
-      const action = this.processPositionCandle(position, tradeCandle, riskCheckTime)
+      const action = this.processPositionCandle(position, tradeCandle, riskCheckTime, okxRisk?.mark)
       if (action === 'liquidation' || (action === 'stop_loss' && exitAction !== 'liquidation') || exitAction === null) {
         exitAction = action ?? exitAction
       }
     }
     this.recalculate(positive(tradeCandle.close, '当前成交价格'), tradeCandle.openTime)
-    this.state.warning = null
-    return { exitAction, warning: null }
+    this.state.warning = okxRisk?.warning ?? null
+    return { exitAction, warning: this.state.warning }
   }
 
-  private processPositionCandle(position: SimulationPosition, tradeCandle: MarketCandle, riskCheckTime: number): TradeAction | null {
+  private accrueFunding(candle: MarketCandle, risk: OkxReplayRisk): void {
+    for (const position of this.state.positions) {
+      const quantity = new Decimal(position.quantity)
+      let margin = new Decimal(position.isolatedMargin)
+      let last = position.fundingCheckedThrough ?? position.openedAt
+      for (const settlement of risk.funding) {
+        if (settlement.timestamp <= last || settlement.timestamp > candle.closeTime) continue
+        const amount = quantity.mul(settlement.price).mul(settlement.rate).mul(position.side === 'long' ? -1 : 1)
+        if (!amount.isZero()) this.applyWalletChange(amount, 'funding', settlement.timestamp)
+        margin = Decimal.max(0, margin.plus(amount))
+        last = settlement.timestamp
+      }
+      position.fundingCheckedThrough = Math.max(last, candle.closeTime)
+      if (!margin.eq(position.isolatedMargin)) {
+        position.isolatedMargin = text(margin)
+        position.liquidationPrice = text(this.roundPrice(this.liquidationPrice(position.side, quantity,
+          new Decimal(position.entryPrice), margin)))
+      }
+    }
+  }
+
+  private processPositionCandle(position: SimulationPosition, tradeCandle: MarketCandle, riskCheckTime: number,
+    mark?: MarketCandle): TradeAction | null {
     if (
       !this.state.config.ctrader &&
       riskCheckTime > position.riskActiveAfterTime &&
-      this.liquidationTouched(position, tradeCandle)
+      this.liquidationTouched(position, mark ?? tradeCandle)
     ) {
       const trigger = decimal(position.liquidationPrice, '预估强平价')
       const open = decimal(tradeCandle.open, 'K 线开盘价')
@@ -636,7 +684,7 @@ export class SimulationEngine {
           : Decimal.max(trigger, open)
       this.closeTriggered(
         position,
-        exitPrice,
+        mark ? Decimal.max(tradeCandle.low, Decimal.min(tradeCandle.high, exitPrice)) : exitPrice,
         trigger,
         tradeCandle.openTime,
         'liquidation',
@@ -737,6 +785,30 @@ export class SimulationEngine {
         throw new Error(`IC Markets 单笔下单范围为 ${min.toString()}–${max.toString()} 手`)
       }
       return { quantity, margin: marginFor(quantity) }
+    }
+    const okx = this.state.config.okx
+    if (okx) {
+      const { leverage } = this.state.config
+      const value = new Decimal(okx.contractValue)
+      const step = new Decimal(okx.contractStep)
+      const current = new Decimal(this.findPosition(side)?.quantity ?? 0)
+      const margin = size.margin?.trim()
+      const contracts = size.lots?.trim()
+      const quantityInput = size.quantity?.trim()
+      if ([margin, contracts, quantityInput].filter(Boolean).length !== 1) throw new Error('请填写保证金金额或合约张数')
+      const eligible = okx.tiers.filter(tier => tier.maxLeverage >= leverage).at(-1)
+      const limit = Decimal.min(okx.maxOrderContracts, new Decimal(eligible?.maxContracts ?? 0).minus(current.div(value)))
+      let count: Decimal
+      if (margin) {
+        const maximum = Decimal.min(positive(margin, '保证金金额').mul(leverage).div(fillPrice).div(value), limit)
+        count = maximum.div(step).floor().mul(step)
+      } else {
+        count = contracts ? positive(contracts, '下单张数') : positive(quantityInput!, '下单数量').div(value)
+        if (!count.mod(step).isZero()) throw new Error(`下单张数必须符合 ${step} 张的步长`)
+      }
+      if (count.lt(okx.minContracts) || count.gt(limit)) throw new Error(`OKX 当前杠杆及持仓下可下单 ${okx.minContracts}–${Decimal.max(0, limit)} 张`)
+      const quantity = count.mul(value)
+      return { quantity, margin: quantity.mul(fillPrice).div(leverage) }
     }
     const hasMargin = size.margin !== undefined && size.margin.trim() !== ''
     const hasQuantity =
@@ -1005,6 +1077,7 @@ export class SimulationEngine {
     let unrealized = ZERO
     for (const position of this.state.positions) {
       const quantity = decimal(position.quantity, '持仓数量')
+      if (this.state.config.okx) position.maintenanceMarginRate = this.maintenanceRate(quantity)
       const positionPnl = this.positionPnl(position, lastPrice, quantity)
       unrealized = unrealized.plus(positionPnl)
       position.lastPrice = text(this.roundPrice(lastPrice))
@@ -1086,7 +1159,7 @@ export class SimulationEngine {
   ): Decimal {
     if (this.state.config.ctrader) return ZERO
     const maintenance = decimal(
-      this.state.config.maintenanceMarginRate,
+      this.maintenanceRate(quantity),
       '维持保证金率',
     )
     const liquidationFee = decimal(
@@ -1107,6 +1180,11 @@ export class SimulationEngine {
       .mul(entryPrice)
       .plus(isolatedMargin)
       .div(quantity.mul(Decimal.add(1, rates)))
+  }
+
+  private maintenanceRate(quantity: Decimal): string {
+    const terms = this.state.config.okx
+    return (terms && okxRiskTier(terms, quantity)?.maintenanceMarginRate) ?? this.state.config.maintenanceMarginRate
   }
 
   private liquidationTouched(
@@ -1142,6 +1220,8 @@ export class SimulationEngine {
   }
 
   private roundPrice(value: Decimal): Decimal {
+    const okx = this.state.config.okx
+    if (okx) return value.div(okx.tickSize).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).mul(okx.tickSize)
     return value.toDecimalPlaces(
       this.pricePrecision,
       Decimal.ROUND_HALF_UP,
@@ -1151,6 +1231,11 @@ export class SimulationEngine {
   private roundQuantity(value: Decimal): Decimal {
     const terms = this.state.config.ctrader
     if (terms) return value.div(terms.quantityStep).floor().mul(terms.quantityStep)
+    const okx = this.state.config.okx
+    if (okx) {
+      const step = new Decimal(okx.contractStep).mul(okx.contractValue)
+      return value.div(step).floor().mul(step)
+    }
     return value.toDecimalPlaces(
       this.quantityPrecision,
       Decimal.ROUND_DOWN,

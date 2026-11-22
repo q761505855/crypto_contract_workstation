@@ -37,6 +37,16 @@ it('restores a drawing on a clean device and syncs a clear without reviving its 
   expect(second.forScope(drawing.scope)).toEqual([drawing])
   expect(second.read().cloudBytes).toBe(files.get(DRAWING_CLOUD_PATH)?.bytes.length)
 
+  const styles = { line: { color: '#12ab34', size: 3 } }
+  await first.editAppearance(drawing.id, 'initial', () => ({ locked: true, styles }))
+  await source.flush()
+  await target.flush()
+  expect(second.forScope(drawing.scope)).toEqual([{ ...drawing, locked: true, styles }])
+  await second.editAppearance(drawing.id, 'initial', () => ({ locked: false }))
+  await target.flush()
+  await source.flush()
+  expect(first.forScope(drawing.scope)).toEqual([{ ...drawing, locked: false, styles }])
+
   await second.edit({ ...drawing, points: [{ timestamp: 120_000, value: 124 }] })
   await first.replace([])
   await source.flush()

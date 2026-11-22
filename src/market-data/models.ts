@@ -4,6 +4,7 @@ import type { Period, SymbolInfo } from '@klinecharts/pro'
 export type CandleKind = 'trade' | 'mark'
 
 export interface MarketSymbol {
+  exchange?: 'OKX'
   symbol: string
   baseAsset: string
   quoteAsset: string
@@ -28,7 +29,7 @@ export interface MarketCandle {
   quoteVolume: string
   tradeCount: number
   isClosed: boolean
-  source: 'binance' | 'ctrader'
+  source: 'binance' | 'ctrader' | 'okx'
   /** Quote tick count reported by cTrader. It is not exchange trade volume. */
   tickVolume?: number
 }
@@ -73,9 +74,9 @@ export function normalizeMarketTicker(value: unknown): string | undefined {
 export function toSymbolInfo(symbol: MarketSymbol): SymbolInfo {
   const isCTrader = symbol.contractType === 'CFD'
   return {
-    exchange: isCTrader ? 'CTRADER' : 'BINANCE',
-    market: isCTrader ? 'cTrader' : 'USDT-M PERPETUAL',
-    name: isCTrader ? symbol.description ?? symbol.symbol : `${symbol.baseAsset} / ${symbol.quoteAsset} Perpetual`,
+    exchange: symbol.exchange ?? (isCTrader ? 'CTRADER' : 'BINANCE'),
+    market: symbol.exchange === 'OKX' ? 'OKX USDT 永续' : isCTrader ? 'cTrader' : 'USDT-M PERPETUAL',
+    name: isCTrader || symbol.exchange === 'OKX' ? symbol.description ?? symbol.symbol : `${symbol.baseAsset} / ${symbol.quoteAsset} Perpetual`,
     shortName: symbol.symbol,
     ticker: symbol.symbol,
     priceCurrency: symbol.quoteAsset,

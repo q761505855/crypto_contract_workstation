@@ -2,8 +2,7 @@ import type { Datafeed, DatafeedSubscribeCallback, Period, SymbolInfo } from '@k
 import type { KLineData } from 'klinecharts'
 import { CTRADER_TIMEFRAMES, alignOpenTime, shiftOpenTime } from './intervals'
 import { INITIAL_LIVE_STATUS, type LiveMarketStatus } from './live-models'
-import { toSymbolInfo, type MarketCandle, type MarketSelection } from './models'
-import type { CTraderMarketService } from './ctrader-market'
+import { toSymbolInfo, type MarketCandle, type MarketSelection, type MarketSymbol } from './models'
 import { toChartCandle } from './chart-candle'
 
 const HISTORY_CANDLES = 499
@@ -14,6 +13,16 @@ interface ChartSubscription {
   period: Period
   callback: DatafeedSubscribeCallback
   stop?: () => void
+}
+
+export interface ChartPriceMarket {
+  getSymbols(options?: { forceRefresh?: boolean; signal?: AbortSignal }): Promise<MarketSymbol[]>
+  loadCandles(kind: 'trade', symbol: string, timeframe: string, start: number, end: number, options?: { signal?: AbortSignal }): Promise<MarketCandle[]>
+  loadRecentCandles(symbol: string, timeframe: string, to: number, options: { signal?: AbortSignal }): Promise<MarketCandle[]>
+  loadRecentCandlesPage(symbol: string, timeframe: string, to: number, options: { signal?: AbortSignal }):
+    Promise<{ candles: MarketCandle[]; nextTo: number }>
+  subscribe(input: { symbol: string; timeframe: string; getHistoryCandle: () => MarketCandle | undefined;
+    onCandle: (candle: MarketCandle) => void; onStatus: (status: LiveMarketStatus) => void }): () => void
 }
 
 export class CTraderDatafeed implements Datafeed {
@@ -32,7 +41,7 @@ export class CTraderDatafeed implements Datafeed {
   private newerHistoryCursor?: { key: string; after: number; from: number }
   private readonly subscriptions = new Map<string, ChartSubscription>()
 
-  constructor(private readonly service: CTraderMarketService) {}
+  constructor(private readonly service: ChartPriceMarket) {}
 
   createChartView(): CTraderDatafeed {
     return new CTraderDatafeed(this.service)
@@ -121,7 +130,7 @@ export class CTraderDatafeed implements Datafeed {
       return candles.map(toChartCandle)
     } catch (reason) {
       signal?.throwIfAborted()
-      publish(reason instanceof Error ? reason.message : 'cTrader 行情读取失败。')
+      publish(reason instanceof Error ? reason.message : '行情读取失败。')
       return []
     }
   }

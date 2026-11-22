@@ -2,9 +2,9 @@ import { DomPosition, type ActionType, type Chart, type Indicator, type KLineDat
 import { alignOpenTime, CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/intervals'
 import type { BybitTrade } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
-import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator } from './order-flow'
+import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator, bigTradeMode, type BigTradeMode } from './order-flow'
 import { CANDLE_PANE, tradeBubbleOffset, tradeBubblePrice, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
-import { OrderFlowBars, tradeBubbles, type TradeBar } from './order-flow-bars'
+import { OrderFlowBars, displayedTradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { ReplayOrderFlow } from './order-flow-replay'
 import type { DrawingPoint } from './drawings'
 
@@ -71,7 +71,7 @@ export class OrderFlowChart {
   private displayedBubbleCount = 0
 
   constructor(private readonly chart: Chart, private readonly feed: CombinedBybitSource, private readonly timeframe: () => string,
-    private readonly hasCurrentCandles: () => boolean = () => true) {
+    private readonly hasCurrentCandles: () => boolean = () => true, private readonly nativePriceVolume = false) {
     this.createIndicator = chart.createIndicator
     this.overrideIndicator = chart.overrideIndicator
     this.removeIndicator = chart.removeIndicator
@@ -297,7 +297,8 @@ export class OrderFlowChart {
     }
     if (sameBars && count === this.displayedBubbleCount &&
         previous?.message === display.message && previous?.projectToCandle === display.projectToCandle &&
-        previous?.timeframe === display.timeframe && previous?.updating === display.updating) return
+        previous?.timeframe === display.timeframe && previous?.updating === display.updating && previous?.mode === display.mode) return
+    if (previous?.mode !== display.mode) this.hideTooltip()
     this.displayedBubbleCount = count
     this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: display }, CANDLE_PANE)
   }
@@ -315,6 +316,7 @@ export class OrderFlowChart {
   }
 
   private showVolume(values?: Map<number, number>): boolean {
+    if (this.nativePriceVolume) return false
     const panes = this.chart.getIndicatorByPaneId()
     if (!(panes instanceof Map)) return false
     const symbol = this.feed.mapping?.symbol
@@ -351,7 +353,7 @@ export class OrderFlowChart {
     return candles.slice(Math.max(0, from), Math.max(0, to))
   }
 
-  private displayFlow(timeframe: string, read: (start: number, until: number) => TradeBar | undefined, message?: string): void {
+  private displayFlow(timeframe: string, mode: BigTradeMode, read: (start: number, until: number) => TradeBar | undefined, message?: string): void {
     const cursor = this.feed.tradeCursorUs
     const bars = new Map<number, TradeBar>()
     const volumes = new Map<number, number>()
@@ -368,7 +370,7 @@ export class OrderFlowChart {
     const previous = this.displayedVolumes
     const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
     this.showVolume(volumeChanged ? volumes : previous)
-    this.showBubbles({ bars, timeframe, updating: this.updating, projectToCandle: this.feed.mapping?.relation === 'etf',
+    this.showBubbles({ bars, timeframe, mode, updating: this.updating, projectToCandle: this.feed.mapping?.relation === 'etf',
       message: message ?? (this.updating ? '正在计算大单气泡…' : partial ? '历史逐笔可通过「下载成交数据」载入' : undefined) })
   }
 
@@ -384,22 +386,24 @@ export class OrderFlowChart {
     const showVolume = this.showVolume(this.displayedVolumes)
     if ((!indicator?.visible && !showVolume) || !visible.length) return
     const timeframe = this.timeframe()
+    const mode = bigTradeMode(indicator?.styles)
     const minimum = Number(indicator?.calcParams[0] ?? DEFAULT_BIG_TRADE_NOTIONAL)
+    const sampleMinimum = mode === 'aggregate' ? 0 : minimum
     const source = this.feed.archiveCacheKey
-    const key = JSON.stringify([source, minimum])
+    const key = JSON.stringify([source, sampleMinimum])
     const replaying = this.feed.replaying
     if ((replaying ? this.replayFlow : this.flow)?.key !== key) {
       this.cancelFlow()
       this.flowSource = source
-      const legacyKeys = CTRADER_TIMEFRAMES.map(period => JSON.stringify([source, period, minimum]))
-      this.replayFlow = replaying ? new ReplayOrderFlow(key, minimum, legacyKeys) : undefined
-      this.flow = replaying ? undefined : new OrderFlowBars(key, minimum)
+      const legacyKeys = CTRADER_TIMEFRAMES.map(period => JSON.stringify([source, period, sampleMinimum]))
+      this.replayFlow = replaying ? new ReplayOrderFlow(key, sampleMinimum, legacyKeys) : undefined
+      this.flow = replaying ? undefined : new OrderFlowBars(key, sampleMinimum)
     }
     const flow = this.flow
     const replay = this.replayFlow
     const cursor = this.feed.tradeCursorUs
     const read = (start: number, until: number) => replay?.read(start, until, this.feed) ?? flow?.read(start, until, this.feed)
-    this.displayFlow(timeframe, read)
+    this.displayFlow(timeframe, mode, read)
     if (this.flowOperation) {
       this.flowPending = true
       return
@@ -412,7 +416,7 @@ export class OrderFlowChart {
       if (this.flowPaint !== undefined) return
       this.flowPaint = requestAnimationFrame(() => {
         this.flowPaint = undefined
-        if (!operation.signal.aborted && this.hasCurrentCandles()) this.displayFlow(this.timeframe(), read)
+        if (!operation.signal.aborted && this.hasCurrentCandles()) this.displayFlow(this.timeframe(), mode, read)
       })
     }
     try {
@@ -425,7 +429,7 @@ export class OrderFlowChart {
       if (!operation.signal.aborted) {
         this.cancelFlowPaint()
         this.updating = undefined
-        if (this.hasCurrentCandles()) this.displayFlow(this.timeframe(), read, errorText(error))
+        if (this.hasCurrentCandles()) this.displayFlow(this.timeframe(), mode, read, errorText(error))
       }
     } finally {
       if (this.flowOperation === operation) {
@@ -446,11 +450,13 @@ export class OrderFlowChart {
     if (!this.pane || !this.tooltip) return
     const indicator = this.chart.getIndicatorByPaneId(CANDLE_PANE, BIG_TRADES) as Indicator | null | undefined
     const display = indicator?.extendData as BubbleDisplay | undefined
-    if (!indicator?.visible || !display?.bars?.size || !display.timeframe) { this.hideTooltip(); return }
+    const mode = bigTradeMode(indicator?.styles)
+    if (!indicator?.visible || !display?.bars?.size || !display.timeframe || display.mode !== mode) { this.hideTooltip(); return }
+    const minimum = Number(indicator.calcParams[0])
     const { left, top, width } = this.pane.getBoundingClientRect()
     const cursorX = event.clientX - left
     const cursorY = event.clientY - top
-    let nearest: BybitTrade | undefined
+    let nearest: TradeBubble | undefined
     let nearestDistance = Infinity
     const converted = this.chart.convertFromPixel([{ x: cursorX }], { paneId: CANDLE_PANE })
     const indexAtPointer = (Array.isArray(converted) ? converted[0] : converted)?.dataIndex
@@ -462,18 +468,20 @@ export class OrderFlowChart {
       const bar = display.bars.get(candle.timestamp)
       if (!bar?.firstPrice) continue
       const end = nextOpenTime(candle.timestamp, display.timeframe)
-      for (const bubble of tradeBubbles(bar)) {
+      for (const bubble of displayedTradeBubbles(bar, mode, minimum)) {
         const { trade } = bubble
         const offset = tradeBubbleOffset(bubble, candle.timestamp, end)
         const price = tradeBubblePrice(trade, bar, candle.open, display.projectToCandle)
         const point = this.chart.convertToPixel({ dataIndex: index + offset, value: price }, { paneId: CANDLE_PANE }) as { x?: number; y?: number }
         const distance = Math.hypot((point.x ?? Infinity) - cursorX, (point.y ?? Infinity) - cursorY)
-        const radius = tradeBubbleRadius(trade, Number(indicator.calcParams[0]))
-        if (distance < radius + 3 && distance < nearestDistance) { nearestDistance = distance; nearest = trade }
+        const radius = tradeBubbleRadius(trade, minimum)
+        if (distance < radius + 3 && distance < nearestDistance) { nearestDistance = distance; nearest = bubble }
       }
     }
     if (!nearest) { this.hideTooltip(); return }
-    this.tooltip.textContent = `${nearest.venue ?? 'Bybit'} ${nearest.side === 'buy' ? '主动买入' : '主动卖出'} · ${nearest.size} @ ${nearest.price} · ${notional(nearest).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`
+    const { trade, count } = nearest
+    const aggregation = mode === 'aggregate' ? ` · ${count ?? 1} 笔` : ''
+    this.tooltip.textContent = `${trade.venue ?? 'Bybit'} ${trade.side === 'buy' ? '主动买入' : '主动卖出'}${aggregation} · ${trade.size} @ ${trade.price} · ${notional(trade).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`
     this.tooltip.style.left = `${Math.max(4, Math.min(width - 260, cursorX + 12))}px`
     this.tooltip.style.top = `${Math.max(4, cursorY - 30)}px`
     this.tooltip.hidden = false

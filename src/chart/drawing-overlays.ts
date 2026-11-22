@@ -1,4 +1,4 @@
-import type { ActionType, Chart, Overlay, OverlayCreate } from 'klinecharts'
+import { LineType, type ActionType, type Chart, type Overlay, type OverlayCreate } from 'klinecharts'
 import { drawingIndexAt, drawingTimeAt } from './drawing-coordinates'
 import { hasDrawingPoints, isDrawingTool, sameDrawingData, type ChartDrawing, type DrawingStore } from './drawings'
 import { VOLUME_PROFILE_TOOL } from './order-flow'
@@ -13,6 +13,29 @@ interface CoreOverlay extends Overlay {
   isDrawing(): boolean
 }
 
+export interface DrawingSelection {
+  id: string
+  locked: boolean
+  allLocked: boolean
+  color: string
+  width: number
+  pattern: LineType
+}
+
+export type DrawingChange =
+  | { locked: boolean }
+  | { color: string }
+  | { width: number }
+  | { pattern: LineType }
+
+function strokeGroup(name: string): 'line' | 'arc' | 'circle' | 'polygon' | 'rect' {
+  if (name === 'circle' || name === 'fibonacciCircle') return 'circle'
+  if (name === 'fibonacciSpiral') return 'arc'
+  if (['rect', 'parallelogram', 'triangle'].includes(name)) return 'polygon'
+  if (name === VOLUME_PROFILE_TOOL) return 'rect'
+  return 'line'
+}
+
 export class DrawingOverlays {
   private scope: string | null = null
   private unsubscribe?: () => void
@@ -20,6 +43,9 @@ export class DrawingOverlays {
   private grid = ''
   private epoch?: string
   private draft?: string
+  private selectedId?: string
+  private selection: DrawingSelection | null = null
+  private readonly toolStyles = new WeakMap<Overlay, Overlay['styles']>()
   private editing?: { id: string; x?: number; moved: boolean; preview?: ChartDrawing['points'] }
   private queued = false
   private disposed = false
@@ -29,7 +55,7 @@ export class DrawingOverlays {
   private readonly override: Chart['overrideOverlay']
 
   constructor(private readonly chart: Chart, private readonly store: DrawingStore, private readonly period: () => string,
-    private readonly orderFlow?: OrderFlowChart) {
+    private readonly orderFlow: OrderFlowChart | undefined, private readonly onSelection: (selection: DrawingSelection | null) => void) {
     this.create = chart.createOverlay
     this.override = chart.overrideOverlay
     // The native toolbar sets the group for its shortcut, but omits it when
@@ -42,7 +68,12 @@ export class DrawingOverlays {
       if (this.draft) chart.removeOverlay(this.draft)
       const id = `drawing-${crypto.randomUUID()}`
       const draft = this.create.call(chart, { ...this.appearance, ...value, groupId: GROUP, id, ...this.callbacks(id, scope) }, PANE)
-      if (typeof draft === 'string') this.draft = draft
+      if (typeof draft === 'string') {
+        this.draft = draft
+        const overlay = chart.getOverlayById(draft)
+        if (overlay) this.toolStyles.set(overlay, structuredClone(overlay.styles))
+        this.select()
+      }
       return draft
     }
     chart.overrideOverlay = value => {
@@ -50,6 +81,13 @@ export class DrawingOverlays {
           (value.visible !== undefined || value.lock !== undefined || value.mode !== undefined)) {
         this.appearance = { ...this.appearance, ...value }
         this.override.call(chart, { ...value, groupId: GROUP })
+        if (value.lock === false) {
+          for (const { id, locked } of this.rendered.values()) {
+            if (locked) this.override.call(chart, { id, lock: true })
+          }
+        }
+        if (value.visible === false) this.select()
+        else this.publishSelection()
       } else this.override.call(chart, value)
     }
     this.unsubscribe = store.subscribe(this.queue)
@@ -68,6 +106,51 @@ export class DrawingOverlays {
     return this.chart.createOverlay({ name: VOLUME_PROFILE_TOOL }) !== null
   }
 
+  changeSelection(id: string, change: DrawingChange): void {
+    if (this.selectedId !== id) return
+    this.write(this.store.editAppearance(id, this.epoch, drawing => {
+      if ('locked' in change) return { locked: change.locked }
+      const group = strokeGroup(drawing.name)
+      const line = group === 'line' || group === 'arc'
+      const stroke = 'color' in change ? { [line ? 'color' : 'borderColor']: change.color }
+        : 'width' in change ? { [line ? 'size' : 'borderSize']: change.width }
+          : { [line ? 'style' : 'borderStyle']: change.pattern }
+      return { styles: { ...drawing.styles, [group]: { ...drawing.styles?.[group], ...stroke } } }
+    }))
+  }
+
+  deleteSelection(id: string): void {
+    if (this.selectedId === id) this.chart.removeOverlay(id)
+  }
+
+  private select(id?: string): void {
+    this.selectedId = id
+    this.publishSelection()
+  }
+
+  private publishSelection(): void {
+    const id = this.selectedId
+    const drawing = id ? this.rendered.get(id) : undefined
+    const overlay = id ? this.chart.getOverlayById(id) : null
+    let next: DrawingSelection | null = null
+    if (drawing && overlay?.visible) {
+      const group = strokeGroup(drawing.name)
+      const defaults = this.chart.getStyles().overlay
+      const status = { id: drawing.id, locked: drawing.locked ?? false, allLocked: this.appearance.lock ?? false }
+      if (group === 'line' || group === 'arc') {
+        const { color, size, style } = { ...defaults[group], ...overlay.styles?.[group] }
+        next = { ...status, color, width: size, pattern: style }
+      } else {
+        const { borderColor, borderSize, borderStyle } = { ...defaults[group], ...overlay.styles?.[group] }
+        next = { ...status, color: borderColor, width: borderSize, pattern: borderStyle }
+      }
+    }
+    if (!sameDrawingData(this.selection, next)) {
+      this.selection = next
+      this.onSelection(next)
+    }
+  }
+
   dispose(): void {
     this.disposed = true
     this.unsubscribe?.()
@@ -83,6 +166,7 @@ export class DrawingOverlays {
     finally { this.applying = false }
     this.rendered.clear()
     this.draft = this.editing = undefined
+    this.select()
     this.grid = ''
   }
 
@@ -126,25 +210,31 @@ export class DrawingOverlays {
       }
       if (candles.length === 0) return
       for (const drawing of desired.values()) {
-        const { id, name, scope, styles } = drawing
+        const { id, name, scope, styles, locked } = drawing
         if (name === VOLUME_PROFILE_TOOL && !this.orderFlow?.supported) continue
         if (this.editing?.id === id) continue
         const existing = this.chart.getOverlayById(id) as CoreOverlay | null
-        if (existing && !reproject && sameDrawingData(this.rendered.get(id), drawing)) continue
+        const previous = this.rendered.get(id)
+        if (existing && !reproject && sameDrawingData(previous, drawing)) continue
+        const lock = Boolean(this.appearance.lock || locked)
         const points = drawing.points.map(({ timestamp, value }) => {
           const dataIndex = drawingIndexAt(candles, timestamp, period)
           return candles[dataIndex]?.timestamp === timestamp ? { timestamp, dataIndex, value } : { dataIndex, value }
         })
         if (existing) {
-          this.override.call(this.chart, { id, points, styles })
+          const stylesChanged = !sameDrawingData(previous?.styles, styles)
+          if (stylesChanged && this.toolStyles.has(existing)) existing.styles = structuredClone(this.toolStyles.get(existing)!)
+          this.override.call(this.chart, { id, points, lock, ...(stylesChanged && { styles }) })
           if (existing.isDrawing()) existing.forceComplete()
         } else {
           // The native open-ended wave uses the chart's single draft slot.
           if (name === 'anyWaves' && this.draft) continue
-          const result = this.create.call(this.chart, { id, name, styles, groupId: GROUP, points,
-            ...this.appearance, ...this.callbacks(id, scope) }, PANE)
+          const result = this.create.call(this.chart, { id, name, groupId: GROUP, points,
+            ...this.appearance, lock, ...this.callbacks(id, scope) }, PANE)
           if (!result) continue
           const overlay = this.chart.getOverlayById(id) as CoreOverlay | null
+          if (overlay) this.toolStyles.set(overlay, structuredClone(overlay.styles))
+          if (styles) this.override.call(this.chart, { id, styles })
           if (overlay?.isDrawing()) {
             overlay.forceComplete()
             const core = this.chart as Chart & { getChartStore(): { getOverlayStore(): { progressInstanceComplete(): void } } }
@@ -154,7 +244,10 @@ export class DrawingOverlays {
         this.rendered.set(id, drawing)
         if (name === VOLUME_PROFILE_TOOL) this.orderFlow?.setProfile(id, drawing.points)
       }
-    } finally { this.applying = false }
+    } finally {
+      this.applying = false
+      this.publishSelection()
+    }
   }
 
   private callbacks(id: string, scope: string): Partial<OverlayCreate> {
@@ -167,6 +260,14 @@ export class DrawingOverlays {
           else this.chart.removeOverlay(id)
         }
         this.queue()
+        return false
+      },
+      onClick: ({ overlay }) => {
+        if (!(overlay as CoreOverlay).isDrawing() && this.scope === scope) this.select(id)
+        return false
+      },
+      onDeselected: () => {
+        if (this.selectedId === id) this.select()
         return false
       },
       onPressedMoveStart: ({ x }) => { this.editing = { id, x, moved: false }; return false },
@@ -189,6 +290,7 @@ export class DrawingOverlays {
       onRemoved: () => {
         this.orderFlow?.removeProfile(id)
         if (this.draft === id) this.draft = undefined
+        if (this.selectedId === id) this.select()
         if (!this.applying && this.scope === scope) this.write(this.store.remove(id, this.epoch))
         this.queue()
         return false
@@ -232,8 +334,8 @@ export class DrawingOverlays {
     const points = preview ?? this.readPoints(overlay, keepTime)
     if (!points) return
     const previous = this.rendered.get(overlay.id)
-    const drawing = { id: overlay.id, name: overlay.name, scope, points,
-      ...(overlay.styles !== null ? { styles: overlay.styles } : {}) }
+    const drawing = previous ? { ...previous, points } : { id: overlay.id, name: overlay.name, scope, points,
+      ...(overlay.styles !== null ? { styles: structuredClone(overlay.styles) } : {}) }
     if (overlay.name === VOLUME_PROFILE_TOOL && !preview) this.orderFlow?.setProfile(overlay.id, points)
     this.write(isNew ? this.store.save(drawing, this.epoch) : this.store.edit(drawing, this.epoch, previous), !isNew)
   }

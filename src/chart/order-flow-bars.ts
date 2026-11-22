@@ -3,8 +3,9 @@ import { nextOpenTime } from '../market-data/intervals'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../market-data/bybit/trades'
 import type { OkxTradePage } from '../market-data/okx/live'
+import type { BigTradeMode } from './order-flow'
 
-export interface TradeBubble { trade: BybitTrade }
+export interface TradeBubble { trade: BybitTrade; count?: number }
 
 interface BubbleRange {
   points: readonly TradeBubble[]
@@ -25,6 +26,41 @@ export function* tradeBubbles(bar: TradeBar): Iterable<TradeBubble> {
   for (const { points, from, until } of bar.pointRanges) {
     for (let index = from; index < until; index++) yield points[index]
   }
+}
+
+const aggregatedBubbles = new WeakMap<TradeBar, { minimum: number; points: TradeBubble[] }>()
+
+export function displayedTradeBubbles(bar: TradeBar, mode: BigTradeMode, minimum: number): Iterable<TradeBubble> {
+  if (mode === 'volume') return tradeBubbles(bar)
+  const cached = aggregatedBubbles.get(bar)
+  if (cached?.minimum === minimum) return cached.points
+  const points: TradeBubble[] = []
+  const groups = new Map<string, TradeBubble>()
+  let millisecond: number | undefined
+  const flush = () => {
+    for (const point of groups.values()) {
+      if (point.trade.price * point.trade.size >= minimum) points.push(point)
+    }
+    groups.clear()
+  }
+  // The bar has already clipped its ordered trade ranges at the replay cursor.
+  for (const { trade } of tradeBubbles(bar)) {
+    const time = Math.floor(trade.timeUs / 1000)
+    if (millisecond !== time) {
+      flush()
+      millisecond = time
+    }
+    const key = `${trade.venue ?? 'Bybit'}:${trade.side}:${trade.price}`
+    const point = groups.get(key)
+    if (point) {
+      if (point.count === undefined) point.trade = { ...point.trade }
+      point.trade.size += trade.size
+      point.count = (point.count ?? 1) + 1
+    } else groups.set(key, { trade })
+  }
+  flush()
+  aggregatedBubbles.set(bar, { minimum, points })
+  return points
 }
 
 export interface HourSamples {

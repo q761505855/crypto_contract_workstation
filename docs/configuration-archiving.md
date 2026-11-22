@@ -20,6 +20,10 @@ cTrader 回放会话沿用 Schema 2，在本地、会话或完整 JSON 以及 Gi
 
 cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID，例如 `demo:17` 或 `live:19`。应用配置、全部数据 JSON 和 GitHub“应用配置”均支持该字段，沿用差异比较、校验和、冲突处理和恢复流程。旧存档缺少字段时保留本机选择。提供字段时，账户 ID 必须是正的安全整数，空值或非法格式在任何写入前拒绝。本地字段缺失、损坏或无法匹配当前授权列表时，唯一授权账户可自动连接，多个授权账户需要重新选择。启动时读取已恢复的选择并重新核对授权。如果连接期间恢复了另一个已授权账户，“工具”菜单会提示刷新后生效。
 
+顶部行情来源保存为 `priceSource`，接受 `ctrader`／`okx`。OKX 的当前产品单独保存为 `okxSelectedSymbol`，须为 `exchange: "OKX"`、`priceCurrency: "USDT"`、`type: "PERPETUAL"` 的 USDT 永续代码。cTrader 的品种继续使用 `selectedSymbol`。两个新增字段随本机、应用配置／完整 JSON 和 GitHub“应用配置”往返，品种与其显示元信息作为一个字段合并。旧档缺字段时保留本机同字段。本机缺省使用 cTrader，切到 OKX 时默认 BTC-USDT-SWAP 或目录中的可用合约。显式空值和非法值在写入前拒绝。自动恢复切换工作区，手动恢复后按提示刷新。
+
+OKX 回放会话沿用 Schema 2，保存 `marketSource: "okx"`、步进游标和排他边界，以及会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。两套来源按会话 ID 隔离，进入该来源时只恢复对应的活动会话。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格与资金费率原始响应属于行情运行数据。
+
 ## 当前配置清单
 
 独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。
@@ -27,11 +31,13 @@ cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、Bybit 大单气泡最低成交额、买卖填充与描边） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、大单气泡模式、最低成交额、买卖填充与描边） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
+| 行情来源 | `marketData.priceSource.v1`；`market-data/price-source-preferences.ts` | `priceSource` | `config/preferences.json` |
+| OKX 当前产品及图表精度 | `marketData.okxSelectedSymbol.v1`；`market-data/symbol-preferences.ts` | `okxSelectedSymbol` | `config/preferences.json` |
 | cTrader 账户环境和 ID | `marketData.ctraderAccount.v1`；`market-data/ctrader-account-preferences.ts` | `ctraderAccount` | `config/preferences.json` |
 | 回放步进（含 Tick、1s、5s、15s） | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
 | 回放主图交易标记显隐 | `chart.showTradeOverlays.v1`；`chart/trade-overlay-preferences.ts` | `showTradeOverlays` | `config/preferences.json` |
@@ -49,6 +55,8 @@ cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID
 主图大单气泡 `BIG_TRADES` 的选择、可见性和最低成交额沿用既有 `chartIndicators`，默认 25,000 USDT，非负有限数，显式 0 表示无成交额下限，`visible: false` 原样恢复。旧版独立工作区保存的同名指标由主图直接恢复。旧档带指标列表时按列表恢复，缺少整个指标配置时保留本地值。非法参数在写入前拒绝。应用配置、完整 JSON、GitHub 应用配置全部支持往返。自动恢复会重建图表，手动恢复仍按界面提示刷新。品种映射属于程序随附的行情目录，无额外用户配置字段。
 
 大单气泡的 `styles.bubbleColors` 按主动买入填充、主动卖出填充、主动买入描边和主动卖出描边的顺序保存四个颜色对象。每项使用标准图表颜色格式，透明度 0% 和 100% 原样往返。含气泡指标但缺少该样式组的旧存档会保留本地样式，本地无设置时使用默认绿红配色和透明度。提供该组时，空数组、`null` 和非法颜色在写入前拒绝。应用配置、完整 JSON 和 GitHub 应用配置均覆盖该样式组。
+
+大单气泡的 `styles.bubbleMode` 接受 `volume` 和 `aggregate`。两者随 `chartIndicators` 在本机、应用配置／完整 JSON 和 GitHub“应用配置”中往返，沿用现有差异、校验和与冲突处理。旧档缺少模式时保留本机选择，本机无值时使用 `volume`。显式 `volume` 可以覆盖 `aggregate`，空字符串、`null` 和其他非法值在写入前拒绝。自动恢复随图表重建生效，手动恢复后按界面提示刷新。配置仍使用 Schema 1。
 
 框选成交分布是绘图业务数据，使用两个 IC 时间和价格锚点，随 IC 品种或回放会话保存。继承本地绘图、完整 JSON 和 GitHub 绘图同步。旧版独立工作区的 Bybit 价格锚点按原作用域保存在绘图存档。实际逐笔数据和计算后的分布从行情重建。成交量和 Delta 横条使用半透明配色，透明度由绘制规则决定。
 

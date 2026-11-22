@@ -1354,6 +1354,7 @@ button:disabled {
 .workspace-shell [hidden], .workspace-dialog [hidden] { display: none !important; }
 .workspace-shell .app-header { position: sticky; top: 0; z-index: 60; flex-shrink: 0; gap: 20px; min-height: 54px; padding: 8px 16px; }
 .workspace-shell .app-header h1 { font-size: 15px; white-space: nowrap; }
+.price-source-select { min-height: 32px; padding: 2px 6px; font-size: 13px; }
 .workspace-tools { position: relative; margin-left: auto; }
 .workspace-tools-trigger { display: inline-flex; align-items: center; gap: 9px; padding: 5px 11px; font-size: 13px; }
 .workspace-tools-trigger span { width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); }

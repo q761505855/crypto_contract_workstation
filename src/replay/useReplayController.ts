@@ -18,12 +18,14 @@ import { DEFAULT_TRADING_CONFIG, replaySourceTimeframe, sessionVisibleUntil } fr
 import { ReplayEngine } from './replay-engine'
 import type { MarketCandle } from '../market-data/models'
 import { validateAdjustableLeverage, validateSimulationConfig } from '../simulation/simulation-engine'
+import type { OkxReplayRisk } from '../simulation/okx-trading'
 
 export interface ReplayCandleEvent {
   /** This quote follows another quote at the same millisecond. */
   sameTimeTick?: true
   type: 'advance' | 'reset'
   candle: MarketCandle
+  okxRisk?: OkxReplayRisk
   /** A later candle in the same step will publish the accumulated state. */
   deferPublish?: boolean
 }

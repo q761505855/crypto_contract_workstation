@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { DEFAULT_OKX_SYMBOL, DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { DrawingStore } from '../chart/drawings'
 import { CHART_WINDOW_SIZE_KEY, DEFAULT_CHART_WINDOW_SIZE, saveChartWindowSize } from '../chart/chart-window-preferences'
 import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
@@ -10,9 +10,11 @@ import {
   type JsonValue,
 } from '../chart/indicator-preferences'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
-import { SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
+import { OKX_SYMBOL_STORAGE_KEY, SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
+import { PRICE_SOURCE_KEY, readPriceSource } from '../market-data/price-source-preferences'
 import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
+import { OKX_SIMULATION_TAKER_FEE, type OkxTradingTerms } from '../simulation/okx-trading'
 import { IndexedDbMarketDataStore, openWorkstationDatabase } from './market-data-store'
 import { IndexedDbReplaySessionStore } from './replay-session-store'
 import { IndexedDbSimulationStateStore } from './simulation-state-store'
@@ -37,7 +39,7 @@ class MemoryPreferences implements Pick<Storage, 'getItem' | 'setItem'> {
 
 it('restores drawings from a complete backup and preserves them when an old backup omits the field', async () => {
   const drawing = { id: 'drawing-line', scope: 'live:BTCUSDT', name: 'horizontalStraightLine',
-    points: [{ timestamp: 120_000, value: 123 }] }
+    points: [{ timestamp: 120_000, value: 123 }], locked: true, styles: { line: { color: '#ffee33', size: 3 } } }
   const sourceStorage = new MemoryPreferences()
   const sourceDrawings = new DrawingStore(sourceStorage)
   await sourceDrawings.save(drawing)
@@ -56,6 +58,8 @@ it('restores drawings from a complete backup and preserves them when an old back
   expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
   const invalid = { ...backup, data: { ...backup.data, drawings: null } }
   await expect(target.import(invalid)).rejects.toThrow('绘图存档格式无效')
+  await expect(target.import({ ...backup, data: { ...backup.data, drawings: [{ ...drawing, locked: null }] } }))
+    .rejects.toThrow('绘图存档格式无效')
   expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
   await target.import({ ...backup, data: { ...backup.data, drawings: [] } })
   expect(targetDrawings.forScope(drawing.scope)).toEqual([])
@@ -119,6 +123,72 @@ function session(): ReplaySession {
     updatedAt: 0,
   }
 }
+
+it('round-trips OKX preferences and a simulated perpetual session, including funding and mark-price liquidation', async () => {
+  const terms: OkxTradingTerms = {
+    accountCurrency: 'USDT', contractValue: '0.01', contractStep: '0.1', minContracts: '0.1',
+    tickSize: '0.5', maxOrderContracts: '100', maxLeverage: 50,
+    tiers: [{ maxContracts: '100', maxLeverage: 50, maintenanceMarginRate: '0.004' },
+      { maxContracts: '1000', maxLeverage: 25.5, maintenanceMarginRate: '0.005' }],
+  }
+  const saved: ReplaySession = {
+    ...session(), symbol: DEFAULT_OKX_SYMBOL, marketSource: 'okx', cursorTimeframe: '1m',
+    visibleUntil: 60_000, endTime: 179_999,
+    tradingConfig: { ...session().tradingConfig, okx: terms, feeRate: OKX_SIMULATION_TAKER_FEE, liquidationFeeRate: OKX_SIMULATION_TAKER_FEE },
+  }
+  const engine = SimulationEngine.create(saved)
+  const first: MarketCandle = { ...candle('101'), symbol: DEFAULT_OKX_SYMBOL.ticker, source: 'okx' }
+  const tiered = SimulationEngine.create(saved)
+  tiered.open('short', { lots: '70' }, first)
+  tiered.open('short', { lots: '70' }, first)
+  expect(tiered.snapshot().positions[0].maintenanceMarginRate).toBe('0.005')
+  expect(() => tiered.setLeverage(26)).toThrow(/持仓档位/)
+  expect(() => engine.open('long', { lots: '1.05' }, first)).toThrow(/步长/)
+  expect(engine.open('long', { lots: '1' }, first)).toMatchObject({ quantity: '0.01', fee: '0.000505' })
+  const second = { ...first, openTime: 60_000, closeTime: 119_999 }
+  const risk = { mark: { ...second, low: '99' }, funding: [{ timestamp: 60_000, rate: '0.001', price: '100' }] }
+  expect(engine.processCandle(second, false, risk).exitAction).toBeNull()
+  engine.processCandle(second, false, risk)
+  expect(engine.snapshot().ledger.filter(row => row.type === 'funding')).toMatchObject([{ timestamp: 60_000, amount: '-0.001' }])
+  const beforeLiquidation = engine.snapshot()
+  const restored = SimulationEngine.restore(beforeLiquidation, saved)
+  const third = { ...second, openTime: 120_000, closeTime: 179_999, low: '100' }
+  expect(restored.processCandle(third, false, { mark: { ...third, low: '80' }, funding: [] }).exitAction).toBe('liquidation')
+
+  const storage = new MemoryPreferences()
+  expect(readPriceSource(storage)).toBe('ctrader')
+  storage.setItem(PRICE_SOURCE_KEY, '"invalid"')
+  expect(readPriceSource(storage)).toBe('ctrader')
+  storage.setItem(PRICE_SOURCE_KEY, '"okx"')
+  storage.setItem(OKX_SYMBOL_STORAGE_KEY, JSON.stringify(DEFAULT_OKX_SYMBOL))
+  const sourceName = `okx-source-${crypto.randomUUID()}`
+  await new IndexedDbReplaySessionStore(sourceName).put({ ...saved, currentTime: 60_000, visibleUntil: 120_000, currentIndex: 1 })
+  await new IndexedDbSimulationStateStore(sourceName).save(beforeLiquidation)
+  const source = new WorkstationBackupService(sourceName, storage)
+  const targetStorage = new MemoryPreferences()
+  const target = new WorkstationBackupService(`okx-target-${crypto.randomUUID()}`, targetStorage)
+  const full = await source.exportAll()
+  for (const archive of [await source.exportPreferences(), full]) {
+    await target.import(archive)
+    expect((await target.exportPreferences()).data.preferences).toEqual(full.data.preferences)
+  }
+  expect((await target.exportAll()).data).toEqual(full.data)
+  const legacy = await source.exportPreferences()
+  delete legacy.data.preferences!.priceSource
+  delete legacy.data.preferences!.okxSelectedSymbol
+  await target.import(legacy)
+  expect((await target.exportAll()).data).toEqual(full.data)
+  for (const patch of [{ priceSource: null }, { priceSource: '' }, { priceSource: false },
+    { okxSelectedSymbol: null }, { okxSelectedSymbol: {} }, { okxSelectedSymbol: { ...DEFAULT_OKX_SYMBOL, priceCurrency: 'BTC' } }]) {
+    const invalid = { ...legacy, data: { preferences: { ...legacy.data.preferences, ...patch, favoriteSymbols: ['changed'] } } }
+    await expect(target.import(invalid)).rejects.toThrow(/priceSource|OKX|交易品种|交易对/)
+    expect((await target.exportAll()).data).toEqual(full.data)
+  }
+  const invalid = structuredClone(full)
+  invalid.data.sessions![0].tradingConfig.okx!.contractStep = '0'
+  await expect(target.import(invalid)).rejects.toThrow(/OKX 回放交易规格/)
+  expect((await target.exportAll()).data).toEqual(full.data)
+})
 
 it('validates a legacy full backup and imports only configuration and sessions in the cTrader experiment', async () => {
   const legacy = new WorkstationBackupService(`legacy-source-${crypto.randomUUID()}`, new MemoryPreferences())
@@ -279,6 +349,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       },
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
       { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
+        bubbleMode: 'aggregate',
         bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
       } },
       { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
@@ -557,6 +628,10 @@ describe('WorkstationBackupService', () => {
     const source = new WorkstationBackupService(`indicator-source-${crypto.randomUUID()}`, sourceStorage)
     const targetStorage = new MemoryPreferences()
     const target = new WorkstationBackupService(`indicator-target-${crypto.randomUUID()}`, targetStorage)
+    const full = await source.exportAll()
+    expect(full.data.preferences!.chartIndicators).toEqual(indicatorPreferences())
+    await target.import(full)
+    expect((await target.exportAll()).data.preferences).toEqual(full.data.preferences)
     const archive = await source.exportPreferences()
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
@@ -596,6 +671,11 @@ describe('WorkstationBackupService', () => {
     archive.data.preferences!.chartIndicators = invalidBubbles
     await expect(target.import(archive)).rejects.toThrow(/BIG_TRADES.*bubbleColors/)
     expect((await target.exportAll()).data).toEqual(before)
+    for (const bubbleMode of [null, '', 'unknown']) {
+      invalidBubbles.main.find(i => i.name === 'BIG_TRADES')!.styles = { bubbleMode }
+      await expect(target.import(archive)).rejects.toThrow(/BIG_TRADES.*bubbleMode/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
   })
 
   it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS', 'BIG_TRADES'])('rejects illegal %s configuration before writing any preferences or market data', async name => {

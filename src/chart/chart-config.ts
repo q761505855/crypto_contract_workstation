@@ -51,6 +51,12 @@ export const DEFAULT_CTRADER_SYMBOL: SymbolInfo = Object.freeze({
   volumePrecision: 0,
 })
 
+export const DEFAULT_OKX_SYMBOL: SymbolInfo = Object.freeze({
+  exchange: 'OKX', market: 'OKX USDT 永续', name: 'BTC / USDT 永续合约',
+  shortName: 'BTC-USDT-SWAP', ticker: 'BTC-USDT-SWAP', priceCurrency: 'USDT',
+  type: 'PERPETUAL', pricePrecision: 1, volumePrecision: 3,
+})
+
 const periodUnits = { m: 'minute', h: 'hour', d: 'day', w: 'week', M: 'month' } as const
 export const CTRADER_PERIODS: readonly Period[] = Object.freeze(CTRADER_TIMEFRAMES.map(text => ({
   text,

@@ -65,8 +65,21 @@ describe('drawing archive', () => {
     expect(() => validateDrawings([{ ...drawing, points: [{ timestamp: 60_000, value: '120' }] }])).toThrow()
     expect(() => validateDrawings([{ ...drawing, styles: { line: { style: 'dashed', dashedValue: 42 } } }])).toThrow()
     expect(() => validateDrawings([{ ...drawing, styles: { point: { radius: -1 } } }])).toThrow()
+    for (const locked of [true, false]) expect(validateDrawings([{ ...drawing, locked }])).toEqual([{ ...drawing, locked }])
+    for (const locked of [null, '', 0]) expect(() => validateDrawings([{ ...drawing, locked }])).toThrow()
     expect(() => validateDrawings([{ ...drawing, id: 'simulation-replay-time' }])).toThrow()
     expect(() => validateDrawings(null)).toThrow()
+  })
+
+  it('keeps style and lock edits when a drag from another window finishes', async () => {
+    const values = new Map<string, string>()
+    const store = new DrawingStore({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) } })
+    await store.save(drawing)
+    const styles = { line: { color: '#12ab34', size: 3 } }
+    await store.editAppearance(drawing.id, 'initial', () => ({ locked: true, styles }))
+    const points = [{ timestamp: 60_000, value: 131 }]
+    await store.edit({ ...drawing, points }, 'initial', drawing)
+    expect(store.forScope(drawing.scope)).toEqual([{ ...drawing, points, locked: true, styles }])
   })
 })
 

@@ -31,7 +31,7 @@ index db8d576..2efa656 100644
 @@ -847,0 +854 @@
 +	setFutureTimeAxis: (interval: number, end: number) => void;
 diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
-index 86b1dce..d09727d 100644
+index 86b1dce..df0bfad 100644
 --- a/node_modules/klinecharts/dist/index.esm.js
 +++ b/node_modules/klinecharts/dist/index.esm.js
 @@ -179,6 +179,7 @@ var CandleTooltipRectPosition;
@@ -324,6 +324,40 @@ index 86b1dce..d09727d 100644
                          case CandleType.CandleSolid: {
                              rects = _this._createSolidBar(x, priceY, barSpace, colors);
                              break;
+@@ -8512,16 +8628,14 @@ var OverlayView = /** @class */ (function (_super) {
+         }).registerEvent('pressedMouseMoveEvent', function (event) {
+             var _a, _b;
+             var _c = overlayStore.getPressedInstanceInfo(), instance = _c.instance, figureType = _c.figureType, figureIndex = _c.figureIndex, figureKey = _c.figureKey;
+-            if (instance !== null) {
+-                if (!instance.lock) {
+-                    if (!((_b = (_a = instance.onPressedMoving) === null || _a === void 0 ? void 0 : _a.call(instance, __assign({ overlay: instance, figureIndex: figureIndex, figureKey: figureKey }, event))) !== null && _b !== void 0 ? _b : false)) {
+-                        var point = _this._coordinateToPoint(instance, event);
+-                        if (figureType === 1 /* EventOverlayInfoFigureType.Point */) {
+-                            instance.eventPressedPointMove(point, figureIndex);
+-                        }
+-                        else {
+-                            instance.eventPressedOtherMove(point, _this.getWidget().getPane().getChart().getChartStore().getTimeScaleStore());
+-                        }
++            if (instance !== null && !instance.lock) {
++                if (!((_b = (_a = instance.onPressedMoving) === null || _a === void 0 ? void 0 : _a.call(instance, __assign({ overlay: instance, figureIndex: figureIndex, figureKey: figureKey }, event))) !== null && _b !== void 0 ? _b : false)) {
++                    var point = _this._coordinateToPoint(instance, event);
++                    if (figureType === 1 /* EventOverlayInfoFigureType.Point */) {
++                        instance.eventPressedPointMove(point, figureIndex);
++                    }
++                    else {
++                        instance.eventPressedOtherMove(point, _this.getWidget().getPane().getChart().getChartStore().getTimeScaleStore());
+                     }
+                 }
+                 return true;
+@@ -8589,6 +8703,8 @@ var OverlayView = /** @class */ (function (_super) {
+         var _this = this;
+         return function (event) {
+             var _a;
++            // Let locked figures receive clicks while the chart handles drag gestures.
++            if (overlay.lock) return false;
+             var pane = _this.getWidget().getPane();
+             var paneId = pane.getId();
+             var overlayStore = pane.getChart().getChartStore().getOverlayStore();
 @@ -8877,6 +8993,7 @@ var IndicatorWidget = /** @class */ (function (_super) {
          _this._gridView = new GridView(_this);
          _this._indicatorView = new IndicatorView(_this);

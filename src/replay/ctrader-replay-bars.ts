@@ -3,6 +3,7 @@ import type { MarketCandle } from '../market-data/models'
 import type { CTraderTick } from '../market-data/ctrader-market'
 
 export interface CTraderReplayMarket {
+  readonly source?: 'okx' | 'ctrader'
   loadTicks?(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<CTraderTick[]>
   loadCandles(
     kind: 'trade',
@@ -36,7 +37,7 @@ export async function loadClosedReplayBars(
   const unique = new Map<number, MarketCandle>()
   for (const bar of bars) {
     if (
-      bar.source === 'ctrader' && bar.isClosed && bar.symbol.toUpperCase() === symbol.toUpperCase() &&
+      bar.source === (service.source ?? 'ctrader') && bar.isClosed && bar.symbol.toUpperCase() === symbol.toUpperCase() &&
       bar.timeframe === timeframe && bar.openTime >= from && bar.openTime <= to
     ) unique.set(bar.openTime, bar)
   }

@@ -56,13 +56,14 @@ function ConnectedChart({ connection, period, onSelection }: {
 
   if (snapshot === null) return <p className="auxiliary-chart-status" role="status">正在等待主窗口连接…</p>
   const replayTime = snapshot.visibleUntil === null ? null : formatDisplayTime(snapshot.visibleUntil, 'Asia/Shanghai')
+  const source = snapshot.symbol.exchange === 'OKX' ? 'OKX' : 'cTrader'
   return (
     <>
       <header className="auxiliary-chart-status">
         <strong>{snapshot.symbol.ticker}</strong>
         {replayTime === null
-          ? <span>实时行情 · {connectionLabels[liveStatus.connection]}</span>
-          : <span>历史回放 · 已回放至 {replayTime}</span>}
+          ? <span>{source} 实时行情 · {connectionLabels[liveStatus.connection]}</span>
+          : <span>{source} 历史回放 · 已回放至 {replayTime}</span>}
         {warning && <span role="status">{warning}</span>}
         <div className="auxiliary-chart-size">
           {replayTime !== null && (

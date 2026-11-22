@@ -124,7 +124,7 @@ export function SymbolPicker({
             type="button"
           >
             收藏
-            <small aria-hidden="true">{favorites.length}</small>
+            <small aria-hidden="true">{favorites.filter(ticker => ticker.endsWith('-USDT-SWAP') === (currentSymbol.exchange === 'OKX')).length}</small>
           </button>
           <button
             aria-selected={tab === 'all'}

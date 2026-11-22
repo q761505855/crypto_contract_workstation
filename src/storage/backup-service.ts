@@ -26,8 +26,11 @@ import {
 } from '../market-data/favorites'
 import {
   SELECTED_SYMBOL_STORAGE_KEY,
+  OKX_SYMBOL_STORAGE_KEY,
   readSelectedSymbol,
+  readSelectedOkxSymbol,
   validateSelectedSymbol,
+  validateSelectedOkxSymbol,
 } from '../market-data/symbol-preferences'
 import type { SymbolInfo } from '@klinecharts/pro'
 import type {
@@ -39,6 +42,7 @@ import { REPLAY_STEP_PERIOD_KEY, readReplayStepPeriod, validateReplayStepPeriod 
 import { isCTraderReplayStepPeriod, isFineStepPeriod, SECOND_STEP_MS, type ReplayStepPeriod } from '../replay/step-periods'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
 import { sameCTraderTradingTerms, validateCTraderTradingTerms } from '../simulation/ctrader-trading'
+import { sameOkxTradingTerms, validateOkxTradingTerms } from '../simulation/okx-trading'
 import type {
   SimulationLedgerEntry,
   SimulationState,
@@ -54,6 +58,7 @@ import { IndexedDbSimulationStateStore } from './simulation-state-store'
 import { ctraderStorage } from './ctrader-storage'
 import { CTRADER_ACCOUNT_KEY, readCTraderAccount, validateCTraderAccount } from '../market-data/ctrader-account-preferences'
 import { CTRADER_PERIODS } from '../chart/chart-config'
+import { PRICE_SOURCE_KEY, readPriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
 
 export const BACKUP_FILE_TYPE = 'crypto-contract-workstation-backup'
 export const BACKUP_SCHEMA_VERSION = 1
@@ -71,7 +76,9 @@ export interface BackupPreferences {
   binanceRestBaseUrl: string
   favoriteSymbols: string[]
   selectedSymbol?: SymbolInfo
+  okxSelectedSymbol?: SymbolInfo
   ctraderAccount?: string
+  priceSource?: PriceSource
   chartIndicators?: ChartIndicatorPreferences
   pinnedPeriods?: string[]
   replayStepPeriod?: ReplayStepPeriod
@@ -205,6 +212,8 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     ...(item.workspace === undefined ? {} : { workspace: validateWorkspacePreferences(item.workspace) }),
     ...(item.selectedSymbol === undefined ? {} : { selectedSymbol: validateSelectedSymbol(item.selectedSymbol) }),
     ...(item.ctraderAccount === undefined ? {} : { ctraderAccount: validateCTraderAccount(item.ctraderAccount) }),
+    ...(item.priceSource === undefined ? {} : { priceSource: validatePriceSource(item.priceSource) }),
+    ...(item.okxSelectedSymbol === undefined ? {} : { okxSelectedSymbol: validateSelectedOkxSymbol(item.okxSelectedSymbol) }),
     ...(item.chartIndicators === undefined
       ? {}
       : {
@@ -340,12 +349,12 @@ function validateSession(value: unknown, index: number): ReplaySession {
     .toUpperCase()
   const timeframe = stringValue(period.text, `${field}.period.text`)
   const marketSource = item.marketSource
-  if (marketSource !== undefined && marketSource !== 'binance' && marketSource !== 'ctrader') {
+  if (marketSource !== undefined && marketSource !== 'binance' && marketSource !== 'ctrader' && marketSource !== 'okx') {
     throw new Error(`${field}.marketSource 无效`)
   }
-  const native = marketSource === 'ctrader'
-  const nativeSymbol = native ? validateSelectedSymbol(symbol) : undefined
-  if (native ? nativeSymbol?.exchange !== 'CTRADER' || !CTRADER_TIMEFRAMES.some(period => period === timeframe)
+  const native = marketSource === 'ctrader' || marketSource === 'okx'
+  const nativeSymbol = marketSource === 'okx' ? validateSelectedOkxSymbol(symbol) : native ? validateSelectedSymbol(symbol) : undefined
+  if (native ? nativeSymbol?.exchange !== (marketSource === 'okx' ? 'OKX' : 'CTRADER') || !CTRADER_TIMEFRAMES.some(period => period === timeframe)
     : !ticker.endsWith('USDT') || !SUPPORTED_TIMEFRAMES.includes(timeframe)) {
     throw new Error(`${field} 的交易对或周期无效`)
   }
@@ -354,6 +363,7 @@ function validateSession(value: unknown, index: number): ReplaySession {
   if ((native && cursorPeriod === undefined) || (!native && item.cursorTimeframe !== undefined)) {
     throw new Error(`${field}.cursorTimeframe 无效`)
   }
+  if (marketSource === 'okx' && isFineStepPeriod(cursorPeriod)) throw new Error(`${field}.cursorTimeframe 无效`)
   const cursorTickIndex = item.cursorTickIndex === undefined ? undefined : nonNegativeInteger(item.cursorTickIndex, `${field}.cursorTickIndex`)
   if ((cursorPeriod === 'tick') !== (cursorTickIndex !== undefined) ||
     (cursorTickIndex !== undefined && !Number.isSafeInteger(cursorTickIndex))) {
@@ -403,6 +413,9 @@ function validateSession(value: unknown, index: number): ReplaySession {
     `${field}.tradingConfig`,
   )
   const ctrader = tradingConfig.ctrader
+  const okx = tradingConfig.okx
+  if (marketSource === 'okx') validateOkxTradingTerms(okx)
+  else if (okx !== undefined) throw new Error(`${field}.tradingConfig.okx 要求 OKX 会话`)
   if (ctrader !== undefined) {
     if (marketSource !== 'ctrader') throw new Error(`${field}.tradingConfig.ctrader 要求 cTrader 会话`)
     validateCTraderTradingTerms(ctrader)
@@ -438,6 +451,7 @@ function validateSession(value: unknown, index: number): ReplaySession {
       false,
     ),
     ...(ctrader === undefined ? {} : { ctrader }),
+    ...(okx === undefined ? {} : { okx }),
   }
   validateSimulationConfig(config)
   if (
@@ -561,6 +575,7 @@ function validateLedger(
       'realized_pnl',
       'liquidation_fee',
       'swap',
+      'funding',
       'balance_adjustment',
     ].includes(String(item.type))
   ) {
@@ -593,7 +608,9 @@ function validateSimulation(
   )
   const config = record(item.config, `${field}.config`)
   const ctrader = config.ctrader
+  const okx = config.okx
   if (ctrader !== undefined) validateCTraderTradingTerms(ctrader)
+  if (okx !== undefined) validateOkxTradingTerms(okx)
   validateSimulationConfig({
     initialBalance: decimalValue(
       config.initialBalance,
@@ -622,6 +639,7 @@ function validateSimulation(
       false,
     ),
     ...(ctrader === undefined ? {} : { ctrader }),
+    ...(okx === undefined ? {} : { okx }),
   })
   const trades = arrayValue(item.trades, `${field}.trades`).map(
     (trade, tradeIndex) =>
@@ -721,6 +739,12 @@ function validateSimulation(
       nonNegativeInteger(position.swapPeriods, `${positionField}.swapPeriods`)
       const checked = nonNegativeInteger(position.swapCheckedThrough, `${positionField}.swapCheckedThrough`)
       if (checked < Number(position.openedAt)) throw new Error(`${positionField}.swapCheckedThrough 早于开仓时间`)
+    }
+    if (position.fundingCheckedThrough !== undefined) {
+      const checked = nonNegativeInteger(position.fundingCheckedThrough, `${positionField}.fundingCheckedThrough`)
+      if (!okx || !Number.isSafeInteger(checked) || checked < Number(position.openedAt)) {
+        throw new Error(`${positionField}.fundingCheckedThrough 无效`)
+      }
     }
     for (const name of [
       'takeProfitActiveAfterTime',
@@ -851,6 +875,11 @@ export function validateBackupEnvelope(value: unknown, currentIndicators?: Chart
     if (!sameCTraderTradingTerms(session.tradingConfig.ctrader, simulation.config.ctrader)) {
       throw new Error(`模拟状态 ${simulation.sessionId} 与会话的 IC Markets 交易规格不匹配`)
     }
+    if (!sameOkxTradingTerms(session.tradingConfig.okx, simulation.config.okx) || (session.marketSource === 'okx' &&
+        (session.tradingConfig.feeRate !== simulation.config.feeRate ||
+          session.tradingConfig.liquidationFeeRate !== simulation.config.liquidationFeeRate))) {
+      throw new Error('回放会话与模拟状态的 OKX 交易规格不一致')
+    }
   }
   return {
     fileType: BACKUP_FILE_TYPE,
@@ -866,6 +895,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
   const chartIndicators = loadChartIndicatorPreferences(storage)
   const selectedSymbol = readSelectedSymbol(storage)
   const ctraderAccount = readCTraderAccount(storage)
+  const okxSelectedSymbol = readSelectedOkxSymbol(storage)
   return {
     binanceRestBaseUrl:
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
@@ -873,11 +903,13 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
     pinnedPeriods: readPinnedPeriods(storage),
     replayStepPeriod: readReplayStepPeriod(storage),
     showTradeOverlays: readShowTradeOverlays(storage),
+    priceSource: readPriceSource(storage),
     chartWindowSize: readChartWindowSize(storage),
     candleType: readCandleType(storage),
     workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
     ...(ctraderAccount === undefined ? {} : { ctraderAccount }),
+    ...(okxSelectedSymbol === null ? {} : { okxSelectedSymbol }),
     ...(chartIndicators === null ? {} : { chartIndicators }),
   }
 }
@@ -1057,7 +1089,9 @@ export class WorkstationBackupService {
     const fields = {
       chartIndicators: CHART_INDICATORS_PREFERENCE,
       selectedSymbol: SELECTED_SYMBOL_STORAGE_KEY,
+      okxSelectedSymbol: OKX_SYMBOL_STORAGE_KEY,
       ctraderAccount: CTRADER_ACCOUNT_KEY,
+      priceSource: PRICE_SOURCE_KEY,
       pinnedPeriods: PINNED_PERIODS_KEY,
       replayStepPeriod: REPLAY_STEP_PERIOD_KEY,
       showTradeOverlays: SHOW_TRADE_OVERLAYS_KEY,

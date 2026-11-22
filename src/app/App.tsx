@@ -11,6 +11,7 @@ import { formatDisplayTime } from '../format-display-time'
 import {
   DEFAULT_CTRADER_SYMBOL,
   DEFAULT_CTRADER_PERIOD,
+  DEFAULT_OKX_SYMBOL,
 } from '../chart/chart-config'
 import { ChartWorkspace } from '../chart/ChartWorkspace'
 import { ChartWindowHost, openChartWindow } from '../chart/chart-window'
@@ -30,7 +31,9 @@ import { WorkspaceTools } from '../components/WorkspaceTools'
 import { PanelToggle } from '../components/PanelToggle'
 import { loadWorkspacePreferences, saveWorkspacePreferences, DEFAULT_WORKSPACE_PREFERENCES, type WorkspacePreferences } from '../workspace/preferences'
 import type { MarketSelection } from '../market-data/models'
-import { readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
+import { readSelectedOkxSymbol, readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
+import { readPriceSource, savePriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
+import { toSymbolInfo } from '../market-data/models'
 import {
   INITIAL_LIVE_STATUS,
   type LiveMarketStatus,
@@ -40,7 +43,7 @@ import { compareReplayPositions, replaySourceTimeframe, sessionVisibleUntil, typ
 import { useCTraderReplayController } from '../replay/useCTraderReplayController'
 import { readReplayStepPeriod, saveReplayStepPeriod } from '../replay/step-preferences'
 import { ctraderReplayChartNeedsReload } from '../replay/ctrader-replay-datafeed'
-import { isCTraderReplayStepPeriod } from '../replay/step-periods'
+import { isCTraderReplayStepPeriod, isFineStepPeriod } from '../replay/step-periods'
 import { classifyRiskPrice, estimateRiskPnl } from '../simulation/risk-price'
 import { useSimulationController } from '../simulation/useSimulationController'
 import type { SimulationTrade } from '../simulation/models'
@@ -68,14 +71,15 @@ function simulationPriceText(price: number, precision: number): string {
   return price.toFixed(Math.min(20, Math.max(0, precision)))
 }
 
-function activeSymbol(): MarketSelection['symbol'] {
+function activeSymbol(source: PriceSource): MarketSelection['symbol'] {
+  if (source === 'okx') return readSelectedOkxSymbol() ?? DEFAULT_OKX_SYMBOL
   const saved = readSelectedSymbol()
   return saved?.exchange === 'CTRADER' ? saved : DEFAULT_CTRADER_SYMBOL
 }
 
-function activeStepPeriod(): ReturnType<typeof readReplayStepPeriod> {
+function activeStepPeriod(source: PriceSource): ReturnType<typeof readReplayStepPeriod> {
   const saved = readReplayStepPeriod()
-  return isCTraderReplayStepPeriod(saved) ? saved : '1m'
+  return isCTraderReplayStepPeriod(saved) && (source === 'ctrader' || !isFineStepPeriod(saved)) ? saved : '1m'
 }
 
 const connectionLabels: Record<LiveMarketStatus['connection'], string> = {
@@ -83,6 +87,37 @@ const connectionLabels: Record<LiveMarketStatus['connection'], string> = {
 }
 
 export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
+  const [rootRuntime] = useState(() => runtime ?? createMarketDataRuntime())
+  const [source, setSource] = useState(readPriceSource)
+  const [sourceError, setSourceError] = useState('')
+  const marketRuntime = useMemo(() => source === 'okx' ? rootRuntime.forPriceSource(source) : rootRuntime, [rootRuntime, source])
+  useEffect(() => { document.title = `${source === 'okx' ? 'OKX' : 'cTrader'} 行情回放工作站` }, [source])
+  useEffect(() => {
+    const restored = (event: Event) => {
+      if ((event as CustomEvent<{ source: string }>).detail?.source === 'cloud') setSource(readPriceSource())
+    }
+    window.addEventListener(PREFERENCES_RESTORED, restored)
+    return () => window.removeEventListener(PREFERENCES_RESTORED, restored)
+  }, [])
+
+  const changeSource = (next: PriceSource) => {
+    try {
+      savePriceSource(next)
+      setSource(next)
+      setSourceError('')
+    } catch { setSourceError('无法保存行情来源，请检查浏览器存储。') }
+  }
+  return <MarketWorkspace key={source} marketRuntime={marketRuntime} source={source}
+    onSourceChange={changeSource} sourceError={sourceError} />
+}
+
+function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }: {
+  marketRuntime: MarketDataRuntime
+  source: PriceSource
+  onSourceChange: (next: PriceSource) => void
+  sourceError: string
+}) {
+  const sourceLabel = source === 'okx' ? 'OKX' : 'cTrader'
   const shellRef = useRef<HTMLElement | null>(null)
   const [layout, setLayout] = useState(loadWorkspacePreferences)
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
@@ -137,12 +172,11 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     return () => document.removeEventListener('keydown', keydown)
   }, [mobile, mobilePanel])
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
-  const [marketRuntime] = useState(() => runtime ?? createMarketDataRuntime())
   const [chartWindows] = useState(() => new ChartWindowHost(marketRuntime))
   const [popupBlocked, setPopupBlocked] = useState(false)
   const [configEpoch, setConfigEpoch] = useState(0)
   const [liveSelection, setLiveSelection] = useState<MarketSelection>(() => ({
-    symbol: activeSymbol(),
+    symbol: activeSymbol(source),
     period: DEFAULT_CTRADER_PERIOD,
   }))
   const [replayPeriod, setReplayPeriod] = useState<{ sessionId: string; period: MarketSelection['period'] } | null>(null)
@@ -161,7 +195,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
     followLatest: boolean
   } | null>(null)
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
-  const [stepPeriod, setStepPeriod] = useState(activeStepPeriod)
+  const [stepPeriod, setStepPeriod] = useState(() => activeStepPeriod(source))
   const [showTradeOverlays, setShowTradeOverlays] = useState(readShowTradeOverlays)
   const replay = useCTraderReplayController(marketRuntime, stepPeriod)
   const mode = replay.session === null ? 'live' : 'history'
@@ -179,19 +213,34 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   replaySessionRef.current = replay.session
   useEffect(() => {
     const restored = (event: Event) => {
-      setStepPeriod(activeStepPeriod())
+      setStepPeriod(activeStepPeriod(source))
       setShowTradeOverlays(readShowTradeOverlays())
       if ((event as CustomEvent<{ source: string }>).detail?.source !== 'cloud') return
       const nextLayout = loadWorkspacePreferences()
       layoutRef.current = nextLayout
       setLayout(nextLayout)
       setFocusMode(false)
-      setLiveSelection(current => ({ ...current, symbol: activeSymbol() }))
+      setLiveSelection(current => ({ ...current, symbol: activeSymbol(source) }))
       setConfigEpoch(current => current + 1)
     }
     window.addEventListener(PREFERENCES_RESTORED, restored)
     return () => window.removeEventListener(PREFERENCES_RESTORED, restored)
-  }, [marketRuntime])
+  }, [source])
+  useEffect(() => {
+    if (source !== 'okx') return
+    const request = new AbortController()
+    void marketRuntime.service.getSymbols({ signal: request.signal }).then(symbols => {
+      if (request.signal.aborted) return
+      setLiveSelection(current => {
+        const instrument = symbols.find(item => item.symbol === current.symbol.ticker)
+          ?? symbols.find(item => item.symbol === DEFAULT_OKX_SYMBOL.ticker) ?? symbols[0]
+        return instrument ? { ...current, symbol: toSymbolInfo(instrument) } : current
+      })
+    }).catch(reason => {
+      if (!request.signal.aborted) setMarketWarning(reason instanceof Error ? reason.message : '无法读取 OKX 品种')
+    })
+    return () => request.abort()
+  }, [marketRuntime, source, configEpoch])
   const simulationOverlays = useMemo<SimulationOverlayState>(() => {
     const currentTime = replay.session
       ? sessionVisibleUntil(replay.session) - 1
@@ -417,7 +466,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
 
   const chartHeight = mobile ? layout.mobileChartHeight : layout.chartHeight
   const accounts = marketRuntime.accountSelection?.getSnapshot()
-  const canSwitchAccount = liveStatus.connection === 'disconnected' && !simulation.busy &&
+  const canSwitchAccount = source === 'ctrader' && liveStatus.connection === 'disconnected' && !simulation.busy &&
     accounts?.selectedKey !== undefined && accounts.accounts.length > 1
   const simulationCurrency = replay.session?.tradingConfig.ctrader?.accountCurrency ?? replay.session?.symbol.priceCurrency ?? ''
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
@@ -425,7 +474,12 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   return (
     <main ref={shellRef} className="app-shell workspace-shell">
       <header className="app-header">
-        <h1><span className="desktop-brand">cTrader 行情回放工作站</span><span className="mobile-brand">cTrader 工作站</span></h1>
+        <h1><span className="desktop-brand">{sourceLabel} 行情回放工作站</span><span className="mobile-brand">{sourceLabel} 工作站</span></h1>
+        <select className="price-source-select" aria-label="行情来源" value={source}
+          onChange={event => onSourceChange(validatePriceSource(event.target.value))}>
+          <option value="ctrader">cTrader</option>
+          <option value="okx">OKX</option>
+        </select>
         <WorkspaceTools>
           {!mobile && <button type="button" onClick={() => setPopupBlocked(openChartWindow() === null)}>打开副图</button>}
           <button type="button" aria-expanded={chartSizeOpen} onClick={() => setChartSizeOpen(true)}>图表尺寸</button>
@@ -433,10 +487,11 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           <hr />
           <button type="button" aria-expanded={workspaceMenu} onClick={() => setWorkspaceMenu(true)}>工作区</button>
           <button type="button" data-testid="open-data-manager" onClick={() => setDataManagerOpen(true)}>数据管理</button>
-          {marketRuntime.accountSelection && <CTraderAccountPicker selection={marketRuntime.accountSelection} busy={simulation.busy}
+          {source === 'ctrader' && marketRuntime.accountSelection && <CTraderAccountPicker selection={marketRuntime.accountSelection} busy={simulation.busy}
             switching={accountSwitchOpen} onSwitchingChange={setAccountSwitchOpen} />}
         </WorkspaceTools>
       </header>
+      {sourceError && <p className="panel-error" role="alert">{sourceError}</p>}
       {popupBlocked && !mobile && <div className="chart-popup-warning" role="alert">浏览器拦截了副图窗口，请允许此站点弹出窗口后重试。</div>}
       {marketRuntime.configSync && <ConfigSyncStatus service={marketRuntime.configSync} />}
       <div
@@ -475,6 +530,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
           <div className="replay-region">
             <div id="workspace-replay-content" className="replay-content">
               <ReplayControls
+                priceSource={source}
                 chartStartTime={chartReplayStartTime}
                 interactionLocked={simulation.busy}
                 market={marketRuntime.service}
@@ -507,7 +563,7 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
       </div>
       {mobile && mobilePanel && <div className="mobile-panel-backdrop" onClick={closeMobilePanel} aria-hidden="true" />}
       <footer className="status-footer" role="contentinfo">
-        <span id="workspace-status-content">{marketSelection.symbol.ticker} · {marketSelection.period.text}{replay.session !== null ? ` · 回放第 ${replay.session.currentIndex + 1} 步` : ''}<span role="status">{[replayHistoryStatus, marketWarning, mode === 'live' ? liveStatus.warning : ''].filter(Boolean).map(message => ` · ${message}`).join('')}</span></span>
+        <span id="workspace-status-content">{marketSelection.symbol.ticker} · {marketSelection.period.text}{replay.session !== null ? ` · 回放第 ${replay.session.currentIndex + 1} 步` : ''}<span role="status">{[replayHistoryStatus, marketWarning, mode === 'live' ? liveStatus.warning : simulation.state?.warning].filter(Boolean).map(message => ` · ${message}`).join('')}</span></span>
         <span>{mode === 'history' ? '历史回放' : '实时行情'}</span>
       </footer>
       <nav className="mobile-workspace-nav" aria-label="工作台快捷操作">

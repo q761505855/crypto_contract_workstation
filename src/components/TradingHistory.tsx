@@ -9,7 +9,7 @@ const actionLabels: Record<TradeAction, string> = {
 
 const ledgerLabels: Record<LedgerEntryType, string> = {
   initial_balance: '初始资金', realized_pnl: '已实现盈亏', trading_fee: '手续费', liquidation_fee: '强平费用', swap: '隔夜调整',
-  balance_adjustment: '余额调整',
+  balance_adjustment: '余额调整', funding: '资金费',
 }
 
 function Amount({ value, currency, digits = 4, signed = false }: {
@@ -26,10 +26,11 @@ function Amount({ value, currency, digits = 4, signed = false }: {
   </span>
 }
 
-export function TradeHistory({ trades, currency, usesLots, volumeText }: {
+export function TradeHistory({ trades, currency, usesLots, volumeText, quantityLabel }: {
   trades: readonly SimulationTrade[]
   currency: string
   usesLots: boolean
+  quantityLabel?: string
   volumeText(quantity: string): string
 }) {
   if (trades.length === 0) return <p className="history-empty">尚无成交</p>
@@ -51,8 +52,8 @@ export function TradeHistory({ trades, currency, usesLots, volumeText }: {
           <dd><Amount value={opening ? null : trade.realizedPnl} currency={currency} digits={2} signed /></dd>
         </dl>
         <dl className="history-field history-fill">
-          <dt>{usesLots ? '手数' : '成交数量'} / 成交价</dt>
-          <dd>{volumeText(trade.quantity)}{usesLots ? ' 手' : ''}<span className="history-at"> @ </span>{trade.price}</dd>
+          <dt>{quantityLabel === '张数' ? '张数' : usesLots ? '手数' : '成交数量'} / 成交价</dt>
+          <dd>{volumeText(trade.quantity)}{quantityLabel === '张数' ? ' 张' : usesLots ? ' 手' : ''}<span className="history-at"> @ </span>{trade.price}</dd>
         </dl>
         <dl className="history-field history-costs">
           <div><dt>{usesLots ? '佣金' : '手续费'}</dt><dd><Amount value={trade.fee} currency={currency} /></dd></div>

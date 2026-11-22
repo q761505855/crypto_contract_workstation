@@ -15,7 +15,22 @@ export interface OrderFlowMapping {
   bybit?: BybitMapping
 }
 
+const okxInstruments = new Map<string, OkxInstrument>()
+
+export function rememberOkxInstrument(instrument: OkxInstrument): void {
+  okxInstruments.set(instrument.symbol, instrument)
+}
+
 export function orderFlowMapping(symbol: Pick<SymbolInfo, 'ticker' | 'exchange'>): OrderFlowMapping | undefined {
+  if (symbol.exchange === 'OKX') {
+    const instrument = okxInstruments.get(symbol.ticker)
+    if (instrument) return { symbol: instrument.symbol, relation: 'direct', okx: instrument }
+    const entry = Object.values(catalog).find(([ticker]) => ticker === symbol.ticker)
+    if (entry) {
+      const [ticker, contractValue, firstDay] = entry as [string, number, string]
+      return { symbol: ticker, relation: 'direct', okx: { symbol: ticker, contractValue, firstDay } }
+    }
+  }
   if (symbol.exchange !== 'CTRADER') return
   const ticker = symbol.ticker.toUpperCase()
   const entry = Object.hasOwn(catalog, ticker) ? catalog[ticker as keyof typeof catalog] : undefined

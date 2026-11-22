@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Decimal from 'decimal.js'
-import type { CTraderMarketService } from '../market-data/ctrader-market'
+import type { PriceSource } from '../market-data/price-source-preferences'
 import type { MarketSelection } from '../market-data/models'
 import { CTRADER_TIMEFRAMES } from '../market-data/intervals'
 import type {
@@ -12,6 +12,7 @@ import type { ReplayController } from '../replay/useReplayController'
 import { validateReplayStepPeriod } from '../replay/step-preferences'
 import { FINE_STEP_PERIODS, isCTraderReplayStepPeriod, isFineStepPeriod, type ReplayStepPeriod } from '../replay/step-periods'
 import { cTraderLeverage, type CTraderTradingTerms } from '../simulation/ctrader-trading'
+import { OKX_SIMULATION_TAKER_FEE, okxMaximumLeverage, type ReplayTradingTerms as TradingTerms } from '../simulation/okx-trading'
 import { MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage } from '../simulation/models'
 import type { SimulationController } from '../simulation/useSimulationController'
 import { WorkspaceDialog } from './WorkspaceDialog'
@@ -19,7 +20,8 @@ import { TimeJumpControl } from './TimeJumpControl'
 import { formatDisplayTime } from '../format-display-time'
 
 interface ReplayControlsProps {
-  market: Pick<CTraderMarketService, 'getReplayTradingTerms'>
+  priceSource?: PriceSource
+  market: { getReplayTradingTerms(symbol: string, start: number, signal?: AbortSignal): Promise<TradingTerms> }
   selection: MarketSelection
   replay: ReplayController<ReplayStepPeriod>
   simulation: SimulationController
@@ -37,25 +39,42 @@ interface ReplayControlsProps {
 function sessionName(session: ReplaySession): string {
   return `${session.symbol.ticker} ${session.period.text} · ${formatDisplayTime(
     session.startTime,
-  )}${session.marketSource !== 'ctrader' ? ' · 币安存档' : session.tradingConfig.ctrader ? '' : ' · 旧模拟规则'}`
+  )}${session.marketSource === 'okx' ? ' · OKX' : session.marketSource !== 'ctrader' ? ' · 币安存档' : session.tradingConfig.ctrader ? '' : ' · 旧模拟规则'}`
 }
 
 const HOLD_TO_PLAY_MS = 450
 
-function ReplayTradingTerms({ terms, waiting }: { terms?: CTraderTradingTerms; waiting?: string }) {
+function ReplayTradingTerms({ terms, waiting, source }: { terms?: TradingTerms; waiting?: string; source: PriceSource }) {
+  if (source === 'okx') {
+    const okx = terms && 'tickSize' in terms ? terms : undefined
+    return <details className="replay-advanced">
+      <summary>OKX 逐仓交易规格</summary>
+      <div>{okx ? <dl className="detail-list">
+        <div><dt>保证金和结算货币</dt><dd>USDT</dd></div>
+        <div><dt>杠杆上限</dt><dd>{okxMaximumLeverage(okx)}×（随持仓档位变化）</dd></div>
+        <div><dt>每张合约单位</dt><dd>{okx.contractValue}</dd></div>
+        <div><dt>最小张数 / 张数步长</dt><dd>{okx.minContracts} / {okx.contractStep}</dd></div>
+        <div><dt>市价单上限</dt><dd>{okx.maxOrderContracts} 张</dd></div>
+        <div><dt>最小价格变动</dt><dd>{okx.tickSize}</dd></div>
+        <div><dt>模拟吃单费率</dt><dd>{new Decimal(OKX_SIMULATION_TAKER_FEE).mul(100).toString()}%</dd></div>
+        <div><dt>首档维持保证金率</dt><dd>{new Decimal(okx.tiers[0].maintenanceMarginRate).mul(100).toString()}%</dd></div>
+      </dl> : <p className="muted-text">{waiting}</p>}</div>
+    </details>
+  }
+  const ctrader = terms as CTraderTradingTerms | undefined
   return <details className="replay-advanced">
     <summary>IC Markets 交易规格</summary>
     <div>
-      {terms ? <dl className="detail-list">
-        <div><dt>账户杠杆上限</dt><dd>{terms.accountLeverage}×</dd></div>
-        <div><dt>品种起始杠杆</dt><dd>{cTraderLeverage(terms)}×（按名义金额分档）</dd></div>
-        <div><dt>每手合约单位</dt><dd>{terms.lotSize}</dd></div>
-        <div><dt>最小手数 / 手数步长</dt><dd>{new Decimal(terms.minQuantity).div(terms.lotSize).toString()} / {new Decimal(terms.quantityStep).div(terms.lotSize).toString()}</dd></div>
-        <div><dt>佣金</dt><dd>{terms.commission.type === 3
-          ? new Decimal(terms.commission.rate).mul(100).toString() + '% 名义金额'
-          : terms.commission.rate + (terms.commission.type === 1 ? ' USD / 百万美元成交额' : ' ' + (terms.commission.type === 2 ? 'USD' : terms.quoteCurrency) + ' / 手')}</dd></div>
-        <div><dt>账户强平线</dt><dd>{new Decimal(terms.stopOutRate).mul(100).toString()}% 保证金水平</dd></div>
-        {terms.swap && <div><dt>隔夜调整</dt><dd>多 {terms.swap.long} / 空 {terms.swap.short}（会话规格）</dd></div>}
+      {ctrader ? <dl className="detail-list">
+        <div><dt>账户杠杆上限</dt><dd>{ctrader.accountLeverage}×</dd></div>
+        <div><dt>品种起始杠杆</dt><dd>{cTraderLeverage(ctrader)}×（按名义金额分档）</dd></div>
+        <div><dt>每手合约单位</dt><dd>{ctrader.lotSize}</dd></div>
+        <div><dt>最小手数 / 手数步长</dt><dd>{new Decimal(ctrader.minQuantity).div(ctrader.lotSize).toString()} / {new Decimal(ctrader.quantityStep).div(ctrader.lotSize).toString()}</dd></div>
+        <div><dt>佣金</dt><dd>{ctrader.commission.type === 3
+          ? new Decimal(ctrader.commission.rate).mul(100).toString() + '% 名义金额'
+          : ctrader.commission.rate + (ctrader.commission.type === 1 ? ' USD / 百万美元成交额' : ' ' + (ctrader.commission.type === 2 ? 'USD' : ctrader.quoteCurrency) + ' / 手')}</dd></div>
+        <div><dt>账户强平线</dt><dd>{new Decimal(ctrader.stopOutRate).mul(100).toString()}% 保证金水平</dd></div>
+        {ctrader.swap && <div><dt>隔夜调整</dt><dd>多 {ctrader.swap.long} / 空 {ctrader.swap.short}（会话规格）</dd></div>}
       </dl> : <p className="muted-text">{waiting}</p>}
     </div>
   </details>
@@ -125,6 +144,7 @@ function NextCandleButton({ next, play, pause, disabled, label }: {
 }
 
 export function ReplayControls({
+  priceSource = 'ctrader',
   market,
   selection,
   replay,
@@ -149,7 +169,7 @@ export function ReplayControls({
   const [activeLeverage, setActiveLeverage] = useState<string | null>(null)
   const [activeSlippage, setActiveSlippage] = useState<string | null>(null)
   const [walletDraft, setWalletDraft] = useState<string | null>(null)
-  const [terms, setTerms] = useState<CTraderTradingTerms | null>(null)
+  const [terms, setTerms] = useState<TradingTerms | null>(null)
   const [termsError, setTermsError] = useState('')
   const [viewportSpeed, setViewportSpeed] = useState<ReplaySpeed>(1)
   const [viewportPlaying, setViewportPlaying] = useState(false)
@@ -169,10 +189,12 @@ export function ReplayControls({
 
   const state = session !== null && simulation.state?.sessionId === session.id ? simulation.state : null
   const config = state?.config ?? session?.tradingConfig
-  const displayedTerms = session === null ? terms : config?.ctrader
-  const minimumLeverage = session !== null && !displayedTerms && state ? minimumContractLeverage(state) : 1
-  const defaultLeverage = displayedTerms ? cTraderLeverage(displayedTerms) : undefined
-  const maximumLeverage = session === null ? defaultLeverage : defaultLeverage ?? MAX_ADJUSTABLE_LEVERAGE
+  const displayedTerms = session === null ? terms : config?.okx ?? config?.ctrader
+  const okx = displayedTerms && 'tickSize' in displayedTerms ? displayedTerms : undefined
+  const minimumLeverage = session !== null && !config?.ctrader && state ? minimumContractLeverage(state) : 1
+  const sourceMaximum = displayedTerms ? ('tickSize' in displayedTerms ? okxMaximumLeverage(displayedTerms) : cTraderLeverage(displayedTerms)) : undefined
+  const defaultLeverage = okx ? Math.min(DEFAULT_TRADING_CONFIG.leverage, okxMaximumLeverage(okx)) : sourceMaximum
+  const maximumLeverage = session === null ? sourceMaximum : sourceMaximum ?? MAX_ADJUSTABLE_LEVERAGE
   const leverageText = session === null ? leverageDraft ?? (defaultLeverage?.toString() ?? '')
     : activeLeverage ?? (config?.leverage.toString() ?? '')
   const slippageText = session === null ? slippageRate : activeSlippage ?? config?.slippageRate ?? '0'
@@ -262,7 +284,7 @@ export function ReplayControls({
   const stepSelect = <select aria-label="步进周期" disabled={interactionLocked}
     value={isCTraderReplayStepPeriod(stepPeriod) ? stepPeriod : '1m'}
     onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
-    {FINE_STEP_PERIODS.map(period => <option key={period} value={period}>{period === 'tick' ? '逐笔 Tick' : period}</option>)}
+    {priceSource === 'ctrader' && FINE_STEP_PERIODS.map(period => <option key={period} value={period}>{period === 'tick' ? '逐笔 Tick' : period}</option>)}
     {CTRADER_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
   </select>
   const speedSelect = <select aria-label={session === null ? '播放速度' : '回放速度'} disabled={interactionLocked}
@@ -309,7 +331,7 @@ export function ReplayControls({
           />
         </label>
         {orderFields}
-        <ReplayTradingTerms terms={terms ?? undefined}
+        <ReplayTradingTerms terms={terms ?? undefined} source={priceSource}
           waiting={termsError || (chartStartTime === null ? '请先在图表上选定回放起点。' : '正在读取账户和品种规格…')} />
         {selectedSession && (
           <>
@@ -327,7 +349,7 @@ export function ReplayControls({
             </select>
             <div className="button-row">
               <button
-                disabled={replay.busy || selectedSession.marketSource !== 'ctrader'}
+                disabled={replay.busy || selectedSession.marketSource !== priceSource}
                 onClick={() => { void replay.loadSession(selectedSession.id); setSettingsOpen(false) }}
                 type="button"
               >
@@ -351,7 +373,7 @@ export function ReplayControls({
     </section>
   }
 
-  const native = session.marketSource === 'ctrader'
+  const native = session.marketSource === 'ctrader' || session.marketSource === 'okx'
   const onTick = session.cursorTimeframe === 'tick'
   const currentTime = onTick ? session.currentTime : sessionVisibleUntil(session) - (native ? 0 : 60_000)
   const precision = onTick ? 'millisecond' : isFineStepPeriod(session.cursorTimeframe) ? 'second' : 'minute'
@@ -419,7 +441,7 @@ export function ReplayControls({
           (activeLeverage === null && activeSlippage === null)} onClick={() => void applyOrderSettings()}>应用交易参数</button>
         {simulation.error && <p className="panel-error" role="alert">{simulation.error}</p>}
         {replay.error && <p className="replay-error" role="alert">{replay.error}</p>}
-        {displayedTerms ? <ReplayTradingTerms terms={displayedTerms} /> : <details className="replay-advanced">
+        {displayedTerms ? <ReplayTradingTerms terms={displayedTerms} source={priceSource} /> : <details className="replay-advanced">
           <summary>会话交易规格</summary>
           <div><dl className="detail-list">
             <div><dt>手续费率</dt><dd>{new Decimal(session.tradingConfig.feeRate).mul(100).toString()}%</dd></div>

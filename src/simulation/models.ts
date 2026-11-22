@@ -49,6 +49,7 @@ export interface SimulationPosition {
   stopLossActiveAfterTime: number | null
   swapCheckedThrough?: number
   swapPeriods?: number
+  fundingCheckedThrough?: number
 }
 
 export interface SimulationTrade {
@@ -75,6 +76,7 @@ export type LedgerEntryType =
   | 'realized_pnl'
   | 'liquidation_fee'
   | 'swap'
+  | 'funding'
   | 'balance_adjustment'
 
 export interface SimulationLedgerEntry {

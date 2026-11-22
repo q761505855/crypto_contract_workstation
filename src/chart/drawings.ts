@@ -23,7 +23,9 @@ export interface ChartDrawing {
   name: string
   points: DrawingPoint[]
   styles?: NonNullable<OverlayCreate['styles']>
+  locked?: boolean
 }
+type DrawingAppearance = Pick<ChartDrawing, 'styles' | 'locked'>
 export interface DrawingArchive { epoch: string; drawings: ChartDrawing[] }
 interface DrawingState { local: DrawingArchive; base: DrawingArchive; cloudBytes: number | null }
 type DrawingStorage = Pick<Storage, 'getItem' | 'setItem'>
@@ -32,6 +34,7 @@ export const EMPTY_DRAWINGS: DrawingArchive = { epoch: 'initial', drawings: [] }
 
 export function drawingScope(mode: 'live' | 'history', symbol: string, session: string | null, exchange?: string): string {
   if (mode === 'history' && session) return `replay:${session}`
+  if (exchange === 'OKX') return `live:OKX:${symbol.toUpperCase()}`
   return exchange === 'CTRADER' ? `live:CTRADER:${symbol.toUpperCase()}` : `live:${symbol.toUpperCase()}`
 }
 
@@ -84,11 +87,12 @@ export function validateDrawings(value: unknown): ChartDrawing[] {
           Math.abs(point.timestamp) > 8.64e15 || typeof point.value !== 'number' || !Number.isFinite(point.value)) invalid()
       return { timestamp: point.timestamp, value: point.value }
     })
-    const { id, scope, name, styles } = row
-    if (styles === undefined) return { id, scope, name, points }
-    if (!object(styles) || !Object.entries(styles).every(([group, entries]) => styleGroups.includes(group) &&
-      object(entries) && Object.entries(entries).every(([key, value]) => styleValue(key, value)))) invalid()
-    return { id, scope, name, points, styles: styles as ChartDrawing['styles'] }
+    const { id, scope, name, styles, locked } = row
+    if (locked !== undefined && typeof locked !== 'boolean') invalid()
+    if (styles !== undefined && (!object(styles) || !Object.entries(styles).every(([group, entries]) => styleGroups.includes(group) &&
+      object(entries) && Object.entries(entries).every(([key, value]) => styleValue(key, value))))) invalid()
+    return { id, scope, name, points, ...(styles !== undefined && { styles: styles as ChartDrawing['styles'] }),
+      ...(locked !== undefined && { locked }) }
   }).sort((a, b) => a.id.localeCompare(b.id))
 }
 
@@ -164,6 +168,18 @@ export class DrawingStore {
     return this.updateDrawing(drawing, true, epoch, before)
   }
 
+  editAppearance(id: string, epoch: string | undefined, change: (drawing: ChartDrawing) => DrawingAppearance): Promise<void> {
+    return this.update(state => {
+      if (epoch !== undefined && epoch !== state.local.epoch) return
+      const current = state.local.drawings.find(drawing => drawing.id === id)
+      if (!current) return
+      const next = { ...current, ...change(current) }
+      if (sameDrawingData(current, next)) return
+      const drawings = validateDrawings(state.local.drawings.map(drawing => drawing.id === id ? next : drawing))
+      return { ...state, local: { ...state.local, drawings } }
+    })
+  }
+
   private updateDrawing(drawing: ChartDrawing, edit: boolean, epoch?: string, before?: ChartDrawing): Promise<void> {
     return this.update(state => {
       if (epoch !== undefined && epoch !== state.local.epoch) return
@@ -176,6 +192,7 @@ export class DrawingStore {
           value: value === before.points[index]?.value ? previous.points[index].value : value,
         })),
         styles: sameDrawingData(drawing.styles, before.styles) ? previous.styles : drawing.styles,
+        locked: drawing.locked === before.locked ? previous.locked : drawing.locked,
       } : drawing
       if (sameDrawingData(previous, next)) return
       const drawings = validateDrawings([...state.local.drawings.filter(row => row.id !== drawing.id), next])

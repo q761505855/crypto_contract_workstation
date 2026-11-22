@@ -47,7 +47,7 @@ import {
   SIMULATION_PRICE_LINE, SIMULATION_TRADE_LABEL, type SimulationTradeLabel,
 } from './simulation-price-line'
 import { SimulationPriceLabels, type PriceLabel, type PriceLabelText } from './simulation-price-labels'
-import { DrawingOverlays } from './drawing-overlays'
+import { DrawingOverlays, type DrawingChange, type DrawingSelection } from './drawing-overlays'
 import type { DrawingStore } from './drawings'
 import { CandleReadout } from './candle-readout'
 import { formatDisplayTime } from '../format-display-time'
@@ -114,7 +114,9 @@ export interface ChartAdapterPort {
   jumpToTime?(timestamp: number, followLatest?: boolean): Promise<number | null>
   stepViewport?(direction: -1 | 1): number | null
   setSimulationOverlays(state: SimulationOverlayState): void
-  setDrawingScope?(store: DrawingStore, scope: string | null): void
+  setDrawingScope?(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void): void
+  changeSelectedDrawing?(id: string, change: DrawingChange): void
+  deleteSelectedDrawing?(id: string): void
 }
 
 export type ChartProFactory = (options: ChartProOptions) => ChartPro
@@ -240,7 +242,8 @@ export class ProChartAdapter implements ChartAdapterPort {
         subscribeReplayCursor?(listener: (context: ReplayContext | null) => void): () => void
       }
       this.source = new CombinedBybitSource(orderFlowCloud, (reset, affected) => this.orderFlow?.refresh(reset, affected))
-      this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => this.hasCurrentCandles())
+      this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => this.hasCurrentCandles(),
+        options.symbol.exchange === 'OKX')
       this.source.select(options.symbol, feed.getReplayContext?.() ?? null)
       this.stopCursor = feed.subscribeReplayCursor?.(context => this.source?.select(this.getSymbol(), context))
     }
@@ -276,10 +279,18 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.requireChart().setTheme(theme)
   }
 
-  setDrawingScope(store: DrawingStore, scope: string | null): void {
+  setDrawingScope(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void): void {
     if (!this.coreChart) return
-    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow)
+    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow, onSelection)
     this.drawings.setScope(scope)
+  }
+
+  changeSelectedDrawing(id: string, change: DrawingChange): void {
+    this.drawings?.changeSelection(id, change)
+  }
+
+  deleteSelectedDrawing(id: string): void {
+    this.drawings?.deleteSelection(id)
   }
 
   startVolumeProfile(): boolean {

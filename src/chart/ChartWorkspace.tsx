@@ -25,6 +25,8 @@ import { SymbolPicker } from './SymbolPicker'
 import { PeriodSelector } from './PeriodSelector'
 import { saveCandleType } from './candle-preferences'
 import type { DrawingStore } from './drawings'
+import type { DrawingSelection } from './drawing-overlays'
+import { DrawingSelectionToolbar } from './DrawingSelectionToolbar'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
 import './chart-size-controls.css'
 
@@ -117,6 +119,7 @@ export function ChartWorkspace({
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
+  const [drawingSelection, setDrawingSelection] = useState<DrawingSelection | null>(null)
   const [dayDownloadMessage, setDayDownloadMessage] = useState('')
   const [dayDownloadSelection, setDayDownloadSelection] = useState<DayDownloadSelection | null>(null)
   const dayDownloadRequest = useRef(0)
@@ -308,7 +311,8 @@ export function ChartWorkspace({
   }, [])
 
   useEffect(() => {
-    if (symbolRef.current.ticker !== symbol.ticker) {
+    if (symbolRef.current.ticker !== symbol.ticker ||
+        symbolRef.current.pricePrecision !== symbol.pricePrecision || symbolRef.current.volumePrecision !== symbol.volumePrecision) {
       symbolRef.current = symbol
       adapterRef.current?.setSymbol(symbol)
     }
@@ -334,7 +338,7 @@ export function ChartWorkspace({
   }, [period])
 
   useEffect(() => {
-    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope)
+    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope, setDrawingSelection)
   }, [drawingStore, drawingScope])
 
   useEffect(() => {
@@ -613,6 +617,9 @@ export function ChartWorkspace({
           <div className="chart-host" data-testid="chart-host" ref={hostRef} />
           {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
           {priceRangeMode}
+          {drawingSelection && <DrawingSelectionToolbar selection={drawingSelection}
+            onChange={change => adapterRef.current?.changeSelectedDrawing?.(drawingSelection.id, change)}
+            onDelete={() => adapterRef.current?.deleteSelectedDrawing?.(drawingSelection.id)} />}
           {orderFlowCloud && periodToolbar && createPortal(dayDownload, periodToolbar)}
           {periodToolbar === null ? periodSelector : createPortal(periodSelector, periodToolbar)}
         </div>

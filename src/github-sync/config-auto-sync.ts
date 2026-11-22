@@ -24,7 +24,7 @@ export function mergeConfig(base: BackupPreferences | undefined, local: BackupPr
     // Absent remote optional fields are legacy omissions, never deletion commands.
     if (there === undefined) return here
     if (equal(here, there)) return here
-    if (path !== 'chartWindowSize' && path !== 'selectedSymbol' && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
+    if (path !== 'chartWindowSize' && path !== 'selectedSymbol' && path !== 'okxSelectedSymbol' && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
       return Object.fromEntries([...new Set([...Object.keys(here), ...Object.keys(there)])].map(key => [
         key, merge(object(beforeHere) ? beforeHere[key] : undefined, object(beforeThere) ? beforeThere[key] : undefined, here[key], there[key], path ? `${path}.${key}` : key),
       ]))

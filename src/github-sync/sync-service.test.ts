@@ -8,6 +8,8 @@ import { SimulationEngine } from '../simulation/simulation-engine'
 import { IndexedDbReplaySessionStore } from '../storage/replay-session-store'
 import { IndexedDbSimulationStateStore } from '../storage/simulation-state-store'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
+import { PRICE_SOURCE_KEY } from '../market-data/price-source-preferences'
+import { OKX_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
 import {
   BACKUP_FILE_TYPE,
   BACKUP_SCHEMA_VERSION,
@@ -70,6 +72,8 @@ function backup(): BackupEnvelope {
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     ctraderAccount: 'live:19',
+    priceSource: 'okx',
+    okxSelectedSymbol: { ticker: 'ETH-USDT-SWAP', exchange: 'OKX', priceCurrency: 'USDT', type: 'PERPETUAL', pricePrecision: 2, volumePrecision: 3 },
     pinnedPeriods: ['1m', '1d'],
     replayStepPeriod: '1M',
     showTradeOverlays: false,
@@ -85,6 +89,7 @@ function backup(): BackupEnvelope {
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
         { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
+          bubbleMode: 'aggregate',
           bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
         } },
         { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#12345600', size: 0 }] } },
@@ -747,7 +752,8 @@ describe('GitHubSyncService', () => {
     const targetStorage = storage()
     sourceStorage.setItem(PINNED_PERIODS_KEY, '["1m","1d"]')
     targetStorage.setItem(PINNED_PERIODS_KEY, '["4h"]')
-    const source = new GitHubSyncService(new WorkstationBackupService(`cloud-source-${crypto.randomUUID()}`, sourceStorage))
+    const sourceBackups = new WorkstationBackupService(`cloud-source-${crypto.randomUUID()}`, sourceStorage)
+    const source = new GitHubSyncService(sourceBackups)
     const targetBackups = new WorkstationBackupService(`cloud-target-${crypto.randomUUID()}`, targetStorage)
     const target = new GitHubSyncService(targetBackups)
     const remote = new MemoryGitHubClient()
@@ -760,6 +766,18 @@ describe('GitHubSyncService', () => {
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect(targetStorage.getItem(PINNED_PERIODS_KEY)).toBe('[]')
+
+    const okxSymbol = backup().data.preferences!.okxSelectedSymbol!
+    sourceStorage.setItem(OKX_SYMBOL_STORAGE_KEY, JSON.stringify(okxSymbol))
+    sourceStorage.setItem(PRICE_SOURCE_KEY, '"okx"')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
+    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx"')
+    expect(JSON.parse(targetStorage.getItem(OKX_SYMBOL_STORAGE_KEY)!)).toEqual(okxSymbol)
+    sourceStorage.setItem(PRICE_SOURCE_KEY, '"ctrader"')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
 
     // Old cloud configurations omit the new field and must retain this browser's value.
     const rewriteRemotePreferences = async (value: Record<string, unknown>) => {
@@ -774,16 +792,26 @@ describe('GitHubSyncService', () => {
     }
     const preferences = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     delete preferences.pinnedPeriods
+    delete preferences.priceSource
+    delete preferences.okxSelectedSymbol
     await rewriteRemotePreferences(preferences)
     targetStorage.setItem(PINNED_PERIODS_KEY, '["1h"]')
     await target.pull(client(remote))
     expect(targetStorage.getItem(PINNED_PERIODS_KEY)).toBe('["1h"]')
+    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx"')
+    expect(JSON.parse(targetStorage.getItem(OKX_SYMBOL_STORAGE_KEY)!)).toEqual(okxSymbol)
 
     // A correct checksum is insufficient: validate configuration before applying any of it.
     const before = await targetBackups.exportAll()
     await rewriteRemotePreferences({ ...preferences, binanceRestBaseUrl: 'https://changed.test', pinnedPeriods: ['bogus'] })
     await expect(target.pull(client(remote))).rejects.toThrow(/pinnedPeriods/)
     expect((await targetBackups.exportAll()).data).toEqual(before.data)
+    for (const patch of [{ priceSource: '' }, { priceSource: null }, { priceSource: 'binance' },
+      { okxSelectedSymbol: null }, { okxSelectedSymbol: {} }, { okxSelectedSymbol: { ...okxSymbol, ticker: 'ETHUSD' } }]) {
+      await rewriteRemotePreferences({ ...preferences, ...patch, binanceRestBaseUrl: 'https://changed.test' })
+      await expect(target.pull(client(remote))).rejects.toThrow(/priceSource|OKX|交易品种|交易对/)
+      expect((await targetBackups.exportAll()).data).toEqual(before.data)
+    }
   })
 
   it('round-trips indicator preferences through config-only cloud sync, including empty, missing and invalid settings', async () => {
@@ -805,8 +833,19 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
 
+    const modeChanged = structuredClone(indicators)
+    const bubbles = modeChanged.main.find(i => i.name === 'BIG_TRADES')!
+    bubbles.styles = { ...(bubbles.styles as Record<string, JsonValue>), bubbleMode: 'volume' }
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(modeChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(modeChanged)
+
     const bubbleChanged = structuredClone(indicators)
     bubbleChanged.main.find(i => i.name === 'BIG_TRADES')!.styles = {
+      bubbleMode: 'aggregate',
       bubbleColors: [{ color: '#ab451200' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
     }
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(bubbleChanged))
@@ -893,6 +932,12 @@ describe('GitHubSyncService', () => {
     await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidBubbles })
     await expect(target.pull(client(remote))).rejects.toThrow(/BIG_TRADES.*bubbleColors/)
     expect((await targetBackups.exportAll()).data).toEqual(before)
+    for (const bubbleMode of [null, '', 'unknown']) {
+      invalidBubbles.main.find(i => i.name === 'BIG_TRADES')!.styles = { bubbleMode }
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidBubbles })
+      await expect(target.pull(client(remote))).rejects.toThrow(/BIG_TRADES.*bubbleMode/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const params of [[60], [null, 60], [1441, 60]]) {
       const invalidSessions = structuredClone(indicators)
       invalidSessions.main.find(i => i.name === 'MARKET_SESSIONS')!.calcParams = params
@@ -937,6 +982,38 @@ describe('GitHubSyncService', () => {
       await expect(target.pull(client(remote))).rejects.toThrow(/negativeColor/)
       expect((await targetBackups.exportAll()).data).toEqual(before)
     }
+  })
+
+  it('round-trips an OKX session with its contract specification and funding ledger in session-only sync', async () => {
+    const envelope = backup()
+    const symbol = envelope.data.preferences!.okxSelectedSymbol!
+    const first = { ...candle(60_000), source: 'okx' as const, symbol: symbol.ticker }
+    const session = {
+      schemaVersion: 2, id: 'okx-cloud-session', symbol, period: SUPPORTED_PERIODS[0],
+      marketSource: 'okx', cursorTimeframe: '1m', startTime: 60_000, currentTime: 120_000,
+      endTime: 300_000, visibleUntil: 180_000, currentIndex: 1, candleCount: 2,
+      speed: 1, status: 'paused', hasTrades: true, active: true, createdAt: 1, updatedAt: 2,
+      tradingConfig: { initialBalance: '1000', leverage: 10, feeRate: '0.0005', slippageRate: '0',
+        maintenanceMarginRate: '0.004', liquidationFeeRate: '0.0005', okx: {
+          accountCurrency: 'USDT', contractValue: '0.1', minContracts: '0.1', contractStep: '0.1',
+          maxOrderContracts: '100', tickSize: '0.01', maxLeverage: 50,
+          tiers: [{ maxContracts: '500', maxLeverage: 50, maintenanceMarginRate: '0.004' }],
+        },
+      },
+    } satisfies NonNullable<BackupEnvelope['data']['sessions']>[number]
+    const engine = SimulationEngine.create(session)
+    engine.open('long', { lots: '1' }, first)
+    engine.processCandle({ ...first, openTime: 120_000, closeTime: 179_999 }, false,
+      { funding: [{ timestamp: 120_000, price: '100', rate: '0.0001' }] })
+    envelope.data.sessions = [session]
+    envelope.data.simulations = [engine.snapshot()]
+    const remote = new MemoryGitHubClient()
+    await service(new MemoryBackupService(envelope)).upload(client(remote), 'stop', { config: false, sessions: true, marketData: false })
+    const target = new WorkstationBackupService(`okx-cloud-${crypto.randomUUID()}`)
+    await new GitHubSyncService(target).pull(client(remote))
+    const restored = await target.exportSession(session.id)
+    expect(restored.data.sessions).toEqual(envelope.data.sessions)
+    expect(restored.data.simulations).toEqual(envelope.data.simulations)
   })
 
   it('prepares config files and gzip-compressed monthly market chunks', async () => {

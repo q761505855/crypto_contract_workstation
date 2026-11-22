@@ -1,0 +1,42 @@
+.drawing-selection-toolbar {
+  position: absolute;
+  z-index: 6;
+  inset-block-start: calc(var(--price-axis-top, 44px) + 8px);
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  padding: 4px;
+  color: #eaf1fb;
+  background: #162335;
+  border: 1px solid #42546c;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px #0005;
+}
+
+.drawing-selection-toolbar :is(button, select, input) {
+  min-width: 36px;
+  min-height: 32px;
+  padding: 0 5px;
+  color: inherit;
+  background: #202f43;
+  border: 1px solid #42546c;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.drawing-selection-toolbar > input {
+  width: 36px;
+  padding: 3px;
+}
+
+.drawing-selection-toolbar > button[aria-label="删除绘图"] {
+  color: #ffa8a3;
+}
+
+@media (pointer: coarse) {
+  .drawing-selection-toolbar :is(button, select, input) { min-height: 40px; }
+}

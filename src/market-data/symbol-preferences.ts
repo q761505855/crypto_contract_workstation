@@ -4,6 +4,7 @@ import { ctraderStorage } from '../storage/ctrader-storage'
 import { normalizeMarketTicker } from './models'
 
 export const SELECTED_SYMBOL_STORAGE_KEY = 'marketData.selectedSymbol'
+export const OKX_SYMBOL_STORAGE_KEY = 'marketData.okxSelectedSymbol.v1'
 
 export function validateSymbolTicker(value: unknown): string {
   const ticker = normalizeMarketTicker(value)
@@ -12,12 +13,17 @@ export function validateSymbolTicker(value: unknown): string {
 }
 
 export function validateSelectedSymbol(value: unknown): SymbolInfo {
+  return validateProduct(value, false)
+}
+
+function validateProduct(value: unknown, okx: boolean): SymbolInfo {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('当前交易对配置无效')
   }
   const item = value as Record<string, unknown>
   const ticker = validateSymbolTicker(item.ticker)
-  if (item.exchange !== 'CTRADER' && (ticker.length <= 4 || !ticker.endsWith('USDT'))) {
+  if (okx ? !/^[A-Z0-9]+-USDT-SWAP$/.test(ticker) :
+    item.exchange === 'OKX' || (item.exchange !== 'CTRADER' && (ticker.length <= 4 || !ticker.endsWith('USDT')))) {
     throw new Error('当前交易品种必须是 cTrader 品种或旧版 USDT 交易对')
   }
   const symbol: SymbolInfo = { ticker }
@@ -37,6 +43,23 @@ export function validateSelectedSymbol(value: unknown): SymbolInfo {
   return symbol
 }
 
+export function validateSelectedOkxSymbol(value: unknown): SymbolInfo {
+  const symbol = validateProduct(value, true)
+  if (symbol.exchange !== 'OKX' || symbol.priceCurrency !== 'USDT' || symbol.type !== 'PERPETUAL') {
+    throw new Error('当前 OKX 品种必须是 USDT 永续合约')
+  }
+  return symbol
+}
+
+export function readSelectedOkxSymbol(storage: Pick<Storage, 'getItem'> = ctraderStorage): SymbolInfo | null {
+  try {
+    const saved = storage.getItem(OKX_SYMBOL_STORAGE_KEY)
+    return saved === null ? null : validateSelectedOkxSymbol(JSON.parse(saved))
+  } catch {
+    return null
+  }
+}
+
 export function readSelectedSymbol(storage: Pick<Storage, 'getItem'> = ctraderStorage): SymbolInfo | null {
   try {
     const saved = storage.getItem(SELECTED_SYMBOL_STORAGE_KEY)
@@ -48,7 +71,8 @@ export function readSelectedSymbol(storage: Pick<Storage, 'getItem'> = ctraderSt
 
 export function saveSelectedSymbol(symbol: SymbolInfo, storage: Pick<Storage, 'setItem'> = ctraderStorage): void {
   try {
-    writePreference(storage, SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(validateSelectedSymbol(symbol)))
+    if (symbol.exchange === 'OKX') writePreference(storage, OKX_SYMBOL_STORAGE_KEY, JSON.stringify(validateSelectedOkxSymbol(symbol)))
+    else writePreference(storage, SELECTED_SYMBOL_STORAGE_KEY, JSON.stringify(validateSelectedSymbol(symbol)))
   } catch {
     // Selecting a product remains usable when browser storage is unavailable.
   }

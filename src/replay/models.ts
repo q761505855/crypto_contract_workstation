@@ -2,6 +2,7 @@ import type { Period, SymbolInfo } from '@klinecharts/pro'
 import { alignOpenTime, klineCloseBoundary, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
 import type { CTraderReplayStepPeriod } from './step-periods'
 import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
+import type { OkxTradingTerms } from '../simulation/okx-trading'
 
 export type ReplaySpeed = 1 | 2 | 5 | 10
 export type ReplayStatus = 'paused' | 'completed'
@@ -14,6 +15,7 @@ export interface ReplayTradingConfig {
   maintenanceMarginRate: string
   liquidationFeeRate: string
   ctrader?: CTraderTradingTerms
+  okx?: OkxTradingTerms
 }
 
 export type ReplayOrderSettings = Pick<ReplayTradingConfig, 'leverage' | 'slippageRate'>
@@ -38,7 +40,7 @@ export interface ReplaySession {
   /** Exclusive visibility boundary of the last processed price. */
   visibleUntil?: number
   /** Missing on legacy Binance sessions. */
-  marketSource?: 'ctrader' | 'binance'
+  marketSource?: 'ctrader' | 'binance' | 'okx'
   /** cTrader step that produced the current cursor. */
   cursorTimeframe?: CTraderReplayStepPeriod
   /** Zero-based quote order within currentTime when the cursor is on a Tick. */

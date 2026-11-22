@@ -281,7 +281,9 @@ export class CTraderReplayDatafeed implements Datafeed {
         forming.high = Math.max(forming.high, Number(bar.high))
         forming.low = Math.min(forming.low, Number(bar.low))
         forming.close = Number(bar.close)
-        forming.volume = (forming.volume ?? 0) + (bar.tickVolume ?? 0)
+        const candle = toChartCandle(bar)
+        forming.volume = (forming.volume ?? 0) + (candle.volume ?? 0)
+        if (candle.turnover !== undefined) forming.turnover = (forming.turnover ?? 0) + candle.turnover
       }
       return forming
     } catch (reason) {

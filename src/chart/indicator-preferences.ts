@@ -122,7 +122,7 @@ function indicator(
   if (item.name === 'RSI' || item.name === MARKET_SESSIONS || item.name === BIG_TRADES) {
     const prior = previous.find(setting => setting.name === item.name)?.styles
     const keys = item.name === 'RSI' ? ['rsiLevels', 'rsiLines']
-      : item.name === BIG_TRADES ? ['bubbleColors'] : ['sessionVisibility', 'sessionFills', 'sessionLines']
+      : item.name === BIG_TRADES ? ['bubbleColors', 'bubbleMode'] : ['sessionVisibility', 'sessionFills', 'sessionLines']
     for (const key of keys) {
       const incoming = validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles) ? validatedStyles : null
       if (incoming?.[key] === undefined && prior && typeof prior === 'object' && !Array.isArray(prior) && prior[key] !== undefined) {
