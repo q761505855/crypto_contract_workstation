@@ -2,10 +2,10 @@ import type { SymbolInfo } from '@klinecharts/pro'
 import type { GitHubContentsClient } from '../../github-sync/github-client'
 import { replayConfirmedUntil, type ReplayContext } from '../../replay/models'
 import { BybitArchive } from './archive'
-import { ensureBybitDay } from './archive-requests'
+import { ensureTradeDay } from './archive-requests'
 import { BybitLiveTrades } from './live'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, bybitFirstDay, type BybitSymbol, type BybitTrade } from './trades'
-import { OkxArchive, okxArchiveDay, okxArchiveDays } from '../okx/archive'
+import { OkxArchive, okxArchiveDay } from '../okx/archive'
 import { OkxLiveTrades, OkxRecentTrades } from '../okx/live'
 import { mergeOkxTrades, orderFlowMapping, type OrderFlowMapping } from '../okx/trades'
 
@@ -20,7 +20,7 @@ interface PendingDay {
 }
 const wakeIntervalMs = 60_000
 const liveSettlementMs = 250
-const cacheWorker = { owner: 'q761505855', repository: 'crypto_contract_workstation', event: 'bybit-trades-requested' }
+const cacheWorker = { owner: 'q761505855', repository: 'crypto_contract_workstation' }
 
 function lowerBound(rows: readonly BybitTrade[], time: number): number {
   let low = 0
@@ -44,12 +44,12 @@ export class CombinedBybitSource {
   private readonly archiveDownloads = new AbortController()
   private readonly downloaded = new Map<string, Set<number>>()
   private released = false
-  private nextWake = 0
+  private readonly nextWake = new Map<string, number>()
   private pendingLiveUpdate?: ReturnType<typeof setTimeout>
 
   constructor(private readonly cloud: GitHubContentsClient, private readonly changed: (reset?: boolean, affected?: TradeRange) => void,
     private readonly archive = new BybitArchive(cloud.getTarget()), private readonly now = Date.now,
-    private readonly okxArchive = new OkxArchive()) {}
+    private readonly okxArchive = new OkxArchive(cloud.getTarget(), fetch, now)) {}
 
   get mapping(): OrderFlowMapping | undefined { return this.active }
   get replaying(): boolean { return this.context !== null }
@@ -93,7 +93,7 @@ export class CombinedBybitSource {
   async readArchivedHour(start: number): Promise<BybitTrade[] | null> {
     const mapping = this.active
     const primary = mapping?.okx && await this.okxArchive.loadHour(mapping.okx, start).catch(() => null)
-    if (primary) return primary
+    if (primary !== null && primary !== undefined) return primary
     return mapping?.bybit ? this.archive.loadHour(mapping.bybit.symbol, start).catch(() => null) : null
   }
 
@@ -324,58 +324,55 @@ export class CombinedBybitSource {
   private async downloadOkxRange(mapping: OrderFlowMapping, from: number, to: number, report: (message: string) => void): Promise<string> {
     const signal = this.archiveDownloads.signal
     const total = 1 + (to - from) / BYBIT_DAY_MS
+    const instrument = mapping.okx!
     let okx = 0
     let bybit = 0
     const unavailable: string[] = []
-    const fallback: { start: number; day: string; symbol: BybitSymbol; primaryError: unknown }[] = []
-    for (let start = from; start <= to; start += BYBIT_DAY_MS) {
+    for (let batch = from; batch <= to; batch += 8 * BYBIT_DAY_MS) {
       signal.throwIfAborted()
-      const day = bybitDay(start)
-      report(`正在下载 ${mapping.symbol} ${day} UTC 日档 · ${(start - from) / BYBIT_DAY_MS + 1}/${total} 天…`)
-      let available = true
-      let downloaded = false
-      let primaryError: unknown
-      for (const date of okxArchiveDays(start)) {
+      const starts = Array.from({ length: Math.min(8, 1 + (to - batch) / BYBIT_DAY_MS) },
+        (_, index) => batch + index * BYBIT_DAY_MS)
+      await Promise.all(starts.map(async start => {
+        const day = bybitDay(start)
+        const progress = (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${total} 天 · ${message}`)
+        const published = (ref?: string) => this.okxArchive.hasCloudDay(instrument, day, ref)
+        let primaryError: unknown
         try {
-          const cached = await this.okxArchive.download(mapping.okx!, date, signal)
-          available &&= cached
-          downloaded ||= cached
-        }
-        catch (error) { signal.throwIfAborted(); primaryError = error; available = false }
-      }
-      if (downloaded) this.markDownloaded(mapping.symbol, start, true)
-      if (available) okx++
-      else if (mapping.bybit && day >= bybitFirstDay(mapping.bybit.symbol)) {
-        fallback.push({ start, day, symbol: mapping.bybit.symbol, primaryError })
-      } else {
-        if (from === to && primaryError) throw primaryError
-        unavailable.push(day)
-      }
-    }
-    for (let index = 0; index < fallback.length; index += 8) {
-      await Promise.all(fallback.slice(index, index + 8).map(async ({ start, day, symbol, primaryError }) => {
-        try {
-          await this.requestDay(symbol, day, report)
-          bybit++
-          this.markDownloaded(mapping.symbol, start)
+          if (day >= instrument.firstDay && await ensureTradeDay('OKX', published, this.cloud, instrument.symbol, day,
+            progress, signal, () => this.wakeWorker('okx-trades-requested'))) {
+            okx++
+            this.markDownloaded(mapping.symbol, start)
+            return
+          }
         } catch (error) {
           signal.throwIfAborted()
-          if (from === to) throw (primaryError ?? error)
-          unavailable.push(day)
+          primaryError = error
         }
+        if (mapping.bybit && day >= bybitFirstDay(mapping.bybit.symbol)) {
+          try {
+            await this.requestDay(mapping.bybit.symbol, day, progress, published)
+            if (await published().catch(() => false)) okx++
+            else bybit++
+            this.markDownloaded(mapping.symbol, start)
+            return
+          } catch (error) {
+            signal.throwIfAborted()
+            if (from === to) throw (primaryError ?? error)
+          }
+        } else if (from === to && primaryError) throw primaryError
+        unavailable.push(day)
       }))
     }
     return `已缓存 OKX ${okx} 天 · Bybit 回退 ${bybit} 天${unavailable.length ? ` · 日期暂不可用 ${unavailable.sort().join('、')}` : ''}`
   }
 
-  private markDownloaded(symbol: string, start: number, okx = false): void {
+  private markDownloaded(symbol: string, start: number): void {
     const downloaded = this.downloaded.get(symbol) ?? new Set<number>()
     downloaded.add(start)
     this.downloaded.set(symbol, downloaded)
-    const hour = BYBIT_HOUR_MS
     if (this.active?.symbol === symbol) this.changed(true, {
-      fromUs: (start - (okx ? 8 * hour : 0)) * 1000,
-      untilUs: (start + BYBIT_DAY_MS + (okx ? 16 * hour : 0)) * 1000,
+      fromUs: start * 1000,
+      untilUs: (start + BYBIT_DAY_MS) * 1000,
       replaceArchive: true,
     })
   }
@@ -406,7 +403,8 @@ export class CombinedBybitSource {
       : `${symbol} ${bybitDay(from)} 至 ${bybitDay(to)} UTC 日档已缓存（${total} 天）`
   }
 
-  private async requestDay(symbol: BybitSymbol, day: string, report: (message: string) => void): Promise<string> {
+  private async requestDay(symbol: BybitSymbol, day: string, report: (message: string) => void,
+    superseded?: (ref?: string) => Promise<boolean>): Promise<string> {
     const key = `${symbol}:${day}`
     const existing = this.pending.get(key)
     if (existing) {
@@ -416,13 +414,15 @@ export class CombinedBybitSource {
     }
     const abort = new AbortController()
     const message = `正在检查 ${symbol} ${day} UTC 日档…`
-    const done = ensureBybitDay(this.archive, this.cloud, symbol, day, progress => {
+    const available = async (ref?: string) => !!await superseded?.(ref).catch(() => false) || this.archive.hasDay(symbol, day, ref)
+    const done = ensureTradeDay('Bybit', available, this.cloud, symbol, day, progress => {
       const pending = this.pending.get(key)
       if (pending?.abort !== abort) return
       pending.message = progress
       pending.report(progress)
-    }, abort.signal, this.wakeWorker).then(() => {
+    }, abort.signal, () => this.wakeWorker('bybit-trades-requested')).then(ready => {
       abort.signal.throwIfAborted()
+      if (!ready) throw new Error(`Bybit 未提供 ${symbol} ${day} UTC 逐笔归档`)
       const start = bybitDayStart(day)
       this.markDownloaded(symbol, start)
       return `${symbol} ${day} UTC 日档已缓存`
@@ -434,12 +434,12 @@ export class CombinedBybitSource {
     return done
   }
 
-  private wakeWorker = (): void => {
-    if (!this.cloud.canWrite() || this.now() < this.nextWake) return
+  private wakeWorker(event: string): void {
+    if (!this.cloud.canWrite() || this.now() < (this.nextWake.get(event) ?? 0)) return
     const target = this.cloud.getTarget()
     if (target.owner !== cacheWorker.owner || target.repository !== 'personal-cloud-storage' || target.branch !== 'main') return
-    this.nextWake = this.now() + wakeIntervalMs
-    void this.cloud.dispatchRepositoryEvent(cacheWorker.owner, cacheWorker.repository, cacheWorker.event, AbortSignal.timeout(10_000))
+    this.nextWake.set(event, this.now() + wakeIntervalMs)
+    void this.cloud.dispatchRepositoryEvent(cacheWorker.owner, cacheWorker.repository, event, AbortSignal.timeout(10_000))
       .catch(() => { /* The persisted request remains available to the scheduled job. */ })
   }
 }

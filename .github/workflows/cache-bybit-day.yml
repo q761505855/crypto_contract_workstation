@@ -1,8 +1,8 @@
-name: 缓存 Bybit 日成交
+name: 缓存交易所日成交
 
 on:
   repository_dispatch:
-    types: [bybit-trades-requested]
+    types: [bybit-trades-requested, okx-trades-requested]
   schedule:
     - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
 
@@ -25,10 +25,14 @@ jobs:
           ref: main
           token: ${{ secrets.CLOUD_STORAGE_TOKEN }}
           path: cloud-storage
-          sparse-checkout: projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests
+          sparse-checkout: |
+            projects/crypto-contract-workstation/experiments/ctrader/data/okx-requests
+            projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: npm
+      - run: npm ci
       - name: 处理网页提交的日成交缓存请求
         run: |
           git -C cloud-storage config user.name "github-actions[bot]"

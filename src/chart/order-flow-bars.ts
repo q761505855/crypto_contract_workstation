@@ -205,7 +205,7 @@ export class OrderFlowBars {
       if (untilUs <= fromUs) continue
       const scan = { hour, fromUs, untilUs, samples: new AccumulatedHour(), complete: true, archived: true, fallbackArchive: false }
       const group = groups.at(-1)
-      if (group?.at(-1)?.untilUs === fromUs) group.push(scan)
+      if (group && group.length < 6 && group.at(-1)?.untilUs === fromUs) group.push(scan)
       else groups.push([scan])
     }
     for (const group of groups) {

@@ -55,6 +55,7 @@ export class OrderFlowChart {
   private updating?: TradeRange
   private flowOperation?: AbortController
   private flowPending = false
+  private readonly flowInvalidations: TradeRange[] = []
   private timer?: number
   private readonly resize: () => void
   private readonly createIndicator: Chart['createIndicator']
@@ -107,8 +108,19 @@ export class OrderFlowChart {
   refresh(reset = false, affected?: TradeRange): void {
     if (reset) {
       if (affected) {
-        this.flow?.invalidate(affected)
-        this.replayFlow?.invalidate(affected)
+        if (this.flowOperation && !affected.replaceArchive && this.flowSource === this.feed.archiveCacheKey) {
+          // REST and live updates must not restart an in-flight archive scan.
+          const overlapping = this.flowInvalidations.find(range => range.fromUs <= affected.untilUs && range.untilUs >= affected.fromUs)
+          if (overlapping) {
+            overlapping.fromUs = Math.min(overlapping.fromUs, affected.fromUs)
+            overlapping.untilUs = Math.max(overlapping.untilUs, affected.untilUs)
+          } else this.flowInvalidations.push({ ...affected })
+          this.flowPending = true
+          this.invalidateProfiles(affected)
+          return
+        }
+        this.invalidateFlow(affected)
+        if (affected.replaceArchive) for (const range of this.flowInvalidations.splice(0)) this.invalidateFlow(range)
       }
       else {
         this.showBubbles({})
@@ -186,7 +198,13 @@ export class OrderFlowChart {
     this.flowOperation?.abort()
     this.flowOperation = undefined
     this.flowPending = false
+    this.flowInvalidations.length = 0
     this.updating = undefined
+  }
+
+  private invalidateFlow(affected: TradeRange): void {
+    this.flow?.invalidate(affected)
+    this.replayFlow?.invalidate(affected)
   }
 
   private schedule(): void {
@@ -364,11 +382,11 @@ export class OrderFlowChart {
     const replay = this.replayFlow
     const cursor = this.feed.tradeCursorUs
     const read = (start: number, until: number) => replay?.read(start, until, this.feed) ?? flow?.read(start, until)
-    this.displayFlow(timeframe, read)
     if (this.flowOperation) {
       this.flowPending = true
       return
     }
+    this.displayFlow(timeframe, read)
     const operation = new AbortController()
     this.flowOperation = operation
     const update = (range?: TradeRange) => {
@@ -397,6 +415,7 @@ export class OrderFlowChart {
       if (this.flowOperation === operation) {
         this.updating = undefined
         this.flowOperation = undefined
+        for (const range of this.flowInvalidations.splice(0)) this.invalidateFlow(range)
         if (this.flowPending) {
           this.flowPending = false
           this.schedule()

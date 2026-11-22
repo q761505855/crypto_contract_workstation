@@ -34,44 +34,19 @@ export function archiveInputs(symbol, day, now = Date.now()) {
 export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }) {
   const start = archiveInputs(symbol, day)
   const target = resolve(repository, archiveRoot, symbol, day)
-  const manifestPath = join(target, 'manifest.json')
-  try {
-    const cached = JSON.parse(await readFile(manifestPath, 'utf8'))
-    if (cached.version !== 1 || cached.symbol !== symbol || cached.day !== day || !cached.parts?.length) {
-      throw new Error('现有 Bybit 归档清单无效')
-    }
-    return { target, cached: true, rows: cached.rows }
-  } catch (error) { if (error.code !== 'ENOENT') throw error }
+  return writeTradeArchive({ target, symbol, day, records: () => bybitRows(symbol, day, start, fetcher) })
+}
 
+async function* bybitRows(symbol, day, start, fetcher) {
   const spot = catalog.spot.includes(symbol)
   const source = spot ? `spot/${symbol}/${symbol}_${day}` : `trading/${symbol}/${symbol}${day}`
-  const response = await fetcher(`https://public.bybit.com/${source}.csv.gz`,
-    { signal: AbortSignal.timeout(360_000) })
+  const response = await fetcher(`https://public.bybit.com/${source}.csv.gz`, { signal: AbortSignal.timeout(360_000) })
   if (!response.ok || !response.body) throw new BybitArchiveHttpError(response.status)
-  await mkdir(dirname(target), { recursive: true })
-  const staging = await mkdtemp(join(dirname(target), '.bybit-'))
-  const parts = []
-  const hours = new Map()
   const gunzip = createGunzip()
-  let rows = 0
   let columns
-  let part
-  const closePart = async () => {
-    if (!part) return
-    part.gzip.end()
-    await part.done
-    const checksum = createHash('sha256')
-    let bytes = 0
-    for await (const chunk of createReadStream(join(staging, part.file))) {
-      checksum.update(chunk)
-      bytes += chunk.length
-    }
-    parts.push({ file: part.file, hour: part.hour, rows: part.rows, bytes, sha256: checksum.digest('hex') })
-    part = undefined
-  }
+  let rows = 0
   try {
     const transfer = pipeline(Readable.fromWeb(response.body), gunzip)
-    // The read loop also sees stream errors; attach a rejection handler immediately.
     void transfer.catch(() => {})
     for await (const line of createInterface({ input: gunzip, crlfDelay: Infinity })) {
       if (!columns) {
@@ -93,7 +68,45 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
           !/^[0-9]+(?:\.\d{1,6})?$/.test(timestamp) || !/^[\w-]+$/.test(id)) {
         throw new Error(`Bybit 成交文件第 ${rows + 2} 行无效：${line.slice(0, 90)}`)
       }
-      const hour = Math.floor((time - start) / hourMs)
+      rows++
+      yield { hour: Math.floor((time - start) / hourMs), line: `${timestamp},${id},${side},${price},${size}` }
+    }
+    await transfer
+  } finally { gunzip.destroy() }
+}
+
+export async function writeTradeArchive({ target, symbol, day, records, allowEmpty = false }) {
+  const manifestPath = join(target, 'manifest.json')
+  try {
+    const cached = JSON.parse(await readFile(manifestPath, 'utf8'))
+    if (cached.version !== 1 || cached.symbol !== symbol || cached.day !== day ||
+        !Array.isArray(cached.parts) || (!allowEmpty && !cached.parts.length)) {
+      throw new Error('现有日成交清单无效')
+    }
+    return { target, cached: true, rows: cached.rows }
+  } catch (error) { if (error.code !== 'ENOENT') throw error }
+
+  await mkdir(dirname(target), { recursive: true })
+  const staging = await mkdtemp(join(dirname(target), '.trades-'))
+  const parts = []
+  const hours = new Map()
+  let rows = 0
+  let part
+  const closePart = async () => {
+    if (!part) return
+    part.gzip.end()
+    await part.done
+    const checksum = createHash('sha256')
+    let bytes = 0
+    for await (const chunk of createReadStream(join(staging, part.file))) {
+      checksum.update(chunk)
+      bytes += chunk.length
+    }
+    parts.push({ file: part.file, hour: part.hour, rows: part.rows, bytes, sha256: checksum.digest('hex') })
+    part = undefined
+  }
+  try {
+    for await (const { hour, line } of records()) {
       let spool = hours.get(hour)
       if (!spool) {
         const path = join(staging, `${hour}.csv`)
@@ -103,11 +116,10 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
         spool = { path, output, done }
         hours.set(hour, spool)
       }
-      if (!spool.output.write(`${timestamp},${id},${side},${price},${size}\n`)) await once(spool.output, 'drain')
+      if (!spool.output.write(line + '\n')) await once(spool.output, 'drain')
       rows++
     }
-    await transfer
-    if (!rows) throw new Error('Bybit 日归档没有成交')
+    if (!rows && !allowEmpty) throw new Error('日归档没有成交')
     for (const spool of hours.values()) spool.output.end()
     await Promise.all([...hours.values()].map(spool => spool.done))
     // Some older exports arrive in reverse order. Sort one hour at a time, retaining
@@ -139,7 +151,6 @@ export async function cacheBybitDay({ repository, symbol, day, fetcher = fetch }
     await rename(staging, target)
     return { target, cached: false, rows }
   } finally {
-    gunzip.destroy()
     for (const spool of hours.values()) spool.output.destroy()
     part?.gzip.destroy()
     await Promise.allSettled([...hours.values()].map(spool => spool.done).concat(part?.done ?? []))

@@ -3,7 +3,7 @@ import { GitHubContentsClient } from '../../github-sync/github-client'
 import { BybitArchive } from '../bybit/archive'
 import { CombinedBybitSource } from '../bybit/combined-source'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../bybit/trades'
-import { OkxArchive, okxArchiveDay, okxArchiveDays } from './archive'
+import { OkxArchive, okxArchiveDay } from './archive'
 import { getOkxTrades } from './live'
 import { orderFlowMapping, okxTrade } from './trades'
 
@@ -20,7 +20,6 @@ describe('OKX 成交来源', () => {
     })
     const bitcoin = orderFlowMapping({ ...symbol, ticker: 'BTCUSD' })!.okx!
     expect(okxTrade(bitcoin, String(start), '3', 'sell', '60000', '25')).toMatchObject({ size: 0.25, venue: 'OKX' })
-    expect(okxArchiveDays(start)).toEqual(['2026-10-20', '2026-10-21'])
     expect(okxArchiveDay(start + 16 * hour - 1)).toBe('2026-10-20')
     expect(okxArchiveDay(start + 16 * hour)).toBe('2026-10-21')
   })
@@ -59,11 +58,10 @@ describe('OKX 成交来源', () => {
         trade => trades.push(trade), new AbortController().signal)).toBe(true)
       expect(trades).toEqual([primary, secondary])
       expect(readFallback).toHaveBeenCalledExactlyOnceWith('SPYUSDT', start + 2 * hour)
-      vi.spyOn(okx, 'download').mockResolvedValue(true)
+      const published = vi.spyOn(okx, 'hasCloudDay').mockResolvedValue(true)
       const request = vi.spyOn(cloud, 'putFile')
       expect(await source.downloadDays('2026-10-20', '', vi.fn())).toContain('OKX 1 天')
-      expect(okx.download).toHaveBeenNthCalledWith(1, instrument, '2026-10-20', expect.any(AbortSignal))
-      expect(okx.download).toHaveBeenNthCalledWith(2, instrument, '2026-10-21', expect.any(AbortSignal))
+      expect(published).toHaveBeenCalledExactlyOnceWith(instrument, '2026-10-20', undefined)
       expect(request).not.toHaveBeenCalled()
     } finally { source.release() }
   })

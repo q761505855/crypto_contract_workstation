@@ -13,7 +13,7 @@ interface ArchivePart {
 
 interface ArchiveManifest {
   version: 1
-  symbol: BybitSymbol
+  symbol: string
   day: string
   rows: number
   parts: ArchivePart[]
@@ -22,11 +22,11 @@ interface ArchiveManifest {
 export const BYBIT_ARCHIVE_ROOT = 'data/bybit-trades'
 const ARCHIVE_PART_MAX = 17 * 1024 ** 2
 
-function manifest(value: unknown, symbol: BybitSymbol, day: string): ArchiveManifest {
+function manifest(value: unknown, symbol: string, day: string, allowEmpty: boolean): ArchiveManifest {
   const item = value as Partial<ArchiveManifest> | null
   if (!item || item.version !== 1 || item.symbol !== symbol || item.day !== day ||
-      !Number.isSafeInteger(item.rows) || !Array.isArray(item.parts) || !item.parts.length) {
-    throw new Error('Bybit 日成交清单无效')
+      !Number.isSafeInteger(item.rows) || !Array.isArray(item.parts) || (!allowEmpty && !item.parts.length)) {
+    throw new Error('日成交清单无效')
   }
   let rows = 0
   let previousFile = ''
@@ -72,22 +72,23 @@ export function parseBybitArchivePart(text: string, partStart: number, rows: num
   return trades
 }
 
-export class BybitArchive {
+export class BybitArchive<Symbol extends string = BybitSymbol> {
   private readonly manifests = new Map<string, { meta: ArchiveManifest; root: string }>()
   private readonly manifestReads = new Map<string, Promise<{ meta: ArchiveManifest; root: string } | null>>()
   private readonly missing = new Map<string, number>()
   private readonly hours = new Map<string, Promise<BybitTrade[]>>()
 
   constructor(private readonly target: GitHubRepositoryTarget = defaultStorageTarget(),
-    private readonly fetcher: typeof fetch = fetch, private readonly now = Date.now) {}
+    private readonly fetcher: typeof fetch = fetch, private readonly now = Date.now,
+    private readonly source = { root: BYBIT_ARCHIVE_ROOT, firstDay: (symbol: Symbol) => bybitFirstDay(symbol as BybitSymbol), allowEmpty: false }) {}
 
   private archiveRoot(ref: string): string {
     const { owner, repository, root } = this.target
     return 'https://raw.githubusercontent.com/' + [owner, repository, ref, ...(root ?? '').split('/').filter(Boolean)]
-      .map(encodeURIComponent).join('/') + '/' + BYBIT_ARCHIVE_ROOT
+      .map(encodeURIComponent).join('/') + '/' + this.source.root
   }
 
-  private async getManifest(symbol: BybitSymbol, day: string, ref?: string) {
+  private async getManifest(symbol: Symbol, day: string, ref?: string) {
     const path = `${symbol}/${day}`
     const cached = this.manifests.get(path)
     if (cached) return cached
@@ -105,8 +106,8 @@ export class BybitArchive {
         }
         return null
       }
-      if (!response.ok) throw new Error(`读取 Bybit 日成交清单失败（HTTP ${response.status}）`)
-      const archive = { meta: manifest(await response.json(), symbol, day), root }
+      if (!response.ok) throw new Error(`读取日成交清单失败（HTTP ${response.status}）`)
+      const archive = { meta: manifest(await response.json(), symbol, day, this.source.allowEmpty), root }
       this.manifests.set(path, archive)
       this.missing.delete(path)
       if (this.manifests.size > 128) this.manifests.delete(this.manifests.keys().next().value!)
@@ -116,15 +117,15 @@ export class BybitArchive {
     try { return await pending } finally { this.manifestReads.delete(url) }
   }
 
-  async hasDay(symbol: BybitSymbol, day: string, ref?: string): Promise<boolean> {
-    return bybitDayStart(day) + BYBIT_DAY_MS <= this.now() && day >= bybitFirstDay(symbol) &&
+  async hasDay(symbol: Symbol, day: string, ref?: string): Promise<boolean> {
+    return bybitDayStart(day) + BYBIT_DAY_MS <= this.now() && day >= this.source.firstDay(symbol) &&
       (await this.getManifest(symbol, day, ref)) !== null
   }
 
-  async loadHour(symbol: BybitSymbol, start: number): Promise<BybitTrade[] | null> {
+  async loadHour(symbol: Symbol, start: number): Promise<BybitTrade[] | null> {
     if (start % BYBIT_HOUR_MS !== 0) throw new Error('Bybit 归档小时无效')
     const day = bybitDay(start)
-    if (bybitDayStart(day) + BYBIT_DAY_MS > this.now() || day < bybitFirstDay(symbol)) return null
+    if (bybitDayStart(day) + BYBIT_DAY_MS > this.now() || day < this.source.firstDay(symbol)) return null
     const archive = await this.getManifest(symbol, day)
     if (!archive) return null
     const key = `${symbol}/${start}`

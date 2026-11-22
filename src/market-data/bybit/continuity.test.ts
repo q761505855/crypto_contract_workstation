@@ -4,7 +4,6 @@ import { CombinedBybitSource } from './combined-source'
 import { GitHubContentsClient } from '../../github-sync/github-client'
 import { BybitLiveTrades, parseBybitSocketTrades } from './live'
 import { bybitDayStart, bybitMapping, type BybitTrade } from './trades'
-import { OkxArchive } from '../okx/archive'
 
 const symbol = 'SPYUSDT'
 const period = { text: '1m', multiplier: 1, timespan: 'minute' } as const
@@ -117,19 +116,18 @@ describe('Bybit 成交连续性', () => {
   })
 
   it('读取缺档不申请下载，手动请求替换旧自动请求并按日期去重', async () => {
+    const start = bybitDayStart('2026-06-18')
     const archive = new BybitArchive()
     vi.spyOn(archive, 'hasDay').mockResolvedValue(false)
     const cloud = new GitHubContentsClient({ owner: 'owner', repository: 'store', branch: 'main' }, 'test-token')
     vi.spyOn(cloud, 'getSnapshot').mockResolvedValue({ commitSha: 'commit', treeSha: 'tree' })
-    const path = 'data/bybit-requests/SPYUSDT/2026-11-18.json'
+    const path = 'data/bybit-requests/SPYUSDT/2026-06-18.json'
     vi.spyOn(cloud, 'getFile').mockResolvedValue({
       path, sha: 'legacy-request',
-      bytes: new TextEncoder().encode(JSON.stringify({ version: 1, symbol, day: '2026-11-18', state: 'awaiting-source' })),
+      bytes: new TextEncoder().encode(JSON.stringify({ version: 1, symbol, day: '2026-06-18', state: 'awaiting-source' })),
     })
     const submit = vi.spyOn(cloud, 'putFile').mockResolvedValue('request')
-    const okx = new OkxArchive()
-    vi.spyOn(okx, 'download').mockResolvedValue(false)
-    const source = new CombinedBybitSource(cloud, vi.fn(), archive, () => start + 4 * 86_400_000, okx)
+    const source = new CombinedBybitSource(cloud, vi.fn(), archive, () => start + 4 * 86_400_000)
     const cursor = { sessionId: 'ic-session', symbol: 'US500', timeframe: '1m', currentTime: start,
       visibleUntil: start + 1000 }
     const scan = () => source.visitTrades({ fromUs: start * 1000, untilUs: (start + 1000) * 1000 },
@@ -139,16 +137,16 @@ describe('Bybit 成交连续性', () => {
       expect(await scan()).toBe(false)
       expect(await scan()).toBe(false)
       expect(submit).not.toHaveBeenCalled()
-      expect(() => source.downloadDays('2026-11-18', '2026-11-22', vi.fn())).toThrow('须等该日结束')
+      expect(() => source.downloadDays('2026-06-18', '2026-06-22', vi.fn())).toThrow('须等该日结束')
       expect(() => source.downloadDays('', '', vi.fn())).toThrow('请选择开始或结束日期')
-      expect(() => source.downloadDays('2026-11-19', '2026-11-18', vi.fn())).toThrow('开始日期不能晚于结束日期')
-      const first = source.downloadDays('2026-11-18', '', vi.fn()).catch(() => undefined)
-      const second = source.downloadDays('', '2026-11-18', vi.fn()).catch(() => undefined)
+      expect(() => source.downloadDays('2026-06-19', '2026-06-18', vi.fn())).toThrow('开始日期不能晚于结束日期')
+      const first = source.downloadDays('2026-06-18', '', vi.fn()).catch(() => undefined)
+      const second = source.downloadDays('', '2026-06-18', vi.fn()).catch(() => undefined)
       await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1))
       const [requestPath, bytes, , previous] = submit.mock.calls[0]
       expect(requestPath).toBe(path)
       expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({
-        version: 1, symbol, day: '2026-11-18', requestedManually: true,
+        version: 1, symbol, day: '2026-06-18', requestedManually: true,
       })
       expect(previous).toBe('legacy-request')
       source.release()

@@ -17,6 +17,7 @@ const manifest = { version: 1, symbol: 'SPYUSDT', day, rows: 2,
 const headers = { 'access-control-allow-origin': '*' }
 
 test.beforeEach(async ({ page }) => {
+  await page.route('https://raw.githubusercontent.com/**/okx-trades/**', route => route.fulfill({ headers, status: 404 }))
   await page.route('https://www.okx.com/api/v5/**', route => route.fulfill({ headers, json: {
     code: route.request().url().includes('market-data-history') ? '0' : '50001', data: [],
   } }))
@@ -313,7 +314,7 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
     json: { schemaVersion: 1, project: 'crypto-contract-workstation', token: 'cache-test-token' },
   }))
   const requested: unknown[] = []
-  let dispatched = 0
+  const dispatched: string[] = []
   let published = false
   let loadedParts = 0
   const checkedDays = new Set<string>()
@@ -335,12 +336,18 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
     const request = route.request()
     const path = new URL(request.url()).pathname
     if (request.method() === 'POST' && path === '/repos/q761505855/crypto_contract_workstation/dispatches') {
-      expect(request.postDataJSON()).toEqual({ event_type: 'bybit-trades-requested' })
-      dispatched++
+      dispatched.push(request.postDataJSON().event_type)
       return route.fulfill({ headers, status: 204 })
     }
     if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers, json: { object: { sha: 'test-commit' } } })
     if (path.endsWith('/git/commits/test-commit')) return route.fulfill({ headers, json: { tree: { sha: 'test-tree' } } })
+    const okxEntry = /\/okx-requests\/BTC-USDT-SWAP\/(\d{4}-\d\d-\d\d)\.json$/.exec(path)
+    if (okxEntry && request.method() === 'PUT') {
+      const content = Buffer.from(JSON.stringify({ version: 1, requestedManually: true, state: 'unavailable',
+        symbol: 'BTC-USDT-SWAP', day: okxEntry[1] })).toString('base64')
+      files.set(path, content)
+      return route.fulfill({ headers, status: 201, json: { content: { sha: 'test-file' } } })
+    }
     const entry = /\/bybit-requests\/BTCUSDT\/(\d{4}-\d\d-\d\d)\.json$/.exec(path)
     if (entry && request.method() === 'PUT') {
       const { content } = request.postDataJSON()
@@ -348,7 +355,7 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
       files.set(path, content)
       return route.fulfill({ headers, status: 201, json: { content: { sha: 'test-file' } } })
     }
-    if (entry && !published && files.has(path)) return route.fulfill({ headers, json: { type: 'file', path, sha: 'test-file',
+    if ((okxEntry || (entry && !published)) && files.has(path)) return route.fulfill({ headers, json: { type: 'file', path, sha: 'test-file',
       encoding: 'base64', content: files.get(path) } })
     return route.fulfill({ headers, status: 404, body: '' })
   })
@@ -384,18 +391,21 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   expect((await inspect()).last!.timestamp).toBeGreaterThan(Date.parse('2026-11-22'))
   await expect.poll(() => checkedDays.size).toBeGreaterThan(1)
   expect(requested).toEqual([])
-  expect(dispatched).toBe(0)
+  expect(dispatched).toEqual([])
   await download.click()
   await expect(firstDate).toHaveValue(day)
   await expect(lastDate).toHaveValue(day)
   await lastDate.fill('2026-11-21')
   await confirm.click()
-  await expect(status).toContainText('2/2 天')
+  await expect.poll(() => dispatched).toEqual(['okx-trades-requested'])
+  await expect.poll(() => files.size).toBe(2)
+  await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
+  await page.clock.fastForward(13_000)
   await expect.poll(() => requested).toEqual(expect.arrayContaining([day, '2026-11-21'].map(day => ({
     version: 1, symbol: 'BTCUSDT', day, requestedManually: true,
   }))))
   expect(requested).toHaveLength(2)
-  await expect.poll(() => dispatched).toBe(1)
+  await expect.poll(() => dispatched).toEqual(['okx-trades-requested', 'bybit-trades-requested'])
   published = true
   await page.clock.fastForward(13_000)
   await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 2 天')
@@ -403,10 +413,14 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   await download.click()
   await lastDate.fill('')
   await confirm.click()
+  await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
+  await page.clock.fastForward(13_000)
   await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 1 天')
   await download.click()
   await firstDate.fill('')
   await confirm.click()
+  await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
+  await page.clock.fastForward(13_000)
   await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 1 天')
   expect(requested).toHaveLength(2)
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
@@ -417,12 +431,14 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   const archivedSecond = Date.parse(day + 'T23:50:00Z') / 1000
   const archivedRows = 400
   let partReads = 0
+  let releasePart!: () => void
+  const firstPart = new Promise<void>(resolve => { releasePart = resolve })
   const archivePart = gzipSync(Array.from({ length: archivedRows }, (_, index) =>
     `${archivedSecond}.${String(index).padStart(3, '0')},archive-${index},Buy,1.1,100000\n`).join(''))
   await page.clock.setFixedTime(now)
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= start })
   await installViewportProbe(page)
-  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => {
+  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', async route => {
     const url = route.request().url()
     if (url.endsWith(`/BTCUSDT/${day}/manifest.json`)) return route.fulfill({ headers, json: {
       version: 1, symbol: 'BTCUSDT', day, rows: archivedRows,
@@ -431,6 +447,7 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
     } })
     if (url.endsWith(`/BTCUSDT/${day}/23-000.csv.gz`)) {
       partReads++
+      if (partReads === 1) await firstPart
       return route.fulfill({ headers, body: archivePart })
     }
     return route.fulfill({ headers, status: 404 })
@@ -459,6 +476,19 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
     coreChart.setBarSpace(value)
   }, space)
   await zoom(3)
+  await expect.poll(() => partReads).toBe(1)
+  try {
+    const scanContinued = await page.evaluate(stamp => {
+      const { source, orderFlow } = (window as unknown as { __viewportTestAdapter: {
+        source: { changed(reset: boolean, range: { fromUs: number; untilUs: number }): void }
+        orderFlow: { flowOperation?: AbortController }
+      } }).__viewportTestAdapter
+      const reading = orderFlow.flowOperation
+      for (let offset = 5; offset > 0; offset--) source.changed(true, { fromUs: (stamp - offset) * 1000, untilUs: Infinity })
+      return !!reading && !reading.signal.aborted && orderFlow.flowOperation === reading
+    }, now)
+    expect(scanContinued).toBe(true)
+  } finally { releasePart() }
   await chart.getByText('指标', { exact: true }).click()
   await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })

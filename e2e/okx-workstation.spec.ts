@@ -1,5 +1,6 @@
 import { expect, test, type WebSocketRoute } from '@playwright/test'
-import { strToU8, zipSync } from 'fflate'
+import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import { connectFixture } from './ctrader-fixture'
 import { installViewportProbe } from './viewport-probe'
 
@@ -7,8 +8,8 @@ const instrument = 'US500-USDT-SWAP'
 const start = Date.parse('2026-11-20T14:20:00Z')
 const headers = { 'access-control-allow-origin': '*' }
 
-test('OKX 实时和历史逐笔按 ID 衔接，手动下载 UTC 日档并保存在浏览器', async ({ page }) => {
-  await page.clock.setFixedTime(start + 30_000)
+test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 Git 缓存', async ({ page }) => {
+  await page.clock.install({ time: start + 30_000 })
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= start - 86_400_000 })
   await installViewportProbe(page)
   let live: WebSocketRoute | undefined
@@ -18,6 +19,9 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动下载 UTC 日档并保存�
     return route.fulfill({ headers, json: { retCode: 0, result: { list: [] } } })
   })
   await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => route.fulfill({ headers, status: 404 }))
+  await page.route('**/cloud-connection.json', route => route.fulfill({ headers,
+    json: { schemaVersion: 1, project: 'crypto-contract-workstation', token: 'cache-test-token' },
+  }))
   await page.routeWebSocket('wss://ws.okx.com/ws/v5/business', socket => socket.onMessage(message => {
     if (message.toString() === 'ping') { socket.send('pong'); return }
     const { op, args } = JSON.parse(message.toString())
@@ -28,26 +32,40 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动下载 UTC 日档并保存�
   }))
   const trade = (id: string, offset: number, size: string) =>
     ({ instId: instrument, tradeId: id, ts: String(start + offset), px: '1.1002', sz: size, side: 'buy' })
-  const archivedDays: string[] = []
-  await page.route('https://www.okx.com/api/v5/**', route => {
-    const url = new URL(route.request().url())
-    if (url.pathname.endsWith('history-trades')) {
-      const data = url.searchParams.get('instId') === instrument ? [trade('1', 5000, '5')] : []
-      return route.fulfill({ headers, json: { code: '0', data } })
-    }
-    const day = new Date(Number(url.searchParams.get('begin')) + 8 * 3600_000).toISOString().slice(0, 10)
-    const filename = `${instrument}-trades-${day}.zip`
-    return route.fulfill({ headers, json: { code: '0', data: [{ details: [{ groupDetails: [
-      { filename, url: `https://static.okx.com/cdn/${filename}` },
-    ] }] }] } })
+  await page.route('https://www.okx.com/api/v5/market/history-trades?*', route => {
+    const data = new URL(route.request().url()).searchParams.get('instId') === instrument ? [trade('1', 5000, '5')] : []
+    return route.fulfill({ headers, json: { code: '0', data } })
   })
-  await page.route('https://static.okx.com/cdn/**', route => {
-    const filename = new URL(route.request().url()).pathname.split('/').at(-1)!
-    const day = filename.slice(-14, -4)
-    archivedDays.push(day)
-    const time = Date.parse(day + 'T03:00:00+08:00')
-    const asset = strToU8(`instrument_name,trade_id,side,price,size,created_time\n${instrument},100,buy,1.1002,11,${time}\n`)
-    return route.fulfill({ headers, body: Buffer.from(zipSync({ 'trades.csv': asset })) })
+  const day = '2026-11-19'
+  const part = gzipSync(`${Date.parse(day + 'T19:00:00Z') / 1000},100,Buy,1.1002,11\n`)
+  const requested: unknown[] = []
+  let dispatched = false
+  let published = false
+  await page.route('https://raw.githubusercontent.com/**/okx-trades/**', route => {
+    const url = route.request().url()
+    if (published && url.endsWith(`/${instrument}/${day}/manifest.json`)) return route.fulfill({ headers, json: {
+      version: 1, day, symbol: instrument, rows: 1, parts: [{
+        file: '19-000.csv.gz', hour: 19, rows: 1, bytes: part.length, sha256: createHash('sha256').update(part).digest('hex'),
+      }],
+    } })
+    if (published && url.endsWith(`/${instrument}/${day}/19-000.csv.gz`)) return route.fulfill({ headers, body: part })
+    return route.fulfill({ status: 404, headers })
+  })
+  await page.route('https://api.github.com/**', route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'POST' && path.endsWith('/dispatches')) {
+      expect(request.postDataJSON()).toEqual({ event_type: 'okx-trades-requested' })
+      dispatched = true
+      return route.fulfill({ headers, status: 204 })
+    }
+    if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers, json: { object: { sha: 'test-commit' } } })
+    if (path.endsWith('/git/commits/test-commit')) return route.fulfill({ headers, json: { tree: { sha: 'test-tree' } } })
+    if (request.method() === 'PUT' && path.endsWith(`/okx-requests/${instrument}/${day}.json`)) {
+      requested.push(JSON.parse(Buffer.from(request.postDataJSON().content, 'base64').toString()))
+      return route.fulfill({ status: 201, headers, json: { content: { sha: 'test-file' } } })
+    }
+    return route.fulfill({ status: 404, headers })
   })
   await page.goto('/')
   const chart = page.getByTestId('chart-host')
@@ -74,8 +92,11 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动下载 UTC 日档并保存�
   await dialog.getByLabel('开始日期').fill('2026-11-19')
   await dialog.getByLabel('结束日期').fill('2026-11-19')
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
+  await expect.poll(() => dispatched).toBe(true)
+  expect(requested).toEqual([{ version: 1, day, symbol: instrument, requestedManually: true }])
+  published = true
+  await page.clock.fastForward(13_000)
   await expect(chart.getByRole('status')).toContainText('已缓存 OKX 1 天')
-  expect(archivedDays).toEqual(['2026-11-19', '2026-11-20'])
   const archivedTrade = await page.evaluate(async stamp => {
     const { source } = (window as unknown as { __viewportTestAdapter: {
       source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
@@ -88,5 +109,5 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动下载 UTC 日档并保存�
   await dialog.getByLabel('结束日期').fill('2026-11-19')
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
   await expect(chart.getByRole('status')).toContainText('已缓存 OKX 1 天')
-  expect(archivedDays).toHaveLength(2)
+  expect(requested).toHaveLength(1)
 })
