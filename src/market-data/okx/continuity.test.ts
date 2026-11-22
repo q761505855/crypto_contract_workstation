@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { GitHubContentsClient } from '../../github-sync/github-client'
 import { BybitArchive } from '../bybit/archive'
-import { CombinedBybitSource } from '../bybit/combined-source'
+import { CombinedBybitSource, firstOkxHistoryDay } from '../bybit/combined-source'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../bybit/trades'
 import { OkxArchive, okxArchiveDay } from './archive'
 import { getOkxTrades } from './live'
@@ -41,26 +41,35 @@ describe('OKX 成交来源', () => {
     expect(received[0]).toMatchObject({ venue: 'OKX', side: 'sell', size: 0.25 })
   })
 
+  it('按 UTC 自然月判断 OKX 能完整覆盖的日期，月末截到目标月最后一天', () => {
+    expect(firstOkxHistoryDay(Date.parse('2025-05-31T00:00:00Z'))).toBe(Date.parse('2025-02-28'))
+    expect(firstOkxHistoryDay(Date.parse('2024-05-31T00:00:01Z'))).toBe(Date.parse('2024-03-01'))
+  })
+
   it('优先使用 OKX，确认无成交的小时保持为空，缺档才读取 Bybit', async () => {
     const okx = new OkxArchive()
     const bybit = new BybitArchive()
     const primary = okxTrade(instrument, String(start + 1), '1', 'buy', '7000', '1')
     const secondary: BybitTrade = { ...primary, id: 'legacy', timeUs: (start + 2 * hour + 1) * 1000, venue: undefined }
-    vi.spyOn(okx, 'loadHour').mockImplementation(async (_instrument, stamp) =>
+    const readPrimary = vi.spyOn(okx, 'loadHour').mockImplementation(async (_instrument, stamp) =>
       stamp === start ? [primary] : stamp === start + hour ? [] : null)
     const readFallback = vi.spyOn(bybit, 'loadHour').mockResolvedValue([secondary])
     const cloud = new GitHubContentsClient({ owner: 'owner', repository: 'store', branch: 'main' })
-    const source = new CombinedBybitSource(cloud, vi.fn(), bybit, () => start + 4 * BYBIT_DAY_MS, okx)
+    const source = new CombinedBybitSource(cloud, vi.fn(), bybit, () => start + 100 * BYBIT_DAY_MS, okx)
     source.select(symbol, { sessionId: 'test', symbol: symbol.ticker, timeframe: '15m', currentTime: start + 3 * hour, visibleUntil: start + 3 * hour })
     const trades: BybitTrade[] = []
     try {
-      expect(await source.visitTrades({ fromUs: start * 1000, untilUs: (start + 3 * hour) * 1000 },
-        trade => trades.push(trade), new AbortController().signal)).toBe(true)
-      expect(trades).toEqual([primary, secondary])
-      expect(readFallback).toHaveBeenCalledExactlyOnceWith('SPYUSDT', start + 2 * hour)
+      const scan = () => source.visitTrades({ fromUs: start * 1000, untilUs: (start + 3 * hour) * 1000 },
+        trade => trades.push(trade), new AbortController().signal)
+      expect(await scan()).toBe(false)
+      expect(readPrimary).not.toHaveBeenCalled()
+      expect(readFallback).not.toHaveBeenCalled()
       const published = vi.spyOn(okx, 'hasCloudDay').mockResolvedValue(true)
       const request = vi.spyOn(cloud, 'putFile')
-      expect(await source.downloadDays('2026-10-20', '', vi.fn())).toContain('OKX 1 天')
+      expect(await source.downloadDays('2026-10-20', '', vi.fn())).toBe('OKX 日档 1 天')
+      expect(await scan()).toBe(true)
+      expect(trades).toEqual([primary, secondary])
+      expect(readFallback).toHaveBeenCalledExactlyOnceWith('SPYUSDT', start + 2 * hour)
       expect(published).toHaveBeenCalledExactlyOnceWith(instrument, '2026-10-20', undefined)
       expect(request).not.toHaveBeenCalled()
     } finally { source.release() }

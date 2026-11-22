@@ -25,7 +25,6 @@ function database() {
 
 export class OkxArchive {
   private readonly cloud: BybitArchive<string>
-  private readonly published = new Set<string>()
   private readonly present = new Set<string>()
   private readonly missing = new Map<string, number>()
   private readonly reads = new Map<string, Promise<BybitTrade[]>>()
@@ -37,13 +36,7 @@ export class OkxArchive {
 
   async hasCloudDay(instrument: OkxInstrument, day: string, ref?: string): Promise<boolean> {
     if (day < instrument.firstDay) return false
-    const available = await this.cloud.hasDay(instrument.symbol, day, ref)
-    if (available) this.published.add(instrument.symbol + ':' + day)
-    return available
-  }
-
-  isCachedHour(instrument: OkxInstrument, start: number): boolean {
-    return this.published.has(instrument.symbol + ':' + bybitDay(start)) || this.present.has(`${instrument.symbol}:${okxArchiveDay(start)}`)
+    return this.cloud.hasDay(instrument.symbol, day, ref)
   }
 
   async hasHour(instrument: OkxInstrument, start: number): Promise<boolean> {

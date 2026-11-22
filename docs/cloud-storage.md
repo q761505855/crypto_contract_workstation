@@ -84,12 +84,12 @@ Git 月分片可能尚未覆盖整月；创建、恢复回放先复用普通价�
 
 ## OKX 逐笔成交缓存
 
-OKX 官方逐笔归档按 UTC+8 切日。下载界面使用 UTC 日期。用户点击下载后，网页提交 `projects/crypto-contract-workstation/experiments/ctrader/data/okx-requests/<品种>/<UTC日期>.json`，并触发日档工作流。后台验证覆盖对应 UTC 日的两份源日档，按 UTC 小时编排并校验 gzip 分片，发布到同一项目的 `data/okx-trades/<品种>/<UTC日期>/`。黄金更名日同时读取旧代码和新代码的文件。网页优先读取已发布的 OKX 分片，旧版浏览器里已下载的 OKX 文件仍可读取。
+下载界面使用 UTC 日期。点击下载后，OKX 历史逐笔接口能完整覆盖的日期直接分页读取，结果保留在当前页面。较早的日期走 Git 日档。需要创建日档时，网页提交 `projects/crypto-contract-workstation/experiments/ctrader/data/okx-requests/<品种>/<UTC日期>.json`，并触发工作流。OKX 官方逐笔归档按 UTC+8 切日，后台验证覆盖对应 UTC 日的两份源日档，按 UTC 小时编排并校验 gzip 分片，发布到同一项目的 `data/okx-trades/<品种>/<UTC日期>/`。黄金更名日同时读取旧代码和新代码的文件。手动加载的日期优先读取已发布的 OKX 分片，也兼容浏览器里已有的 OKX 旧版缓存。
 
 OKX 完整覆盖对应 UTC 日后，工作流在发布的同一 Git 提交中清理同品种同日的 Bybit 分片及清单。映射有歧义、OKX 上市首日、源日档缺失或校验失败时保留 Bybit 日档。清理只涉及缓存目录，Git 的旧提交可用于恢复。OKX 日档、Bybit 日档、近期回补及映射都属于行情数据，与用户配置及 JSON 存档独立。旧归档仍由顶部按钮按需申请。
 
 ## Bybit 逐笔成交缓存
 
-Bybit 归档按 UTC 日获取。用户从图表顶部打开「下载成交数据」后，可选择一个日期或含首尾两日的日期范围。开始和结束日期默认取最右侧可见 K 线的开盘时间所在日。对于尚未缓存且已结束的日期，网页通过现有云端连接在 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json` 写入带 `requestedManually: true` 的请求。同品种同日共用一个请求。页面写入请求后直接触发 GitHub Actions，定时扫描和临时失败重试只处理明确手动申请的日期。旧自动请求保留在原处，点击同日时可转为手动请求。后台使用现有 `CLOUD_STORAGE_TOKEN` 下载并发布，归档就绪后主图刷新对应日期的成交量指标。图表浏览、框选和回放读取已有归档及实时成交，缺失区间显示数据覆盖缺口。
+Bybit 归档按 UTC 日获取。用户从图表顶部打开「下载成交数据」后，可选择一个日期或含首尾两日的日期范围。开始和结束日期默认取最右侧可见 K 线的开盘时间所在日。对使用 Bybit 来源且未缓存的已结束日期，网页通过现有云端连接在 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json` 写入带 `requestedManually: true` 的请求。同品种同日共用一个请求。页面写入请求后直接触发 GitHub Actions，定时扫描和临时失败重试只处理明确手动申请的日期。旧自动请求保留在原处，点击同日时可转为手动请求。后台使用现有 `CLOUD_STORAGE_TOKEN` 下载并发布，归档就绪后主图刷新对应日期的成交量指标。图表浏览、框选和回放使用手动加载的日期及 WebSocket 实时成交。
 
 归档只写入 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/<品种>/<UTC日期>/`。原始数据按成交时间排序后转存为保留交易 ID、方向、时间、价格、数量的 gzip 分片。分片按小时读取，大文件进一步拆分，并由当天清单记录每个分片的笔数、大小和 SHA-256。完整归档与请求移除在同一 Git 提交发布，非强制推送。网页通过 GitHub Raw 读取，刚发布的归档以同一个提交读取清单和分片，避开分支地址暂时缓存的 404。日档和下载请求属于行情缓存运行数据，独立于配置、存档、会话和旧行情清单。无云端写权限时仍可读取已有公开缓存。

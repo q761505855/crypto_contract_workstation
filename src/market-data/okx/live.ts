@@ -1,11 +1,9 @@
-import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../bybit/trades'
-import { okxArchiveDay } from './archive'
-import { compareTrades, mergeOkxTrades, okxTrade, type OkxInstrument } from './trades'
+import type { BybitTrade } from '../bybit/trades'
+import { compareTrades, okxTrade, type OkxInstrument } from './trades'
 
 const subscribedChannel = 'trades-all'
 const liveLimit = 150_000
 const pageSpacing = 125
-const recentWindow = 3 * BYBIT_DAY_MS
 let nextRequest = 0
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -25,11 +23,12 @@ function rowTrade(instrument: OkxInstrument, row: OkxRow): BybitTrade {
 
 /** Read an inclusive start and exclusive end, paging by ID to preserve same-millisecond fills. */
 export async function getOkxTrades(instrument: OkxInstrument, fromUs: number, untilUs: number, signal: AbortSignal,
-  fetcher: typeof fetch = fetch): Promise<BybitTrade[]> {
+  fetcher: typeof fetch = fetch, onProgress?: (count: number) => void): Promise<BybitTrade[]> {
   if (fromUs >= untilUs) return []
   const trades = new Map<string, BybitTrade>()
   let after = String(Math.ceil(untilUs / 1000))
   let type = '2'
+  let pages = 0
   for (;;) {
     const now = Date.now()
     const requestAt = Math.max(now, nextRequest)
@@ -43,70 +42,14 @@ export async function getOkxTrades(instrument: OkxInstrument, fromUs: number, un
     if (result.code !== '0' || !Array.isArray(result.data)) throw new Error('读取 OKX 历史逐笔失败')
     const rows: BybitTrade[] = result.data.map((row: OkxRow) => rowTrade(instrument, row))
     for (const trade of rows) if (trade.timeUs >= fromUs && trade.timeUs < untilUs) trades.set(trade.id, trade)
+    if (++pages % 25 === 0) onProgress?.(trades.size)
     if (rows.length < 100 || rows.some(trade => trade.timeUs < fromUs)) break
     const oldest = rows.sort(compareTrades)[0]
-    if (type === '1' && Number(oldest.id) >= Number(after)) throw new Error('OKX 历史逐笔分页未推进')
+    if (type === '1' && BigInt(oldest.id) >= BigInt(after)) throw new Error('OKX 历史逐笔分页未推进')
     after = oldest.id
     type = '1'
   }
   return [...trades.values()].sort(compareTrades)
-}
-
-interface RecentHour { untilUs: number; trades: BybitTrade[] }
-export class OkxRecentTrades {
-  private readonly hours = new Map<number, RecentHour>()
-  private readonly pending = new Map<number, number>()
-  private readonly failed = new Map<number, number>()
-  private readonly abort = new AbortController()
-  private filling = false
-
-  constructor(private readonly instrument: OkxInstrument, private readonly changed: (start: number, ready: boolean) => void,
-    private readonly now = Date.now) {}
-
-  applies(hour: number): boolean {
-    return hour >= Math.floor((this.now() - recentWindow) / BYBIT_HOUR_MS) * BYBIT_HOUR_MS &&
-      okxArchiveDay(hour) >= this.instrument.firstDay
-  }
-
-  read(hour: number): RecentHour | undefined { return this.hours.get(hour) }
-  get earliestUs(): number { return this.hours.size ? Math.min(...this.hours.keys()) * 1000 : Infinity }
-  get latestUs(): number { return Math.max(0, ...Array.from(this.hours.values(), entry => entry.untilUs)) }
-  close(): void { this.abort.abort(); this.pending.clear() }
-
-  request(hour: number, untilUs: number): void {
-    if (!this.applies(hour) || this.abort.signal.aborted || (this.failed.get(hour) ?? 0) > this.now() ||
-        untilUs <= (this.hours.get(hour)?.untilUs ?? hour * 1000)) return
-    this.pending.set(hour, Math.max(untilUs, this.pending.get(hour) ?? 0))
-    if (this.filling) return
-    this.filling = true
-    queueMicrotask(() => void this.fill())
-  }
-
-  private async fill(): Promise<void> {
-    try {
-      while (this.pending.size && !this.abort.signal.aborted) {
-        const hour = Math.max(...this.pending.keys())
-        const untilUs = this.pending.get(hour)!
-        this.pending.delete(hour)
-        const previous = this.hours.get(hour)
-        const fromUs = previous?.untilUs ?? hour * 1000
-        if (untilUs <= fromUs) continue
-        try {
-          const trades = await getOkxTrades(this.instrument, fromUs, untilUs, this.abort.signal)
-          this.abort.signal.throwIfAborted()
-          this.hours.set(hour, { untilUs, trades: previous ? mergeOkxTrades(previous.trades, trades) : trades })
-          this.failed.delete(hour)
-          for (const start of this.hours.keys()) if (!this.applies(start)) this.hours.delete(start)
-          this.changed(hour, true)
-        } catch {
-          if (this.abort.signal.aborted) break
-          this.pending.delete(hour)
-          this.failed.set(hour, this.now() + 30_000)
-          this.changed(hour, false)
-        }
-      }
-    } finally { this.filling = false }
-  }
 }
 
 export class OkxLiveTrades {
@@ -127,6 +70,7 @@ export class OkxLiveTrades {
     private readonly connect = (url: string) => new WebSocket(url)) {}
 
   get lastTradeUs(): number | undefined { return this.trades.at(-1)?.timeUs }
+  get firstTradeUs(): number | undefined { return this.trades[0]?.timeUs }
 
   read(fromUs: number, untilUs: number): BybitTrade[] {
     let low = 0
@@ -167,8 +111,7 @@ export class OkxLiveTrades {
         if (packet.event === 'error') { socket.close(); return }
         if (packet.arg?.instId !== this.instrument.symbol || packet.arg?.channel !== subscribedChannel) return
         if (packet.event === 'subscribe') {
-          // Overlap REST with the subscription acknowledgement to include trades in flight.
-          this.coverageStartUs = (this.now() + 1500) * 1000
+          this.coverageStartUs = this.now() * 1000
           this.gap = false
           this.failed = false
           this.failures = 0

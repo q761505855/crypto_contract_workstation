@@ -15,11 +15,12 @@ function database() {
 }
 
 type CapturedTrades = Pick<CombinedBybitSource, 'readReplayLive' | 'capturedFromUs' | 'capturedUntilUs'> &
-  Partial<Pick<CombinedBybitSource, 'hasRecentOkxCoverage'>>
+  Partial<Pick<CombinedBybitSource, 'hasCapturedCoverage'>>
 
 export class ReplayOrderFlow {
   private readonly days = new Map<number, (HourSamples | undefined)[]>()
   private readonly liveHours = new Map<number, { cursor: number; samples: AccumulatedHour }>()
+  private readonly preparedHistory = new Map<number, number>()
   private readonly missing = new Map<number, number>()
   private readonly bars = new Map<number, TradeBar>()
 
@@ -27,6 +28,9 @@ export class ReplayOrderFlow {
 
   invalidate(range: TradeRange): void {
     if (range.replaceArchive) {
+      for (const day of this.preparedHistory.keys()) {
+        if (day * 1000 < range.untilUs && (day + BYBIT_DAY_MS) * 1000 > range.fromUs) this.preparedHistory.delete(day)
+      }
       for (const day of this.days.keys()) {
         if (day * 1000 < range.untilUs && (day + BYBIT_DAY_MS) * 1000 > range.fromUs) this.days.delete(day)
       }
@@ -39,6 +43,20 @@ export class ReplayOrderFlow {
     }
     for (const [hour, section] of this.liveHours) {
       if (hour * 1000 < range.untilUs && section.cursor > range.fromUs) this.liveHours.delete(hour)
+    }
+  }
+
+  async prepareRequestedHistory(source: CombinedBybitSource, signal: AbortSignal, onUpdate: (range?: TradeRange) => void): Promise<void> {
+    for (const [day, untilUs] of source.requestedHistoryDays) {
+      if (this.preparedHistory.get(day) === untilUs) continue
+      onUpdate({ fromUs: day * 1000, untilUs })
+      for (let hour = day; hour * 1000 < untilUs; hour += BYBIT_HOUR_MS) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0))
+        signal.throwIfAborted()
+        this.readCapturedHour(hour, source)
+      }
+      this.preparedHistory.set(day, untilUs)
+      onUpdate()
     }
   }
 
@@ -106,9 +124,9 @@ export class ReplayOrderFlow {
       for (let hour = Math.floor(from / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour < until; hour += BYBIT_HOUR_MS) {
         const hourEnd = Math.min(hour + BYBIT_HOUR_MS, until) * 1000
         const archived = hours?.[(hour - day) / BYBIT_HOUR_MS]
-        const recent = source.hasRecentOkxCoverage?.(hour, hourEnd)
-        const section = (recent ? this.readCapturedHour(hour, source) : archived) ?? this.readCapturedHour(hour, source)
-        bar.complete &&= !!archived || !!recent
+        const captured = source.hasCapturedCoverage?.(Math.max(hour, from) * 1000, hourEnd)
+        const section = archived ?? this.readCapturedHour(hour, source)
+        bar.complete &&= !!archived || !!captured
         if (section) includeHour(bar, section, hour, Math.max(hour, from) * 1000, hourEnd)
       }
       from = until

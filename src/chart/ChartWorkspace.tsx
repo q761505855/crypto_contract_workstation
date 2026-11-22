@@ -506,9 +506,9 @@ export function ChartWorkspace({
       const download = adapterRef.current?.downloadBybitDays?.(dayDownloadRange.start, dayDownloadRange.end, report)
       if (!download) return
       setDayDownloadRange(null)
-      void download.then(report, error => report(error instanceof Error ? error.message : '无法下载成交日档'))
+      void download.then(report, error => report(error instanceof Error ? error.message : '无法加载逐笔成交'))
     } catch (error) {
-      setDayDownloadRange({ ...dayDownloadRange, error: error instanceof Error ? error.message : '无法下载成交日档' })
+      setDayDownloadRange({ ...dayDownloadRange, error: error instanceof Error ? error.message : '无法加载逐笔成交' })
     }
   }
 
@@ -606,6 +606,7 @@ export function ChartWorkspace({
           downloadBybitDays()
         }}>
           <p>{mapping && orderFlowLabel(mapping)} · UTC 日期 · 只填一个日期即可下载当天</p>
+          <p>日期在 OKX 接口范围内时直接读取，当天取至请求时刻。较早日期使用 Git 日档。</p>
           <div>
             <label>开始日期<input type="date" value={dayDownloadRange.start}
               onChange={event => setDayDownloadRange({ start: event.target.value, end: dayDownloadRange.end })} /></label>

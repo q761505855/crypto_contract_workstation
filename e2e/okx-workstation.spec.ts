@@ -5,7 +5,7 @@ import { connectFixture } from './ctrader-fixture'
 import { installViewportProbe } from './viewport-probe'
 
 const instrument = 'US500-USDT-SWAP'
-const start = Date.parse('2026-11-20T14:20:00Z')
+const start = Date.parse('2027-02-20T14:20:00Z')
 const headers = { 'access-control-allow-origin': '*' }
 
 test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 Git 缓存', async ({ page }) => {
@@ -14,6 +14,8 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
   await installViewportProbe(page)
   let live: WebSocketRoute | undefined
   let bybitRequests = 0
+  let historyRequests = 0
+  let archiveRequests = 0
   await page.route('https://api.bybit.com/**', route => {
     if (new URL(route.request().url()).searchParams.get('symbol') === 'SPYUSDT') bybitRequests++
     return route.fulfill({ headers, json: { retCode: 0, result: { list: [] } } })
@@ -33,7 +35,11 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
   const trade = (id: string, offset: number, size: string) =>
     ({ instId: instrument, tradeId: id, ts: String(start + offset), px: '1.1002', sz: size, side: 'buy' })
   await page.route('https://www.okx.com/api/v5/market/history-trades?*', route => {
-    const data = new URL(route.request().url()).searchParams.get('instId') === instrument ? [trade('1', 5000, '5')] : []
+    const query = new URL(route.request().url()).searchParams
+    historyRequests++
+    expect(query.get('instId')).toBe(instrument)
+    expect(Number(query.get('after'))).toBeGreaterThanOrEqual(start + 30_000)
+    const data = [trade('2', 15_000, '8'), trade('1', 5000, '5')]
     return route.fulfill({ headers, json: { code: '0', data } })
   })
   const day = '2026-11-19'
@@ -42,6 +48,7 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
   let dispatched = false
   let published = false
   await page.route('https://raw.githubusercontent.com/**/okx-trades/**', route => {
+    archiveRequests++
     const url = route.request().url()
     if (published && url.endsWith(`/${instrument}/${day}/manifest.json`)) return route.fulfill({ headers, json: {
       version: 1, day, symbol: instrument, rows: 1, parts: [{
@@ -81,14 +88,25 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
     const indicator = [...panes.values()].find(pane => pane.has('VOL'))?.get('VOL')
     return indicator?.result.at(-1)?.volume
   })
-  await expect.poll(volume).toBe(5)
-  expect(live).toBeDefined()
-  live!.send(JSON.stringify({ arg: { channel: 'trades-all', instId: instrument }, data: [trade('1', 5000, '5'), trade('2', 15_000, '8')] }))
-  await expect.poll(volume).toBe(13)
-  expect(bybitRequests).toBe(0)
+  await expect.poll(() => live).toBeDefined()
+  expect(historyRequests).toBe(0)
+  expect(archiveRequests).toBe(0)
+  live!.send(JSON.stringify({ arg: { channel: 'trades-all', instId: instrument }, data: [trade('2', 15_000, '8')] }))
+  await expect.poll(volume).toBe(8)
 
   await chart.getByRole('button', { name: '下载成交数据' }).click()
   const dialog = page.getByRole('dialog', { name: '下载成交数据' })
+  await expect(dialog.getByLabel('开始日期')).toHaveValue('2027-02-20')
+  expect(historyRequests).toBe(0)
+  expect(archiveRequests).toBe(0)
+  await dialog.getByRole('button', { name: '下载', exact: true }).click()
+  await expect(chart.getByRole('status')).toContainText('OKX 接口 1 天')
+  await expect.poll(volume).toBe(13)
+  expect(historyRequests).toBe(1)
+  expect(archiveRequests).toBe(0)
+  expect(bybitRequests).toBe(0)
+
+  await chart.getByRole('button', { name: '下载成交数据' }).click()
   await dialog.getByLabel('开始日期').fill('2026-11-19')
   await dialog.getByLabel('结束日期').fill('2026-11-19')
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
@@ -96,7 +114,7 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
   expect(requested).toEqual([{ version: 1, day, symbol: instrument, requestedManually: true }])
   published = true
   await page.clock.fastForward(13_000)
-  await expect(chart.getByRole('status')).toContainText('已缓存 OKX 1 天')
+  await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
   const archivedTrade = await page.evaluate(async stamp => {
     const { source } = (window as unknown as { __viewportTestAdapter: {
       source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
@@ -108,6 +126,7 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
   await dialog.getByLabel('开始日期').fill('2026-11-19')
   await dialog.getByLabel('结束日期').fill('2026-11-19')
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
-  await expect(chart.getByRole('status')).toContainText('已缓存 OKX 1 天')
+  await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
   expect(requested).toHaveLength(1)
+  expect(historyRequests).toBe(1)
 })

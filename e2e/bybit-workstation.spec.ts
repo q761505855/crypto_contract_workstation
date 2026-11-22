@@ -164,6 +164,12 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
         return points.map(({ trade }) => [trade.id, trade.price, Math.round(trade.price * (open / row.firstPrice!) * 1e5) / 1e5])
       }) }
   })
+  expect(futureReads).toBe(0)
+  await chart.getByRole('button', { name: '下载成交数据' }).click()
+  const downloadDialog = page.getByRole('dialog', { name: '下载成交数据' })
+  await downloadDialog.getByLabel('开始日期').fill(day)
+  await downloadDialog.getByLabel('结束日期').fill(day)
+  await downloadDialog.getByRole('button', { name: '下载', exact: true }).click()
   try {
     await expect.poll(() => futureReads).toBeGreaterThan(0)
     await expect.poll(async () => (await combined()).updating).toEqual({
@@ -196,7 +202,7 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   const button = (await tool.boundingBox())!
   expect(Math.abs(rail.x + rail.width / 2 - button.x - button.width / 2)).toBeLessThan(1)
   await tool.click()
-  const ends = await page.evaluate(start => {
+  const endpoints = () => page.evaluate(start => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     const bounds = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
     const index = coreChart.getDataList().findIndex(bar => bar.timestamp === start)
@@ -206,6 +212,7 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     }
     return [point(index, 1.1006), point(index + 1, 1.1001)]
   }, start)
+  const ends = await endpoints()
   await page.mouse.click(ends[0].x, ends[0].y)
   await page.mouse.move(ends[1].x, ends[1].y)
   await expect.poll(() => page.evaluate(() => {
@@ -230,9 +237,10 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   }, operation)
   await expect.poll(async () => (await profileState('read')).savedLow).toBeDefined()
   const original = await profileState('read')
-  await page.mouse.move(ends[1].x, ends[1].y)
+  const [, handle] = await endpoints()
+  await page.mouse.move(handle.x, handle.y)
   await page.mouse.down()
-  await page.mouse.move(ends[1].x, ends[1].y - 15, { steps: 4 })
+  await page.mouse.move(handle.x, handle.y - 15, { steps: 4 })
   await expect.poll(async () => (await profileState('read')).low).not.toBe(original.low)
   await expect.poll(async () => (await profileState('read')).busy).toBe(false)
   const preview = await profileState('store')
@@ -269,10 +277,10 @@ test('实时成交只更新映射品种的成交量，切到未匹配品种时�
     if (args.includes('publicTrade.ETHUSDT')) ethereum = socket
     socket.send(JSON.stringify({ op: 'subscribe', success: true }))
   }))
+  let bybitRequests = 0
   await page.route('https://api.bybit.com/**', route => {
-    const isEthereum = new URL(route.request().url()).searchParams.get('symbol') === 'ETHUSDT'
-    return route.fulfill({ headers, json: { retCode: 0, result: { list: isEthereum
-      ? [{ symbol: 'ETHUSDT', execId: 'rest', time: String(start + 10_000), side: 'Buy', price: '1.1', size: '5' }] : [] } } })
+    bybitRequests++
+    return route.fulfill({ headers, json: { retCode: 0, result: { list: [] } } })
   })
   await page.goto('/')
   const chart = page.getByTestId('chart-host')
@@ -291,12 +299,12 @@ test('实时成交只更新映射品种的成交量，切到未匹配品种时�
   await choose('ETHUSD')
   await page.getByRole('button', { name: '图表周期', exact: true }).click()
   await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
-  await expect.poll(volume).toEqual({ name: 'OKX / Bybit 成交量', value: 5 })
+  await expect.poll(() => ethereum).toBeDefined()
+  expect(bybitRequests).toBe(0)
   ethereum!.send(JSON.stringify({ topic: 'publicTrade.ETHUSDT', data: [
-    { T: start + 10_000, s: 'ETHUSDT', S: 'Buy', v: '5', p: '1.1', i: 'rest' },
     { T: start + 20_000, s: 'ETHUSDT', S: 'Sell', v: '8', p: '1.103', i: 'next' },
   ] }))
-  await expect.poll(volume).toEqual({ name: 'OKX / Bybit 成交量', value: 13 })
+  await expect.poll(volume).toEqual({ name: 'OKX / Bybit 成交量', value: 8 })
   expect((await inspect()).last?.close).toBe(1.1)
   await choose('USDCHF')
   await expect.poll(volume).toMatchObject({ name: '报价量' })
@@ -366,7 +374,10 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   await picker.getByRole('button', { name: '选择 BTCUSD', exact: true }).click()
   await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
   await expect.poll(async () => (await inspect()).rightmost).toBeGreaterThan(Date.parse('2026-11-22'))
-  await expect.poll(() => checkedDays.has('2026-11-21')).toBe(true)
+  expect(checkedDays.size).toBe(0)
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __viewportTestAdapter: {
+    getVisibleBybitDay(): string
+  } }).__viewportTestAdapter.getVisibleBybitDay())).toBe('2026-11-22')
   const download = page.getByTestId('chart-host').getByRole('button', { name: '下载成交数据' })
   const status = page.getByTestId('chart-host').getByRole('status')
   const dialog = page.getByRole('dialog', { name: '下载成交数据' })
@@ -376,8 +387,9 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   await download.click()
   await expect(firstDate).toHaveValue('2026-11-22')
   await expect(lastDate).toHaveValue('2026-11-22')
+  await lastDate.fill('2026-11-23')
   await confirm.click()
-  await expect(dialog.getByRole('alert')).toContainText('2026-11-22 UTC 日档须等该日结束')
+  await expect(dialog.getByRole('alert')).toContainText('结束日期不能晚于当前 UTC 日期')
   await dialog.getByRole('button', { name: '关闭下载成交数据' }).click()
   await page.evaluate(end => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
@@ -389,7 +401,7 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   }, Date.parse(day + 'T22:00:00Z'))
   await expect.poll(async () => new Date((await inspect()).rightmost!).toISOString().slice(0, 10)).toBe(day)
   expect((await inspect()).last!.timestamp).toBeGreaterThan(Date.parse('2026-11-22'))
-  await expect.poll(() => checkedDays.size).toBeGreaterThan(1)
+  expect(checkedDays.size).toBe(0)
   expect(requested).toEqual([])
   expect(dispatched).toEqual([])
   await download.click()
@@ -408,20 +420,20 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   await expect.poll(() => dispatched).toEqual(['okx-trades-requested', 'bybit-trades-requested'])
   published = true
   await page.clock.fastForward(13_000)
-  await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 2 天')
+  await expect(status).toContainText('Bybit 日档 2 天')
   await expect.poll(() => loadedParts).toBeGreaterThan(0)
   await download.click()
   await lastDate.fill('')
   await confirm.click()
   await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
   await page.clock.fastForward(13_000)
-  await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 1 天')
+  await expect(status).toContainText('Bybit 日档 1 天')
   await download.click()
   await firstDate.fill('')
   await confirm.click()
   await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
   await page.clock.fastForward(13_000)
-  await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 1 天')
+  await expect(status).toContainText('Bybit 日档 1 天')
   expect(requested).toHaveLength(2)
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
 })
@@ -452,11 +464,6 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
     }
     return route.fulfill({ headers, status: 404 })
   })
-  await page.route('https://api.bybit.com/**', route => {
-    const btc = new URL(route.request().url()).searchParams.get('symbol') === 'BTCUSDT'
-    return route.fulfill({ headers, json: { retCode: 0, result: { list: btc
-      ? [{ symbol: 'BTCUSDT', execId: 'below-minimum', time: String(now - 20_000), side: 'Buy', price: '1.1', size: '10' }] : [] } } })
-  })
   let bitcoin: WebSocketRoute | undefined
   await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => socket.onMessage(message => {
     const { op, args } = JSON.parse(message.toString())
@@ -475,7 +482,17 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     coreChart.setBarSpace(value)
   }, space)
+  const loadArchive = async () => {
+    await chart.getByRole('button', { name: '下载成交数据' }).click()
+    const dialog = page.getByRole('dialog', { name: '下载成交数据' })
+    await dialog.getByLabel('开始日期').fill(day)
+    await dialog.getByLabel('结束日期').fill(day)
+    await dialog.getByRole('button', { name: '下载', exact: true }).click()
+    await expect(chart.getByRole('status')).toContainText('Bybit 日档 1 天')
+  }
   await zoom(3)
+  expect(partReads).toBe(0)
+  await loadArchive()
   await expect.poll(() => partReads).toBe(1)
   try {
     const scanContinued = await page.evaluate(stamp => {
@@ -537,6 +554,9 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   await page.reload()
   await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
   await zoom(3)
+  await expect.poll(async () => (await bubbleIds()).length).toBe(0)
+  expect(partReads).toBe(reads)
+  await loadArchive()
   await expect.poll(async () => (await bubbleIds()).length).toBe(400)
   expect(partReads).toBe(reads)
 })

@@ -168,6 +168,12 @@ export class OrderFlowBars {
   }
 
   invalidate(range: TradeRange): void {
+    if (range.replaceArchive) {
+      for (const hour of this.checked) {
+        if (hour * 1000 < range.untilUs && (hour + BYBIT_HOUR_MS) * 1000 > range.fromUs) this.checked.delete(hour)
+      }
+      this.invalidateBars(range)
+    }
     for (const [hour, section] of this.hours) {
       if ((!section.archived || section.fallbackArchive || range.replaceArchive) &&
           hour * 1000 < range.untilUs && (hour + BYBIT_HOUR_MS) * 1000 > range.fromUs) {
@@ -189,9 +195,11 @@ export class OrderFlowBars {
     for (const start of starts) {
       if (start * 1000 >= cursor) break
       const end = Math.min(cursor, nextOpenTime(start, timeframe) * 1000)
-      for (let hour = hourOf(start); hour * 1000 < end; hour += BYBIT_HOUR_MS) requested.add(hour)
+      for (let hour = hourOf(start); hour * 1000 < end; hour += BYBIT_HOUR_MS) {
+        if (source.shouldScanTradeHour(hour)) requested.add(hour)
+      }
     }
-    const pending = [...requested].filter(hour => !this.checked.has(hour))
+    const pending = [...requested].filter(hour => source.isArchiveRequested(hour) && !this.checked.has(hour))
     if (pending.length) {
       await this.restore(pending, source, signal)
       onUpdate()
@@ -199,7 +207,6 @@ export class OrderFlowBars {
     const groups: HourScan[][] = []
     for (const hour of requested) {
       const section = this.hours.get(hour)
-      if (section?.fallbackArchive) source.requestRecentHours(hour, hour + BYBIT_HOUR_MS)
       const fromUs = section?.cursor ?? hour * 1000
       const untilUs = Math.min((hour + BYBIT_HOUR_MS) * 1000, cursor)
       if (untilUs <= fromUs) continue
@@ -222,8 +229,10 @@ export class OrderFlowBars {
       const db = await database()
       const range = IDBKeyRange.bound([this.key, hours[0]], [this.key, hours.at(-1)!])
       const restored = await db.getAll('hours', range)
+      const requested = new Set(hours)
       signal.throwIfAborted()
       for (const { hour, ...section } of restored) {
+        if (!requested.has(hour)) continue
         if (section.fallbackArchive && await source.isOkxArchiveCachedAt(hour)) continue
         signal.throwIfAborted()
         this.hours.set(hour, section)

@@ -6,11 +6,16 @@ import { ensureTradeDay } from './archive-requests'
 import { BybitLiveTrades } from './live'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, bybitFirstDay, type BybitSymbol, type BybitTrade } from './trades'
 import { OkxArchive, okxArchiveDay } from '../okx/archive'
-import { OkxLiveTrades, OkxRecentTrades } from '../okx/live'
-import { mergeOkxTrades, orderFlowMapping, type OrderFlowMapping } from '../okx/trades'
+import { getOkxTrades, OkxLiveTrades } from '../okx/live'
+import { compareTrades, mergeOkxTrades, orderFlowMapping, type OrderFlowMapping } from '../okx/trades'
 
 export interface TradeRange { fromUs: number; untilUs: number; replaceArchive?: boolean }
 export interface TradeCoverage extends TradeRange { complete: boolean; archived: boolean; fallbackArchive?: boolean }
+
+interface HistoryDay {
+  untilUs: number
+  rows: BybitTrade[]
+}
 
 interface PendingDay {
   abort: AbortController
@@ -21,6 +26,19 @@ interface PendingDay {
 const wakeIntervalMs = 60_000
 const liveSettlementMs = 250
 const cacheWorker = { owner: 'q761505855', repository: 'crypto_contract_workstation' }
+
+const dayStart = (ms: number) => Math.floor(ms / BYBIT_DAY_MS) * BYBIT_DAY_MS
+
+// Return the oldest UTC day that the API can still cover in full.
+export function firstOkxHistoryDay(now: number): number {
+  const date = new Date(now)
+  const day = date.getUTCDate()
+  date.setUTCDate(1)
+  date.setUTCMonth(date.getUTCMonth() - 3)
+  date.setUTCDate(Math.min(day, new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate()))
+  const cutoff = date.getTime()
+  return Math.ceil(cutoff / BYBIT_DAY_MS) * BYBIT_DAY_MS
+}
 
 function lowerBound(rows: readonly BybitTrade[], time: number): number {
   let low = 0
@@ -36,14 +54,13 @@ function lowerBound(rows: readonly BybitTrade[], time: number): number {
 export class CombinedBybitSource {
   private live?: BybitLiveTrades
   private okxLive?: OkxLiveTrades
-  private recent?: OkxRecentTrades
   private active?: OrderFlowMapping
   private context: ReplayContext | null = null
   private selection = ''
   private readonly pending = new Map<string, PendingDay>()
   private readonly archiveDownloads = new AbortController()
   private readonly downloaded = new Map<string, Set<number>>()
-  private released = false
+  private readonly history = new Map<string, Map<number, HistoryDay>>()
   private readonly nextWake = new Map<string, number>()
   private pendingLiveUpdate?: ReturnType<typeof setTimeout>
 
@@ -54,6 +71,9 @@ export class CombinedBybitSource {
   get mapping(): OrderFlowMapping | undefined { return this.active }
   get replaying(): boolean { return this.context !== null }
   get downloadedDays(): Iterable<number> { return this.active && this.downloaded.get(this.active.symbol) || [] }
+  get requestedHistoryDays(): Iterable<[number, number]> {
+    return Array.from(this.activeHistory ?? [], ([day, history]) => [day, history.untilUs])
+  }
   get archiveCacheKey(): string {
     const { owner, repository, branch, root } = this.cloud.getTarget()
     const primary = this.active?.okx
@@ -62,14 +82,30 @@ export class CombinedBybitSource {
   }
   get tradeCursorUs(): number {
     if (this.context) return replayConfirmedUntil(this.context) * 1000
-    if (this.active?.okx) return (this.now() - liveSettlementMs) * 1000
-    const last = this.live?.lastTradeUs
-    return last === undefined ? this.now() * 1000 + 1 : Math.min(last + 1, (this.now() - liveSettlementMs) * 1000)
+    return (this.now() - liveSettlementMs) * 1000
+  }
+
+  isArchiveRequested(hour: number): boolean {
+    return !!this.active && !!this.downloaded.get(this.active.symbol)?.has(dayStart(hour))
+  }
+
+  shouldScanTradeHour(hour: number): boolean {
+    return this.isArchiveRequested(hour) || this.activeHistory?.has(dayStart(hour)) === true ||
+      ((hour + BYBIT_HOUR_MS) * 1000 > this.liveStartUs &&
+        Math.max(this.okxLive?.lastTradeUs ?? -1, this.live?.lastTradeUs ?? -1) >= hour * 1000)
+  }
+
+  private get activeHistory(): Map<number, HistoryDay> | undefined {
+    return this.active && this.history.get(this.active.symbol)
+  }
+
+  private get liveStartUs(): number {
+    return Math.min(this.okxLive?.firstTradeUs ?? Infinity, this.live?.firstTradeUs ?? Infinity)
   }
 
   async hasArchivedDay(start: number): Promise<boolean> {
     const mapping = this.active
-    if (!mapping) return false
+    if (!mapping || !this.isArchiveRequested(start)) return false
     if (mapping.okx && (await this.okxDayHours(mapping.okx, start)).some(Boolean)) return true
     return !!mapping.bybit && this.archive.hasDay(mapping.bybit.symbol, bybitDay(start)).catch(() => false)
   }
@@ -84,14 +120,18 @@ export class CombinedBybitSource {
     return !okx || okxArchiveDay(start + BYBIT_DAY_MS - 1) < okx.firstDay || (await this.okxDayHours(okx, start)).every(Boolean)
   }
 
-  hasRecentOkxCoverage(hour: number, untilUs: number): boolean {
-    if (this.active?.okx && this.okxArchive.isCachedHour(this.active.okx, hour)) return false
-    const slice = this.recent?.read(hour)
-    return !!slice && slice.untilUs >= untilUs
+  hasCapturedCoverage(fromUs: number, untilUs: number): boolean {
+    const snapshot = this.activeHistory?.get(dayStart(fromUs / 1000))
+    if (snapshot && snapshot.untilUs >= untilUs) return true
+    const socket = this.okxLive?.gap === false ? this.okxLive : this.live?.gap === false ? this.live : undefined
+    if (!socket || (socket.lastTradeUs ?? -1) + 1 < untilUs) return false
+    const socketStart = socket.coverageStartUs ?? Infinity
+    return socketStart <= fromUs || (!!snapshot && snapshot.untilUs >= socketStart)
   }
 
   async readArchivedHour(start: number): Promise<BybitTrade[] | null> {
     const mapping = this.active
+    if (!this.isArchiveRequested(start)) return null
     const primary = mapping?.okx && await this.okxArchive.loadHour(mapping.okx, start).catch(() => null)
     if (primary !== null && primary !== undefined) return primary
     return mapping?.bybit ? this.archive.loadHour(mapping.bybit.symbol, start).catch(() => null) : null
@@ -101,42 +141,42 @@ export class CombinedBybitSource {
     return this.active?.okx ? this.okxArchive.hasHour(this.active.okx, hour) : Promise.resolve(false)
   }
 
-  requestRecentHours(start: number, end: number): void {
-    const recent = this.recent
-    const instrument = this.active?.okx
-    if (!recent || !instrument) return
-    const hourStart = Math.max(Math.floor(start / BYBIT_HOUR_MS) * BYBIT_HOUR_MS,
-      Math.floor((this.now() - 3 * BYBIT_DAY_MS) / BYBIT_HOUR_MS) * BYBIT_HOUR_MS)
-    for (let hour = hourStart; hour < end; hour += BYBIT_HOUR_MS) {
-      if (!recent.applies(hour)) continue
-      const untilUs = Math.min(hour + BYBIT_HOUR_MS, Math.floor((this.now() - liveSettlementMs) / 15_000) * 15_000) * 1000
-      void this.okxArchive.hasHour(instrument, hour).then(cached => {
-        if (!cached && recent === this.recent) recent.request(hour, untilUs)
-      })
+  readReplayLive({ fromUs, untilUs }: TradeRange): BybitTrade[] {
+    const result: BybitTrade[] = []
+    for (let start = Math.max(fromUs, this.capturedFromUs); start < untilUs;) {
+      const day = dayStart(start / 1000)
+      const end = Math.min(untilUs, (day + BYBIT_DAY_MS) * 1000)
+      for (const trade of this.readCapturedDay(day, start, end)) result.push(trade)
+      start = end
     }
+    return result
   }
 
-  readReplayLive({ fromUs, untilUs }: TradeRange): BybitTrade[] {
-    if (this.recent) {
-      const result: BybitTrade[] = []
-      const from = Math.max(fromUs, this.capturedFromUs)
-      for (let hour = Math.floor(from / 1000 / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour * 1000 < untilUs; hour += BYBIT_HOUR_MS) {
-        const startUs = Math.max(from, hour * 1000)
-        const endUs = Math.min(untilUs, (hour + BYBIT_HOUR_MS) * 1000)
-        const rows = this.recent.read(hour)?.trades ?? []
-        for (const trade of mergeOkxTrades(rows.slice(lowerBound(rows, startUs), lowerBound(rows, endUs)),
-          this.okxLive?.read(startUs, endUs) ?? [])) result.push(trade)
-      }
-      return result
-    }
-    return this.live?.read(fromUs, untilUs) ?? []
+  private readCapturedDay(day: number, fromUs: number, untilUs: number): BybitTrade[] {
+    const snapshot = this.activeHistory?.get(day)
+    const rows = snapshot?.rows
+    const requested = rows?.slice(lowerBound(rows, fromUs), lowerBound(rows, untilUs)) ?? []
+    const primary = this.okxLive?.read(fromUs, untilUs) ?? []
+    const okx = !primary.length ? requested : !requested.length ? primary : mergeOkxTrades(requested, primary)
+    const fallbackStart = Math.max(fromUs, snapshot?.untilUs ?? fromUs)
+    const fallback = this.live?.read(fallbackStart, untilUs) ?? []
+    if (!fallback.length || !this.okxLive) return okx.length ? okx : fallback
+    // Keep fallback trades only in the gap between confirmed OKX sessions.
+    const primaryResumed = this.okxLive.gap ? Infinity : this.okxLive.coverageStartUs
+    const available = fallback.filter(trade => trade.timeUs < primaryResumed)
+    return okx.concat(available).sort(compareTrades)
   }
 
   get capturedFromUs(): number {
-    return Math.min(this.recent?.earliestUs ?? Infinity, this.okxLive?.coverageStartUs ?? Infinity, this.live?.coverageStartUs ?? Infinity)
+    let first = this.liveStartUs
+    for (const day of this.activeHistory?.keys() ?? []) first = Math.min(first, day * 1000)
+    return first
   }
+
   get capturedUntilUs(): number {
-    return Math.max(this.recent?.latestUs ?? 0, (this.okxLive?.lastTradeUs ?? this.live?.lastTradeUs ?? -1) + 1)
+    let end = Math.max(this.okxLive?.lastTradeUs ?? -1, this.live?.lastTradeUs ?? -1) + 1
+    for (const { untilUs } of this.activeHistory?.values() ?? []) end = Math.max(end, untilUs)
+    return end
   }
 
   select(symbol: SymbolInfo, context: ReplayContext | null): void {
@@ -150,24 +190,20 @@ export class CombinedBybitSource {
         this.live = undefined
         this.okxLive?.close()
         this.okxLive = undefined
-        this.recent?.close()
-        this.recent = mapping?.okx && new OkxRecentTrades(mapping.okx,
-          (hour, ready) => this.changed(ready, ready ? { fromUs: hour * 1000, untilUs: (hour + BYBIT_HOUR_MS) * 1000 } : undefined), this.now)
         clearTimeout(this.pendingLiveUpdate)
       }
       this.selection = key
       this.active = mapping
     }
+    if (!context && this.active) this.startRealtime(this.active)
     this.changed(reset)
   }
 
   release(): void {
-    this.released = true
     this.archiveDownloads.abort()
     this.live?.close()
     this.live = undefined
     this.okxLive?.close()
-    this.recent?.close()
     clearTimeout(this.pendingLiveUpdate)
     for (const pending of this.pending.values()) pending.abort.abort()
     this.pending.clear()
@@ -175,134 +211,60 @@ export class CombinedBybitSource {
 
   async visitTrades({ fromUs, untilUs }: TradeRange, accept: (trade: BybitTrade) => void, signal: AbortSignal,
     reportCoverage?: (coverage: TradeCoverage) => void): Promise<boolean> {
-    const primary = this.active
-    if (primary?.okx) return this.visitOkxTrades(primary, { fromUs, untilUs }, accept, signal, reportCoverage)
-    const mapping = primary?.bybit
-    if (!mapping) return false
-    if (!this.context) this.openBybitLive(mapping.symbol)
-    const first = bybitDayStart(bybitFirstDay(mapping.symbol))
+    if (!this.active) return false
     const end = Math.min(untilUs, this.tradeCursorUs)
-    const latest = bybitDay(this.now())
-    let complete = fromUs >= first * 1000
-    if (!complete && fromUs < end) reportCoverage?.({ fromUs, untilUs: Math.min(first * 1000, end), complete: false, archived: false })
-    for (let hour = Math.floor(Math.max(fromUs / 1000, first) / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour * 1000 < end;) {
+    let complete = true
+    for (let hour = Math.floor(fromUs / 1000 / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour * 1000 < end; hour += BYBIT_HOUR_MS) {
       signal.throwIfAborted()
-      const day = bybitDay(hour)
-      const nextDay = bybitDayStart(day) + BYBIT_DAY_MS
-      const dayFrom = Math.max(hour * 1000, fromUs)
-      const dayUntil = Math.min(nextDay * 1000, end)
-      const available = day < latest && await this.archive.hasDay(mapping.symbol, day)
+      const start = Math.max(fromUs, hour * 1000)
+      const stop = Math.min(end, (hour + BYBIT_HOUR_MS) * 1000)
+      const primary = this.isArchiveRequested(hour) && this.active.okx
+        ? await this.okxArchive.loadHour(this.active.okx, hour).catch(() => null) : null
+      const archived = primary ?? (this.isArchiveRequested(hour) && this.active.bybit
+        ? await this.archive.loadHour(this.active.bybit.symbol, hour).catch(() => null) : null)
       signal.throwIfAborted()
-      if (!available) {
-        const coverageStart = this.live?.coverageStartUs ?? Infinity
-        const gapUntil = this.live && !this.live.gap ? Math.min(dayUntil, Math.max(dayFrom, coverageStart)) : dayUntil
-        if (gapUntil > dayFrom) {
-          complete = false
-          reportCoverage?.({ fromUs: dayFrom, untilUs: gapUntil, complete: false, archived: false })
-        }
-        if (gapUntil < dayUntil) reportCoverage?.({ fromUs: gapUntil, untilUs: dayUntil, complete: true, archived: false })
-        for (const trade of this.live?.read(dayFrom, dayUntil) ?? []) accept(trade)
-        hour = nextDay
-        continue
+      if (archived) {
+        const last = lowerBound(archived, stop)
+        for (let i = lowerBound(archived, start); i < last; i++) accept(archived[i])
+      } else {
+        for (const trade of this.readCapturedDay(dayStart(hour), start, stop)) accept(trade)
       }
-      while (hour < nextDay && hour * 1000 < end) {
-        const rows = await this.archive.loadHour(mapping.symbol, hour)
-        signal.throwIfAborted()
-        const nextHour = hour + BYBIT_HOUR_MS
-        if (rows) {
-          const stop = lowerBound(rows, Math.min(nextHour * 1000, end))
-          for (let i = lowerBound(rows, Math.max(hour * 1000, fromUs)); i < stop; i++) accept(rows[i])
-        } else complete = false
-        reportCoverage?.({ fromUs: Math.max(hour * 1000, fromUs), untilUs: Math.min(nextHour * 1000, end),
-          complete: rows !== null, archived: rows !== null })
-        hour = nextHour
-      }
+      const covered = archived !== null || this.hasCapturedCoverage(start, stop)
+      complete &&= covered
+      reportCoverage?.({ fromUs: start, untilUs: stop, complete: covered, archived: archived !== null,
+        fallbackArchive: !!archived && !primary && !!this.active.okx && bybitDay(hour) >= this.active.okx.firstDay })
     }
     return complete
   }
 
   private openBybitLive(symbol: BybitSymbol): void {
-    if (this.live) return
-    const live = new BybitLiveTrades(symbol, () => this.changed())
-    live.subscribe((rows, rebuilt, fromUs) => {
-      const first = fromUs ?? rows[0]?.timeUs
-      const changedPast = first !== undefined && (rebuilt || !!this.active?.okx) && first < this.tradeCursorUs
-      this.changed(changedPast, changedPast ? { fromUs: first, untilUs: Infinity } : undefined)
-      clearTimeout(this.pendingLiveUpdate)
-      this.pendingLiveUpdate = setTimeout(() => this.changed(), liveSettlementMs + 1)
-    })
+    if (this.live) { this.live.open(); return }
+    const live = new BybitLiveTrades(symbol, () => this.changed(), undefined, this.now)
+    live.subscribe((rows, _rebuilt, fromUs) => this.liveChanged(fromUs ?? rows[0]?.timeUs))
     this.live = live
     live.open()
   }
 
-  private async visitOkxTrades(mapping: OrderFlowMapping, range: TradeRange, accept: (trade: BybitTrade) => void, signal: AbortSignal,
-    reportCoverage?: (coverage: TradeCoverage) => void): Promise<boolean> {
-    const instrument = mapping.okx!
-    const recent = this.recent
-    if (!this.context && !this.okxLive) {
+  private liveChanged(fromUs?: number): void {
+    const affected = fromUs !== undefined && fromUs < this.tradeCursorUs
+      ? { fromUs, untilUs: Infinity } : undefined
+    this.changed(!!affected, affected)
+    clearTimeout(this.pendingLiveUpdate)
+    this.pendingLiveUpdate = setTimeout(() => this.changed(), liveSettlementMs + 1)
+  }
+
+  private startRealtime(mapping: OrderFlowMapping): void {
+    const instrument = mapping.okx
+    if (!instrument) {
+      if (mapping.bybit) this.openBybitLive(mapping.bybit.symbol)
+    } else if (!this.okxLive) {
       this.okxLive = new OkxLiveTrades(instrument, fromUs => {
         if (this.okxLive?.failed && mapping.bybit && !this.context) this.openBybitLive(mapping.bybit.symbol)
-        else if (this.live && !this.okxLive?.gap) {
-          fromUs = Math.min(fromUs ?? Infinity, this.live.coverageStartUs ?? Infinity)
-          this.live.close()
-          this.live = undefined
-        }
-        this.changed(fromUs !== undefined, fromUs === undefined ? undefined : { fromUs, untilUs: Infinity })
-        clearTimeout(this.pendingLiveUpdate)
-        this.pendingLiveUpdate = setTimeout(() => this.changed(), liveSettlementMs + 1)
+        else if (this.live && !this.okxLive?.gap) this.live.close()
+        this.liveChanged(fromUs)
       }, this.now)
       this.okxLive.open()
     }
-    const end = Math.min(range.untilUs, this.tradeCursorUs)
-    const live = this.okxLive
-    const requests: [number, number][] = []
-    let complete = true
-    for (let hour = Math.floor(range.fromUs / 1000 / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour * 1000 < end; hour += BYBIT_HOUR_MS) {
-      signal.throwIfAborted()
-      const fromUs = Math.max(hour * 1000, range.fromUs)
-      const untilUs = Math.min((hour + BYBIT_HOUR_MS) * 1000, end)
-      const okxAvailable = okxArchiveDay(hour) >= instrument.firstDay
-      const archive = okxAvailable ? await this.okxArchive.loadHour(instrument, hour).catch(() => null) : null
-      let rows = archive
-      let archived = archive !== null
-      let covered = archived
-      let fallbackArchive = false
-      if (!archive) {
-        const rest = recent?.read(hour)
-        const liveStart = !live || live.gap ? Infinity : live.coverageStartUs
-        const restEnd = Math.min(untilUs, liveStart,
-          Math.floor((this.now() - liveSettlementMs) / 5000) * 5000 * 1000)
-        if (recent?.applies(hour) && fromUs < restEnd && (rest?.untilUs ?? 0) < restEnd) requests.push([hour, restEnd])
-        const socketRows = live?.read(fromUs, untilUs) ?? []
-        const fallback = live?.failed && !socketRows.length ? this.live : undefined
-        const fallbackStart = Math.max(fromUs, rest?.untilUs ?? fromUs)
-        const fallbackRows = fallback?.read(fallbackStart, untilUs) ?? []
-        if (rest || socketRows.length || liveStart < untilUs || fallbackRows.length) {
-          const recentRows = rest?.trades ?? []
-          rows = mergeOkxTrades(recentRows.slice(lowerBound(recentRows, fromUs), lowerBound(recentRows, untilUs)), socketRows)
-          if (fallbackRows.length) {
-            rows = rows.filter(trade => trade.timeUs < fallbackStart).concat(fallbackRows)
-          }
-          covered = liveStart <= fromUs || (!!rest && rest.untilUs >= Math.min(untilUs, liveStart))
-          covered ||= !!fallback && !fallback.gap && (rest !== undefined || fallbackStart === fromUs) &&
-            (fallback.coverageStartUs ?? Infinity) <= fallbackStart && (fallback.lastTradeUs ?? 0) + 1 >= untilUs
-        } else if (mapping.bybit) {
-          rows = await this.archive.loadHour(mapping.bybit.symbol, hour).catch(() => null)
-          covered = rows !== null
-          archived = covered
-          fallbackArchive = covered && okxAvailable
-        }
-      }
-      signal.throwIfAborted()
-      if (rows) {
-        const stop = lowerBound(rows, untilUs)
-        for (let index = lowerBound(rows, fromUs); index < stop; index++) accept(rows[index])
-      }
-      complete &&= covered
-      reportCoverage?.({ fromUs, untilUs, complete: covered, archived, fallbackArchive })
-    }
-    for (const [hour, untilUs] of requests) recent?.request(hour, untilUs)
-    return complete
   }
 
   downloadDays(start: string, end: string, report: (message: string) => void): Promise<string> {
@@ -314,93 +276,130 @@ export class CombinedBybitSource {
     const from = bybitDayStart(first)
     const to = bybitDayStart(last)
     if (from > to) throw new Error('开始日期不能晚于结束日期')
-    if (last >= bybitDay(this.now())) throw new Error(`${last} UTC 日档须等该日结束后下载`)
-    if (mapping.okx) return this.downloadOkxRange(mapping, from, to, report)
-    const symbol = mapping.bybit!.symbol
-    if (first < bybitFirstDay(symbol)) throw new Error(`Bybit 未提供 ${symbol} ${first} UTC 逐笔归档`)
-    return from === to ? this.requestDay(symbol, first, report) : this.downloadRange(symbol, from, to, report)
+    const now = this.now()
+    const today = dayStart(now)
+    if (to > today) throw new Error('结束日期不能晚于当前 UTC 日期')
+    return this.downloadRange(mapping, from, to, now, report)
   }
 
-  private async downloadOkxRange(mapping: OrderFlowMapping, from: number, to: number, report: (message: string) => void): Promise<string> {
+  private async downloadRange(mapping: OrderFlowMapping, from: number, to: number, now: number,
+    report: (message: string) => void): Promise<string> {
     const signal = this.archiveDownloads.signal
     const total = 1 + (to - from) / BYBIT_DAY_MS
-    const instrument = mapping.okx!
-    let okx = 0
-    let bybit = 0
+    const earliest = firstOkxHistoryDay(now)
+    const today = dayStart(now)
+    const instrument = mapping.okx
+    const counts = { 'OKX 接口': 0, 'OKX 日档': 0, 'Bybit 日档': 0 }
     const unavailable: string[] = []
-    for (let batch = from; batch <= to; batch += 8 * BYBIT_DAY_MS) {
+
+    const fallbacks: Promise<void>[] = []
+    const load = async (start: number, useRest: boolean) => {
       signal.throwIfAborted()
-      const starts = Array.from({ length: Math.min(8, 1 + (to - batch) / BYBIT_DAY_MS) },
-        (_, index) => batch + index * BYBIT_DAY_MS)
-      await Promise.all(starts.map(async start => {
-        const day = bybitDay(start)
-        const progress = (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${total} 天 · ${message}`)
-        const published = (ref?: string) => this.okxArchive.hasCloudDay(instrument, day, ref)
-        let primaryError: unknown
-        try {
-          if (day >= instrument.firstDay && await ensureTradeDay('OKX', published, this.cloud, instrument.symbol, day,
-            progress, signal, () => this.wakeWorker('okx-trades-requested'))) {
-            okx++
-            this.markDownloaded(mapping.symbol, start)
-            return
-          }
-        } catch (error) {
-          signal.throwIfAborted()
-          primaryError = error
-        }
-        if (mapping.bybit && day >= bybitFirstDay(mapping.bybit.symbol)) {
+      const day = bybitDay(start)
+      const progress = (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${total} 天 · ${message}`)
+      try {
+        if (instrument && useRest) {
           try {
-            await this.requestDay(mapping.bybit.symbol, day, progress, published)
-            if (await published().catch(() => false)) okx++
-            else bybit++
-            this.markDownloaded(mapping.symbol, start)
+            const untilUs = Math.min(start + BYBIT_DAY_MS, now) * 1000
+            let history = this.history.get(mapping.symbol)
+            if (!history) {
+              history = new Map<number, HistoryDay>()
+              this.history.set(mapping.symbol, history)
+            }
+            const previous = history.get(start)
+            const fromUs = previous?.untilUs ?? start * 1000
+            if (!previous || fromUs < untilUs) {
+              progress(`正在读取 OKX ${day} UTC 历史逐笔…`)
+              const rows = await getOkxTrades(instrument, fromUs, untilUs, signal, fetch,
+                count => progress(`OKX ${day} UTC 已读取 ${count.toLocaleString()} 笔…`))
+              signal.throwIfAborted()
+              if ((history.get(start)?.untilUs ?? -Infinity) < untilUs) {
+                history.set(start, { untilUs, rows: previous ? previous.rows.concat(rows) : rows })
+                this.downloaded.get(mapping.symbol)?.delete(start)
+                this.invalidateDay(mapping.symbol, start)
+              }
+            }
+            counts['OKX 接口']++
             return
           } catch (error) {
             signal.throwIfAborted()
-            if (from === to) throw (primaryError ?? error)
+            if (start === today) throw error
+            return false
           }
-        } else if (from === to && primaryError) throw primaryError
+        }
+        if (start === today) throw new Error(`${day} UTC 尚无可按日期读取的逐笔接口，日档在该日结束后提供`)
+        const venue = await this.downloadArchive(mapping, start, progress, signal)
+        counts[venue]++
+      } catch (error) {
+        signal.throwIfAborted()
+        if (from === to) throw error
         unavailable.push(day)
-      }))
+        progress(error instanceof Error ? error.message : `${day} 下载失败`)
+      }
     }
-    return `已缓存 OKX ${okx} 天 · Bybit 回退 ${bybit} 天${unavailable.length ? ` · 日期暂不可用 ${unavailable.sort().join('、')}` : ''}`
+    // Page the REST API one day at a time. Archive requests can wait on Git in parallel.
+    const firstRest = instrument ? Math.max(from, earliest, bybitDayStart(instrument.firstDay)) : to + BYBIT_DAY_MS
+    const loadArchived = async () => {
+      for (let batch = from; batch < firstRest && batch <= to; batch += 8 * BYBIT_DAY_MS) {
+        const length = Math.min(8, (firstRest - batch) / BYBIT_DAY_MS, (to - batch) / BYBIT_DAY_MS + 1)
+        await Promise.all(Array.from({ length }, (_, index) => load(batch + index * BYBIT_DAY_MS, false)))
+      }
+    }
+    const loadRecent = async () => {
+      for (let start = firstRest; start <= to; start += BYBIT_DAY_MS) {
+        if (await load(start, true) !== false) continue
+        if (from === to) { await load(start, false); return }
+        fallbacks.push(load(start, false).then(() => undefined))
+        if (fallbacks.length === 8) await Promise.all(fallbacks.splice(0))
+      }
+      await Promise.all(fallbacks)
+    }
+    await Promise.all([loadArchived(), loadRecent()])
+    const summary = Object.entries(counts).filter(([, count]) => count > 0).map(([label, count]) => `${label} ${count} 天`)
+    if (unavailable.length) summary.push(`日期暂不可用 ${unavailable.sort().join('、')}`)
+    return summary.join(' · ')
+  }
+
+  private async downloadArchive(mapping: OrderFlowMapping, start: number, progress: (message: string) => void,
+    signal: AbortSignal): Promise<'OKX 日档' | 'Bybit 日档'> {
+    const instrument = mapping.okx
+    const day = bybitDay(start)
+    const published = (ref?: string) => instrument ? this.okxArchive.hasCloudDay(instrument, day, ref) : Promise.resolve(false)
+    let primaryError: unknown
+    if (instrument && day >= instrument.firstDay) {
+      try {
+        if (await ensureTradeDay('OKX', published, this.cloud, instrument.symbol, day, progress, signal,
+          () => this.wakeWorker('okx-trades-requested'))) {
+          this.markDownloaded(mapping.symbol, start)
+          return 'OKX 日档'
+        }
+      } catch (error) {
+        signal.throwIfAborted()
+        primaryError = error
+      }
+    }
+    if (mapping.bybit && day >= bybitFirstDay(mapping.bybit.symbol)) {
+      await this.requestDay(mapping.bybit.symbol, day, progress, published)
+      this.markDownloaded(mapping.symbol, start)
+      return await published().catch(() => false) ? 'OKX 日档' : 'Bybit 日档'
+    }
+    throw primaryError ?? new Error(`${mapping.symbol} ${day} UTC 暂无逐笔归档`)
   }
 
   private markDownloaded(symbol: string, start: number): void {
     const downloaded = this.downloaded.get(symbol) ?? new Set<number>()
     downloaded.add(start)
     this.downloaded.set(symbol, downloaded)
+    this.history.get(symbol)?.delete(start)
+    this.invalidateDay(symbol, start)
+  }
+
+  private invalidateDay(symbol: string, start: number): void {
     if (this.active?.symbol === symbol) this.changed(true, {
       fromUs: start * 1000,
       untilUs: (start + BYBIT_DAY_MS) * 1000,
       replaceArchive: true,
     })
-  }
-
-  private async downloadRange(symbol: BybitSymbol, from: number, to: number, report: (message: string) => void): Promise<string> {
-    const total = (to - from) / BYBIT_DAY_MS + 1
-    let finished = 0
-    const failures: string[] = []
-    for (let batch = from; batch <= to; batch += 8 * BYBIT_DAY_MS) {
-      const requests: Promise<void>[] = []
-      for (let time = batch; time <= to && time < batch + 8 * BYBIT_DAY_MS; time += BYBIT_DAY_MS) {
-        const day = bybitDay(time)
-        const show = (progress: string) => report(`${symbol} 已处理 ${finished}/${total} 天 · ${progress}`)
-        requests.push(this.requestDay(symbol, day, show).then(message => {
-          finished++
-          show(message)
-        }, error => {
-          finished++
-          failures.push(day)
-          show(error instanceof Error ? error.message : `${day} 下载失败`)
-        }))
-      }
-      await Promise.all(requests)
-      if (this.released) break
-    }
-    return failures.length
-      ? `${symbol} 已缓存 ${finished - failures.length}/${total} 天 · 失败日期 ${failures.sort().join('、')}`
-      : `${symbol} ${bybitDay(from)} 至 ${bybitDay(to)} UTC 日档已缓存（${total} 天）`
   }
 
   private async requestDay(symbol: BybitSymbol, day: string, report: (message: string) => void,
@@ -423,8 +422,6 @@ export class CombinedBybitSource {
     }, abort.signal, () => this.wakeWorker('bybit-trades-requested')).then(ready => {
       abort.signal.throwIfAborted()
       if (!ready) throw new Error(`Bybit 未提供 ${symbol} ${day} UTC 逐笔归档`)
-      const start = bybitDayStart(day)
-      this.markDownloaded(symbol, start)
       return `${symbol} ${day} UTC 日档已缓存`
     }).finally(() => {
       if (this.pending.get(key)?.abort === abort) this.pending.delete(key)

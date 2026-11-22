@@ -1,6 +1,6 @@
 import { DomPosition, type ActionType, type Chart, type Indicator, type KLineData } from 'klinecharts'
 import { alignOpenTime, CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/intervals'
-import { BYBIT_DAY_MS, type BybitTrade } from '../market-data/bybit/trades'
+import type { BybitTrade } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator } from './order-flow'
 import { CANDLE_PANE, tradeBubbleOffset, tradeBubblePrice, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
@@ -109,7 +109,7 @@ export class OrderFlowChart {
     if (reset) {
       if (affected) {
         if (this.flowOperation && !affected.replaceArchive && this.flowSource === this.feed.archiveCacheKey) {
-          // REST and live updates must not restart an in-flight archive scan.
+          // Live updates must not restart an in-flight history scan.
           const overlapping = this.flowInvalidations.find(range => range.fromUs <= affected.untilUs && range.untilUs >= affected.fromUs)
           if (overlapping) {
             overlapping.fromUs = Math.min(overlapping.fromUs, affected.fromUs)
@@ -352,7 +352,7 @@ export class OrderFlowChart {
     const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
     this.showVolume(volumeChanged ? volumes : previous)
     this.showBubbles({ bars, timeframe, updating: this.updating, projectToCandle: this.feed.mapping?.relation === 'etf',
-      message: message ?? (this.updating ? '正在计算大单气泡…' : partial ? '逐笔成交尚未补齐 · 可在顶部下载日档' : undefined) })
+      message: message ?? (this.updating ? '正在计算大单气泡…' : partial ? '历史逐笔可通过「下载成交数据」载入' : undefined) })
   }
 
   private async updateBubbles(): Promise<void> {
@@ -396,13 +396,8 @@ export class OrderFlowChart {
     }
     try {
       if (replay) {
-        const days = new Set(this.feed.downloadedDays)
-        const end = Math.min(cursor / 1000, nextOpenTime(visible.at(-1)!.timestamp, timeframe))
-        this.feed.requestRecentHours(visible[0].timestamp, end)
-        const firstDay = Math.floor(visible[0].timestamp / BYBIT_DAY_MS) * BYBIT_DAY_MS
-        const lastDay = Math.ceil(end / BYBIT_DAY_MS - 1) * BYBIT_DAY_MS
-        for (let day = lastDay; day >= firstDay; day -= BYBIT_DAY_MS) days.add(day)
-        await replay.prepare(days, this.feed, operation.signal, update)
+        await replay.prepareRequestedHistory(this.feed, operation.signal, update)
+        await replay.prepare(this.feed.downloadedDays, this.feed, operation.signal, update)
       } else {
         await flow?.load(visible.map(bar => bar.timestamp), timeframe, cursor, this.feed, operation.signal, update)
       }

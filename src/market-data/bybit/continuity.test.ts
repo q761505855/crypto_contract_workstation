@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BybitArchive, parseBybitArchivePart } from './archive'
 import { CombinedBybitSource } from './combined-source'
+import { OkxArchive } from '../okx/archive'
 import { GitHubContentsClient } from '../../github-sync/github-client'
 import { BybitLiveTrades, parseBybitSocketTrades } from './live'
 import { bybitDayStart, bybitMapping, type BybitTrade } from './trades'
@@ -33,45 +34,46 @@ class SocketFixture {
 afterEach(() => vi.useRealTimers())
 
 describe('Bybit 成交连续性', () => {
-  it('订阅期间缓冲实时成交，用 REST 合并启动与断线区间，按成交 ID 去重', async () => {
+  it('订阅和重连只使用 WebSocket，按成交 ID 去重', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(start + 30_000)
     const sockets: SocketFixture[] = []
     const status = vi.fn()
-    const a = trade('a', 1000), b = trade('b', 2000), c = trade('c', 3000), d = trade('d', 4000), e = trade('e', 5000)
+    const b = trade('b', 2000), c = trade('c', 3000), d = trade('d', 4000), e = trade('e', 5000)
     const sameTime = trade('same-time', 3000)
-    const recent = vi.fn().mockResolvedValueOnce([a, b]).mockResolvedValueOnce([c, sameTime, d]).mockResolvedValueOnce([trade('z', 9000)])
     const live = new BybitLiveTrades(symbol, status, () => {
       const socket = new SocketFixture()
       sockets.push(socket)
       return socket as unknown as WebSocket
-    }, recent)
+    })
     try {
       live.open()
+      sockets[0].trades(b)
+      expect(live.read(0, Infinity)).toEqual([])
       sockets[0].acknowledge()
-      sockets[0].trades(b, c)
+      sockets[0].trades(c)
       await vi.advanceTimersByTimeAsync(0)
-      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['a', 'b', 'c'])
+      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['b', 'c'])
       expect(status).toHaveBeenLastCalledWith('实时逐笔')
       const changed = vi.fn()
       live.subscribe(changed)
       sockets[0].trades(c, sameTime)
-      expect(changed).toHaveBeenLastCalledWith([a, b, c, sameTime], true, sameTime.timeUs)
+      expect(changed).toHaveBeenLastCalledWith([b, c, sameTime], true, sameTime.timeUs)
 
       sockets[0].close()
       await vi.advanceTimersByTimeAsync(1000)
       sockets[1].acknowledge()
       sockets[1].trades(d, e)
       await vi.advanceTimersByTimeAsync(0)
-      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['a', 'b', 'c', 'same-time', 'd', 'e'])
+      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['b', 'c', 'same-time', 'd', 'e'])
       expect(status).toHaveBeenLastCalledWith('实时逐笔')
 
       sockets[1].close()
       await vi.advanceTimersByTimeAsync(1000)
       sockets[2].acknowledge()
       await vi.advanceTimersByTimeAsync(0)
-      expect(status).toHaveBeenLastCalledWith('逐笔有缺口')
-      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['a', 'b', 'c', 'same-time', 'd', 'e', 'z'])
+      expect(status).toHaveBeenLastCalledWith('实时逐笔')
+      expect(live.read(0, Infinity).map(item => item.id)).toEqual(['b', 'c', 'same-time', 'd', 'e'])
     } finally { live.close() }
   })
 
@@ -86,16 +88,23 @@ describe('Bybit 成交连续性', () => {
     const first = trade('first', 500)
     const atCursor = trade('at-cursor', 1000)
     const latest = trade('next', 1500)
-    vi.spyOn(archive, 'hasDay').mockResolvedValue(true)
+    const hasDay = vi.spyOn(archive, 'hasDay').mockResolvedValue(true)
+    const okx = new OkxArchive()
+    const hasOkx = vi.spyOn(okx, 'hasCloudDay').mockRejectedValue(new Error('OKX 不可用'))
+    vi.spyOn(okx, 'loadHour').mockResolvedValue(null)
     vi.spyOn(archive, 'loadHour').mockResolvedValue([first, atCursor, latest])
     const source = new CombinedBybitSource(new GitHubContentsClient({ owner: 'owner', repository: 'store', branch: 'main' }),
-      vi.fn(), archive, () => start + 4 * 86_400_000)
+      vi.fn(), archive, () => start + 100 * 86_400_000, okx)
     const cursor = { sessionId: 'ic-session', symbol: ic.ticker, timeframe: '1m', currentTime: start + 1000,
       visibleUntil: start + 1001, cursorTickIndex: 0 }
     const received: BybitTrade[] = []
     const scan = () => source.visitTrades({ fromUs: start * 1000, untilUs: (start + 2000) * 1000 },
       row => received.push(row), new AbortController().signal)
     source.select(ic, cursor)
+    expect(await scan()).toBe(false)
+    expect(hasDay).not.toHaveBeenCalled()
+    expect(hasOkx).not.toHaveBeenCalled()
+    expect(await source.downloadDays('2026-11-18', '', vi.fn())).toBe('Bybit 日档 1 天')
     expect(await scan()).toBe(true)
     expect(received).toEqual([first])
     source.select(ic, { ...cursor, currentTime: start + 1800, visibleUntil: start + 1801 })
@@ -137,7 +146,7 @@ describe('Bybit 成交连续性', () => {
       expect(await scan()).toBe(false)
       expect(await scan()).toBe(false)
       expect(submit).not.toHaveBeenCalled()
-      expect(() => source.downloadDays('2026-06-18', '2026-06-22', vi.fn())).toThrow('须等该日结束')
+      expect(() => source.downloadDays('2026-06-18', '2026-06-23', vi.fn())).toThrow('结束日期不能晚于')
       expect(() => source.downloadDays('', '', vi.fn())).toThrow('请选择开始或结束日期')
       expect(() => source.downloadDays('2026-06-19', '2026-06-18', vi.fn())).toThrow('开始日期不能晚于结束日期')
       const first = source.downloadDays('2026-06-18', '', vi.fn()).catch(() => undefined)

@@ -288,10 +288,10 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   getVisibleBybitDay(): string {
     if (!this.source?.mapping) throw new Error('当前品种暂无成交量')
-    if (!this.hasCurrentCandles()) throw new Error('当前图表暂无可见 K 线')
+    if (!this.hasCurrentCandles()) return ''
     const { from, to } = this.requireCoreChart().getVisibleRange()
     const timestamp = this.getRightmostVisibleCandleTime()
-    if (to <= from || timestamp === null) throw new Error('当前图表暂无可见 K 线')
+    if (to <= from || timestamp === null) return ''
     return bybitDay(timestamp)
   }
 

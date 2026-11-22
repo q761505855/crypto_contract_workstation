@@ -83,7 +83,7 @@ export async function ensureTradeDay(venue: 'OKX' | 'Bybit', hasArchive: (ref?: 
       if (state === 'unavailable') return false
       if (state === 'failed') throw new Error(`${symbol} ${day} UTC 日档下载多次失败，请稍后再试`)
       if (!state || (typeof retryAt === 'number' && Date.now() >= retryAt)) wake()
-      status(state === 'awaiting-source' ? `${day} UTC 日档等待 Bybit 发布…` : state === 'retrying'
+      status(state === 'awaiting-source' ? `${day} UTC 日档等待 ${venue} 发布…` : state === 'retrying'
         ? '日档下载遇到临时错误，后台将继续重试…' : `等待后台下载并缓存 ${symbol} ${day} UTC 日档…`)
     } else {
       wake()
