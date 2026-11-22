@@ -99,8 +99,13 @@ test('大单气泡样式保存后可刷新恢复，也支持配置导出和导�
 
 test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', async ({ page }) => {
   let futureReads = 0
+  let anchorReads = 0
+  let nearbyReads = 0
   let finishRead: () => void = () => {}
+  let finishAnchor: () => void = () => {}
   const futureReady = new Promise<void>(resolve => { finishRead = resolve })
+  const anchorReady = new Promise<void>(resolve => { finishAnchor = resolve })
+  const nearby = gzipSync(`${Date.parse(`${day}T13:10:00Z`) / 1000},nearby,Buy,710,1\n`)
   const inspect = await installViewportProbe(page)
   await page.clock.setFixedTime(new Date(start + 86_400_000 + 30_000))
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= start - 86_400_000 })
@@ -111,10 +116,21 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', async route => {
     const url = route.request().url()
     if (url.endsWith(`/SPYUSDT/${day}/manifest.json`)) return route.fulfill({ headers, json: {
-      ...manifest, rows: 3, parts: [...manifest.parts, { file: '22-000.csv.gz', hour: 22, rows: 1,
-        bytes: future.byteLength, sha256: createHash('sha256').update(future).digest('hex') }],
+      ...manifest, rows: 4, parts: [
+        { file: '13-000.csv.gz', hour: 13, rows: 1, bytes: nearby.byteLength, sha256: createHash('sha256').update(nearby).digest('hex') },
+        ...manifest.parts,
+        { file: '22-000.csv.gz', hour: 22, rows: 1, bytes: future.byteLength, sha256: createHash('sha256').update(future).digest('hex') },
+      ],
     } })
-    if (url.endsWith(`/SPYUSDT/${day}/14-000.csv.gz`)) return route.fulfill({ headers, body: part })
+    if (url.endsWith(`/SPYUSDT/${day}/13-000.csv.gz`)) {
+      nearbyReads++
+      return route.fulfill({ headers, body: nearby })
+    }
+    if (url.endsWith(`/SPYUSDT/${day}/14-000.csv.gz`)) {
+      anchorReads++
+      await anchorReady
+      return route.fulfill({ headers, body: part })
+    }
     if (url.endsWith(`/SPYUSDT/${day}/22-000.csv.gz`)) {
       futureReads++
       await futureReady
@@ -173,6 +189,10 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await downloadDialog.getByLabel('往后天数').fill('0')
   await downloadDialog.getByRole('button', { name: '下载', exact: true }).click()
   try {
+    try {
+      await expect.poll(() => [anchorReads, nearbyReads]).toEqual([1, 1])
+      expect((await combined()).volume).toBeUndefined()
+    } finally { finishAnchor() }
     await expect.poll(() => futureReads).toBeGreaterThan(0)
     await expect.poll(combined).toMatchObject({
       updating: { fromUs: Date.parse(`${day}T22:00:00Z`) * 1000, untilUs: Date.parse(`${day}T23:00:00Z`) * 1000 },
@@ -181,7 +201,8 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   } finally { finishRead() }
   await expect.poll(async () => (await inspect()).last).toMatchObject({ timestamp: start, open: 1.1002, close: 1.1005 })
   await expect.poll(combined).toMatchObject({ volumeName: 'OKX / Bybit 成交量', volume: 40, points: [['first', 710, 1.1002]] })
-  expect((await combined()).updating).toBeUndefined()
+  await expect.poll(async () => (await combined()).updating).toBeUndefined()
+  expect(nearbyReads).toBe(1)
   const readsBeforeStep = futureReads
   await page.evaluate(() => {
     const state = window as unknown as { __replayStepScans: number; __viewportTestAdapter: {

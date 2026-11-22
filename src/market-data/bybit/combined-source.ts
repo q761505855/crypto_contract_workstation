@@ -145,6 +145,13 @@ export class CombinedBybitSource {
     return mapping?.bybit ? this.archive.loadHour(mapping.bybit.symbol, start).catch(() => null) : null
   }
 
+  async prefetchArchivedHour(start: number): Promise<void> {
+    const mapping = this.active
+    if (!mapping || !this.isArchiveRequested(start)) return
+    if (mapping.okx && await this.okxArchive.prefetchHour(mapping.okx, start).catch(() => false)) return
+    if (mapping.bybit) await this.archive.prefetchHour(mapping.bybit.symbol, start)
+  }
+
   isOkxArchiveCachedAt(hour: number): Promise<boolean> {
     return this.active?.okx ? this.okxArchive.hasHour(this.active.okx, hour) : Promise.resolve(false)
   }

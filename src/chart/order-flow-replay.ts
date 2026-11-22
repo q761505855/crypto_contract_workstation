@@ -1,7 +1,7 @@
 import { openDB, type DBSchema } from 'idb'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS } from '../market-data/bybit/trades'
-import { AccumulatedHour, HistoryPageSamples, includeHour, orderTradeHours, type HourSamples, type TradeBar } from './order-flow-bars'
+import { AccumulatedHour, HistoryPageSamples, archiveLookahead, includeHour, orderTradeHours, type HourSamples, type TradeBar } from './order-flow-bars'
 
 interface ReplayFlowCache extends DBSchema {
   days: { key: [string, number]; value: HourSamples[] }
@@ -55,7 +55,7 @@ export class ReplayOrderFlow {
   }
 
   async prepare(days: Iterable<number>, source: Pick<CombinedBybitSource, 'hasArchivedDay' | 'readArchivedHour'> &
-    Partial<Pick<CombinedBybitSource, 'shouldPersistArchiveDay' | 'downloadAnchorUs'>>, signal: AbortSignal,
+    Partial<Pick<CombinedBybitSource, 'shouldPersistArchiveDay' | 'downloadAnchorUs' | 'prefetchArchivedHour'>>, signal: AbortSignal,
     onUpdate: (range?: TradeRange) => void): Promise<void> {
     const pending: number[] = []
     for (const day of orderTradeHours(days, source.downloadAnchorUs)) {
@@ -85,8 +85,12 @@ export class ReplayOrderFlow {
       }
     }
 
-    for (const hour of orderTradeHours(pending, source.downloadAnchorUs)) {
+    const ordered = orderTradeHours(pending, source.downloadAnchorUs)
+    const prefetch = archiveLookahead(ordered, source, signal)
+    for (let index = 0; index < ordered.length; index++) {
       signal.throwIfAborted()
+      prefetch(index)
+      const hour = ordered[index]
       const day = Math.floor(hour / BYBIT_DAY_MS) * BYBIT_DAY_MS
       const hours = this.days.get(day)!
       const range = { fromUs: hour * 1000, untilUs: (hour + BYBIT_HOUR_MS) * 1000 }

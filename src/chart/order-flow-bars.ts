@@ -128,6 +128,19 @@ export function orderTradeHours(hours: Iterable<number>, anchorUs?: number): num
   })
 }
 
+export function archiveLookahead(hours: readonly number[], source: Partial<Pick<CombinedBybitSource, 'prefetchArchivedHour'>>,
+  signal: AbortSignal): (index: number) => void {
+  const ahead = 3
+  let next = 0
+  return index => {
+    if (signal.aborted) return
+    while (next < Math.min(hours.length, index + ahead + 1)) {
+      const hour = hours[next++]
+      void source.prefetchArchivedHour?.(hour).catch(() => undefined)
+    }
+  }
+}
+
 export class HistoryPageSamples {
   private readonly samples = new WeakMap<OkxTradePage, HourSamples>()
 
@@ -272,11 +285,15 @@ export class OrderFlowBars {
       if (untilUs <= fromUs) continue
       const scan = { hour, fromUs, untilUs, samples: new AccumulatedHour(), complete: true, archived: true, fallbackArchive: false }
       const group = groups.at(-1)
-      if (group && group.length < 6 && group.at(-1)?.untilUs === fromUs) group.push(scan)
+      if (group && group.length < 6 && group.at(-1)?.untilUs === fromUs &&
+          !source.isArchiveRequested(hour) && !source.isArchiveRequested(group[0].hour)) group.push(scan)
       else groups.push([scan])
     }
-    for (const group of groups) {
+    const prefetch = archiveLookahead(groups.map(group => group[0].hour), source, signal)
+    for (let index = 0; index < groups.length; index++) {
       signal.throwIfAborted()
+      prefetch(index)
+      const group = groups[index]
       const range = { fromUs: group[0].fromUs, untilUs: group.at(-1)!.untilUs }
       onUpdate(range)
       await this.scan(group, range, source, signal)

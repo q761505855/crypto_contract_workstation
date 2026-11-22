@@ -81,6 +81,9 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
   private readonly manifestReads = new Map<string, Promise<{ meta: ArchiveManifest; root: string } | null>>()
   private readonly missing = new Map<string, number>()
   private readonly hours = new Map<string, Promise<BybitTrade[]>>()
+  private readonly compressed = new Map<string, Promise<ArrayBuffer>>()
+  private readonly waiting: (() => void)[] = []
+  private downloading = 0
 
   constructor(private readonly target: GitHubRepositoryTarget = defaultStorageTarget(),
     private readonly fetcher: typeof fetch = fetch, private readonly now = Date.now,
@@ -126,12 +129,28 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
       (await this.getManifest(symbol, day, ref)) !== null
   }
 
-  async loadHour(symbol: Symbol, start: number): Promise<BybitTrade[] | null> {
+  private async hourParts(symbol: Symbol, start: number): Promise<{ root: string; parts: ArchivePart[] } | null> {
     if (start % BYBIT_HOUR_MS !== 0) throw new Error('Bybit 归档小时无效')
     const day = bybitDay(start)
     if (bybitDayStart(day) + BYBIT_DAY_MS > this.now() || day < this.source.firstDay(symbol)) return null
     const archive = await this.getManifest(symbol, day)
     if (!archive) return null
+    const hour = new Date(start).getUTCHours()
+    return { root: `${archive.root}/${symbol}/${day}`, parts: archive.meta.parts.filter(part => part.hour === hour) }
+  }
+
+  async prefetchHour(symbol: Symbol, start: number): Promise<boolean> {
+    if (this.hours.has(`${symbol}/${start}`)) return true
+    const files = await this.hourParts(symbol, start)
+    if (!files) return false
+    for (const part of files.parts) await this.compressedPart(`${files.root}/${part.file}`, part)
+    return true
+  }
+
+  async loadHour(symbol: Symbol, start: number, contractValue?: number): Promise<BybitTrade[] | null> {
+    const files = await this.hourParts(symbol, start)
+    if (!files) return null
+    if (!files.parts.length) return []
     const key = `${symbol}/${start}`
     const cached = this.hours.get(key)
     if (cached) {
@@ -139,29 +158,62 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
       this.hours.set(key, cached)
       return cached
     }
-    const hour = new Date(start).getUTCHours()
-    const pending = this.readParts(`${archive.root}/${symbol}/${day}`, start, archive.meta.parts.filter(part => part.hour === hour))
+    const pending = this.readParts(files.root, start, files.parts, contractValue)
     this.hours.set(key, pending)
     if (this.hours.size > 6) this.hours.delete(this.hours.keys().next().value!)
     void pending.catch(() => { if (this.hours.get(key) === pending) this.hours.delete(key) })
     return pending
   }
 
-  private async readParts(root: string, start: number, parts: ArchivePart[]): Promise<BybitTrade[]> {
-    const trades: BybitTrade[] = []
-    for (const part of parts) {
-      const response = await this.fetcher.call(globalThis, `${root}/${part.file}`, { signal: AbortSignal.timeout(45_000) })
+  private compressedPart(url: string, part: ArchivePart): Promise<ArrayBuffer> {
+    const existing = this.compressed.get(url)
+    if (existing) return existing
+    const pending = this.downloadPart(url, part)
+    this.compressed.set(url, pending)
+    if (this.compressed.size > 8) this.compressed.delete(this.compressed.keys().next().value!)
+    void pending.catch(() => { if (this.compressed.get(url) === pending) this.compressed.delete(url) })
+    return pending
+  }
+
+  private async downloadPart(url: string, part: ArchivePart): Promise<ArrayBuffer> {
+    if (this.downloading < 4) this.downloading++
+    else await new Promise<void>(resolve => this.waiting.push(resolve))
+    try {
+      const response = await this.fetcher.call(globalThis, url, { signal: AbortSignal.timeout(45_000) })
       if (!response.ok) throw new Error(`Bybit 成交分片读取失败（HTTP ${response.status}）`)
       const buffer = await response.arrayBuffer()
       if (buffer.byteLength !== part.bytes || await sha256(buffer) !== part.sha256) {
         throw new Error(`Bybit 成交分片校验失败：${part.file}`)
       }
+      return buffer
+    } finally {
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.downloading--
+    }
+  }
+
+  private async readParts(root: string, start: number, parts: ArchivePart[], contractValue?: number): Promise<BybitTrade[]> {
+    const trades: BybitTrade[] = []
+    for (const part of parts) {
+      const url = `${root}/${part.file}`
+      const pending = this.compressedPart(url, part)
+      const buffer = await pending
+      if (this.compressed.get(url) === pending) this.compressed.delete(url)
       const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))
       const text = await new Response(stream).text()
+      let yieldAt = performance.now() + 10
       for (const trade of archivePartTrades(text, start, part.rows)) {
         if ((trades.at(-1)?.timeUs ?? 0) > trade.timeUs) throw new Error('Bybit 成交分片顺序无效')
+        if (contractValue !== undefined) {
+          trade.venue = 'OKX'
+          trade.size *= contractValue
+        }
         trades.push(trade)
-        if (trades.length % 8192 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
+        if (trades.length % 2048 === 0 && performance.now() >= yieldAt) {
+          await new Promise<void>(resolve => setTimeout(resolve, 0))
+          yieldAt = performance.now() + 10
+        }
       }
     }
     return trades

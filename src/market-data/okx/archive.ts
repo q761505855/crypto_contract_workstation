@@ -82,8 +82,8 @@ export class OkxArchive {
 
   async loadHour(instrument: OkxInstrument, start: number): Promise<BybitTrade[] | null> {
     if (await this.hasCloudDay(instrument, bybitDay(start)).catch(() => false)) {
-      const trades = await this.cloud.loadHour(instrument.symbol, start)
-      if (trades) return trades.map(trade => ({ ...trade, size: trade.size * instrument.contractValue, venue: 'OKX' }))
+      const trades = await this.cloud.loadHour(instrument.symbol, start, instrument.contractValue)
+      if (trades) return trades
     }
     if (!await this.hasLocalHour(instrument, start)) return null
     const key = `${instrument.symbol}:${start}`
@@ -96,6 +96,11 @@ export class OkxArchive {
       if (this.reads.get(key) === pending) this.reads.delete(key)
       throw error
     }
+  }
+
+  async prefetchHour(instrument: OkxInstrument, start: number): Promise<boolean> {
+    if (bybitDay(start) < instrument.firstDay) return false
+    return await this.cloud.prefetchHour(instrument.symbol, start) || this.hasLocalHour(instrument, start)
   }
 
   private async readHour(instrument: OkxInstrument, start: number): Promise<BybitTrade[]> {

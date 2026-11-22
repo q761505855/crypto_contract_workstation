@@ -54,6 +54,7 @@ export class OrderFlowChart {
   private flowSource?: string
   private updating?: TradeRange
   private flowOperation?: AbortController
+  private flowPaint?: number
   private flowPending = false
   private readonly flowInvalidations: TradeRange[] = []
   private timer?: number
@@ -206,9 +207,16 @@ export class OrderFlowChart {
   private cancelFlow(): void {
     this.flowOperation?.abort()
     this.flowOperation = undefined
+    this.cancelFlowPaint()
     this.flowPending = false
     this.flowInvalidations.length = 0
     this.updating = undefined
+  }
+
+  private cancelFlowPaint(): void {
+    if (this.flowPaint === undefined) return
+    cancelAnimationFrame(this.flowPaint)
+    this.flowPaint = undefined
   }
 
   private invalidateFlow(affected: TradeRange): void {
@@ -401,7 +409,11 @@ export class OrderFlowChart {
     const update = (range?: TradeRange) => {
       if (operation.signal.aborted) return
       this.updating = range
-      if (this.hasCurrentCandles()) this.displayFlow(this.timeframe(), read)
+      if (this.flowPaint !== undefined) return
+      this.flowPaint = requestAnimationFrame(() => {
+        this.flowPaint = undefined
+        if (!operation.signal.aborted && this.hasCurrentCandles()) this.displayFlow(this.timeframe(), read)
+      })
     }
     try {
       if (replay) {
@@ -411,6 +423,7 @@ export class OrderFlowChart {
       }
     } catch (error) {
       if (!operation.signal.aborted) {
+        this.cancelFlowPaint()
         this.updating = undefined
         if (this.hasCurrentCandles()) this.displayFlow(this.timeframe(), read, errorText(error))
       }
