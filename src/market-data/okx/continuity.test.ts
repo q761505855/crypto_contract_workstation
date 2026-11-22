@@ -4,7 +4,7 @@ import { BybitArchive } from '../bybit/archive'
 import { CombinedBybitSource, firstOkxHistoryDay } from '../bybit/combined-source'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../bybit/trades'
 import { OkxArchive, okxArchiveDay } from './archive'
-import { getOkxTrades } from './live'
+import { readOkxTradePages, readOkxTradePagesForward } from './live'
 import { orderFlowMapping, okxTrade } from './trades'
 
 const symbol = { ticker: 'US500', exchange: 'CTRADER' }
@@ -35,10 +35,49 @@ describe('OKX 成交来源', () => {
       expect(args.get('after')).toBe('3')
       return Response.json({ code: '0', data: [row(3, start + 1), row(2, start + 1), row(1, start - 1)] })
     })
-    const received = await getOkxTrades(instrument, start * 1000, (start + 2) * 1000, new AbortController().signal, fetcher)
+    const received: BybitTrade[] = []
+    for await (const page of readOkxTradePages(instrument, start * 1000, (start + 2) * 1000, new AbortController().signal, fetcher)) {
+      received.unshift(...page.rows)
+    }
     expect(fetcher).toHaveBeenCalledTimes(2)
     expect(received.map(trade => trade.id)).toEqual(Array.from({ length: 101 }, (_, index) => String(index + 2)))
     expect(received[0]).toMatchObject({ venue: 'OKX', side: 'sell', size: 0.25 })
+  })
+
+  it('先发布靠近锚点的 API 页，再继续向左请求更早成交', async () => {
+    const trades = Array.from({ length: 102 }, (_, index) => ({ instId: instrument.symbol, tradeId: String(index + 1),
+      ts: String(start + index), px: '7000', sz: '1', side: 'buy' }))
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ code: '0', data: trades.slice(2).reverse() }))
+      .mockResolvedValueOnce(Response.json({ code: '0', data: trades.slice(0, 2).reverse() }))
+    const stream = readOkxTradePages(instrument, start * 1000, (start + 102) * 1000, new AbortController().signal, fetcher)
+    const nearest = await stream.next()
+    expect(nearest.value).toMatchObject({ fromUs: (start + 3) * 1000, untilUs: (start + 102) * 1000 })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    const earlier = await stream.next()
+    expect(earlier.value).toMatchObject({ fromUs: start * 1000, untilUs: (start + 3) * 1000 })
+    expect(earlier.done ? [] : earlier.value.rows.map(trade => trade.id)).toEqual(['1', '2', '3'])
+  })
+
+  it('从回放锚点向右按 ID 区间逐页发布，保留未来数据的时间顺序', async () => {
+    const trades = Array.from({ length: 208 }, (_, index) => ({ instId: instrument.symbol, tradeId: String(index + 1),
+      ts: String(start + index), px: '7000', sz: '1', side: 'buy' }))
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async input => {
+      const query = new URL(String(input)).searchParams
+      const after = Number(query.get('after'))
+      const before = Number(query.get('before'))
+      const limit = Number(query.get('limit'))
+      const rows = trades.filter(row => query.get('type') === '2' ? Number(row.ts) < after :
+        Number(row.tradeId) > before && Number(row.tradeId) < after)
+      return Response.json({ code: '0', data: rows.reverse().slice(0, limit) })
+    })
+    const stream = readOkxTradePagesForward(instrument, (start + 4) * 1000, (start + 206) * 1000,
+      new AbortController().signal, fetcher)
+    const first = await stream.next()
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(first.value).toMatchObject({ fromUs: (start + 4) * 1000, untilUs: (start + 103) * 1000 })
+    const ids = first.done ? [] : first.value.rows.map(trade => Number(trade.id))
+    for await (const page of stream) ids.push(...page.rows.map(trade => Number(trade.id)))
+    expect(ids).toEqual(Array.from({ length: 202 }, (_, index) => index + 5))
   })
 
   it('按 UTC 自然月判断 OKX 能完整覆盖的日期，月末截到目标月最后一天', () => {

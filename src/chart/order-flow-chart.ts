@@ -106,6 +106,15 @@ export class OrderFlowChart {
   get supported(): boolean { return !!this.feed.mapping }
 
   refresh(reset = false, affected?: TradeRange): void {
+    if (affected?.historyPage) {
+      if (this.flowSource === this.feed.archiveCacheKey) {
+        this.flow?.acceptHistory(affected, this.feed)
+        this.replayFlow?.acceptHistory(affected, this.feed)
+      }
+      if (affected.fromUs < this.feed.tradeCursorUs) this.invalidateProfiles(affected)
+      this.schedule()
+      return
+    }
     if (reset) {
       if (affected) {
         if (this.flowOperation && !affected.replaceArchive && this.flowSource === this.feed.archiveCacheKey) {
@@ -381,12 +390,12 @@ export class OrderFlowChart {
     const flow = this.flow
     const replay = this.replayFlow
     const cursor = this.feed.tradeCursorUs
-    const read = (start: number, until: number) => replay?.read(start, until, this.feed) ?? flow?.read(start, until)
+    const read = (start: number, until: number) => replay?.read(start, until, this.feed) ?? flow?.read(start, until, this.feed)
+    this.displayFlow(timeframe, read)
     if (this.flowOperation) {
       this.flowPending = true
       return
     }
-    this.displayFlow(timeframe, read)
     const operation = new AbortController()
     this.flowOperation = operation
     const update = (range?: TradeRange) => {
@@ -396,7 +405,6 @@ export class OrderFlowChart {
     }
     try {
       if (replay) {
-        await replay.prepareRequestedHistory(this.feed, operation.signal, update)
         await replay.prepare(this.feed.downloadedDays, this.feed, operation.signal, update)
       } else {
         await flow?.load(visible.map(bar => bar.timestamp), timeframe, cursor, this.feed, operation.signal, update)

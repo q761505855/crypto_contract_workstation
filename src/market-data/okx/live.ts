@@ -16,40 +16,97 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 interface OkxRow { instId: string; tradeId: string; ts: string; px: string; sz: string; side: string }
+export interface OkxTradePage { fromUs: number; untilUs: number; rows: BybitTrade[] }
 function rowTrade(instrument: OkxInstrument, row: OkxRow): BybitTrade {
   if (row?.instId !== instrument.symbol) throw new Error('OKX 逐笔成交品种无效')
   return okxTrade(instrument, row.ts, row.tradeId, row.side, row.px, row.sz)
 }
 
-/** Read an inclusive start and exclusive end, paging by ID to preserve same-millisecond fills. */
-export async function getOkxTrades(instrument: OkxInstrument, fromUs: number, untilUs: number, signal: AbortSignal,
-  fetcher: typeof fetch = fetch, onProgress?: (count: number) => void): Promise<BybitTrade[]> {
-  if (fromUs >= untilUs) return []
-  const trades = new Map<string, BybitTrade>()
+async function requestTradePage(instrument: OkxInstrument, params: Record<string, string>, signal: AbortSignal,
+  fetcher: typeof fetch): Promise<BybitTrade[]> {
+  const now = Date.now()
+  const requestAt = Math.max(now, nextRequest)
+  nextRequest = requestAt + pageSpacing
+  if (requestAt > now) await sleep(requestAt - now, signal)
+  signal.throwIfAborted()
+  const query = new URLSearchParams({ instId: instrument.symbol, limit: '100', ...params })
+  const response = await fetcher.call(globalThis, `https://www.okx.com/api/v5/market/history-trades?${query}`,
+    { credentials: 'omit', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) })
+  if (!response.ok) throw new Error(`读取 OKX 历史逐笔失败（HTTP ${response.status}）`)
+  const result = await response.json()
+  if (result.code !== '0' || !Array.isArray(result.data)) throw new Error('读取 OKX 历史逐笔失败')
+  return result.data.map((row: OkxRow) => rowTrade(instrument, row)).sort(compareTrades)
+}
+
+/** Keep the boundary millisecond pending until all of its trade IDs have arrived. */
+export async function* readOkxTradePages(instrument: OkxInstrument, fromUs: number, untilUs: number, signal: AbortSignal,
+  fetcher: typeof fetch = fetch): AsyncGenerator<OkxTradePage> {
+  if (fromUs >= untilUs) return
   let after = String(Math.ceil(untilUs / 1000))
   let type = '2'
-  let pages = 0
+  let edge: BybitTrade[] = []
+  let cursor = untilUs
   for (;;) {
-    const now = Date.now()
-    const requestAt = Math.max(now, nextRequest)
-    nextRequest = requestAt + pageSpacing
-    if (requestAt > now) await sleep(requestAt - now, signal)
-    const query = new URLSearchParams({ instId: instrument.symbol, after, type, limit: '100' })
-    const response = await fetcher.call(globalThis, `https://www.okx.com/api/v5/market/history-trades?${query}`,
-      { credentials: 'omit', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) })
-    if (!response.ok) throw new Error(`读取 OKX 历史逐笔失败（HTTP ${response.status}）`)
-    const result = await response.json()
-    if (result.code !== '0' || !Array.isArray(result.data)) throw new Error('读取 OKX 历史逐笔失败')
-    const rows: BybitTrade[] = result.data.map((row: OkxRow) => rowTrade(instrument, row))
-    for (const trade of rows) if (trade.timeUs >= fromUs && trade.timeUs < untilUs) trades.set(trade.id, trade)
-    if (++pages % 25 === 0) onProgress?.(trades.size)
-    if (rows.length < 100 || rows.some(trade => trade.timeUs < fromUs)) break
-    const oldest = rows.sort(compareTrades)[0]
+    const rows = await requestTradePage(instrument, { after, type }, signal, fetcher)
+    const oldest = rows[0]
+    const done = rows.length < 100 || oldest.timeUs < fromUs
+    const start = done ? fromUs : oldest.timeUs + 1000
+    const merged = new Map(rows.concat(edge).filter(trade => trade.timeUs >= fromUs && trade.timeUs < cursor)
+      .map(trade => [trade.id, trade]))
+    const ordered = [...merged.values()].sort(compareTrades)
+    edge = ordered.filter(trade => trade.timeUs < start)
+    if (start < cursor) yield { fromUs: start, untilUs: cursor, rows: ordered.filter(trade => trade.timeUs >= start) }
+    if (done) break
     if (type === '1' && BigInt(oldest.id) >= BigInt(after)) throw new Error('OKX 历史逐笔分页未推进')
+    cursor = Math.min(cursor, start)
     after = oldest.id
     type = '1'
   }
-  return [...trades.values()].sort(compareTrades)
+}
+
+export async function* readOkxTradePagesForward(instrument: OkxInstrument, fromUs: number, untilUs: number, signal: AbortSignal,
+  fetcher: typeof fetch = fetch): AsyncGenerator<OkxTradePage> {
+  if (fromUs >= untilUs) return
+  const tradeBefore = async (timeUs: number) => (await requestTradePage(instrument,
+    { type: '2', after: String(Math.ceil(timeUs / 1000)), limit: '1' }, signal, fetcher))[0]
+  const start = await tradeBefore(fromUs)
+  const last = await tradeBefore(untilUs)
+  if (!last || last.id === start?.id) {
+    yield { fromUs, untilUs, rows: [] }
+    return
+  }
+  if (!start) {
+    // A newly listed instrument may have no preceding trade from which to get an ID.
+    for (let from = fromUs; from < untilUs; from += 60_000_000) {
+      yield* readOkxTradePages(instrument, from, Math.min(from + 60_000_000, untilUs), signal, fetcher)
+    }
+    return
+  }
+
+  const lastId = BigInt(last.id)
+  let before = BigInt(start.id)
+  let width = 101n
+  let edge: BybitTrade[] = []
+  let cursor = fromUs
+  while (before < lastId) {
+    const after = before + width <= lastId ? before + width : lastId + 1n
+    // With only `before`, OKX can return the latest page rather than the next one.
+    const rows = await requestTradePage(instrument, { type: '1', before: String(before), after: String(after) }, signal, fetcher)
+    if (rows.some(trade => BigInt(trade.id) <= before || BigInt(trade.id) >= after)) throw new Error('OKX 历史逐笔分页超出边界')
+    if (rows.length >= 100 && after - before > 101n) {
+      width = (after - before) / 2n
+      continue
+    }
+    const newest = rows.at(-1)
+    const end = Math.max(cursor, Math.min(newest?.timeUs ?? cursor, untilUs))
+    const points = edge.concat(rows.filter(trade => trade.timeUs >= fromUs && trade.timeUs < untilUs))
+    if (end > cursor) yield { fromUs: cursor, untilUs: end, rows: points.filter(trade => trade.timeUs < end) }
+    edge = points.filter(trade => trade.timeUs >= end)
+    cursor = end
+    before = after - 1n
+    width = rows.length >= 50 ? 101n : width < 65_536n ? width * 2n : width
+  }
+  if (cursor < untilUs) yield { fromUs: cursor, untilUs, rows: edge }
 }
 
 export class OkxLiveTrades {
@@ -66,7 +123,7 @@ export class OkxLiveTrades {
   failed = false
 
   constructor(private readonly instrument: OkxInstrument,
-    private readonly changed: (fromUs?: number) => void, private readonly now = Date.now,
+    private readonly changed: (fromUs?: number, trade?: BybitTrade) => void, private readonly now = Date.now,
     private readonly connect = (url: string) => new WebSocket(url)) {}
 
   get lastTradeUs(): number | undefined { return this.trades.at(-1)?.timeUs }
@@ -160,6 +217,6 @@ export class OkxLiveTrades {
       for (const removed of this.trades.splice(0, liveLimit / 5)) this.ids.delete(removed.id)
       this.coverageStartUs = Math.max(this.coverageStartUs, this.trades[0].timeUs)
     }
-    this.changed(trade.timeUs < (this.now() - 250) * 1000 ? trade.timeUs : undefined)
+    this.changed(trade.timeUs < (this.now() - 250) * 1000 ? trade.timeUs : undefined, trade)
   }
 }

@@ -50,12 +50,12 @@ async function sha256(buffer: ArrayBuffer): Promise<string> {
     byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
-export function parseBybitArchivePart(text: string, partStart: number, rows: number): BybitTrade[] {
-  const trades: BybitTrade[] = []
+function* archivePartTrades(text: string, partStart: number, rows: number): Generator<BybitTrade> {
   const startUs = partStart * 1000
   const endUs = (partStart + BYBIT_HOUR_MS) * 1000
   let from = 0
   let previous = 0
+  let count = 0
   while (from < text.length) {
     const end = text.indexOf('\n', from)
     const [timestamp, id, side, price, size, extra] = text.slice(from, end < 0 ? undefined : end).split(',')
@@ -63,13 +63,17 @@ export function parseBybitArchivePart(text: string, partStart: number, rows: num
     if (extra !== undefined || trade.timeUs < startUs || trade.timeUs >= endUs || trade.timeUs < previous) {
       throw new Error('Bybit 成交分片的时间或字段无效')
     }
-    trades.push(trade)
+    count++
+    yield trade
     previous = trade.timeUs
     if (end < 0) break
     from = end + 1
   }
-  if (trades.length !== rows) throw new Error('Bybit 成交分片笔数不符')
-  return trades
+  if (count !== rows) throw new Error('Bybit 成交分片笔数不符')
+}
+
+export function parseBybitArchivePart(text: string, partStart: number, rows: number): BybitTrade[] {
+  return [...archivePartTrades(text, partStart, rows)]
 }
 
 export class BybitArchive<Symbol extends string = BybitSymbol> {
@@ -153,9 +157,12 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
         throw new Error(`Bybit 成交分片校验失败：${part.file}`)
       }
       const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))
-      const rows = parseBybitArchivePart(await new Response(stream).text(), start, part.rows)
-      if ((trades.at(-1)?.timeUs ?? 0) > (rows[0]?.timeUs ?? Infinity)) throw new Error('Bybit 成交分片顺序无效')
-      for (const trade of rows) trades.push(trade)
+      const text = await new Response(stream).text()
+      for (const trade of archivePartTrades(text, start, part.rows)) {
+        if ((trades.at(-1)?.timeUs ?? 0) > trade.timeUs) throw new Error('Bybit 成交分片顺序无效')
+        trades.push(trade)
+        if (trades.length % 8192 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      }
     }
     return trades
   }

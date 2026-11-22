@@ -297,7 +297,16 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   downloadBybitDays(start: string, end: string, report: (message: string) => void): Promise<string> {
     if (!this.source) throw new Error('当前品种暂无成交量')
-    return this.source.downloadDays(start, end, report)
+    const timeframe = this.getPeriod().text
+    const context = (this.datafeed as Datafeed & { getReplayContext?(): ReplayContext | null }).getReplayContext?.()
+    const replayUntil = context ? replayConfirmedUntil(context) : undefined
+    const visible = this.hasCurrentCandles() ? this.getRightmostVisibleCandleTime() : null
+    const candleTime = visible ?? (replayUntil === undefined ? null : alignOpenTime(replayUntil - 1, timeframe, 'floor'))
+    const anchor = candleTime === null ? undefined : {
+      candleTime,
+      until: Math.min(nextOpenTime(candleTime, timeframe), replayUntil ?? Date.now()),
+    }
+    return this.source.downloadDays(start, end, report, anchor)
   }
 
   private hasCurrentCandles(): boolean {

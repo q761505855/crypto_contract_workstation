@@ -34,12 +34,19 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   }))
   const trade = (id: string, offset: number, size: string) =>
     ({ instId: instrument, tradeId: id, ts: String(start + offset), px: '1.1002', sz: size, side: 'buy' })
-  await page.route('https://www.okx.com/api/v5/market/history-trades?*', route => {
+  let finishApiPage!: () => void
+  const apiPage = new Promise<void>(resolve => { finishApiPage = resolve })
+  await page.route('https://www.okx.com/api/v5/market/history-trades?*', async route => {
     const query = new URL(route.request().url()).searchParams
     historyRequests++
     expect(query.get('instId')).toBe(instrument)
+    if (query.get('type') === '1') {
+      await apiPage
+      return route.fulfill({ headers, json: { code: '0', data: [] } })
+    }
     expect(Number(query.get('after'))).toBeGreaterThanOrEqual(start + 30_000)
-    const data = [trade('2', 15_000, '8'), trade('1', 5000, '5')]
+    const data = [trade('200', 15_000, '8'), trade('199', 5000, '5'),
+      ...Array.from({ length: 98 }, (_, index) => trade(String(198 - index), -60_000 - index, '1'))]
     return route.fulfill({ headers, json: { code: '0', data } })
   })
   const day = '2026-11-19'
@@ -96,7 +103,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await expect.poll(() => live).toBeDefined()
   expect(historyRequests).toBe(0)
   expect(archiveRequests).toBe(0)
-  live!.send(JSON.stringify({ arg: { channel: 'trades-all', instId: instrument }, data: [trade('2', 15_000, '8')] }))
+  live!.send(JSON.stringify({ arg: { channel: 'trades-all', instId: instrument }, data: [trade('200', 15_000, '8')] }))
   await expect.poll(volume).toBe(8)
 
   await chart.getByRole('button', { name: '下载成交数据' }).click()
@@ -107,9 +114,16 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   expect(historyRequests).toBe(0)
   expect(archiveRequests).toBe(0)
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
+  try {
+    await expect.poll(() => historyRequests).toBe(2)
+    await expect.poll(volume).toBe(13)
+    await expect(chart.getByRole('status')).not.toContainText('OKX 接口 1 天')
+    live!.send(JSON.stringify({ arg: { channel: 'trades-all', instId: instrument }, data: [trade('201', 20_000, '2')] }))
+    await expect.poll(volume).toBe(15)
+  } finally { finishApiPage() }
   await expect(chart.getByRole('status')).toContainText('OKX 接口 1 天 · OKX 日档 1 天')
-  await expect.poll(volume).toBe(13)
-  expect(historyRequests).toBe(1)
+  await expect.poll(volume).toBe(15)
+  expect(historyRequests).toBe(2)
   expect(archiveRequests).toBeGreaterThan(0)
   expect(bybitRequests).toBe(0)
   expect(dispatched).toBe(false)
@@ -140,5 +154,5 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
   await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
   expect(requested).toHaveLength(1)
-  expect(historyRequests).toBe(1)
+  expect(historyRequests).toBe(2)
 })

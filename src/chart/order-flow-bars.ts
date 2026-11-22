@@ -1,7 +1,8 @@
 import { openDB, type DBSchema } from 'idb'
 import { nextOpenTime } from '../market-data/intervals'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
-import { BYBIT_HOUR_MS, type BybitTrade } from '../market-data/bybit/trades'
+import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../market-data/bybit/trades'
+import type { OkxTradePage } from '../market-data/okx/live'
 
 export interface TradeBubble { trade: BybitTrade }
 
@@ -117,6 +118,52 @@ export function includeHour(bar: TradeBar, section: HourSamples, hour: number, f
   if (from < until) bar.pointRanges.push({ points, from, until })
 }
 
+export function orderTradeHours(hours: Iterable<number>, anchorUs?: number): number[] {
+  return [...hours].sort((a, b) => {
+    if (anchorUs === undefined) return a - b
+    const aPast = a * 1000 < anchorUs
+    const bPast = b * 1000 < anchorUs
+    if (aPast !== bPast) return aPast ? -1 : 1
+    return aPast ? b - a : a - b
+  })
+}
+
+export class HistoryPageSamples {
+  private readonly samples = new WeakMap<OkxTradePage, HourSamples>()
+
+  constructor(private readonly minimum: number) {}
+
+  private prepare(page: OkxTradePage, hour: number): HourSamples {
+    const cached = this.samples.get(page)
+    if (cached) return cached
+    const samples = new AccumulatedHour()
+    for (const row of page.rows) samples.add(row, hour, this.minimum)
+    this.samples.set(page, samples)
+    return samples
+  }
+
+  accept(range: TradeRange, source: Pick<CombinedBybitSource, 'historyPages'>): void {
+    for (let hour = hourOf(range.fromUs / 1000); hour * 1000 < range.untilUs; hour += BYBIT_HOUR_MS) {
+      const pages = source.historyPages(hour)
+      const first = lowerBound(pages.length, range.fromUs + 1, index => pages[index].untilUs)
+      for (let index = first; index < pages.length && pages[index].fromUs < range.untilUs; index++) this.prepare(pages[index], hour)
+    }
+  }
+
+  include(bar: TradeBar, pages: readonly OkxTradePage[], socket: HourSamples | undefined, hour: number, fromUs: number, untilUs: number): void {
+    let cursor = fromUs
+    const first = lowerBound(pages.length, fromUs + 1, index => pages[index].untilUs)
+    for (let index = first; index < pages.length && pages[index].fromUs < untilUs; index++) {
+      const page = pages[index]
+      if (socket && page.fromUs > cursor) includeHour(bar, socket, hour, cursor, page.fromUs)
+      const stop = Math.min(untilUs, page.untilUs)
+      if (page.rows.length) includeHour(bar, this.prepare(page, hour), hour, Math.max(cursor, page.fromUs), stop)
+      cursor = stop
+    }
+    if (socket && cursor < untilUs) includeHour(bar, socket, hour, cursor, untilUs)
+  }
+}
+
 interface FlowHour {
   cursor: number
   samples: HourSamples
@@ -150,21 +197,31 @@ export class OrderFlowBars {
   private readonly hours = new Map<number, FlowHour>()
   private readonly checked = new Set<number>()
   private readonly bars = new Map<number, TradeBar>()
+  private readonly history: HistoryPageSamples
 
-  constructor(readonly key: string, private readonly minimum: number) {}
+  constructor(readonly key: string, private readonly minimum: number) {
+    this.history = new HistoryPageSamples(minimum)
+  }
 
-  read(start: number, untilUs: number): TradeBar {
+  read(start: number, untilUs: number, source: CombinedBybitSource): TradeBar {
     const cached = this.bars.get(start)
     if (cached?.cursor === untilUs) return cached
     const bar: TradeBar = { cursor: untilUs, volume: 0, pointRanges: [], complete: true }
     for (let hour = hourOf(start); hour * 1000 < untilUs; hour += BYBIT_HOUR_MS) {
       const rangeEnd = Math.min((hour + BYBIT_HOUR_MS) * 1000, untilUs)
+      const begin = Math.max(start, hour) * 1000
       const section = this.hours.get(hour)
-      if (section) includeHour(bar, section.samples, hour, Math.max(start, hour) * 1000, Math.min(section.cursor, rangeEnd))
-      bar.complete &&= !!section?.complete && section.cursor >= rangeEnd
+      if (section?.archived) includeHour(bar, section.samples, hour, begin, Math.min(section.cursor, rangeEnd))
+      else this.history.include(bar, source.historyPages(hour), section?.samples, hour, begin, rangeEnd)
+      bar.complete &&= section?.archived ? section.complete && section.cursor >= rangeEnd : source.hasCapturedCoverage(begin, rangeEnd)
     }
     this.bars.set(start, bar)
     return bar
+  }
+
+  acceptHistory(range: TradeRange, source: CombinedBybitSource): void {
+    this.history.accept(range, source)
+    this.invalidateBars(range)
   }
 
   invalidate(range: TradeRange): void {
@@ -199,13 +256,16 @@ export class OrderFlowBars {
         if (source.shouldScanTradeHour(hour)) requested.add(hour)
       }
     }
-    const pending = [...requested].filter(hour => source.isArchiveRequested(hour) && !this.checked.has(hour))
+    for (const day of source.downloadedDays) {
+      for (let hour = day; hour < day + BYBIT_DAY_MS; hour += BYBIT_HOUR_MS) requested.add(hour)
+    }
+    const pending = [...requested].filter(hour => source.isArchiveRequested(hour) && !this.checked.has(hour)).sort((a, b) => a - b)
     if (pending.length) {
       await this.restore(pending, source, signal)
       onUpdate()
     }
     const groups: HourScan[][] = []
-    for (const hour of requested) {
+    for (const hour of orderTradeHours(requested, source.downloadAnchorUs)) {
       const section = this.hours.get(hour)
       const fromUs = section?.cursor ?? hour * 1000
       const untilUs = Math.min((hour + BYBIT_HOUR_MS) * 1000, cursor)
@@ -261,7 +321,7 @@ export class OrderFlowBars {
         group[index].archived &&= coverage.archived
         group[index].fallbackArchive ||= !!coverage.fallbackArchive
       }
-    })
+    }, false)
     signal.throwIfAborted()
     const persist: (FlowHour & { hour: number })[] = []
     for (const scan of group) {

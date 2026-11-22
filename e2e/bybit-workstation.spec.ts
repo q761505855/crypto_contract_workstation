@@ -165,6 +165,7 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
       }) }
   })
   expect(futureReads).toBe(0)
+  await expect.poll(async () => (await inspect()).last?.timestamp).toBe(start)
   await chart.getByRole('button', { name: '下载成交数据' }).click()
   const downloadDialog = page.getByRole('dialog', { name: '下载成交数据' })
   await downloadDialog.getByLabel('锚点日期').fill(day)
@@ -173,8 +174,9 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await downloadDialog.getByRole('button', { name: '下载', exact: true }).click()
   try {
     await expect.poll(() => futureReads).toBeGreaterThan(0)
-    await expect.poll(async () => (await combined()).updating).toEqual({
-      fromUs: Date.parse(day) * 1000, untilUs: Date.parse('2026-11-21') * 1000,
+    await expect.poll(combined).toMatchObject({
+      updating: { fromUs: Date.parse(`${day}T22:00:00Z`) * 1000, untilUs: Date.parse(`${day}T23:00:00Z`) * 1000 },
+      volume: 40, points: [['first', 710, 1.1002]],
     })
   } finally { finishRead() }
   await expect.poll(async () => (await inspect()).last).toMatchObject({ timestamp: start, open: 1.1002, close: 1.1005 })
