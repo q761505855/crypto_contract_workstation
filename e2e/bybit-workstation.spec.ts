@@ -137,19 +137,34 @@ test('实时成交只更新映射品种的成交量，切到未匹配品种时�
   await choose('USDCHF')
   await expect.poll(volume).toMatchObject({ name: '报价量' })
   await expect(chart.getByRole('button', { name: '框选成交分布' })).toBeDisabled()
+  await expect(chart.getByRole('button', { name: '下载当日成交' })).toBeDisabled()
 })
 
-test('最新 BTCUSD 的 15m 图扩大可见日期后申请 UTC 日档并唤醒缓存工作流', async ({ page }) => {
+test('仅点击图表顶部按钮才下载最右侧 K 线所在的 UTC 日档', async ({ page }) => {
   const dayMs = 86_400_000
   const now = Date.parse('2026-11-22T02:00:30Z')
-  await page.clock.setFixedTime(now)
+  await page.clock.install({ time: now })
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= now - 7 * dayMs })
-  await installViewportProbe(page)
+  const inspect = await installViewportProbe(page)
   await page.route('**/cloud-connection.json', route => route.fulfill({ headers,
     json: { schemaVersion: 1, project: 'crypto-contract-workstation', token: 'cache-test-token' },
   }))
-  const requested: string[] = []
+  const requested: unknown[] = []
   let dispatched = 0
+  let published = false
+  let loadedParts = 0
+  const checkedDays = new Set<string>()
+  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => {
+    const url = route.request().url()
+    const cacheDay = /\/BTCUSDT\/(\d{4}-\d\d-\d\d)\/manifest\.json$/.exec(url)?.[1]
+    if (cacheDay) checkedDays.add(cacheDay)
+    if (published && cacheDay === day) return route.fulfill({ headers, json: { ...manifest, symbol: 'BTCUSDT' } })
+    if (published && url.endsWith(`/BTCUSDT/${day}/14-000.csv.gz`)) {
+      loadedParts++
+      return route.fulfill({ headers, body: part })
+    }
+    return route.fulfill({ status: 404, headers })
+  })
   const files = new Map<string, string>()
   await page.route('https://api.github.com/**', route => {
     const request = route.request()
@@ -163,11 +178,12 @@ test('最新 BTCUSD 的 15m 图扩大可见日期后申请 UTC 日档并唤醒�
     if (path.endsWith('/git/commits/test-commit')) return route.fulfill({ headers, json: { tree: { sha: 'test-tree' } } })
     const entry = /\/bybit-requests\/BTCUSDT\/(\d{4}-\d\d-\d\d)\.json$/.exec(path)
     if (entry && request.method() === 'PUT') {
-      requested.push(entry[1])
-      files.set(path, request.postDataJSON().content)
+      const { content } = request.postDataJSON()
+      requested.push(JSON.parse(Buffer.from(content, 'base64').toString()))
+      files.set(path, content)
       return route.fulfill({ headers, status: 201, json: { content: { sha: 'test-file' } } })
     }
-    if (entry && files.has(path)) return route.fulfill({ headers, json: { type: 'file', path, sha: 'test-file',
+    if (entry && !published && files.has(path)) return route.fulfill({ headers, json: { type: 'file', path, sha: 'test-file',
       encoding: 'base64', content: files.get(path) } })
     return route.fulfill({ headers, status: 404, body: '' })
   })
@@ -177,14 +193,38 @@ test('最新 BTCUSD 的 15m 图扩大可见日期后申请 UTC 日档并唤醒�
   await picker.getByRole('tab', { name: '全部' }).click()
   await picker.getByRole('button', { name: '选择 BTCUSD', exact: true }).click()
   await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
-  await page.evaluate(() => {
+  await expect.poll(async () => (await inspect()).rightmost).toBeGreaterThan(Date.parse('2026-11-22'))
+  await expect.poll(() => checkedDays.has('2026-11-21')).toBe(true)
+  const download = page.getByTestId('chart-host').getByRole('button', { name: '下载当日成交' })
+  const status = page.getByTestId('chart-host').getByRole('status')
+  await download.click()
+  await expect(status).toContainText('2026-11-22 UTC 日档须等该日结束')
+  await page.evaluate(end => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     coreChart.setBarSpace(3)
-  })
-  await expect.poll(() => requested).toEqual(expect.arrayContaining(['2026-11-20', '2026-11-21']))
-  expect(requested).not.toContain('2026-11-22')
-  expect(new Set(requested).size).toBe(requested.length)
+    const { realTo } = coreChart.getVisibleRange()
+    const target = coreChart.getDataList().findIndex(candle => candle.timestamp === end)
+    if (target < 0) throw new Error('未加载测试日期的 K 线')
+    coreChart.scrollByDistance((realTo - target - 1) * coreChart.getBarSpace(), 0)
+  }, Date.parse(day + 'T22:00:00Z'))
+  await expect.poll(async () => new Date((await inspect()).rightmost!).toISOString().slice(0, 10)).toBe(day)
+  expect((await inspect()).last!.timestamp).toBeGreaterThan(Date.parse('2026-11-22'))
+  await expect.poll(() => checkedDays.size).toBeGreaterThan(1)
+  expect(requested).toEqual([])
+  expect(dispatched).toBe(0)
+  await download.click()
+  await expect(status).toContainText(`等待后台下载并缓存 BTCUSDT ${day}`)
+  expect(requested).toEqual([{ version: 1, symbol: 'BTCUSDT', day, requestedManually: true }])
   await expect.poll(() => dispatched).toBe(1)
+  await download.click()
+  expect(requested).toHaveLength(1)
+  published = true
+  await page.clock.fastForward(13_000)
+  await expect(status).toContainText(`BTCUSDT ${day} UTC 日档已缓存`)
+  await expect.poll(() => loadedParts).toBeGreaterThan(0)
+  await download.click()
+  await expect(status).toContainText(`BTCUSDT ${day} UTC 日档已缓存`)
+  expect(requested).toHaveLength(1)
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
 })
 

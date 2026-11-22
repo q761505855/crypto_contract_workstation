@@ -115,12 +115,16 @@ describe('Bybit 成交连续性', () => {
     expect(() => parseBybitSocketTrades({ topic: 'publicTrade.SPYUSDT', data: [{ s: symbol, T: start, i: 'a', S: 'Buy', p: '-1', v: '1' }] }, symbol)).toThrow('成交格式')
   })
 
-  it('同日缺档只提交一次后台缓存请求', async () => {
+  it('读取缺档不申请下载，手动请求替换旧自动请求并按日期去重', async () => {
     const archive = new BybitArchive()
     vi.spyOn(archive, 'hasDay').mockResolvedValue(false)
     const cloud = new GitHubContentsClient({ owner: 'owner', repository: 'store', branch: 'main' }, 'test-token')
     vi.spyOn(cloud, 'getSnapshot').mockResolvedValue({ commitSha: 'commit', treeSha: 'tree' })
-    vi.spyOn(cloud, 'getFile').mockResolvedValue(null)
+    const path = 'data/bybit-requests/SPYUSDT/2026-11-18.json'
+    vi.spyOn(cloud, 'getFile').mockResolvedValue({
+      path, sha: 'legacy-request',
+      bytes: new TextEncoder().encode(JSON.stringify({ version: 1, symbol, day: '2026-11-18', state: 'awaiting-source' })),
+    })
     const submit = vi.spyOn(cloud, 'putFile').mockResolvedValue('request')
     const source = new CombinedBybitSource(cloud, vi.fn(), archive, () => start + 86_400_000)
     const cursor = { sessionId: 'ic-session', symbol: 'US500', timeframe: '1m', currentTime: start,
@@ -131,8 +135,19 @@ describe('Bybit 成交连续性', () => {
       source.select({ ticker: 'US500', exchange: 'CTRADER' }, cursor)
       expect(await scan()).toBe(false)
       expect(await scan()).toBe(false)
+      expect(submit).not.toHaveBeenCalled()
+      await expect(source.downloadDay(start + 86_400_000, vi.fn())).rejects.toThrow('须等该日结束')
+      const first = source.downloadDay(start, vi.fn()).catch(() => undefined)
+      const second = source.downloadDay(start, vi.fn()).catch(() => undefined)
       await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1))
-      expect(submit.mock.calls[0][0]).toBe('data/bybit-requests/SPYUSDT/2026-11-18.json')
+      const [requestPath, bytes, , previous] = submit.mock.calls[0]
+      expect(requestPath).toBe(path)
+      expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({
+        version: 1, symbol, day: '2026-11-18', requestedManually: true,
+      })
+      expect(previous).toBe('legacy-request')
+      source.release()
+      await Promise.all([first, second])
     } finally { source.release() }
   })
 })

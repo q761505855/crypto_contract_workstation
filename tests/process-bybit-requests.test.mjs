@@ -18,10 +18,10 @@ it('处理使用者请求，重试暂时不可用的日档，原子发布后复�
   const remote = join(base, 'remote')
   const worker = join(base, 'worker')
   const author = join(base, 'author')
-  const writeRequest = async symbol => {
+  const writeRequest = async (symbol, requestedManually = true) => {
     const path = join(author, requestPath(symbol))
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, JSON.stringify({ version: 1, symbol, day }))
+    await writeFile(path, JSON.stringify({ version: 1, symbol, day, ...(requestedManually ? { requestedManually } : {}) }))
   }
   const identify = repository => {
     git(repository, 'config', 'user.name', 'Fixture')
@@ -46,6 +46,7 @@ it('处理使用者请求，重试暂时不可用的日档，原子发布后复�
     identify(author)
     await writeFile(join(author, 'unrelated.txt'), '初始值')
     for (const symbol of ['SPYUSDT', 'QQQUSDT', 'XAUUSDT']) await writeRequest(symbol)
+    await writeRequest('BTCUSDT', false)
     git(author, 'add', '--all')
     git(author, 'commit', '-m', '申请历史成交')
     git(author, 'push', 'origin', 'main')
@@ -59,11 +60,12 @@ it('处理使用者请求，重试暂时不可用的日档，原子发布后复�
     expect(messages.join('\n')).toContain(`SPYUSDT ${day} 归档完成`)
     expect(JSON.parse(git(remote, 'show', `main:${archivePath('SPYUSDT')}`))).toMatchObject({ day, rows: 1 })
     expect(git(remote, 'ls-tree', 'main', '--', requestPath('SPYUSDT'))).toBe('')
-    expect(JSON.parse(git(remote, 'show', `main:${requestPath('QQQUSDT')}`))).toMatchObject({ state: 'retrying', attempts: 1 })
+    expect(JSON.parse(git(remote, 'show', `main:${requestPath('QQQUSDT')}`))).toMatchObject({ requestedManually: true, state: 'retrying', attempts: 1 })
     expect(JSON.parse(git(remote, 'show', `main:${requestPath('XAUUSDT')}`))).toMatchObject({ state: 'unavailable' })
     expect(git(remote, 'show', 'main:unrelated.txt')).toBe('保留这次提交')
     expect(await run(now + 1000)).toBe(0)
     expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(git(remote, 'ls-tree', 'main', '--', archivePath('BTCUSDT'))).toBe('')
 
     git(author, 'pull', '--ff-only')
     await writeRequest('SPYUSDT')

@@ -89,6 +89,8 @@ export function ChartWorkspace({
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
+  const [dayDownloadMessage, setDayDownloadMessage] = useState('')
+  const dayDownloadRequest = useRef(0)
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
@@ -219,6 +221,7 @@ export function ChartWorkspace({
       synchronizeLayoutRef.current = null
       host.removeEventListener('click', openSymbolPicker, true)
       drawingSlot?.remove()
+      dayDownloadRequest.current++
       adapter?.dispose?.()
     }
   }, [])
@@ -479,6 +482,38 @@ export function ChartWorkspace({
     adapter?.resize?.()
   }
 
+  async function downloadBybitDay(): Promise<void> {
+    const adapter = adapterRef.current
+    const request = ++dayDownloadRequest.current
+    const report = (message: string) => {
+      if (dayDownloadRequest.current === request) setDayDownloadMessage(message)
+    }
+    try {
+      if (adapter?.downloadVisibleBybitDay) report(await adapter.downloadVisibleBybitDay(report))
+    } catch (error) {
+      report(error instanceof Error ? error.message : '无法下载 Bybit 日档')
+    }
+  }
+
+  const dayDownload = (
+    <>
+      <button className="chart-day-download" type="button" disabled={!mapping}
+        title={mapping ? `下载 ${mapping.symbol} 最右侧可见 K 线所在的 UTC 日档` : '当前品种暂无 Bybit 成交量'}
+        onClick={() => void downloadBybitDay()}>
+        下载当日成交
+      </button>
+      {dayDownloadMessage && (
+        <div className="chart-day-download-status">
+          <span role="status">{dayDownloadMessage}</span>
+          <button type="button" aria-label="关闭下载提示" onClick={() => {
+            dayDownloadRequest.current++
+            setDayDownloadMessage('')
+          }}>×</button>
+        </div>
+      )}
+    </>
+  )
+
   const indicatorInfoToggle = (
     <button
       aria-label={indicatorInfoVisible ? '隐藏主图指标信息' : '显示主图指标信息'}
@@ -527,6 +562,7 @@ export function ChartWorkspace({
           <div className="chart-host" data-testid="chart-host" ref={hostRef} />
           {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
           {priceRangeMode}
+          {orderFlowCloud && periodToolbar && createPortal(dayDownload, periodToolbar)}
           {periodToolbar === null ? periodSelector : createPortal(periodSelector, periodToolbar)}
         </div>
       </div>

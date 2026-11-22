@@ -1,6 +1,6 @@
 import { GitHubConflictError, type GitHubContentsClient, type GitHubFile } from '../../github-sync/github-client'
 import type { BybitArchive } from './archive'
-import { BYBIT_DAY_MS, bybitDayStart, bybitFirstDay, type BybitSymbol } from './trades'
+import type { BybitSymbol } from './trades'
 
 const pollMs = 12_000
 const writes = new WeakMap<GitHubContentsClient, Promise<unknown>>()
@@ -22,7 +22,7 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 function requestRecord(file: GitHubFile, symbol: BybitSymbol, day: string): {
-  state?: 'awaiting-source' | 'retrying' | 'failed' | 'unavailable'; retryAt?: number
+  requestedManually?: boolean; state?: 'awaiting-source' | 'retrying' | 'failed' | 'unavailable'; retryAt?: number
 } {
   const record = JSON.parse(new TextDecoder().decode(file.bytes))
   if (record?.version !== 1 || record.symbol !== symbol || record.day !== day ||
@@ -32,14 +32,17 @@ function requestRecord(file: GitHubFile, symbol: BybitSymbol, day: string): {
   return record
 }
 
+function needsRequest(file: GitHubFile | null, symbol: BybitSymbol, day: string): boolean {
+  if (!file) return true
+  const { requestedManually, state } = requestRecord(file, symbol, day)
+  return requestedManually !== true || state === 'failed' || state === 'unavailable'
+}
+
 export async function ensureBybitDay(archive: BybitArchive, client: GitHubContentsClient, symbol: BybitSymbol, day: string,
   status: (message: string) => void, signal: AbortSignal, wake: () => void): Promise<void> {
-  if (day < bybitFirstDay(symbol) || bybitDayStart(day) + BYBIT_DAY_MS > Date.now()) {
-    throw new Error('请选择该品种已结束的 UTC 日期')
-  }
   if (await archive.hasDay(symbol, day)) return
   const path = `data/bybit-requests/${symbol}/${day}.json`
-  const input = new TextEncoder().encode(JSON.stringify({ version: 1, symbol, day }))
+  const input = new TextEncoder().encode(JSON.stringify({ version: 1, symbol, day, requestedManually: true }))
   async function published() {
     const { commitSha } = await client.getSnapshot(readOptions(signal))
     return archive.hasDay(symbol, day, commitSha)
@@ -48,11 +51,11 @@ export async function ensureBybitDay(archive: BybitArchive, client: GitHubConten
   // A branch-level Raw 404 can be stale. Check the current commit before enqueueing.
   if (await published()) return
   let file = await client.getFile(path, readOptions(signal))
-  if (!file || requestRecord(file, symbol, day).state === 'failed') {
+  if (needsRequest(file, symbol, day)) {
     const previous = writes.get(client) ?? Promise.resolve()
     const write = previous.then(async () => {
       signal.throwIfAborted()
-      if (!client.canWrite()) throw new Error('自动缓存需要可用的云端连接，已缓存的日期仍可回放')
+      if (!client.canWrite()) throw new Error('下载日档需要可写的云端缓存连接')
       for (let attempt = 0; ; attempt++) {
         status(`正在申请下载 ${symbol} ${day} UTC 日档…`)
         try {
@@ -61,7 +64,7 @@ export async function ensureBybitDay(archive: BybitArchive, client: GitHubConten
         } catch (error) {
           if (!(error instanceof GitHubConflictError)) throw error
           file = await client.getFile(path, readOptions(signal))
-          if (file && requestRecord(file, symbol, day).state !== 'failed') return file
+          if (!needsRequest(file, symbol, day)) return file
           if (!file && await published()) return undefined
           if (attempt === 2) throw error
           await wait(600, signal)

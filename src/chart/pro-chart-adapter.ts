@@ -86,6 +86,7 @@ export interface ChartAdapterPort {
   dispose?(): void
   mount(options: ChartProOptions & { orderFlowCloud?: GitHubContentsClient }): void
   startVolumeProfile?(): boolean
+  downloadVisibleBybitDay?(report: (message: string) => void): Promise<string>
   getPeriod(): Period
   getSymbol(): SymbolInfo
   setPeriod(period: Period): void
@@ -237,10 +238,7 @@ export class ProChartAdapter implements ChartAdapterPort {
         subscribeReplayCursor?(listener: (context: ReplayContext | null) => void): () => void
       }
       this.source = new CombinedBybitSource(orderFlowCloud, reset => this.orderFlow?.refresh(reset))
-      this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => {
-        const last = this.requireCoreChart().getDataList().at(-1)
-        return !!last && this.candleOwners.get(last) === this.selectionKey(this.getSymbol(), this.getPeriod())
-      })
+      this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => this.hasCurrentCandles())
       this.source.select(options.symbol, feed.getReplayContext?.() ?? null)
       this.stopCursor = feed.subscribeReplayCursor?.(context => this.source?.select(this.getSymbol(), context))
     }
@@ -284,6 +282,20 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   startVolumeProfile(): boolean {
     return this.drawings?.startVolumeProfile() ?? false
+  }
+
+  async downloadVisibleBybitDay(report: (message: string) => void): Promise<string> {
+    if (!this.source?.mapping) throw new Error('当前品种暂无 Bybit 成交量')
+    if (!this.hasCurrentCandles()) throw new Error('当前图表暂无可见 K 线')
+    const { from, to } = this.requireCoreChart().getVisibleRange()
+    const timestamp = this.getRightmostVisibleCandleTime()
+    if (to <= from || timestamp === null) throw new Error('当前图表暂无可见 K 线')
+    return this.source.downloadDay(timestamp, report)
+  }
+
+  private hasCurrentCandles(): boolean {
+    const last = this.requireCoreChart().getDataList().at(-1)
+    return !!last && this.candleOwners.get(last) === this.selectionKey(this.getSymbol(), this.getPeriod())
   }
 
   resize(): void {

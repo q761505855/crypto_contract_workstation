@@ -72,6 +72,48 @@
 .chart-volume-profile-tool i { height: 2px; width: 10px; background: currentColor; }
 .chart-volume-profile-tool i:nth-child(2) { width: 14px; }
 .chart-volume-profile-tool i:nth-child(3) { width: 7px; }
+.chart-host .klinecharts-pro-period-bar > .chart-day-download {
+  flex: 0 0 auto;
+  height: 28px;
+  align-self: center;
+  margin-inline: 4px;
+  padding: 0 8px;
+  border: 1px solid #34465d;
+  border-radius: 4px;
+  background: #182638;
+  color: #c8d9ee;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chart-day-download:hover:not(:disabled) { border-color: #5c7898; color: #f1f7ff; }
+.chart-day-download:disabled { opacity: 0.45; cursor: default; }
+.chart-host .klinecharts-pro-period-bar > .chart-day-download-status {
+  position: absolute;
+  z-index: 55;
+  top: 100%;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: auto;
+  max-width: calc(100% - 12px);
+  padding: 3px 4px 3px 10px;
+  border: 1px solid #34465d;
+  border-radius: 4px;
+  background: #182638;
+  color: #e3eaf2;
+  font-size: 12px;
+}
+.chart-day-download-status button {
+  flex: 0 0 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
 .bybit-trade-tooltip {
   position: absolute;
   z-index: 8;

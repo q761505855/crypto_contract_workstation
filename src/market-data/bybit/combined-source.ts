@@ -7,10 +7,14 @@ import { BybitLiveTrades } from './live'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, bybitFirstDay, bybitMapping, type BybitMapping,
   type BybitTrade } from './trades'
 
-export interface TradeRange { fromUs: number; untilUs: number; cache?: 'viewport' | 'selection' }
+export interface TradeRange { fromUs: number; untilUs: number }
 
-interface PendingDay { abort: AbortController; message: string }
-const weekUs = 7 * BYBIT_DAY_MS * 1000
+interface PendingDay {
+  abort: AbortController
+  message: string
+  report: (message: string) => void
+  done: Promise<string>
+}
 const wakeIntervalMs = 60_000
 const liveSettlementMs = 250
 const cacheWorker = { owner: 'q761505855', repository: 'crypto_contract_workstation', event: 'bybit-trades-requested' }
@@ -32,7 +36,6 @@ export class CombinedBybitSource {
   private context: ReplayContext | null = null
   private selection = ''
   private readonly pending = new Map<string, PendingDay>()
-  private readonly failed = new Map<string, string>()
   private nextWake = 0
   private pendingLiveUpdate?: ReturnType<typeof setTimeout>
 
@@ -40,10 +43,6 @@ export class CombinedBybitSource {
     private readonly archive = new BybitArchive(cloud.getTarget()), private readonly now = Date.now) {}
 
   get mapping(): BybitMapping | undefined { return this.active }
-  get status(): string {
-    if (this.pending.size > 1) return `正在补齐 ${this.pending.size} 个 UTC 日的 Bybit 成交…`
-    return this.pending.values().next().value?.message ?? this.failed.values().next().value ?? ''
-  }
   get tradeCursorUs(): number {
     if (this.context) return replayConfirmedUntil(this.context) * 1000
     const last = this.live?.lastTradeUs
@@ -60,7 +59,6 @@ export class CombinedBybitSource {
         this.live?.close()
         this.live = undefined
         clearTimeout(this.pendingLiveUpdate)
-        this.clearRequests()
       }
       this.selection = key
       this.active = mapping
@@ -72,16 +70,11 @@ export class CombinedBybitSource {
     this.live?.close()
     this.live = undefined
     clearTimeout(this.pendingLiveUpdate)
-    this.clearRequests()
-  }
-
-  private clearRequests(): void {
     for (const pending of this.pending.values()) pending.abort.abort()
     this.pending.clear()
-    this.failed.clear()
   }
 
-  async visitTrades({ fromUs, untilUs, cache }: TradeRange, accept: (trade: BybitTrade) => void, signal: AbortSignal): Promise<boolean> {
+  async visitTrades({ fromUs, untilUs }: TradeRange, accept: (trade: BybitTrade) => void, signal: AbortSignal): Promise<boolean> {
     const mapping = this.active
     if (!mapping) return false
     if (!this.context && !this.live) {
@@ -98,28 +91,13 @@ export class CombinedBybitSource {
     }
     const first = bybitDayStart(bybitFirstDay(mapping.symbol))
     const end = Math.min(untilUs, this.tradeCursorUs)
-    const replayDay = this.context && bybitDay((this.tradeCursorUs - 1) / 1000)
-    const firstDay = bybitFirstDay(mapping.symbol)
     const latest = bybitDay(this.now())
-    const requested = new Set<string>()
-    if (replayDay && replayDay < latest && replayDay >= firstDay && end > bybitDayStart(replayDay) * 1000) requested.add(replayDay)
-    if (cache === 'selection' || (cache === 'viewport' && end - fromUs <= weekUs)) {
-      const oldest = bybitDayStart(bybitDay(Math.max(fromUs / 1000, first)))
-      const newest = Math.min(bybitDayStart(bybitDay((end - 1) / 1000)), bybitDayStart(latest) - BYBIT_DAY_MS)
-      for (let date = newest; date >= oldest; date -= BYBIT_DAY_MS) requested.add(bybitDay(date))
-    }
-    const planned = new Map(await Promise.all([...requested].map(async day => {
-      const available = await this.archive.hasDay(mapping.symbol, day)
-      signal.throwIfAborted()
-      if (!available) this.requestDay(mapping, day)
-      return [day, available] as const
-    })))
     let complete = fromUs >= first * 1000
     for (let hour = Math.floor(Math.max(fromUs / 1000, first) / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour * 1000 < end;) {
       signal.throwIfAborted()
       const day = bybitDay(hour)
       const nextDay = bybitDayStart(day) + BYBIT_DAY_MS
-      const available = day < latest && (planned.get(day) ?? await this.archive.hasDay(mapping.symbol, day))
+      const available = day < latest && await this.archive.hasDay(mapping.symbol, day)
       signal.throwIfAborted()
       if (!available) {
         const lo = Math.max(hour * 1000, fromUs)
@@ -142,24 +120,36 @@ export class CombinedBybitSource {
     return complete
   }
 
-  private requestDay(mapping: BybitMapping, day: string): void {
-    if (this.pending.has(day) || this.failed.has(day)) return
-    const pending = { abort: new AbortController(), message: `准备补齐 ${day} UTC 日档…` }
-    this.pending.set(day, pending)
-    void ensureBybitDay(this.archive, this.cloud, mapping.symbol, day, message => {
-      if (this.pending.get(day) !== pending || pending.message === message) return
-      pending.message = message
-      this.changed()
-    }, pending.abort.signal, this.wakeWorker).then(() => {
-      if (this.pending.get(day) !== pending) return
-      this.pending.delete(day)
-      this.changed(true)
-    }, error => {
-      if (this.pending.get(day) !== pending) return
-      this.pending.delete(day)
-      this.failed.set(day, error instanceof Error ? error.message : '无法缓存 Bybit 逐笔成交')
-      this.changed()
+  async downloadDay(timestamp: number, report: (message: string) => void): Promise<string> {
+    const symbol = this.active?.symbol
+    if (!symbol) throw new Error('当前品种暂无 Bybit 成交量')
+    const day = bybitDay(timestamp)
+    if (day >= bybitDay(this.now())) throw new Error(`${day} UTC 日档须等该日结束后下载`)
+    if (day < bybitFirstDay(symbol)) throw new Error(`Bybit 未提供 ${symbol} ${day} UTC 逐笔归档`)
+    const key = `${symbol}:${day}`
+    const existing = this.pending.get(key)
+    if (existing) {
+      existing.report = report
+      report(existing.message)
+      return existing.done
+    }
+    const abort = new AbortController()
+    const message = `正在检查 ${symbol} ${day} UTC 日档…`
+    const done = ensureBybitDay(this.archive, this.cloud, symbol, day, progress => {
+      const pending = this.pending.get(key)
+      if (pending?.abort !== abort) return
+      pending.message = progress
+      pending.report(progress)
+    }, abort.signal, this.wakeWorker).then(() => {
+      abort.signal.throwIfAborted()
+      if (this.active?.symbol === symbol) this.changed(true)
+      return `${symbol} ${day} UTC 日档已缓存`
+    }).finally(() => {
+      if (this.pending.get(key)?.abort === abort) this.pending.delete(key)
     })
+    this.pending.set(key, { abort, message, report, done })
+    report(message)
+    return done
   }
 
   private wakeWorker = (): void => {

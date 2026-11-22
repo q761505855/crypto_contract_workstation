@@ -122,7 +122,7 @@ export class OrderFlowChart {
     this.schedule()
   }
 
-  setProfile(id: string, points: readonly DrawingPoint[], preview = false): void {
+  setProfile(id: string, points: readonly DrawingPoint[]): void {
     const [first, last] = points
     if (!first || !last) return
     const low = Math.min(first.value, last.value)
@@ -135,12 +135,11 @@ export class OrderFlowChart {
     const fromUs = Math.min(first.timestamp, last.timestamp) * 1000
     const untilUs = (Math.max(first.timestamp, last.timestamp) + 1) * 1000
     const existing = this.profiles.get(id)
-    const cache = preview ? undefined : 'selection'
     if (existing?.low === low && existing.high === high && existing.range.fromUs === fromUs &&
-        existing.range.untilUs === untilUs && existing.range.cache === cache) return
+        existing.range.untilUs === untilUs) return
     this.removeProfile(id)
     this.profiles.set(id, {
-      range: { fromUs, untilUs, cache }, low, high, cursor: fromUs, complete: true,
+      range: { fromUs, untilUs }, low, high, cursor: fromUs, complete: true,
       accumulator: new VolumeProfileAccumulator(low, high),
     })
     this.showProfile(id, { message: '读取区间成交…' })
@@ -224,7 +223,7 @@ export class OrderFlowChart {
       const fromUs = request.cursor === request.range.fromUs && this.feed.mapping?.relation === 'etf'
         ? alignOpenTime(request.cursor / 1000, timeframe, 'floor') * 1000 : request.cursor
       const project = this.projectPrices(this.chart.getDataList(), timeframe, request.prices ??= new Map())
-      const complete = await this.feed.visitTrades({ fromUs, untilUs, cache: request.range.cache }, trade => {
+      const complete = await this.feed.visitTrades({ fromUs, untilUs }, trade => {
         const price = project(trade)
         if (price !== undefined && trade.timeUs >= request.cursor) request.accumulator.add(trade, price)
       }, operation.signal)
@@ -232,7 +231,7 @@ export class OrderFlowChart {
       request.cursor = untilUs
       request.complete &&= complete
       const profile = request.accumulator.profile()
-      this.showProfile(id, { profile, message: request.complete ? (profile ? undefined : '选区暂无成交') : this.feed.status || '选区有缺失的 Bybit 成交' })
+      this.showProfile(id, { profile, message: request.complete ? (profile ? undefined : '选区暂无成交') : '选区的 Bybit 逐笔成交不完整' })
       if (Math.min(this.feed.tradeCursorUs, request.range.untilUs) > request.cursor) this.schedule()
     } catch (error) {
       // A retry must reprocess any partial range that was already accumulated.
@@ -281,7 +280,7 @@ export class OrderFlowChart {
         if (!this.nativeVolume.has(indicator)) this.nativeVolume.set(indicator,
           { calc: indicator.calc, shortName: name === 'VOL' ? '报价量' : indicator.shortName, precision: indicator.precision })
         const native = this.nativeVolume.get(indicator)!
-        const shortName = symbol ? (name === 'VOL' ? this.feed.status || 'Bybit 成交量' : `${native.shortName} · Bybit`) : native.shortName
+        const shortName = symbol ? (name === 'VOL' ? 'Bybit 成交量' : `${native.shortName} · Bybit`) : native.shortName
         if (changed || indicator.shortName !== shortName) {
           const calc = symbol ? bybitVolumeCalc(native.calc, values) : native.calc
           this.overrideIndicator.call(this.chart, { name, calc, precision: symbol && name === 'VOL' ? 3 : native.precision,
@@ -337,7 +336,7 @@ export class OrderFlowChart {
     const project = this.projectPrices(candles, timeframe, current.barPrices)
     function reduceBubbles() { strongest.sort((a, b) => notional(b) - notional(a)); strongest.length = Math.min(strongest.length, maxBubbles) }
     try {
-      const complete = await this.feed.visitTrades({ fromUs: current.cursor, untilUs, cache: 'viewport' }, trade => {
+      const complete = await this.feed.visitTrades({ fromUs: current.cursor, untilUs }, trade => {
         const bar = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')
         const index = candlesByTime.get(bar)
         if (index === undefined) return
@@ -377,7 +376,7 @@ export class OrderFlowChart {
           points.push({ index, offset, trade, price })
         }
       }
-      this.showBubbles({ points, message: current.complete ? undefined : this.feed.status || '部分 Bybit 逐笔成交尚未补齐' })
+      this.showBubbles({ points, message: current.complete ? undefined : 'Bybit 逐笔成交不完整 · 可在顶部下载日档' })
       if (this.feed.tradeCursorUs > untilUs && untilUs < nextOpenTime(last.timestamp, timeframe) * 1000) this.schedule()
     } catch (error) {
       if (!operation.signal.aborted) this.showBubbles({ points: [], message: errorText(error) })

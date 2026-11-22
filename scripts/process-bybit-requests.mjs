@@ -21,7 +21,7 @@ function readRequests(git, now) {
       const start = archiveInputs(symbol, day, now)
       if (Number(git('cat-file', '-s', `HEAD:${path}`)) > 512) return []
       const record = JSON.parse(git('show', `HEAD:${path}`))
-      if (record?.version !== 1 || record.symbol !== symbol || record.day !== day) return []
+      if (record?.version !== 1 || record.requestedManually !== true || record.symbol !== symbol || record.day !== day) return []
       if (record.state === 'unavailable' || record.state === 'failed') return []
       const { state, attempts = 0, retryAt = 0 } = record
       if ((state !== undefined && state !== 'awaiting-source' && state !== 'retrying') ||
@@ -60,7 +60,7 @@ export async function processBybitRequests({ repository, fetcher = fetch, now = 
       // Yesterday's source file may arrive hours after the UTC day closes.
       const waiting = missing && now - start < 60 * hour
       const state = waiting ? 'awaiting-source' : missing ? 'unavailable' : attempts + 1 >= attemptLimit ? 'failed' : 'retrying'
-      const record = { version: 1, symbol, day, state, attempts: waiting ? 0 : attempts + 1,
+      const record = { version: 1, symbol, day, requestedManually: true, state, attempts: waiting ? 0 : attempts + 1,
         retryAt: now + (waiting ? hour : 10 * 60_000 * 2 ** attempts) }
       await writeFile(join(repository, path), JSON.stringify(record) + '\n')
       git('add', '--', path)
