@@ -4,7 +4,7 @@ import {
   readFavoriteSymbols,
   saveFavoriteSymbols,
 } from '../market-data/favorites'
-import { bybitMapping } from '../market-data/bybit/trades'
+import { orderFlowLabel, orderFlowMapping } from '../market-data/okx/trades'
 
 type SymbolPickerTab = 'favorites' | 'all'
 
@@ -162,7 +162,7 @@ export function SymbolPicker({
           {!loading &&
             visibleSymbols.map((item) => {
               const favorite = favoriteSet.has(item.ticker)
-              const mapping = orderFlowAvailable && bybitMapping(item)
+              const mapping = orderFlowAvailable && orderFlowMapping(item)
               return (
                 <div
                   className={
@@ -185,7 +185,7 @@ export function SymbolPicker({
                       {item.name ? <small>{item.name}</small> : null}
                     </span>
                     {orderFlowAvailable ? <small className="symbol-volume-status" data-supported={!!mapping}
-                      title={mapping ? `Bybit ${mapping.symbol}${mapping.relation === 'direct' ? '' : '（代理）'}` : undefined}>
+                      title={mapping ? `${orderFlowLabel(mapping)}${mapping.relation === 'direct' ? '' : '（代理）'}` : undefined}>
                       {mapping ? `${mapping.relation === 'direct' ? '支持成交量' : '支持代理成交量'} · ${mapping.symbol}` : '暂无成交量'}
                     </small> : <small>{item.exchange ?? ''}</small>}
                   </button>

@@ -16,6 +16,15 @@ const manifest = { version: 1, symbol: 'SPYUSDT', day, rows: 2,
 }
 const headers = { 'access-control-allow-origin': '*' }
 
+test.beforeEach(async ({ page }) => {
+  await page.route('https://www.okx.com/api/v5/**', route => route.fulfill({ headers, json: {
+    code: route.request().url().includes('market-data-history') ? '0' : '50001', data: [],
+  } }))
+  await page.routeWebSocket('wss://ws.okx.com/ws/v5/business', socket => socket.onMessage(message => {
+    if (JSON.parse(message.toString()).op === 'subscribe') socket.send(JSON.stringify({ event: 'error', code: '50001' }))
+  }))
+})
+
 test('大单气泡样式保存后可刷新恢复，也支持配置导出和导入', async ({ page }) => {
   await connectFixture(page)
   await page.addInitScript(() => {
@@ -120,8 +129,8 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await symbolButton.click()
   const picker = page.getByRole('dialog', { name: '选择交易对' })
   await picker.getByRole('tab', { name: '全部' }).click()
-  await expect(picker.getByTestId('symbol-picker-row-US500')).toContainText('支持代理成交量 · SPYUSDT')
-  await expect(picker.getByTestId('symbol-picker-row-ETHUSD')).toContainText('支持成交量 · ETHUSDT')
+  await expect(picker.getByTestId('symbol-picker-row-US500')).toContainText('支持代理成交量 · US500-USDT-SWAP')
+  await expect(picker.getByTestId('symbol-picker-row-ETHUSD')).toContainText('支持成交量 · ETH-USDT-SWAP')
   await expect(picker.getByTestId('symbol-picker-row-USDCHF')).toContainText('暂无成交量')
   await picker.getByRole('button', { name: '选择 US500', exact: true }).click()
 
@@ -161,7 +170,7 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     })
   } finally { finishRead() }
   await expect.poll(async () => (await inspect()).last).toMatchObject({ timestamp: start, open: 1.1002, close: 1.1005 })
-  await expect.poll(combined).toMatchObject({ volumeName: 'Bybit 成交量', volume: 40, points: [['first', 710, 1.1002]] })
+  await expect.poll(combined).toMatchObject({ volumeName: 'OKX / Bybit 成交量', volume: 40, points: [['first', 710, 1.1002]] })
   expect((await combined()).updating).toBeUndefined()
   const readsBeforeStep = futureReads
   await page.evaluate(() => {
@@ -281,12 +290,12 @@ test('实时成交只更新映射品种的成交量，切到未匹配品种时�
   await choose('ETHUSD')
   await page.getByRole('button', { name: '图表周期', exact: true }).click()
   await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
-  await expect.poll(volume).toEqual({ name: 'Bybit 成交量', value: 5 })
+  await expect.poll(volume).toEqual({ name: 'OKX / Bybit 成交量', value: 5 })
   ethereum!.send(JSON.stringify({ topic: 'publicTrade.ETHUSDT', data: [
     { T: start + 10_000, s: 'ETHUSDT', S: 'Buy', v: '5', p: '1.1', i: 'rest' },
     { T: start + 20_000, s: 'ETHUSDT', S: 'Sell', v: '8', p: '1.103', i: 'next' },
   ] }))
-  await expect.poll(volume).toEqual({ name: 'Bybit 成交量', value: 13 })
+  await expect.poll(volume).toEqual({ name: 'OKX / Bybit 成交量', value: 13 })
   expect((await inspect()).last?.close).toBe(1.1)
   await choose('USDCHF')
   await expect.poll(volume).toMatchObject({ name: '报价量' })
@@ -381,7 +390,7 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   await expect(lastDate).toHaveValue(day)
   await lastDate.fill('2026-11-21')
   await confirm.click()
-  await expect(status).toContainText('0/2 天')
+  await expect(status).toContainText('2/2 天')
   await expect.poll(() => requested).toEqual(expect.arrayContaining([day, '2026-11-21'].map(day => ({
     version: 1, symbol: 'BTCUSDT', day, requestedManually: true,
   }))))
@@ -389,16 +398,16 @@ test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) =
   await expect.poll(() => dispatched).toBe(1)
   published = true
   await page.clock.fastForward(13_000)
-  await expect(status).toContainText(`BTCUSDT ${day} 至 2026-11-21 UTC 日档已缓存（2 天）`)
+  await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 2 天')
   await expect.poll(() => loadedParts).toBeGreaterThan(0)
   await download.click()
   await lastDate.fill('')
   await confirm.click()
-  await expect(status).toContainText(`BTCUSDT ${day} UTC 日档已缓存`)
+  await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 1 天')
   await download.click()
   await firstDate.fill('')
   await confirm.click()
-  await expect(status).toContainText(`BTCUSDT ${day} UTC 日档已缓存`)
+  await expect(status).toContainText('已缓存 OKX 0 天 · Bybit 回退 1 天')
   expect(requested).toHaveLength(2)
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
 })

@@ -287,7 +287,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   }
 
   getVisibleBybitDay(): string {
-    if (!this.source?.mapping) throw new Error('当前品种暂无 Bybit 成交量')
+    if (!this.source?.mapping) throw new Error('当前品种暂无成交量')
     if (!this.hasCurrentCandles()) throw new Error('当前图表暂无可见 K 线')
     const { from, to } = this.requireCoreChart().getVisibleRange()
     const timestamp = this.getRightmostVisibleCandleTime()
@@ -296,7 +296,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   }
 
   downloadBybitDays(start: string, end: string, report: (message: string) => void): Promise<string> {
-    if (!this.source) throw new Error('当前品种暂无 Bybit 成交量')
+    if (!this.source) throw new Error('当前品种暂无成交量')
     return this.source.downloadDays(start, end, report)
   }
 

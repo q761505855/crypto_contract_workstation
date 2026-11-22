@@ -29,6 +29,10 @@ export function tradeBubbleOffset(point: TradeBubble, start: number, end: number
   return (point.trade.timeUs / 1000 - start) / (end - start) - 0.5
 }
 
+export function tradeBubblePrice(trade: BybitTrade, bar: TradeBar, open: number, project?: boolean): number {
+  return project && !trade.venue && bar.firstBybitPrice ? trade.price * open / bar.firstBybitPrice : trade.price
+}
+
 export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {
   if (coordinates.length < 2) return []
   const [first, second] = coordinates
@@ -48,7 +52,7 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
   }
   if (message) text(message, x + 4, y + 17, VALUE_AREA)
   if (!profile || !yAxis) return figures
-  text('Bybit Delta / 成交量', x + 4, y + (message ? 30 : 17), VALUE_AREA)
+  text('Delta / 成交量', x + 4, y + (message ? 30 : 17), VALUE_AREA)
   const maxVolume = Math.max(...profile.rows.map(row => row.buy + row.sell))
   const maxDelta = Math.max(...profile.rows.map(row => Math.abs(row.buy - row.sell)))
   const barWidth = Math.min(160, Math.max(10, width * 0.42))
@@ -120,11 +124,10 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
     const bar = display.bars?.get(candle.timestamp)
     if (!bar?.firstPrice) continue
     const end = nextOpenTime(candle.timestamp, display.timeframe)
-    const scale = display.projectToCandle ? candle.open / bar.firstPrice! : 1
     for (const point of tradeBubbles(bar)) {
       const { trade } = point
       const radius = tradeBubbleRadius(trade, minimum)
-      const y = yAxis.convertToPixel(trade.price * scale)
+      const y = yAxis.convertToPixel(tradeBubblePrice(trade, bar, candle.open, display.projectToCandle))
       if (y + radius < 0 || y - radius > bounding.height) continue
       const { fill, outline } = colors[trade.side]
       ctx.beginPath()
@@ -149,7 +152,7 @@ export function registerOrderFlow(): void {
       icons: defaultStyles.tooltip.icons.filter(icon => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
       values: indicator.extendData
         ? ((indicator.extendData as BubbleDisplay).message ? [{ title: '', value: (indicator.extendData as BubbleDisplay).message! }] : [])
-        : [{ title: '', value: '使用 Bybit 逐笔成交' }],
+        : [{ title: '', value: '使用交易所逐笔成交' }],
     }),
   })
 }

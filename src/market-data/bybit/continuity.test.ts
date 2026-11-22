@@ -4,6 +4,7 @@ import { CombinedBybitSource } from './combined-source'
 import { GitHubContentsClient } from '../../github-sync/github-client'
 import { BybitLiveTrades, parseBybitSocketTrades } from './live'
 import { bybitDayStart, bybitMapping, type BybitTrade } from './trades'
+import { OkxArchive } from '../okx/archive'
 
 const symbol = 'SPYUSDT'
 const period = { text: '1m', multiplier: 1, timespan: 'minute' } as const
@@ -89,7 +90,7 @@ describe('Bybit 成交连续性', () => {
     vi.spyOn(archive, 'hasDay').mockResolvedValue(true)
     vi.spyOn(archive, 'loadHour').mockResolvedValue([first, atCursor, latest])
     const source = new CombinedBybitSource(new GitHubContentsClient({ owner: 'owner', repository: 'store', branch: 'main' }),
-      vi.fn(), archive, () => start + 86_400_000)
+      vi.fn(), archive, () => start + 4 * 86_400_000)
     const cursor = { sessionId: 'ic-session', symbol: ic.ticker, timeframe: '1m', currentTime: start + 1000,
       visibleUntil: start + 1001, cursorTickIndex: 0 }
     const received: BybitTrade[] = []
@@ -126,7 +127,9 @@ describe('Bybit 成交连续性', () => {
       bytes: new TextEncoder().encode(JSON.stringify({ version: 1, symbol, day: '2026-11-18', state: 'awaiting-source' })),
     })
     const submit = vi.spyOn(cloud, 'putFile').mockResolvedValue('request')
-    const source = new CombinedBybitSource(cloud, vi.fn(), archive, () => start + 86_400_000)
+    const okx = new OkxArchive()
+    vi.spyOn(okx, 'download').mockResolvedValue(false)
+    const source = new CombinedBybitSource(cloud, vi.fn(), archive, () => start + 4 * 86_400_000, okx)
     const cursor = { sessionId: 'ic-session', symbol: 'US500', timeframe: '1m', currentTime: start,
       visibleUntil: start + 1000 }
     const scan = () => source.visitTrades({ fromUs: start * 1000, untilUs: (start + 1000) * 1000 },
@@ -136,7 +139,7 @@ describe('Bybit 成交连续性', () => {
       expect(await scan()).toBe(false)
       expect(await scan()).toBe(false)
       expect(submit).not.toHaveBeenCalled()
-      expect(() => source.downloadDays('2026-11-18', '2026-11-19', vi.fn())).toThrow('须等该日结束')
+      expect(() => source.downloadDays('2026-11-18', '2026-11-22', vi.fn())).toThrow('须等该日结束')
       expect(() => source.downloadDays('', '', vi.fn())).toThrow('请选择开始或结束日期')
       expect(() => source.downloadDays('2026-11-19', '2026-11-18', vi.fn())).toThrow('开始日期不能晚于结束日期')
       const first = source.downloadDays('2026-11-18', '', vi.fn()).catch(() => undefined)

@@ -15,6 +15,7 @@ export interface TradeBar {
   cursor: number
   volume: number
   firstPrice?: number
+  firstBybitPrice?: number
   pointRanges: BubbleRange[]
   complete: boolean
 }
@@ -29,6 +30,8 @@ export interface HourSamples {
   times: ArrayLike<number>
   volume: ArrayLike<number>
   firstPrices: ArrayLike<number>
+  bybitTimes?: ArrayLike<number>
+  bybitPrices?: ArrayLike<number>
   points: TradeBubble[]
 }
 
@@ -36,10 +39,17 @@ export class AccumulatedHour implements HourSamples {
   readonly times: number[] = []
   readonly volume: number[] = [0]
   readonly firstPrices: number[] = []
+  readonly bybitTimes: number[] = []
+  readonly bybitPrices: number[] = []
   readonly points: TradeBubble[] = []
 
   add(trade: BybitTrade, hour: number, minimum: number): void {
-    this.addSample(Math.floor(trade.timeUs / 1000) - hour, trade.size, trade.price)
+    const offset = Math.floor(trade.timeUs / 1000) - hour
+    this.addSample(offset, trade.size, trade.price)
+    if (!trade.venue && this.bybitTimes.at(-1) !== offset) {
+      this.bybitTimes.push(offset)
+      this.bybitPrices.push(trade.price)
+    }
     if (trade.price * trade.size >= minimum) this.points.push({ trade })
   }
 
@@ -53,12 +63,20 @@ export class AccumulatedHour implements HourSamples {
       }
       this.volume[this.times.length] = previousTotal + other.volume[index + 1]
     }
+    for (let index = 0; index < (other.bybitTimes?.length ?? 0); index++) {
+      const offset = other.bybitTimes![index]
+      if (this.bybitTimes.at(-1) !== offset) {
+        this.bybitTimes.push(offset)
+        this.bybitPrices.push(other.bybitPrices![index])
+      }
+    }
     for (const point of other.points) this.points.push(point)
   }
 
   pack(): HourSamples {
     return { times: Uint32Array.from(this.times), volume: Float64Array.from(this.volume),
-      firstPrices: Float64Array.from(this.firstPrices), points: this.points }
+      firstPrices: Float64Array.from(this.firstPrices), bybitTimes: Uint32Array.from(this.bybitTimes),
+      bybitPrices: Float64Array.from(this.bybitPrices), points: this.points }
   }
 
   private addSample(offset: number, size: number, price: number): void {
@@ -88,6 +106,10 @@ export function includeHour(bar: TradeBar, section: HourSamples, hour: number, f
   if (lo < hi) {
     bar.volume += section.volume[hi] - section.volume[lo]
     bar.firstPrice ??= section.firstPrices[lo]
+    const times = section.bybitTimes ?? section.times
+    const prices = section.bybitPrices ?? section.firstPrices
+    const index = lowerBound(times.length, fromUs / 1000 - hour, item => times[item])
+    if (times[index] < untilUs / 1000 - hour) bar.firstBybitPrice ??= prices[index]
   }
   const points = section.points
   const from = lowerBound(points.length, fromUs, index => points[index].trade.timeUs)
@@ -100,6 +122,7 @@ interface FlowHour {
   samples: HourSamples
   complete: boolean
   archived: boolean
+  fallbackArchive?: boolean
 }
 
 interface HourCache extends DBSchema {
@@ -118,6 +141,7 @@ interface HourScan extends TradeRange {
   samples: AccumulatedHour
   complete: boolean
   archived: boolean
+  fallbackArchive: boolean
 }
 
 const hourOf = (time: number) => Math.floor(time / BYBIT_HOUR_MS) * BYBIT_HOUR_MS
@@ -145,7 +169,8 @@ export class OrderFlowBars {
 
   invalidate(range: TradeRange): void {
     for (const [hour, section] of this.hours) {
-      if (!section.archived && hour * 1000 < range.untilUs && (hour + BYBIT_HOUR_MS) * 1000 > range.fromUs) {
+      if ((!section.archived || section.fallbackArchive || range.replaceArchive) &&
+          hour * 1000 < range.untilUs && (hour + BYBIT_HOUR_MS) * 1000 > range.fromUs) {
         this.hours.delete(hour)
         this.invalidateBars({ fromUs: hour * 1000, untilUs: (hour + BYBIT_HOUR_MS) * 1000 })
       }
@@ -168,15 +193,17 @@ export class OrderFlowBars {
     }
     const pending = [...requested].filter(hour => !this.checked.has(hour))
     if (pending.length) {
-      await this.restore(pending, signal)
+      await this.restore(pending, source, signal)
       onUpdate()
     }
     const groups: HourScan[][] = []
     for (const hour of requested) {
-      const fromUs = this.hours.get(hour)?.cursor ?? hour * 1000
+      const section = this.hours.get(hour)
+      if (section?.fallbackArchive) source.requestRecentHours(hour, hour + BYBIT_HOUR_MS)
+      const fromUs = section?.cursor ?? hour * 1000
       const untilUs = Math.min((hour + BYBIT_HOUR_MS) * 1000, cursor)
       if (untilUs <= fromUs) continue
-      const scan = { hour, fromUs, untilUs, samples: new AccumulatedHour(), complete: true, archived: true }
+      const scan = { hour, fromUs, untilUs, samples: new AccumulatedHour(), complete: true, archived: true, fallbackArchive: false }
       const group = groups.at(-1)
       if (group?.at(-1)?.untilUs === fromUs) group.push(scan)
       else groups.push([scan])
@@ -190,13 +217,15 @@ export class OrderFlowBars {
     }
   }
 
-  private async restore(hours: readonly number[], signal: AbortSignal): Promise<void> {
+  private async restore(hours: readonly number[], source: CombinedBybitSource, signal: AbortSignal): Promise<void> {
     try {
       const db = await database()
       const range = IDBKeyRange.bound([this.key, hours[0]], [this.key, hours.at(-1)!])
       const restored = await db.getAll('hours', range)
       signal.throwIfAborted()
       for (const { hour, ...section } of restored) {
+        if (section.fallbackArchive && await source.isOkxArchiveCachedAt(hour)) continue
+        signal.throwIfAborted()
         this.hours.set(hour, section)
         this.checked.add(hour)
         this.invalidateBars({ fromUs: hour * 1000, untilUs: section.cursor })
@@ -221,6 +250,7 @@ export class OrderFlowBars {
       for (let index = coverageIndex; index < group.length && group[index].fromUs < coverage.untilUs; index++) {
         group[index].complete &&= coverage.complete
         group[index].archived &&= coverage.archived
+        group[index].fallbackArchive ||= !!coverage.fallbackArchive
       }
     })
     signal.throwIfAborted()
@@ -235,7 +265,8 @@ export class OrderFlowBars {
       const complete = (previous?.complete ?? true) && scan.complete
       const archived = (previous?.archived ?? true) && scan.archived
       const sealed = archived && cursor === (hour + BYBIT_HOUR_MS) * 1000
-      const section = { cursor, samples: sealed ? samples.pack() : samples, complete, archived }
+      const fallbackArchive = (previous?.fallbackArchive ?? false) || scan.fallbackArchive
+      const section = { cursor, samples: sealed ? samples.pack() : samples, complete, archived, fallbackArchive }
       this.hours.set(hour, section)
       if (sealed) persist.push({ ...section, hour })
     }

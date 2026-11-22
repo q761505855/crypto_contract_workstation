@@ -14,10 +14,11 @@ function database() {
   })
 }
 
-type CapturedTrades = Pick<CombinedBybitSource, 'readReplayLive' | 'capturedFromUs' | 'capturedUntilUs'>
+type CapturedTrades = Pick<CombinedBybitSource, 'readReplayLive' | 'capturedFromUs' | 'capturedUntilUs'> &
+  Partial<Pick<CombinedBybitSource, 'hasRecentOkxCoverage'>>
 
 export class ReplayOrderFlow {
-  private readonly days = new Map<number, HourSamples[]>()
+  private readonly days = new Map<number, (HourSamples | undefined)[]>()
   private readonly liveHours = new Map<number, { cursor: number; samples: AccumulatedHour }>()
   private readonly missing = new Map<number, number>()
   private readonly bars = new Map<number, TradeBar>()
@@ -25,6 +26,11 @@ export class ReplayOrderFlow {
   constructor(readonly key: string, private readonly minimum: number, private readonly legacyKeys: readonly string[] = []) {}
 
   invalidate(range: TradeRange): void {
+    if (range.replaceArchive) {
+      for (const day of this.days.keys()) {
+        if (day * 1000 < range.untilUs && (day + BYBIT_DAY_MS) * 1000 > range.fromUs) this.days.delete(day)
+      }
+    }
     for (const [start, bar] of this.bars) {
       if (start * 1000 < range.untilUs && bar.cursor > range.fromUs) this.bars.delete(start)
     }
@@ -36,7 +42,8 @@ export class ReplayOrderFlow {
     }
   }
 
-  async prepare(days: Iterable<number>, source: Pick<CombinedBybitSource, 'hasArchivedDay' | 'readArchivedHour'>, signal: AbortSignal,
+  async prepare(days: Iterable<number>, source: Pick<CombinedBybitSource, 'hasArchivedDay' | 'readArchivedHour'> &
+    Partial<Pick<CombinedBybitSource, 'shouldPersistArchiveDay'>>, signal: AbortSignal,
     onUpdate: (range?: TradeRange) => void): Promise<void> {
     for (const day of days) {
       signal.throwIfAborted()
@@ -57,11 +64,11 @@ export class ReplayOrderFlow {
       }
       const until = day + BYBIT_DAY_MS
       onUpdate({ fromUs: day * 1000, untilUs: until * 1000 })
-      const hours: HourSamples[] = []
+      const hours: (HourSamples | undefined)[] = []
       for (let hour = day; hour < until; hour += BYBIT_HOUR_MS) {
         const trades = await source.readArchivedHour(hour)
         signal.throwIfAborted()
-        if (trades === null) throw new Error('Bybit 日档尚未完整就绪')
+        if (trades === null) { hours.push(undefined); continue }
         const samples = new AccumulatedHour()
         for (const trade of trades) samples.add(trade, hour, this.minimum)
         hours.push(samples.pack())
@@ -69,7 +76,9 @@ export class ReplayOrderFlow {
       this.days.set(day, hours)
       this.invalidate({ fromUs: day * 1000, untilUs: until * 1000 })
       onUpdate()
-      void database().then(db => db.put('days', hours, [this.key, day])).catch(() => undefined)
+      if (hours.every(section => section !== undefined) && await (source.shouldPersistArchiveDay?.(day) ?? true)) {
+        void database().then(db => db.put('days', hours, [this.key, day])).catch(() => undefined)
+      }
     }
   }
 
@@ -94,10 +103,13 @@ export class ReplayOrderFlow {
       const day = Math.floor(from / BYBIT_DAY_MS) * BYBIT_DAY_MS
       const until = Math.min(untilUs / 1000, day + BYBIT_DAY_MS)
       const hours = this.days.get(day)
-      bar.complete &&= !!hours
       for (let hour = Math.floor(from / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour < until; hour += BYBIT_HOUR_MS) {
-        const section = hours ? hours[(hour - day) / BYBIT_HOUR_MS] : this.readCapturedHour(hour, source)
-        if (section) includeHour(bar, section, hour, Math.max(hour, from) * 1000, Math.min(hour + BYBIT_HOUR_MS, until) * 1000)
+        const hourEnd = Math.min(hour + BYBIT_HOUR_MS, until) * 1000
+        const archived = hours?.[(hour - day) / BYBIT_HOUR_MS]
+        const recent = source.hasRecentOkxCoverage?.(hour, hourEnd)
+        const section = (recent ? this.readCapturedHour(hour, source) : archived) ?? this.readCapturedHour(hour, source)
+        bar.complete &&= !!archived || !!recent
+        if (section) includeHour(bar, section, hour, Math.max(hour, from) * 1000, hourEnd)
       }
       from = until
     }

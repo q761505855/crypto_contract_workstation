@@ -3,7 +3,7 @@ import { alignOpenTime, CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/
 import { BYBIT_DAY_MS, type BybitTrade } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator } from './order-flow'
-import { CANDLE_PANE, tradeBubbleOffset, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
+import { CANDLE_PANE, tradeBubbleOffset, tradeBubblePrice, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
 import { OrderFlowBars, tradeBubbles, type TradeBar } from './order-flow-bars'
 import { ReplayOrderFlow } from './order-flow-replay'
 import type { DrawingPoint } from './drawings'
@@ -114,7 +114,7 @@ export class OrderFlowChart {
         this.showBubbles({})
         this.showVolume()
       }
-      if (!this.replayFlow || !this.feed.replaying || this.flowSource !== this.feed.archiveCacheKey) this.cancelFlow()
+      if (affected?.replaceArchive || !this.replayFlow || !this.feed.replaying || this.flowSource !== this.feed.archiveCacheKey) this.cancelFlow()
       this.invalidateProfiles(affected)
     }
     this.schedule()
@@ -235,7 +235,7 @@ export class OrderFlowChart {
       request.cursor = untilUs
       request.complete &&= complete
       const profile = request.accumulator.profile()
-      this.showProfile(id, { profile, message: request.complete ? (profile ? undefined : '选区暂无成交') : '选区的 Bybit 逐笔成交不完整' })
+      this.showProfile(id, { profile, message: request.complete ? (profile ? undefined : '选区暂无成交') : '选区的逐笔成交不完整' })
       if (Math.min(this.feed.tradeCursorUs, request.range.untilUs) > request.cursor) this.schedule()
     } catch (error) {
       // A retry must reprocess any partial range that was already accumulated.
@@ -271,7 +271,7 @@ export class OrderFlowChart {
     const useEtfScale = this.feed.mapping?.relation === 'etf'
     const inputs = new Map(candles.map(bar => [bar.timestamp, bar.open]))
     return (trade: BybitTrade, start = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')): number | undefined => {
-      if (!useEtfScale) return trade.price
+      if (!useEtfScale || trade.venue === 'OKX') return trade.price
       const open = inputs.get(start)
       if (open === undefined) return
       if (!anchors.has(start)) anchors.set(start, open / trade.price)
@@ -297,7 +297,8 @@ export class OrderFlowChart {
         if (!this.nativeVolume.has(indicator)) this.nativeVolume.set(indicator,
           { calc: indicator.calc, shortName: name === 'VOL' ? '报价量' : indicator.shortName, precision: indicator.precision })
         const native = this.nativeVolume.get(indicator)!
-        const shortName = symbol ? (name === 'VOL' ? 'Bybit 成交量' : `${native.shortName} · Bybit`) : native.shortName
+        const source = this.feed.mapping?.okx ? (this.feed.mapping.bybit ? 'OKX / Bybit' : 'OKX') : 'Bybit'
+        const shortName = symbol ? (name === 'VOL' ? `${source} 成交量` : `${native.shortName} · ${source}`) : native.shortName
         if (changed || indicator.shortName !== shortName) {
           const calc = symbol ? bybitVolumeCalc(native.calc, values) : native.calc
           this.overrideIndicator.call(this.chart, { name, calc, precision: symbol && name === 'VOL' ? 3 : native.precision,
@@ -333,7 +334,7 @@ export class OrderFlowChart {
     const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
     this.showVolume(volumeChanged ? volumes : previous)
     this.showBubbles({ bars, timeframe, updating: this.updating, projectToCandle: this.feed.mapping?.relation === 'etf',
-      message: message ?? (this.updating ? '正在计算大单气泡…' : partial ? 'Bybit 逐笔成交不完整 · 可在顶部下载日档' : undefined) })
+      message: message ?? (this.updating ? '正在计算大单气泡…' : partial ? '逐笔成交尚未补齐 · 可在顶部下载日档' : undefined) })
   }
 
   private async updateBubbles(): Promise<void> {
@@ -341,7 +342,7 @@ export class OrderFlowChart {
     const visible = this.visibleCandles()
     if (!this.supported) {
       this.showVolume()
-      if (indicator?.visible) this.showBubbles({ message: '此品种暂无 Bybit 成交量' })
+      if (indicator?.visible) this.showBubbles({ message: '此品种暂无成交量' })
       this.hideTooltip()
       return
     }
@@ -379,6 +380,7 @@ export class OrderFlowChart {
       if (replay) {
         const days = new Set(this.feed.downloadedDays)
         const end = Math.min(cursor / 1000, nextOpenTime(visible.at(-1)!.timestamp, timeframe))
+        this.feed.requestRecentHours(visible[0].timestamp, end)
         const firstDay = Math.floor(visible[0].timestamp / BYBIT_DAY_MS) * BYBIT_DAY_MS
         const lastDay = Math.ceil(end / BYBIT_DAY_MS - 1) * BYBIT_DAY_MS
         for (let day = lastDay; day >= firstDay; day -= BYBIT_DAY_MS) days.add(day)
@@ -425,18 +427,18 @@ export class OrderFlowChart {
       const bar = display.bars.get(candle.timestamp)
       if (!bar?.firstPrice) continue
       const end = nextOpenTime(candle.timestamp, display.timeframe)
-      const scale = display.projectToCandle ? candle.open / bar.firstPrice! : 1
       for (const bubble of tradeBubbles(bar)) {
         const { trade } = bubble
         const offset = tradeBubbleOffset(bubble, candle.timestamp, end)
-        const point = this.chart.convertToPixel({ dataIndex: index + offset, value: trade.price * scale }, { paneId: CANDLE_PANE }) as { x?: number; y?: number }
+        const price = tradeBubblePrice(trade, bar, candle.open, display.projectToCandle)
+        const point = this.chart.convertToPixel({ dataIndex: index + offset, value: price }, { paneId: CANDLE_PANE }) as { x?: number; y?: number }
         const distance = Math.hypot((point.x ?? Infinity) - cursorX, (point.y ?? Infinity) - cursorY)
         const radius = tradeBubbleRadius(trade, Number(indicator.calcParams[0]))
         if (distance < radius + 3 && distance < nearestDistance) { nearestDistance = distance; nearest = trade }
       }
     }
     if (!nearest) { this.hideTooltip(); return }
-    this.tooltip.textContent = `Bybit ${nearest.side === 'buy' ? '主动买入' : '主动卖出'} · ${nearest.size} @ ${nearest.price} · ${notional(nearest).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`
+    this.tooltip.textContent = `${nearest.venue ?? 'Bybit'} ${nearest.side === 'buy' ? '主动买入' : '主动卖出'} · ${nearest.size} @ ${nearest.price} · ${notional(nearest).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`
     this.tooltip.style.left = `${Math.max(4, Math.min(width - 260, cursorX + 12))}px`
     this.tooltip.style.top = `${Math.max(4, cursorY - 30)}px`
     this.tooltip.hidden = false

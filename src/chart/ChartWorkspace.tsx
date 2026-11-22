@@ -14,7 +14,7 @@ import {
   type ChartIndicatorPreferences,
 } from './indicator-preferences'
 import type { GitHubContentsClient } from '../github-sync/github-client'
-import { bybitMapping } from '../market-data/bybit/trades'
+import { orderFlowLabel, orderFlowMapping } from '../market-data/okx/trades'
 import {
   ProChartAdapter,
   type ChartAdapterPort,
@@ -107,7 +107,7 @@ export function ChartWorkspace({
   const symbolRef = useRef(symbol)
   const periodRef = useRef(period)
   const reloadKeyRef = useRef(reloadKey)
-  const mapping = orderFlowCloud && bybitMapping(symbol)
+  const mapping = orderFlowCloud && orderFlowMapping(symbol)
   const initialIndicatorPreferencesRef = useRef<
     ChartIndicatorPreferences | null | undefined
   >(undefined)
@@ -506,16 +506,16 @@ export function ChartWorkspace({
       const download = adapterRef.current?.downloadBybitDays?.(dayDownloadRange.start, dayDownloadRange.end, report)
       if (!download) return
       setDayDownloadRange(null)
-      void download.then(report, error => report(error instanceof Error ? error.message : '无法下载 Bybit 日档'))
+      void download.then(report, error => report(error instanceof Error ? error.message : '无法下载成交日档'))
     } catch (error) {
-      setDayDownloadRange({ ...dayDownloadRange, error: error instanceof Error ? error.message : '无法下载 Bybit 日档' })
+      setDayDownloadRange({ ...dayDownloadRange, error: error instanceof Error ? error.message : '无法下载成交日档' })
     }
   }
 
   const dayDownload = (
     <>
       <button className="chart-day-download" type="button" disabled={!mapping}
-        title={mapping ? `选择 ${mapping.symbol} 逐笔成交的下载日期` : '当前品种暂无 Bybit 成交量'}
+        title={mapping ? `选择 ${orderFlowLabel(mapping)} 逐笔成交的下载日期` : '当前品种暂无成交量'}
         onClick={openBybitDownload}>
         下载成交数据
       </button>
@@ -594,7 +594,7 @@ export function ChartWorkspace({
       ) : null}
       {orderFlowCloud && drawingToolbar && createPortal(
         <button type="button" className="chart-volume-profile-tool" aria-label="框选成交分布"
-          title={mapping ? `框选成交分布 · ${mapping.symbol}` : '当前品种暂无 Bybit 成交量'} disabled={!mapping}
+          title={mapping ? `框选成交分布 · ${orderFlowLabel(mapping)}` : '当前品种暂无成交量'} disabled={!mapping}
           onClick={() => adapterRef.current?.startVolumeProfile?.()}>
           <span aria-hidden="true"><i /><i /><i /></span>
         </button>, drawingToolbar,
@@ -605,7 +605,7 @@ export function ChartWorkspace({
           event.preventDefault()
           downloadBybitDays()
         }}>
-          <p>{mapping?.symbol} · UTC 日期 · 只填一个日期即可下载当天</p>
+          <p>{mapping && orderFlowLabel(mapping)} · UTC 日期 · 只填一个日期即可下载当天</p>
           <div>
             <label>开始日期<input type="date" value={dayDownloadRange.start}
               onChange={event => setDayDownloadRange({ start: event.target.value, end: dayDownloadRange.end })} /></label>
