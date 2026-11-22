@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { archiveRoot, cacheBybitDay } from '../scripts/cache-bybit-day.mjs'
+import { archiveRoot, cacheBybitDay, writeTradeArchive } from '../scripts/cache-bybit-day.mjs'
 
 const symbol = 'SPYUSDT'
 const day = '2026-05-15'
@@ -41,6 +41,24 @@ describe('Bybit 日成交缓存', () => {
     await expect(cacheBybitDay({ repository: '.', symbol: '../../unrelated', day, fetcher })).rejects.toThrow('请选择')
     await expect(cacheBybitDay({ repository: '.', symbol, day: '2026-02-31', fetcher })).rejects.toThrow('请选择')
     expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('为大于分片预算的小时写出多个 gzip，每个实际文件都小于 20 MB', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'trade-part-size-'))
+    const target = join(repository, 'archive')
+    const padding = 'a'.repeat(2 * 1024 ** 2)
+    async function* records() {
+      for (let id = 0; id < 9; id++) yield { hour: 0, line: `${utc},${id}${padding},Buy,600,1` }
+    }
+    try {
+      await writeTradeArchive({ target, symbol, day, records })
+      const index = JSON.parse(await readFile(join(target, 'manifest.json'), 'utf8'))
+      expect(index.parts.map(part => [part.file, part.rows])).toEqual([['00-000.csv.gz', 7], ['00-001.csv.gz', 2]])
+      for (const part of index.parts) {
+        expect((await readFile(join(target, part.file))).length).toBe(part.bytes)
+        expect(part.bytes).toBeLessThan(20_000_000)
+      }
+    } finally { await rm(repository, { recursive: true, force: true }) }
   })
 
   it('归档 Bybit 现货的毫秒时间及小写主动方向', async () => {

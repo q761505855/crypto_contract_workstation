@@ -25,6 +25,7 @@ export async function connectFixture(page: Page, multipleAccounts = false, {
   const cors = { 'access-control-allow-origin': '*' }
   await page.route('https://api.bybit.com/**', route => route.fulfill({ headers: cors, json: { retCode: 0, result: { list: [] } } }))
   await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => route.fulfill({ status: 404, headers: cors }))
+  await page.route('https://testingcf.jsdelivr.net/gh/**', route => route.fulfill({ status: 404, headers: cors }))
   await page.routeWebSocket(/^wss:\/\/stream\.bybit\.com\/v5\/public\//, socket => socket.onMessage(message => {
     if (JSON.parse(message.toString()).op === 'subscribe') socket.send(JSON.stringify({ op: 'subscribe', success: true }))
   }))

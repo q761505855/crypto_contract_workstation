@@ -12,7 +12,8 @@ import catalog from '../src/market-data/bybit/instruments.json' with { type: 'js
 
 const dayMs = 86_400_000
 const hourMs = 3_600_000
-const maxPartBytes = 16 * 1024 ** 2
+const maxRawPartBytes = 16 * 1024 ** 2
+const maxCompressedPartBytes = 20_000_000
 export const archiveRoot = 'projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades'
 
 export class BybitArchiveHttpError extends Error {
@@ -102,6 +103,7 @@ export async function writeTradeArchive({ target, symbol, day, records, allowEmp
       checksum.update(chunk)
       bytes += chunk.length
     }
+    if (bytes >= maxCompressedPartBytes) throw new Error(`成交分片必须小于 20 MB：${part.file}`)
     parts.push({ file: part.file, hour: part.hour, rows: part.rows, bytes, sha256: checksum.digest('hex') })
     part = undefined
   }
@@ -129,7 +131,9 @@ export async function writeTradeArchive({ target, symbol, day, records, allowEmp
         .map(line => ({ line, time: Number(line.slice(0, line.indexOf(','))) }))
       records.sort((a, b) => a.time - b.time)
       for (const { line } of records) {
-        if (!part || part.written + line.length + 1 > maxPartBytes) {
+        const bytes = Buffer.byteLength(line) + 1
+        if (bytes > maxRawPartBytes) throw new Error('单条成交记录超出分片大小')
+        if (!part || part.written + bytes > maxRawPartBytes) {
           const index = part ? part.index + 1 : 0
           await closePart()
           const file = `${String(hour).padStart(2, '0')}-${String(index).padStart(3, '0')}.csv.gz`
@@ -139,7 +143,7 @@ export async function writeTradeArchive({ target, symbol, day, records, allowEmp
           part = { file, gzip, done, hour, index, rows: 0, written: 0 }
         }
         if (!part.gzip.write(line + '\n')) await once(part.gzip, 'drain')
-        part.written += line.length + 1
+        part.written += bytes
         part.rows++
       }
       await closePart()

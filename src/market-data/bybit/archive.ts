@@ -22,6 +22,11 @@ interface ArchiveManifest {
 export const BYBIT_ARCHIVE_ROOT = 'data/bybit-trades'
 const ARCHIVE_PART_MAX = 17 * 1024 ** 2
 
+function mirrorPartUrl(rawUrl: string): string {
+  const [owner, repository, ref, ...file] = new URL(rawUrl).pathname.slice(1).split('/')
+  return `https://testingcf.jsdelivr.net/gh/${owner}/${repository}@${ref}/${file.join('/')}`
+}
+
 function manifest(value: unknown, symbol: string, day: string, allowEmpty: boolean): ArchiveManifest {
   const item = value as Partial<ArchiveManifest> | null
   if (!item || item.version !== 1 || item.symbol !== symbol || item.day !== day ||
@@ -179,18 +184,26 @@ export class BybitArchive<Symbol extends string = BybitSymbol> {
     if (this.downloading < 4) this.downloading++
     else await new Promise<void>(resolve => this.waiting.push(resolve))
     try {
-      const response = await this.fetcher.call(globalThis, url, { signal: AbortSignal.timeout(45_000) })
-      if (!response.ok) throw new Error(`Bybit 成交分片读取失败（HTTP ${response.status}）`)
-      const buffer = await response.arrayBuffer()
-      if (buffer.byteLength !== part.bytes || await sha256(buffer) !== part.sha256) {
-        throw new Error(`Bybit 成交分片校验失败：${part.file}`)
+      try {
+        return await this.readVerifiedPart(mirrorPartUrl(url), part, 15_000)
+      } catch {
+        return await this.readVerifiedPart(url, part, 45_000)
       }
-      return buffer
     } finally {
       const next = this.waiting.shift()
       if (next) next()
       else this.downloading--
     }
+  }
+
+  private async readVerifiedPart(url: string, part: ArchivePart, timeout: number): Promise<ArrayBuffer> {
+    const response = await this.fetcher.call(globalThis, url, { signal: AbortSignal.timeout(timeout), credentials: 'omit' })
+    if (!response.ok) throw new Error(`逐笔成交分片读取失败（HTTP ${response.status}）`)
+    const buffer = await response.arrayBuffer()
+    if (buffer.byteLength !== part.bytes || await sha256(buffer) !== part.sha256) {
+      throw new Error(`逐笔成交分片校验失败：${part.file}`)
+    }
+    return buffer
   }
 
   private async readParts(root: string, start: number, parts: ArchivePart[], contractValue?: number): Promise<BybitTrade[]> {
