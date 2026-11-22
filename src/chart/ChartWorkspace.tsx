@@ -651,7 +651,7 @@ export function ChartWorkspace({
           {downloadPreview?.start && <p>下载范围 <strong>{downloadPreview.start === downloadPreview.end
             ? downloadPreview.start : `${downloadPreview.start} 至 ${downloadPreview.end}`}</strong>
             {downloadPreview.clipped && ' · 未来日期已跳过'}</p>}
-          <p>日期在 OKX 接口范围内时直接读取，当天取至请求时刻。较早日期使用 Git 日档。</p>
+          <p>优先复用已缓存的 OKX 日档。近日期缺档时走接口，当天取至请求时刻。</p>
           {dayDownloadSelection.error && <p role="alert">{dayDownloadSelection.error}</p>}
           <button type="submit">下载</button>
         </form>}

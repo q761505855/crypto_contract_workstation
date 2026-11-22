@@ -84,7 +84,7 @@ Git 月分片可能尚未覆盖整月；创建、恢复回放先复用普通价�
 
 ## OKX 逐笔成交缓存
 
-下载界面使用 UTC 日期。点击下载后，OKX 历史逐笔接口能完整覆盖的日期直接分页读取，结果保留在当前页面。较早的日期走 Git 日档。需要创建日档时，网页提交 `projects/crypto-contract-workstation/experiments/ctrader/data/okx-requests/<品种>/<UTC日期>.json`，并触发工作流。OKX 官方逐笔归档按 UTC+8 切日，后台验证覆盖对应 UTC 日的两份源日档，按 UTC 小时编排并校验 gzip 分片，发布到同一项目的 `data/okx-trades/<品种>/<UTC日期>/`。黄金更名日同时读取旧代码和新代码的文件。手动加载的日期优先读取已发布的 OKX 分片，也兼容浏览器里已有的 OKX 旧版缓存。
+下载界面使用 UTC 日期。点击下载后，已结束的日期优先复用 Git 中的 OKX 日档。缺档时，OKX 历史逐笔接口能覆盖的日期直接分页读取，结果保留在当前页面。较早的日期走 Git 日档。需要创建日档时，网页提交 `projects/crypto-contract-workstation/experiments/ctrader/data/okx-requests/<品种>/<UTC日期>.json`，并触发工作流。OKX 官方逐笔归档按 UTC+8 切日，后台验证覆盖对应 UTC 日的两份源日档，按 UTC 小时编排并校验 gzip 分片，发布到同一项目的 `data/okx-trades/<品种>/<UTC日期>/`。黄金更名日同时读取旧代码和新代码的文件。手动加载的日期优先读取已发布的 OKX 分片，也兼容浏览器里已有的 OKX 旧版缓存。
 
 OKX 完整覆盖对应 UTC 日后，工作流在发布的同一 Git 提交中清理同品种同日的 Bybit 分片及清单。映射有歧义、OKX 上市首日、源日档缺失或校验失败时保留 Bybit 日档。清理只涉及缓存目录，Git 的旧提交可用于恢复。OKX 日档、Bybit 日档、近期回补及映射都属于行情数据，与用户配置及 JSON 存档独立。旧归档仍由顶部按钮按需申请。
 

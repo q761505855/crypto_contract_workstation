@@ -299,6 +299,16 @@ export class CombinedBybitSource {
       const progress = (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${total} 天 · ${message}`)
       try {
         if (instrument && useRest) {
+          if (start < today) {
+            progress(`正在检查 OKX ${day} UTC 日档缓存…`)
+            const cached = await this.okxArchive.hasCloudDay(instrument, day).catch(() => false)
+            signal.throwIfAborted()
+            if (cached) {
+              this.markDownloaded(mapping.symbol, start)
+              counts['OKX 日档']++
+              return
+            }
+          }
           try {
             const untilUs = Math.min(start + BYBIT_DAY_MS, now) * 1000
             let history = this.history.get(mapping.symbol)

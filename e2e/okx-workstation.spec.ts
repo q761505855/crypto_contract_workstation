@@ -8,7 +8,7 @@ const instrument = 'US500-USDT-SWAP'
 const start = Date.parse('2027-02-20T14:20:00Z')
 const headers = { 'access-control-allow-origin': '*' }
 
-test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 Git 缓存', async ({ page }) => {
+test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重', async ({ page }) => {
   await page.clock.install({ time: start + 30_000 })
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= start - 86_400_000 })
   await installViewportProbe(page)
@@ -43,19 +43,24 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
     return route.fulfill({ headers, json: { code: '0', data } })
   })
   const day = '2026-11-19'
-  const part = gzipSync(`${Date.parse(day + 'T19:00:00Z') / 1000},100,Buy,1.1002,11\n`)
+  const recentDay = '2027-02-19'
+  const archiveParts = new Map([day, recentDay].map(date => [date,
+    gzipSync(`${Date.parse(date + 'T19:00:00Z') / 1000},100,Buy,1.1002,11\n`)]))
   const requested: unknown[] = []
   let dispatched = false
   let published = false
   await page.route('https://raw.githubusercontent.com/**/okx-trades/**', route => {
     archiveRequests++
     const url = route.request().url()
-    if (published && url.endsWith(`/${instrument}/${day}/manifest.json`)) return route.fulfill({ headers, json: {
-      version: 1, day, symbol: instrument, rows: 1, parts: [{
-        file: '19-000.csv.gz', hour: 19, rows: 1, bytes: part.length, sha256: createHash('sha256').update(part).digest('hex'),
-      }],
-    } })
-    if (published && url.endsWith(`/${instrument}/${day}/19-000.csv.gz`)) return route.fulfill({ headers, body: part })
+    for (const [date, part] of archiveParts) {
+      if (date === day && !published) continue
+      if (url.endsWith(`/${instrument}/${date}/manifest.json`)) return route.fulfill({ headers, json: {
+        version: 1, day: date, symbol: instrument, rows: 1, parts: [{
+          file: '19-000.csv.gz', hour: 19, rows: 1, bytes: part.length, sha256: createHash('sha256').update(part).digest('hex'),
+        }],
+      } })
+      if (url.endsWith(`/${instrument}/${date}/19-000.csv.gz`)) return route.fulfill({ headers, body: part })
+    }
     return route.fulfill({ status: 404, headers })
   })
   await page.route('https://api.github.com/**', route => {
@@ -99,15 +104,23 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
   await expect(dialog.getByLabel('锚点日期')).toHaveValue('2027-02-20')
   await expect(dialog.getByText('2027-02-19 至 2027-02-20')).toBeVisible()
   await expect(dialog.getByText('未来日期已跳过', { exact: false })).toBeVisible()
-  await dialog.getByLabel('往前天数').fill('0')
   expect(historyRequests).toBe(0)
   expect(archiveRequests).toBe(0)
   await dialog.getByRole('button', { name: '下载', exact: true }).click()
-  await expect(chart.getByRole('status')).toContainText('OKX 接口 1 天')
+  await expect(chart.getByRole('status')).toContainText('OKX 接口 1 天 · OKX 日档 1 天')
   await expect.poll(volume).toBe(13)
   expect(historyRequests).toBe(1)
-  expect(archiveRequests).toBe(0)
+  expect(archiveRequests).toBeGreaterThan(0)
   expect(bybitRequests).toBe(0)
+  expect(dispatched).toBe(false)
+  expect(requested).toHaveLength(0)
+  const readArchivedTrade = (date: string) => page.evaluate(async stamp => {
+    const { source } = (window as unknown as { __viewportTestAdapter: {
+      source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
+    } }).__viewportTestAdapter
+    return (await source.readArchivedHour(stamp))?.[0]
+  }, Date.parse(`${date}T19:00:00Z`))
+  expect(await readArchivedTrade(recentDay)).toMatchObject({ id: '100', venue: 'OKX', size: 11 })
 
   await chart.getByRole('button', { name: '下载成交数据' }).click()
   await dialog.getByLabel('锚点日期').fill('2026-11-19')
@@ -119,13 +132,7 @@ test('OKX 实时和历史逐笔按 ID 衔接，手动申请 UTC 日档并复用 
   published = true
   await page.clock.fastForward(13_000)
   await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
-  const archivedTrade = await page.evaluate(async stamp => {
-    const { source } = (window as unknown as { __viewportTestAdapter: {
-      source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
-    } }).__viewportTestAdapter
-    return (await source.readArchivedHour(stamp))?.[0]
-  }, Date.parse('2026-11-19T19:00:00Z'))
-  expect(archivedTrade).toMatchObject({ id: '100', venue: 'OKX', size: 11 })
+  expect(await readArchivedTrade(day)).toMatchObject({ id: '100', venue: 'OKX', size: 11 })
   await chart.getByRole('button', { name: '下载成交数据' }).click()
   await dialog.getByLabel('锚点日期').fill('2026-11-19')
   await dialog.getByLabel('往前天数').fill('0')
