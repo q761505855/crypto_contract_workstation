@@ -2,6 +2,7 @@ import { registerIndicator, registerOverlay, type IndicatorDrawParams, type Indi
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, type VolumeProfile } from './order-flow'
 import type { BybitTrade } from '../market-data/bybit/trades'
+import type { TradeBar } from './order-flow-bars'
 
 export const CANDLE_PANE = 'candle_pane'
 export const bigTradesTitle = '大单气泡（Big Trades）'
@@ -12,7 +13,8 @@ const POC = '#ffcc70'
 
 export interface ProfileDisplay { profile?: VolumeProfile; message?: string }
 export interface BubbleDisplay {
-  points: { index: number; offset: number; trade: BybitTrade; price: number }[]
+  bars?: ReadonlyMap<number, TradeBar>
+  projectToCandle?: boolean
   message?: string
 }
 
@@ -72,26 +74,33 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
   return figures
 }
 
-function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding }: IndicatorDrawParams): boolean {
+function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, kLineDataList }: IndicatorDrawParams): boolean {
   const display = indicator.extendData as BubbleDisplay | undefined
-  if (!display?.points?.length) return true
+  if (!display?.bars?.size) return true
   const minimum = indicator.calcParams[0] as number
   ctx.save()
   ctx.beginPath()
   ctx.rect(0, 0, bounding.width, bounding.height)
   ctx.clip()
-  for (const { trade, index, offset, price } of display.points) {
-    if (index < visibleRange.from || index >= visibleRange.to) continue
-    const radius = tradeBubbleRadius(trade, minimum)
-    const color = trade.side === 'buy' ? BUY : SELL
-    ctx.beginPath()
-    ctx.arc(xAxis.convertToPixel(index + offset), yAxis.convertToPixel(price), radius, 0, Math.PI * 2)
-    ctx.fillStyle = color
-    ctx.globalAlpha = 0.42
-    ctx.fill()
-    ctx.globalAlpha = 0.9
-    ctx.strokeStyle = color
-    ctx.stroke()
+  for (let index = Math.max(0, visibleRange.from); index < Math.min(kLineDataList.length, visibleRange.to); index++) {
+    const candle = kLineDataList[index]
+    const bar = display.bars.get(candle.timestamp)
+    if (!bar?.points.length) continue
+    const scale = display.projectToCandle ? candle.open / bar.firstPrice! : 1
+    for (const { trade, offset } of bar.points) {
+      const radius = tradeBubbleRadius(trade, minimum)
+      const y = yAxis.convertToPixel(trade.price * scale)
+      if (y + radius < 0 || y - radius > bounding.height) continue
+      const color = trade.side === 'buy' ? BUY : SELL
+      ctx.beginPath()
+      ctx.arc(xAxis.convertToPixel(index + offset), y, radius, 0, Math.PI * 2)
+      ctx.fillStyle = color
+      ctx.globalAlpha = 0.42
+      ctx.fill()
+      ctx.globalAlpha = 0.9
+      ctx.strokeStyle = color
+      ctx.stroke()
+    }
   }
   ctx.restore()
   return true

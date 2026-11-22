@@ -33,6 +33,7 @@ import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
 import { CombinedBybitSource } from '../market-data/bybit/combined-source'
+import { bybitDay } from '../market-data/bybit/trades'
 import type { GitHubContentsClient } from '../github-sync/github-client'
 import { OrderFlowChart } from './order-flow-chart'
 import { registerOrderFlow } from './order-flow-renderers'
@@ -86,7 +87,8 @@ export interface ChartAdapterPort {
   dispose?(): void
   mount(options: ChartProOptions & { orderFlowCloud?: GitHubContentsClient }): void
   startVolumeProfile?(): boolean
-  downloadVisibleBybitDay?(report: (message: string) => void): Promise<string>
+  getVisibleBybitDay?(): string
+  downloadBybitDays?(start: string, end: string, report: (message: string) => void): Promise<string>
   getPeriod(): Period
   getSymbol(): SymbolInfo
   setPeriod(period: Period): void
@@ -237,7 +239,7 @@ export class ProChartAdapter implements ChartAdapterPort {
         getReplayContext?(): ReplayContext | null
         subscribeReplayCursor?(listener: (context: ReplayContext | null) => void): () => void
       }
-      this.source = new CombinedBybitSource(orderFlowCloud, reset => this.orderFlow?.refresh(reset))
+      this.source = new CombinedBybitSource(orderFlowCloud, (reset, affected) => this.orderFlow?.refresh(reset, affected))
       this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => this.hasCurrentCandles())
       this.source.select(options.symbol, feed.getReplayContext?.() ?? null)
       this.stopCursor = feed.subscribeReplayCursor?.(context => this.source?.select(this.getSymbol(), context))
@@ -284,13 +286,18 @@ export class ProChartAdapter implements ChartAdapterPort {
     return this.drawings?.startVolumeProfile() ?? false
   }
 
-  async downloadVisibleBybitDay(report: (message: string) => void): Promise<string> {
+  getVisibleBybitDay(): string {
     if (!this.source?.mapping) throw new Error('当前品种暂无 Bybit 成交量')
     if (!this.hasCurrentCandles()) throw new Error('当前图表暂无可见 K 线')
     const { from, to } = this.requireCoreChart().getVisibleRange()
     const timestamp = this.getRightmostVisibleCandleTime()
     if (to <= from || timestamp === null) throw new Error('当前图表暂无可见 K 线')
-    return this.source.downloadDay(timestamp, report)
+    return bybitDay(timestamp)
+  }
+
+  downloadBybitDays(start: string, end: string, report: (message: string) => void): Promise<string> {
+    if (!this.source) throw new Error('当前品种暂无 Bybit 成交量')
+    return this.source.downloadDays(start, end, report)
   }
 
   private hasCurrentCandles(): boolean {

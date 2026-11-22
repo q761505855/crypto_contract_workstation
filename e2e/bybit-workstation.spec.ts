@@ -61,9 +61,13 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     const panes = coreChart.getIndicatorByPaneId() as Map<string, Map<string, import('klinecharts').Indicator>>
     const volume = [...panes.values()].find(pane => pane.has('VOL'))?.get('VOL')
     const bubbles = panes.get('candle_pane')?.get('BIG_TRADES')
+    const bars = bubbles?.extendData?.bars as import('../src/chart/order-flow-renderers').BubbleDisplay['bars']
+    const candles = coreChart.getDataList()
     return { volumeName: volume?.shortName, volume: volume?.result.at(-1)?.volume,
-      points: bubbles?.extendData?.points?.map((point: { trade: { id: string; price: number }; price: number }) =>
-        [point.trade.id, point.trade.price, Math.round(point.price * 1e5) / 1e5]) }
+      points: Array.from(bars ?? []).flatMap(([stamp, row]) => {
+        const open = candles.find(candle => candle.timestamp === stamp)?.open ?? 0
+        return row.points.map(({ trade }) => [trade.id, trade.price, Math.round(trade.price * (open / row.firstPrice!) * 1e5) / 1e5])
+      }) }
   })
   await expect.poll(async () => (await inspect()).last).toMatchObject({ timestamp: start, open: 1.1002, close: 1.1005 })
   await expect.poll(combined).toMatchObject({ volumeName: 'Bybit 成交量', volume: 40, points: [['first', 710, 1.1002]] })
@@ -71,6 +75,9 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await expect.poll(combined).toMatchObject({ volume: 50, points: [['first', 710, 1.1002], ['next', 711, 1.1002]] })
   const tool = chart.locator('.klinecharts-pro-drawing-bar').getByRole('button', { name: '框选成交分布' })
   await expect(tool).toBeEnabled()
+  const rail = (await chart.locator('.klinecharts-pro-drawing-bar').boundingBox())!
+  const button = (await tool.boundingBox())!
+  expect(Math.abs(rail.x + rail.width / 2 - button.x - button.width / 2)).toBeLessThan(1)
   await tool.click()
   const ends = await page.evaluate(start => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
@@ -92,6 +99,28 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     const display = adapter.coreChart.getOverlayById(id)?.extendData?.profile
     return display?.rows.reduce((sum: number, row: { buy: number; sell: number }) => sum + row.buy + row.sell, 0)
   })).toBe(40)
+  await page.mouse.click(ends[1].x, ends[1].y)
+  const profileState = (operation: 'read' | 'store') => page.evaluate(operation => {
+    const state = window as unknown as { __viewportTestAdapter: {
+      orderFlow: { profiles: Map<string, { low: number; high: number; operation?: AbortController }> }
+      drawings: { rendered: Map<string, import('../src/chart/drawings').ChartDrawing> }
+    }; __savedProfile?: unknown }
+    const [id, profile] = [...state.__viewportTestAdapter.orderFlow.profiles][0]
+    const drawing = state.__viewportTestAdapter.drawings.rendered.get(id)
+    if (operation === 'store') state.__savedProfile = profile
+    return { low: profile.low, high: profile.high, savedLow: drawing && Math.min(...drawing.points.map(point => point.value)),
+      sameProfile: state.__savedProfile === profile, busy: !!profile.operation }
+  }, operation)
+  await expect.poll(async () => (await profileState('read')).savedLow).toBeDefined()
+  const original = await profileState('read')
+  await page.mouse.move(ends[1].x, ends[1].y)
+  await page.mouse.down()
+  await page.mouse.move(ends[1].x, ends[1].y - 15, { steps: 4 })
+  await expect.poll(async () => (await profileState('read')).low).not.toBe(original.low)
+  await expect.poll(async () => (await profileState('read')).busy).toBe(false)
+  const preview = await profileState('store')
+  await page.mouse.up()
+  await expect.poll(() => profileState('read')).toMatchObject({ sameProfile: true, savedLow: preview.low })
 })
 
 test('实时成交只更新映射品种的成交量，切到未匹配品种时恢复报价量', async ({ page }) => {
@@ -137,10 +166,10 @@ test('实时成交只更新映射品种的成交量，切到未匹配品种时�
   await choose('USDCHF')
   await expect.poll(volume).toMatchObject({ name: '报价量' })
   await expect(chart.getByRole('button', { name: '框选成交分布' })).toBeDisabled()
-  await expect(chart.getByRole('button', { name: '下载当日成交' })).toBeDisabled()
+  await expect(chart.getByRole('button', { name: '下载成交数据' })).toBeDisabled()
 })
 
-test('仅点击图表顶部按钮才下载最右侧 K 线所在的 UTC 日档', async ({ page }) => {
+test('手动选择 UTC 日期范围并复用已缓存日档', async ({ page }) => {
   const dayMs = 86_400_000
   const now = Date.parse('2026-11-22T02:00:30Z')
   await page.clock.install({ time: now })
@@ -158,7 +187,9 @@ test('仅点击图表顶部按钮才下载最右侧 K 线所在的 UTC 日档', 
     const url = route.request().url()
     const cacheDay = /\/BTCUSDT\/(\d{4}-\d\d-\d\d)\/manifest\.json$/.exec(url)?.[1]
     if (cacheDay) checkedDays.add(cacheDay)
-    if (published && cacheDay === day) return route.fulfill({ headers, json: { ...manifest, symbol: 'BTCUSDT' } })
+    if (published && (cacheDay === day || cacheDay === '2026-11-21')) {
+      return route.fulfill({ headers, json: { ...manifest, day: cacheDay, symbol: 'BTCUSDT' } })
+    }
     if (published && url.endsWith(`/BTCUSDT/${day}/14-000.csv.gz`)) {
       loadedParts++
       return route.fulfill({ headers, body: part })
@@ -195,10 +226,18 @@ test('仅点击图表顶部按钮才下载最右侧 K 线所在的 UTC 日档', 
   await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
   await expect.poll(async () => (await inspect()).rightmost).toBeGreaterThan(Date.parse('2026-11-22'))
   await expect.poll(() => checkedDays.has('2026-11-21')).toBe(true)
-  const download = page.getByTestId('chart-host').getByRole('button', { name: '下载当日成交' })
+  const download = page.getByTestId('chart-host').getByRole('button', { name: '下载成交数据' })
   const status = page.getByTestId('chart-host').getByRole('status')
+  const dialog = page.getByRole('dialog', { name: '下载成交数据' })
+  const firstDate = dialog.getByLabel('开始日期')
+  const lastDate = dialog.getByLabel('结束日期')
+  const confirm = dialog.getByRole('button', { name: '下载', exact: true })
   await download.click()
-  await expect(status).toContainText('2026-11-22 UTC 日档须等该日结束')
+  await expect(firstDate).toHaveValue('2026-11-22')
+  await expect(lastDate).toHaveValue('2026-11-22')
+  await confirm.click()
+  await expect(dialog.getByRole('alert')).toContainText('2026-11-22 UTC 日档须等该日结束')
+  await dialog.getByRole('button', { name: '关闭下载成交数据' }).click()
   await page.evaluate(end => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     coreChart.setBarSpace(3)
@@ -213,25 +252,37 @@ test('仅点击图表顶部按钮才下载最右侧 K 线所在的 UTC 日档', 
   expect(requested).toEqual([])
   expect(dispatched).toBe(0)
   await download.click()
-  await expect(status).toContainText(`等待后台下载并缓存 BTCUSDT ${day}`)
-  expect(requested).toEqual([{ version: 1, symbol: 'BTCUSDT', day, requestedManually: true }])
+  await expect(firstDate).toHaveValue(day)
+  await expect(lastDate).toHaveValue(day)
+  await lastDate.fill('2026-11-21')
+  await confirm.click()
+  await expect(status).toContainText('0/2 天')
+  await expect.poll(() => requested).toEqual(expect.arrayContaining([day, '2026-11-21'].map(day => ({
+    version: 1, symbol: 'BTCUSDT', day, requestedManually: true,
+  }))))
+  expect(requested).toHaveLength(2)
   await expect.poll(() => dispatched).toBe(1)
-  await download.click()
-  expect(requested).toHaveLength(1)
   published = true
   await page.clock.fastForward(13_000)
-  await expect(status).toContainText(`BTCUSDT ${day} UTC 日档已缓存`)
+  await expect(status).toContainText(`BTCUSDT ${day} 至 2026-11-21 UTC 日档已缓存（2 天）`)
   await expect.poll(() => loadedParts).toBeGreaterThan(0)
   await download.click()
+  await lastDate.fill('')
+  await confirm.click()
   await expect(status).toContainText(`BTCUSDT ${day} UTC 日档已缓存`)
-  expect(requested).toHaveLength(1)
+  await download.click()
+  await firstDate.fill('')
+  await confirm.click()
+  await expect(status).toContainText(`BTCUSDT ${day} UTC 日档已缓存`)
+  expect(requested).toHaveLength(2)
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
 })
 
-test('日档待补齐时，较小的实时大单仍能和早期大单一起显示', async ({ page }) => {
+test('保留全部达标气泡，缩放和刷新后复用归档计算结果', async ({ page }) => {
   const now = Date.parse('2026-11-22T02:00:30Z')
   const archivedSecond = Date.parse(day + 'T23:50:00Z') / 1000
   const archivedRows = 400
+  let partReads = 0
   const archivePart = gzipSync(Array.from({ length: archivedRows }, (_, index) =>
     `${archivedSecond}.${String(index).padStart(3, '0')},archive-${index},Buy,1.1,100000\n`).join(''))
   await page.clock.setFixedTime(now)
@@ -244,7 +295,10 @@ test('日档待补齐时，较小的实时大单仍能和早期大单一起显�
       parts: [{ file: '23-000.csv.gz', hour: 23, rows: archivedRows, bytes: archivePart.byteLength,
         sha256: createHash('sha256').update(archivePart).digest('hex') }],
     } })
-    if (url.endsWith(`/BTCUSDT/${day}/23-000.csv.gz`)) return route.fulfill({ headers, body: archivePart })
+    if (url.endsWith(`/BTCUSDT/${day}/23-000.csv.gz`)) {
+      partReads++
+      return route.fulfill({ headers, body: archivePart })
+    }
     return route.fulfill({ headers, status: 404 })
   })
   await page.route('https://api.bybit.com/**', route => {
@@ -266,19 +320,21 @@ test('日档待补齐时，较小的实时大单仍能和早期大单一起显�
   await picker.getByRole('tab', { name: '全部' }).click()
   await picker.getByRole('button', { name: '选择 BTCUSD', exact: true }).click()
   await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
-  await page.evaluate(() => {
+  const zoom = (space: number) => page.evaluate(value => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
-    coreChart.setBarSpace(3)
-  })
+    coreChart.setBarSpace(value)
+  }, space)
+  await zoom(3)
   await chart.getByText('指标', { exact: true }).click()
   await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
   const bubbleIds = () => page.evaluate(() => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     const indicator = coreChart.getIndicatorByPaneId('candle_pane', 'BIG_TRADES') as import('klinecharts').Indicator | null
-    return (indicator?.extendData?.points ?? []).map((point: { trade: { id: string } }) => point.trade.id) as string[]
+    const bars = indicator?.extendData?.bars as import('../src/chart/order-flow-renderers').BubbleDisplay['bars']
+    return Array.from(bars?.values() ?? []).flatMap(bar => bar.points.map(point => point.trade.id))
   })
-  await expect.poll(async () => (await bubbleIds()).length).toBe(360)
+  await expect.poll(async () => (await bubbleIds()).length).toBe(400)
   expect((await bubbleIds()).every(id => id.startsWith('archive-'))).toBe(true)
   await expect.poll(() => !!bitcoin).toBe(true)
   bitcoin!.send(JSON.stringify({ topic: 'publicTrade.BTCUSDT', data: [
@@ -286,6 +342,28 @@ test('日档待补齐时，较小的实时大单仍能和早期大单一起显�
   ] }))
   await expect.poll(async () => {
     const ids = await bubbleIds()
-    return [ids.length, new Set(ids).size, ids[0], ids.slice(1).every(id => id.startsWith('archive-'))]
-  }).toEqual([360, 360, 'live-trade', true])
+    return [ids.length, new Set(ids).size, ids.at(-1), ids.slice(0, -1).every(id => id.startsWith('archive-'))]
+  }).toEqual([401, 401, 'live-trade', true])
+  const reads = partReads
+  await page.evaluate(stamp => {
+    const state = window as unknown as { __viewportTestAdapter: { source: import('../src/market-data/bybit/combined-source').CombinedBybitSource }; __archivedScans: number }
+    const source = state.__viewportTestAdapter.source
+    const visit = source.visitTrades.bind(source)
+    state.__archivedScans = 0
+    source.visitTrades = (...args) => {
+      if (args[0].fromUs <= stamp * 1000 && args[0].untilUs > stamp * 1000) state.__archivedScans++
+      return visit(...args)
+    }
+  }, archivedSecond * 1000)
+  await zoom(20)
+  await expect.poll(async () => (await bubbleIds()).length).toBe(1)
+  await zoom(3)
+  await expect.poll(async () => (await bubbleIds()).length).toBe(401)
+  expect(await page.evaluate(() => (window as unknown as { __archivedScans: number }).__archivedScans)).toBe(0)
+  expect(partReads).toBe(reads)
+  await page.reload()
+  await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
+  await zoom(3)
+  await expect.poll(async () => (await bubbleIds()).length).toBe(400)
+  expect(partReads).toBe(reads)
 })

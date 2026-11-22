@@ -4,11 +4,11 @@ import type { BybitTrade } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator } from './order-flow'
 import { CANDLE_PANE, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
+import { OrderFlowBars, type TradeBar } from './order-flow-bars'
 import type { DrawingPoint } from './drawings'
 
 const dataReady = 'onDataReady' as ActionType
 const visibleRangeChange = 'onVisibleRangeChange' as ActionType
-const maxBubbles = 360
 const volumeIndicators = new Set(['VOL', 'AVP', 'OBV', 'PVT', 'VR', 'EMV'])
 
 interface ProfileRequest {
@@ -20,22 +20,6 @@ interface ProfileRequest {
   prices?: Map<number, number>
   complete: boolean
   operation?: AbortController
-}
-
-interface BubbleRequest {
-  fromUs: number
-  cursor: number
-  minimum: number
-  trades: BybitTrade[]
-  groupSize: number
-  strongestByGroup: Map<number, BybitTrade>
-  timeframe: string
-  chartStart: number
-  operation?: AbortController
-  complete: boolean
-  volumes: Map<number, number>
-  barPrices: Map<number, number>
-  showBubbles: boolean
 }
 
 const notional = (trade: BybitTrade) => trade.price * trade.size
@@ -64,7 +48,9 @@ function bybitVolumeCalc(native: Indicator['calc'], volumes?: ReadonlyMap<number
 
 export class OrderFlowChart {
   private readonly profiles = new Map<string, ProfileRequest>()
-  private bubbles?: BubbleRequest
+  private flow?: OrderFlowBars
+  private flowOperation?: AbortController
+  private flowPending = false
   private timer?: number
   private readonly resize: () => void
   private readonly createIndicator: Chart['createIndicator']
@@ -76,6 +62,7 @@ export class OrderFlowChart {
   private readonly nativeVolume = new Map<Indicator, { calc: Indicator['calc']; shortName: string; precision: number }>()
   private displayedVolumes?: Map<number, number>
   private volumeSymbol?: string
+  private displayedBubbleCount = 0
 
   constructor(private readonly chart: Chart, private readonly feed: CombinedBybitSource, private readonly timeframe: () => string,
     private readonly hasCurrentCandles: () => boolean = () => true) {
@@ -113,11 +100,15 @@ export class OrderFlowChart {
 
   get supported(): boolean { return !!this.feed.mapping }
 
-  refresh(reset = false): void {
+  refresh(reset = false, affected?: TradeRange): void {
     if (reset) {
-      this.invalidateCoverage()
-      this.showBubbles({ points: [] })
-      this.showVolume()
+      if (affected) this.flow?.invalidate(affected)
+      else {
+        this.showBubbles({})
+        this.showVolume()
+      }
+      this.flowOperation?.abort()
+      this.invalidateProfiles(affected)
     }
     this.schedule()
   }
@@ -168,14 +159,13 @@ export class OrderFlowChart {
     this.tooltip?.remove()
     clearTimeout(this.timer)
     if (this.pendingFrame !== undefined) cancelAnimationFrame(this.pendingFrame)
-    this.bubbles?.operation?.abort()
+    this.flowOperation?.abort()
     for (const id of this.profiles.keys()) this.removeProfile(id)
   }
 
-  private invalidateCoverage(): void {
-    this.bubbles?.operation?.abort()
-    this.bubbles = undefined
+  private invalidateProfiles(affected?: TradeRange): void {
     for (const request of this.profiles.values()) {
+      if (affected && (request.range.fromUs >= affected.untilUs || request.range.untilUs <= affected.fromUs)) continue
       request.operation?.abort()
       request.operation = undefined
       request.cursor = request.range.fromUs
@@ -247,6 +237,18 @@ export class OrderFlowChart {
   }
 
   private showBubbles(display: BubbleDisplay): void {
+    const indicator = this.chart.getIndicatorByPaneId(CANDLE_PANE, BIG_TRADES) as Indicator | null | undefined
+    if (!indicator) return
+    const previous = indicator.extendData as BubbleDisplay | undefined
+    let count = 0
+    let sameBars = previous?.bars?.size === display.bars?.size
+    for (const [start, bar] of display.bars ?? []) {
+      count += bar.points.length
+      sameBars &&= previous?.bars?.get(start) === bar
+    }
+    if (sameBars && count === this.displayedBubbleCount &&
+        previous?.message === display.message && previous?.projectToCandle === display.projectToCandle) return
+    this.displayedBubbleCount = count
     this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: display }, CANDLE_PANE)
   }
 
@@ -292,95 +294,72 @@ export class OrderFlowChart {
     return visible
   }
 
-  private async updateBubbles(): Promise<void> {
-    const indicator = this.chart.getIndicatorByPaneId(CANDLE_PANE, BIG_TRADES) as Indicator | null | undefined
+  private visibleCandles(): KLineData[] {
     const candles = this.chart.getDataList()
     const { from, to } = this.chart.getVisibleRange()
-    const firstIndex = Math.max(0, from)
-    const endIndex = Math.min(candles.length, to)
-    const first = candles[firstIndex]
-    const last = candles[endIndex - 1]
-    const showBubbles = !!indicator?.visible
-    const showVolume = this.showVolume(this.bubbles?.volumes)
-    if (!this.supported || (!showBubbles && !showVolume) || !first || !last) {
-      if (!this.supported && showBubbles) this.showBubbles({ points: [], message: '此品种暂无 Bybit 成交量' })
-      this.bubbles?.operation?.abort()
-      this.bubbles = undefined
+    return candles.slice(Math.max(0, from), Math.max(0, to))
+  }
+
+  private displayFlow(flow: OrderFlowBars, cursor: number, message?: string): void {
+    const bars = new Map<number, TradeBar>()
+    const volumes = new Map<number, number>()
+    let partial = false
+    for (const { timestamp } of this.visibleCandles()) {
+      const target = Math.min(cursor, nextOpenTime(timestamp, flow.timeframe) * 1000)
+      if (target <= timestamp * 1000) break
+      const bar = flow.read(timestamp, target)
+      if (!bar) continue
+      bars.set(timestamp, bar)
+      if (bar.firstPrice !== undefined) volumes.set(timestamp, bar.volume)
+      partial ||= !bar.complete
+    }
+    const previous = this.displayedVolumes
+    const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
+    this.showVolume(volumeChanged ? volumes : previous)
+    this.showBubbles({ bars, projectToCandle: this.feed.mapping?.relation === 'etf',
+      message: message ?? (partial ? 'Bybit 逐笔成交不完整 · 可在顶部下载日档' : undefined) })
+  }
+
+  private async updateBubbles(): Promise<void> {
+    const indicator = this.chart.getIndicatorByPaneId(CANDLE_PANE, BIG_TRADES) as Indicator | null | undefined
+    const visible = this.visibleCandles()
+    if (!this.supported) {
+      this.showVolume()
+      if (indicator?.visible) this.showBubbles({ message: '此品种暂无 Bybit 成交量' })
       this.hideTooltip()
       return
     }
+    const showVolume = this.showVolume(this.displayedVolumes)
+    if ((!indicator?.visible && !showVolume) || !visible.length) return
     const timeframe = this.timeframe()
-    const fromUs = first.timestamp * 1000
-    const untilUs = Math.min(this.feed.tradeCursorUs, nextOpenTime(last.timestamp, timeframe) * 1000)
     const minimum = Number(indicator?.calcParams[0] ?? DEFAULT_BIG_TRADE_NOTIONAL)
-    const chartStart = candles[0].timestamp
-    const groupSize = showBubbles ? Math.max(1, Math.ceil((endIndex - firstIndex) / maxBubbles)) : 1
-    let request = this.bubbles
-    if (!request || request.minimum !== minimum || request.fromUs !== fromUs || request.cursor > untilUs ||
-        request.timeframe !== timeframe || request.chartStart !== chartStart || request.showBubbles !== showBubbles ||
-        request.groupSize !== groupSize) {
-      request?.operation?.abort()
-      request = { fromUs, cursor: fromUs, minimum, trades: [], groupSize, strongestByGroup: new Map(), complete: true, timeframe, chartStart,
-        volumes: new Map(), barPrices: new Map(), showBubbles }
-      this.bubbles = request
-      this.showBubbles({ points: [], message: '读取可见成交…' })
+    const key = JSON.stringify([this.feed.archiveCacheKey, timeframe, minimum])
+    if (this.flow?.key !== key) {
+      this.flowOperation?.abort()
+      this.flow = new OrderFlowBars(key, timeframe, minimum)
     }
-    if (request.operation || request.cursor >= untilUs) return
+    const flow = this.flow
+    const cursor = this.feed.tradeCursorUs
+    this.displayFlow(flow, cursor)
+    if (this.flowOperation) {
+      this.flowPending = true
+      return
+    }
     const operation = new AbortController()
-    request.operation = operation
-    const current = request
-    const candlesByTime = new Map(candles.map((candle, index) => [candle.timestamp, index]))
-    const strongest = [...current.trades]
-    const strongestByGroup = new Map(current.strongestByGroup)
-    const volumes = new Map(current.volumes)
-    const project = this.projectPrices(candles, timeframe, current.barPrices)
-    function reduceBubbles() { strongest.sort((a, b) => notional(b) - notional(a)); strongest.length = Math.min(strongest.length, maxBubbles) }
+    this.flowOperation = operation
     try {
-      const complete = await this.feed.visitTrades({ fromUs: current.cursor, untilUs }, trade => {
-        const bar = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')
-        const index = candlesByTime.get(bar)
-        if (index === undefined) return
-        volumes.set(bar, (volumes.get(bar) ?? 0) + trade.size)
-        project(trade, bar)
-        if (showBubbles && notional(trade) >= minimum) {
-          const group = Math.floor((index - firstIndex) / groupSize)
-          const leader = strongestByGroup.get(group)
-          if (!leader || notional(trade) > notional(leader)) strongestByGroup.set(group, trade)
-          strongest.push(trade)
-          if (strongest.length >= maxBubbles * 4) reduceBubbles()
-        }
-      }, operation.signal)
-      operation.signal.throwIfAborted()
-      if (this.bubbles !== current || this.chart.getDataList()[0]?.timestamp !== chartStart) return
-      reduceBubbles()
-      current.trades = strongest
-      current.strongestByGroup = strongestByGroup
-      current.volumes = volumes
-      this.showVolume(volumes)
-      current.complete &&= complete
-      current.cursor = untilUs
-      // Reserve one bubble per time group before using the remaining chart capacity.
-      const selected = new Set(strongestByGroup.values())
-      for (const trade of strongest) {
-        if (selected.size === maxBubbles) break
-        selected.add(trade)
-      }
-      const points: BubbleDisplay['points'] = []
-      for (const trade of [...selected].sort((a, b) => notional(a) - notional(b))) {
-        const timestamp = trade.timeUs / 1000
-        const barStart = alignOpenTime(timestamp, timeframe, 'floor')
-        const index = candlesByTime.get(barStart)
-        const price = project(trade, barStart)
-        if (index !== undefined && price !== undefined) {
-          const offset = (timestamp - barStart) / (nextOpenTime(barStart, timeframe) - barStart) - 0.5
-          points.push({ index, offset, trade, price })
-        }
-      }
-      this.showBubbles({ points, message: current.complete ? undefined : 'Bybit 逐笔成交不完整 · 可在顶部下载日档' })
-      if (this.feed.tradeCursorUs > untilUs && untilUs < nextOpenTime(last.timestamp, timeframe) * 1000) this.schedule()
+      await flow.load(visible.map(bar => bar.timestamp), cursor, this.feed, operation.signal, () => {
+        if (!operation.signal.aborted && this.hasCurrentCandles()) this.displayFlow(flow, this.feed.tradeCursorUs)
+      })
     } catch (error) {
-      if (!operation.signal.aborted) this.showBubbles({ points: [], message: errorText(error) })
-    } finally { if (current.operation === operation) current.operation = undefined }
+      if (!operation.signal.aborted) this.displayFlow(flow, this.feed.tradeCursorUs, errorText(error))
+    } finally {
+      this.flowOperation = undefined
+      if (this.flowPending) {
+        this.flowPending = false
+        this.schedule()
+      }
+    }
   }
 
   private hideTooltip = () => { if (this.tooltip) this.tooltip.hidden = true }
@@ -388,19 +367,29 @@ export class OrderFlowChart {
   private hover = (event: PointerEvent): void => {
     if (!this.pane || !this.tooltip) return
     const indicator = this.chart.getIndicatorByPaneId(CANDLE_PANE, BIG_TRADES) as Indicator | null | undefined
-    const points = (indicator?.extendData as BubbleDisplay | undefined)?.points
-    if (!indicator?.visible || !points?.length) { this.hideTooltip(); return }
+    const display = indicator?.extendData as BubbleDisplay | undefined
+    if (!indicator?.visible || !display?.bars?.size) { this.hideTooltip(); return }
     const { left, top, width } = this.pane.getBoundingClientRect()
     const cursorX = event.clientX - left
     const cursorY = event.clientY - top
     let nearest: BybitTrade | undefined
     let nearestDistance = Infinity
-    // Project only the small set of rendered circles.
-    for (const { index, offset, trade, price } of points) {
-      const point = this.chart.convertToPixel({ dataIndex: index + offset, value: price }, { paneId: CANDLE_PANE }) as { x?: number; y?: number }
-      const distance = Math.hypot((point.x ?? Infinity) - cursorX, (point.y ?? Infinity) - cursorY)
-      const radius = tradeBubbleRadius(trade, Number(indicator.calcParams[0]))
-      if (distance < radius + 3 && distance < nearestDistance) { nearestDistance = distance; nearest = trade }
+    const converted = this.chart.convertFromPixel([{ x: cursorX }], { paneId: CANDLE_PANE })
+    const indexAtPointer = (Array.isArray(converted) ? converted[0] : converted)?.dataIndex
+    if (indexAtPointer === undefined) { this.hideTooltip(); return }
+    const candles = this.chart.getDataList()
+    const margin = Math.ceil(23 / this.chart.getBarSpace()) + 1
+    for (let index = Math.max(0, indexAtPointer - margin); index < Math.min(candles.length, indexAtPointer + margin + 1); index++) {
+      const candle = candles[index]
+      const bar = display.bars.get(candle.timestamp)
+      if (!bar?.points.length) continue
+      const scale = display.projectToCandle ? candle.open / bar.firstPrice! : 1
+      for (const { offset, trade } of bar.points) {
+        const point = this.chart.convertToPixel({ dataIndex: index + offset, value: trade.price * scale }, { paneId: CANDLE_PANE }) as { x?: number; y?: number }
+        const distance = Math.hypot((point.x ?? Infinity) - cursorX, (point.y ?? Infinity) - cursorY)
+        const radius = tradeBubbleRadius(trade, Number(indicator.calcParams[0]))
+        if (distance < radius + 3 && distance < nearestDistance) { nearestDistance = distance; nearest = trade }
+      }
     }
     if (!nearest) { this.hideTooltip(); return }
     this.tooltip.textContent = `Bybit ${nearest.side === 'buy' ? '主动买入' : '主动卖出'} · ${nearest.size} @ ${nearest.price} · ${notional(nearest).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`

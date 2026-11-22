@@ -20,7 +20,7 @@ export class DrawingOverlays {
   private grid = ''
   private epoch?: string
   private draft?: string
-  private editing?: { id: string; x?: number; moved: boolean }
+  private editing?: { id: string; x?: number; moved: boolean; preview?: ChartDrawing['points'] }
   private queued = false
   private disposed = false
   private applying = false
@@ -170,9 +170,9 @@ export class DrawingOverlays {
         return false
       },
       onPressedMoveStart: ({ x }) => { this.editing = { id, x, moved: false }; return false },
-      onPressedMoving: ({ overlay }) => {
+      onPressedMoving: ({ overlay, x }) => {
         if (this.editing?.id === id) this.editing.moved = true
-        this.previewProfile(overlay)
+        this.previewProfile(overlay, x)
         return false
       },
       onPressedMoveEnd: ({ overlay, x }) => {
@@ -181,7 +181,7 @@ export class DrawingOverlays {
           this.editing = undefined
           if (edit.moved && this.scope === scope) {
             const keepTime = x !== undefined && edit.x !== undefined && Math.abs(x - edit.x) < 1
-            this.capture(overlay, scope, false, keepTime)
+            this.capture(overlay, scope, false, keepTime, edit.preview)
           } else this.queue()
         }
         return false
@@ -196,13 +196,18 @@ export class DrawingOverlays {
     }
   }
 
-  private previewProfile(overlay: Overlay): void {
+  private previewProfile(overlay: Overlay, x?: number): void {
     if (overlay.name !== VOLUME_PROFILE_TOOL || !this.orderFlow) return
     queueMicrotask(() => {
       if (this.disposed || !this.chart.getOverlayById(overlay.id)) return
-      if (this.draft !== overlay.id && this.editing?.id !== overlay.id) return
-      const points = this.readPoints(overlay)
-      if (points) this.orderFlow?.setProfile(overlay.id, points)
+      const edit = this.editing?.id === overlay.id ? this.editing : undefined
+      if (this.draft !== overlay.id && !edit) return
+      const keepTime = x !== undefined && edit?.x !== undefined && Math.abs(x - edit.x) < 1
+      const points = this.readPoints(overlay, keepTime)
+      if (points) {
+        if (edit) edit.preview = points
+        this.orderFlow?.setProfile(overlay.id, points)
+      }
     })
   }
 
@@ -223,13 +228,13 @@ export class DrawingOverlays {
     return points as ChartDrawing['points']
   }
 
-  private capture(overlay: Overlay, scope: string, isNew: boolean, keepTime = false): void {
-    const points = this.readPoints(overlay, keepTime)
+  private capture(overlay: Overlay, scope: string, isNew: boolean, keepTime = false, preview?: ChartDrawing['points']): void {
+    const points = preview ?? this.readPoints(overlay, keepTime)
     if (!points) return
     const previous = this.rendered.get(overlay.id)
     const drawing = { id: overlay.id, name: overlay.name, scope, points,
       ...(overlay.styles !== null ? { styles: overlay.styles } : {}) }
-    if (overlay.name === VOLUME_PROFILE_TOOL) this.orderFlow?.setProfile(overlay.id, points)
+    if (overlay.name === VOLUME_PROFILE_TOOL && !preview) this.orderFlow?.setProfile(overlay.id, points)
     this.write(isNew ? this.store.save(drawing, this.epoch) : this.store.edit(drawing, this.epoch, previous), !isNew)
   }
 

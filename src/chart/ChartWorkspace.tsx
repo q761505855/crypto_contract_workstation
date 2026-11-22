@@ -24,6 +24,7 @@ import { SymbolPicker } from './SymbolPicker'
 import { PeriodSelector } from './PeriodSelector'
 import { saveCandleType } from './candle-preferences'
 import type { DrawingStore } from './drawings'
+import { WorkspaceDialog } from '../components/WorkspaceDialog'
 import './chart-size-controls.css'
 
 export interface ChartWorkspaceProps {
@@ -90,6 +91,7 @@ export function ChartWorkspace({
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
   const [dayDownloadMessage, setDayDownloadMessage] = useState('')
+  const [dayDownloadRange, setDayDownloadRange] = useState<{ start: string; end: string; error?: string } | null>(null)
   const dayDownloadRequest = useRef(0)
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
@@ -149,7 +151,10 @@ export function ChartWorkspace({
     setPeriodToolbar(toolbar)
     const drawingBar = host.querySelector<HTMLElement>('.klinecharts-pro-drawing-bar')
     const drawingSlot = orderFlowCloud && drawingBar ? document.createElement('div') : null
-    if (drawingSlot) drawingBar?.prepend(drawingSlot)
+    if (drawingSlot) {
+      drawingSlot.className = 'chart-volume-profile-slot'
+      drawingBar?.prepend(drawingSlot)
+    }
     setDrawingToolbar(drawingSlot ?? toolbar)
     const priceAxis = adapter?.getPriceAxisContainer?.() ?? null
     priceAxis?.classList.add('chart-price-axis')
@@ -482,25 +487,37 @@ export function ChartWorkspace({
     adapter?.resize?.()
   }
 
-  async function downloadBybitDay(): Promise<void> {
-    const adapter = adapterRef.current
+  function openBybitDownload(): void {
+    try {
+      const day = adapterRef.current?.getVisibleBybitDay?.() ?? ''
+      setDayDownloadRange({ start: day, end: day })
+    } catch (error) {
+      setDayDownloadMessage(error instanceof Error ? error.message : '当前图表暂无可见 K 线')
+    }
+  }
+
+  function downloadBybitDays(): void {
+    if (!dayDownloadRange) return
     const request = ++dayDownloadRequest.current
     const report = (message: string) => {
       if (dayDownloadRequest.current === request) setDayDownloadMessage(message)
     }
     try {
-      if (adapter?.downloadVisibleBybitDay) report(await adapter.downloadVisibleBybitDay(report))
+      const download = adapterRef.current?.downloadBybitDays?.(dayDownloadRange.start, dayDownloadRange.end, report)
+      if (!download) return
+      setDayDownloadRange(null)
+      void download.then(report, error => report(error instanceof Error ? error.message : '无法下载 Bybit 日档'))
     } catch (error) {
-      report(error instanceof Error ? error.message : '无法下载 Bybit 日档')
+      setDayDownloadRange({ ...dayDownloadRange, error: error instanceof Error ? error.message : '无法下载 Bybit 日档' })
     }
   }
 
   const dayDownload = (
     <>
       <button className="chart-day-download" type="button" disabled={!mapping}
-        title={mapping ? `下载 ${mapping.symbol} 最右侧可见 K 线所在的 UTC 日档` : '当前品种暂无 Bybit 成交量'}
-        onClick={() => void downloadBybitDay()}>
-        下载当日成交
+        title={mapping ? `选择 ${mapping.symbol} 逐笔成交的下载日期` : '当前品种暂无 Bybit 成交量'}
+        onClick={openBybitDownload}>
+        下载成交数据
       </button>
       {dayDownloadMessage && (
         <div className="chart-day-download-status">
@@ -582,6 +599,23 @@ export function ChartWorkspace({
           <span aria-hidden="true"><i /><i /><i /></span>
         </button>, drawingToolbar,
       )}
+      <WorkspaceDialog open={dayDownloadRange !== null} title="下载成交数据" onClose={() => setDayDownloadRange(null)}
+        className="bybit-download-dialog">
+        {dayDownloadRange && <form className="bybit-download-form" onSubmit={event => {
+          event.preventDefault()
+          downloadBybitDays()
+        }}>
+          <p>{mapping?.symbol} · UTC 日期 · 只填一个日期即可下载当天</p>
+          <div>
+            <label>开始日期<input type="date" value={dayDownloadRange.start}
+              onChange={event => setDayDownloadRange({ start: event.target.value, end: dayDownloadRange.end })} /></label>
+            <label>结束日期<input type="date" value={dayDownloadRange.end}
+              onChange={event => setDayDownloadRange({ start: dayDownloadRange.start, end: event.target.value })} /></label>
+          </div>
+          {dayDownloadRange.error && <p role="alert">{dayDownloadRange.error}</p>}
+          <button type="submit">下载</button>
+        </form>}
+      </WorkspaceDialog>
       {onChartHeightChange !== undefined ? (
         <div
           aria-label="图表高度"

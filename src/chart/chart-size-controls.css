@@ -54,12 +54,18 @@
   .chart-size-backdrop { align-items: end; padding: 0; }
   .chart-size-dialog { width: 100%; max-height: min(85dvh, calc(var(--workspace-viewport-height, 100dvh) - 12px)); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
 }
+.chart-volume-profile-slot {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
+}
 .chart-volume-profile-tool {
   display: grid;
   place-items: center;
   width: 34px;
   height: 32px;
-  flex: 0 0 32px;
+  flex: 0 0 34px;
+  padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -114,6 +120,20 @@
   font-size: 16px;
   cursor: pointer;
 }
+.bybit-download-form { display: grid; gap: 14px; }
+.bybit-download-form p { margin: 0; color: #aebdd0; font-size: 13px; }
+.bybit-download-form p[role="alert"] { color: #ffb4b4; }
+.bybit-download-form > div { display: flex; flex-wrap: wrap; gap: 12px; }
+.bybit-download-form label { display: grid; flex: 1 0 145px; gap: 5px; }
+.bybit-download-form input, .bybit-download-form button {
+  min-height: 36px;
+  padding: 5px 10px;
+  border: 1px solid #405672;
+  border-radius: 6px;
+  background: #182638;
+  color: #edf6ff;
+}
+.bybit-download-form button { justify-self: end; cursor: pointer; }
 .bybit-trade-tooltip {
   position: absolute;
   z-index: 8;
