@@ -28,7 +28,7 @@ export function tradeBubbleRadius(trade: BybitTrade, minimum: number): number {
 }
 
 export function tradeBubbleOffset(point: TradeBubble, start: number, end: number): number {
-  return point.offset ?? (point.trade.timeUs / 1000 - start) / (end - start) - 0.5
+  return (point.trade.timeUs / 1000 - start) / (end - start) - 0.5
 }
 
 export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {

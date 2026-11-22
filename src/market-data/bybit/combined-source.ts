@@ -70,6 +70,9 @@ export class CombinedBybitSource {
     return this.live?.read(fromUs, untilUs) ?? []
   }
 
+  get capturedFromUs(): number { return this.live?.coverageStartUs ?? Infinity }
+  get capturedUntilUs(): number { return (this.live?.lastTradeUs ?? -1) + 1 }
+
   select(symbol: SymbolInfo, context: ReplayContext | null): void {
     const key = `${symbol.exchange}:${symbol.ticker}:${context?.sessionId ?? ''}`
     const reset = this.selection !== key || (!!context && !!this.context && replayConfirmedUntil(context) < replayConfirmedUntil(this.context))

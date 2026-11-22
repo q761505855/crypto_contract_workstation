@@ -1,5 +1,5 @@
 import { DomPosition, type ActionType, type Chart, type Indicator, type KLineData } from 'klinecharts'
-import { alignOpenTime, nextOpenTime } from '../market-data/intervals'
+import { alignOpenTime, CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/intervals'
 import { BYBIT_DAY_MS, type BybitTrade } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator } from './order-flow'
@@ -257,8 +257,7 @@ export class OrderFlowChart {
     let count = 0
     let sameBars = previous?.bars?.size === display.bars?.size
     for (const [start, bar] of display.bars ?? []) {
-      count += bar.points.length
-      for (const { from, until } of bar.pointRanges ?? []) count += until - from
+      for (const { from, until } of bar.pointRanges) count += until - from
       sameBars &&= previous?.bars?.get(start) === bar
     }
     if (sameBars && count === this.displayedBubbleCount &&
@@ -351,13 +350,14 @@ export class OrderFlowChart {
     const timeframe = this.timeframe()
     const minimum = Number(indicator?.calcParams[0] ?? DEFAULT_BIG_TRADE_NOTIONAL)
     const source = this.feed.archiveCacheKey
-    const key = JSON.stringify([source, timeframe, minimum])
+    const key = JSON.stringify([source, minimum])
     const replaying = this.feed.replaying
     if ((replaying ? this.replayFlow : this.flow)?.key !== key) {
       this.cancelFlow()
       this.flowSource = source
-      this.replayFlow = replaying ? new ReplayOrderFlow(key, minimum) : undefined
-      this.flow = replaying ? undefined : new OrderFlowBars(key, timeframe, minimum)
+      const legacyKeys = CTRADER_TIMEFRAMES.map(period => JSON.stringify([source, period, minimum]))
+      this.replayFlow = replaying ? new ReplayOrderFlow(key, minimum, legacyKeys) : undefined
+      this.flow = replaying ? undefined : new OrderFlowBars(key, minimum)
     }
     const flow = this.flow
     const replay = this.replayFlow
@@ -373,7 +373,7 @@ export class OrderFlowChart {
     const update = (range?: TradeRange) => {
       if (operation.signal.aborted) return
       this.updating = range
-      if (this.hasCurrentCandles()) this.displayFlow(timeframe, read)
+      if (this.hasCurrentCandles()) this.displayFlow(this.timeframe(), read)
     }
     try {
       if (replay) {
@@ -384,12 +384,12 @@ export class OrderFlowChart {
         for (let day = lastDay; day >= firstDay; day -= BYBIT_DAY_MS) days.add(day)
         await replay.prepare(days, this.feed, operation.signal, update)
       } else {
-        await flow?.load(visible.map(bar => bar.timestamp), cursor, this.feed, operation.signal, update)
+        await flow?.load(visible.map(bar => bar.timestamp), timeframe, cursor, this.feed, operation.signal, update)
       }
     } catch (error) {
       if (!operation.signal.aborted) {
         this.updating = undefined
-        this.displayFlow(timeframe, read, errorText(error))
+        if (this.hasCurrentCandles()) this.displayFlow(this.timeframe(), read, errorText(error))
       }
     } finally {
       if (this.flowOperation === operation) {

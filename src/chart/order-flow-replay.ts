@@ -1,17 +1,10 @@
 import { openDB, type DBSchema } from 'idb'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
-import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../market-data/bybit/trades'
-import type { TradeBar, TradeBubble } from './order-flow-bars'
-
-interface PreparedHour {
-  times: Uint32Array
-  volume: Float64Array
-  firstPrices: Float64Array
-  points: TradeBubble[]
-}
+import { BYBIT_DAY_MS, BYBIT_HOUR_MS } from '../market-data/bybit/trades'
+import { AccumulatedHour, includeHour, type HourSamples, type TradeBar } from './order-flow-bars'
 
 interface ReplayFlowCache extends DBSchema {
-  days: { key: [string, number]; value: PreparedHour[] }
+  days: { key: [string, number]; value: HourSamples[] }
 }
 
 let cache: ReturnType<typeof openDB<ReplayFlowCache>> | undefined
@@ -21,43 +14,15 @@ function database() {
   })
 }
 
-function lowerBound(length: number, time: number, at: (index: number) => number): number {
-  let lo = 0
-  let hi = length
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1
-    if (at(mid) < time) lo = mid + 1
-    else hi = mid
-  }
-  return lo
-}
-
-function prepareHour(hour: number, trades: readonly BybitTrade[], minimum: number): PreparedHour {
-  const times: number[] = []
-  const volume: number[] = [0]
-  const firstPrices: number[] = []
-  const points: TradeBubble[] = []
-  let total = 0
-  for (const trade of trades) {
-    const offset = Math.floor(trade.timeUs / 1000) - hour
-    if (offset !== times.at(-1)) {
-      times.push(offset)
-      firstPrices.push(trade.price)
-    }
-    total += trade.size
-    volume[times.length] = total
-    if (trade.price * trade.size >= minimum) points.push({ trade })
-  }
-  return { times: Uint32Array.from(times), volume: Float64Array.from(volume),
-    firstPrices: Float64Array.from(firstPrices), points }
-}
+type CapturedTrades = Pick<CombinedBybitSource, 'readReplayLive' | 'capturedFromUs' | 'capturedUntilUs'>
 
 export class ReplayOrderFlow {
-  private readonly days = new Map<number, PreparedHour[]>()
+  private readonly days = new Map<number, HourSamples[]>()
+  private readonly liveHours = new Map<number, { cursor: number; samples: AccumulatedHour }>()
   private readonly missing = new Map<number, number>()
   private readonly bars = new Map<number, TradeBar>()
 
-  constructor(readonly key: string, private readonly minimum: number) {}
+  constructor(readonly key: string, private readonly minimum: number, private readonly legacyKeys: readonly string[] = []) {}
 
   invalidate(range: TradeRange): void {
     for (const [start, bar] of this.bars) {
@@ -66,6 +31,9 @@ export class ReplayOrderFlow {
     for (const day of this.missing.keys()) {
       if (day * 1000 < range.untilUs && (day + BYBIT_DAY_MS) * 1000 > range.fromUs) this.missing.delete(day)
     }
+    for (const [hour, section] of this.liveHours) {
+      if (hour * 1000 < range.untilUs && section.cursor > range.fromUs) this.liveHours.delete(hour)
+    }
   }
 
   async prepare(days: Iterable<number>, source: Pick<CombinedBybitSource, 'hasArchivedDay' | 'readArchivedHour'>, signal: AbortSignal,
@@ -73,7 +41,7 @@ export class ReplayOrderFlow {
     for (const day of days) {
       signal.throwIfAborted()
       if (this.days.has(day) || (this.missing.get(day) ?? 0) > Date.now()) continue
-      const stored = await database().then(db => db.get('days', [this.key, day])).catch(() => undefined)
+      const stored = await this.restoreDay(day).catch(() => undefined)
       signal.throwIfAborted()
       if (stored) {
         this.days.set(day, stored)
@@ -89,12 +57,14 @@ export class ReplayOrderFlow {
       }
       const until = day + BYBIT_DAY_MS
       onUpdate({ fromUs: day * 1000, untilUs: until * 1000 })
-      const hours: PreparedHour[] = []
+      const hours: HourSamples[] = []
       for (let hour = day; hour < until; hour += BYBIT_HOUR_MS) {
         const trades = await source.readArchivedHour(hour)
         signal.throwIfAborted()
         if (trades === null) throw new Error('Bybit 日档尚未完整就绪')
-        hours.push(prepareHour(hour, trades, this.minimum))
+        const samples = new AccumulatedHour()
+        for (const trade of trades) samples.add(trade, hour, this.minimum)
+        hours.push(samples.pack())
       }
       this.days.set(day, hours)
       this.invalidate({ fromUs: day * 1000, untilUs: until * 1000 })
@@ -103,45 +73,47 @@ export class ReplayOrderFlow {
     }
   }
 
-  read(start: number, untilUs: number, source: Pick<CombinedBybitSource, 'readReplayLive'>): TradeBar {
+  private async restoreDay(day: number): Promise<HourSamples[] | undefined> {
+    const db = await database()
+    const cached = await db.get('days', [this.key, day])
+    if (cached) return cached
+    for (const key of this.legacyKeys) {
+      const legacy = await db.get('days', [key, day])
+      if (legacy) {
+        void db.put('days', legacy, [this.key, day]).catch(() => undefined)
+        return legacy
+      }
+    }
+  }
+
+  read(start: number, untilUs: number, source: CapturedTrades): TradeBar {
     const previous = this.bars.get(start)
     if (previous?.cursor === untilUs) return previous
-    const pointRanges: NonNullable<TradeBar['pointRanges']> = []
-    const bar: TradeBar = { cursor: untilUs, volume: 0, points: [], pointRanges, complete: true, archived: true }
+    const bar: TradeBar = { cursor: untilUs, volume: 0, pointRanges: [], complete: true }
     for (let from = start; from * 1000 < untilUs;) {
       const day = Math.floor(from / BYBIT_DAY_MS) * BYBIT_DAY_MS
       const until = Math.min(untilUs / 1000, day + BYBIT_DAY_MS)
       const hours = this.days.get(day)
-      if (hours) {
-        for (let hour = Math.floor(from / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour < until; hour += BYBIT_HOUR_MS) {
-          const section = hours[(hour - day) / BYBIT_HOUR_MS]
-          const low = Math.max(hour, from)
-          const high = Math.min(hour + BYBIT_HOUR_MS, until)
-          const lo = lowerBound(section.times.length, low - hour, index => section.times[index])
-          const hi = lowerBound(section.times.length, high - hour, index => section.times[index])
-          if (lo < hi) {
-            bar.volume += section.volume[hi] - section.volume[lo]
-            bar.firstPrice ??= section.firstPrices[lo]
-          }
-          const points = section.points
-          const first = lowerBound(points.length, low * 1000, index => points[index].trade.timeUs)
-          const last = lowerBound(points.length, high * 1000, index => points[index].trade.timeUs)
-          if (first < last) pointRanges.push({ points, from: first, until: last })
-        }
-      } else {
-        bar.complete = false
-        bar.archived = false
-        const points: TradeBubble[] = []
-        for (const trade of source.readReplayLive({ fromUs: from * 1000, untilUs: until * 1000 })) {
-          bar.volume += trade.size
-          bar.firstPrice ??= trade.price
-          if (trade.price * trade.size >= this.minimum) points.push({ trade })
-        }
-        if (points.length) pointRanges.push({ points, from: 0, until: points.length })
+      bar.complete &&= !!hours
+      for (let hour = Math.floor(from / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour < until; hour += BYBIT_HOUR_MS) {
+        const section = hours ? hours[(hour - day) / BYBIT_HOUR_MS] : this.readCapturedHour(hour, source)
+        if (section) includeHour(bar, section, hour, Math.max(hour, from) * 1000, Math.min(hour + BYBIT_HOUR_MS, until) * 1000)
       }
       from = until
     }
     this.bars.set(start, bar)
     return bar
+  }
+
+  private readCapturedHour(hour: number, source: CapturedTrades): HourSamples | undefined {
+    const untilUs = Math.min(source.capturedUntilUs, (hour + BYBIT_HOUR_MS) * 1000)
+    let section = this.liveHours.get(hour)
+    const fromUs = Math.max(section?.cursor ?? hour * 1000, source.capturedFromUs)
+    if (untilUs <= fromUs) return section?.samples
+    section ??= { cursor: fromUs, samples: new AccumulatedHour() }
+    for (const trade of source.readReplayLive({ fromUs, untilUs })) section.samples.add(trade, hour, this.minimum)
+    section.cursor = untilUs
+    this.liveHours.set(hour, section)
+    return section.samples
   }
 }

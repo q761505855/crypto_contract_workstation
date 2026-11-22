@@ -78,7 +78,7 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     return { volumeName: volume?.shortName, volume: volume?.result.at(-1)?.volume, updating: bubbles?.extendData?.updating,
       points: Array.from(bars ?? []).flatMap(([stamp, row]) => {
         const open = candles.find(candle => candle.timestamp === stamp)?.open ?? 0
-        const points = row.pointRanges?.flatMap(({ points, from, until }) => points.slice(from, until)) ?? row.points
+        const points = row.pointRanges.flatMap(({ points, from, until }) => points.slice(from, until))
         return points.map(({ trade }) => [trade.id, trade.price, Math.round(trade.price * (open / row.firstPrice!) * 1e5) / 1e5])
       }) }
   })
@@ -156,6 +156,24 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   const preview = await profileState('store')
   await page.mouse.up()
   await expect.poll(() => profileState('read')).toMatchObject({ sameProfile: true, savedLow: preview.low })
+
+  await page.evaluate(() => {
+    const state = window as unknown as { __periodArchiveReads: number; __viewportTestAdapter: {
+      source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
+    } }
+    const { source } = state.__viewportTestAdapter
+    state.__periodArchiveReads = 0
+    const read = source.readArchivedHour.bind(source)
+    source.readArchivedHour = (...args) => {
+      state.__periodArchiveReads++
+      return read(...args)
+    }
+  })
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 5m', exact: true }).click()
+  await expect.poll(async () => (await combined()).points.map(point => point[0])).toEqual(['first', 'next'])
+  await expect.poll(async () => (await combined()).volume).toBe(90)
+  expect(await page.evaluate(() => (window as unknown as { __periodArchiveReads: number }).__periodArchiveReads)).toBe(0)
 })
 
 test('实时成交只更新映射品种的成交量，切到未匹配品种时恢复报价量', async ({ page }) => {
@@ -367,7 +385,8 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     const indicator = coreChart.getIndicatorByPaneId('candle_pane', 'BIG_TRADES') as import('klinecharts').Indicator | null
     const bars = indicator?.extendData?.bars as import('../src/chart/order-flow-renderers').BubbleDisplay['bars']
-    return Array.from(bars?.values() ?? []).flatMap(bar => bar.points.map(point => point.trade.id))
+    return Array.from(bars?.values() ?? []).flatMap(bar =>
+      bar.pointRanges.flatMap(({ points, from, until }) => points.slice(from, until).map(point => point.trade.id)))
   })
   await expect.poll(async () => (await bubbleIds()).length).toBe(400)
   expect((await bubbleIds()).every(id => id.startsWith('archive-'))).toBe(true)
@@ -394,8 +413,16 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   await expect.poll(async () => (await bubbleIds()).length).toBe(1)
   await zoom(3)
   await expect.poll(async () => (await bubbleIds()).length).toBe(401)
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 5m', exact: true }).click()
+  await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 5m')
+  await zoom(3)
+  await expect.poll(async () => (await bubbleIds()).length).toBe(401)
   expect(await page.evaluate(() => (window as unknown as { __archivedScans: number }).__archivedScans)).toBe(0)
   expect(partReads).toBe(reads)
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 15m', exact: true }).click()
+  await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
   await page.reload()
   await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 15m')
   await zoom(3)

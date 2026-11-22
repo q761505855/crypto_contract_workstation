@@ -17,6 +17,8 @@ it('预读整份 UTC 日档，K 线内逐步揭示成交时直接查已算好的
       return []
     }),
     readReplayLive: vi.fn().mockReturnValue([]),
+    capturedFromUs: Infinity,
+    capturedUntilUs: 0,
   }
   const flow = new ReplayOrderFlow('test-replay-flow', 300)
   const update = vi.fn()
@@ -36,4 +38,9 @@ it('预读整份 UTC 日档，K 线内逐步揭示成交时直接查已算好的
   await prepare()
   expect(source.readArchivedHour).toHaveBeenCalledTimes(24)
   expect(source.readReplayLive).not.toHaveBeenCalled()
+
+  const migrated = new ReplayOrderFlow('test-period-independent-flow', 300, [flow.key])
+  await migrated.prepare([day], source, new AbortController().signal, update)
+  expect(source.readArchivedHour).toHaveBeenCalledTimes(24)
+  expect([...tradeBubbles(migrated.read(day, start + 2000, source))].map(point => point.trade.id)).toEqual(['first'])
 })
