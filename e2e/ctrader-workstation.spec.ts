@@ -74,10 +74,15 @@ test('edits, locks, unlocks and deletes a selected drawing', async ({ page }) =>
   await expect.poll(detail).toMatchObject({ locked: false })
   await drag()
   await expect.poll(async () => (await detail())?.value).not.toBe(restored.value)
+  // Hit testing uses the overlay figures from the most recent canvas paint.
+  await page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
   await page.mouse.click(restored.x, restored.y - 25)
   await expect(toolbar).toHaveCount(0)
   const moved = (await detail())!
   await page.mouse.click(moved.x, moved.y)
+  await expect(toolbar).toBeVisible({ timeout: 3_000 })
   await toolbar.getByRole('button', { name: '删除绘图' }).click()
   await expect(toolbar).toHaveCount(0)
   await expect.poll(detail).toMatchObject({ exists: false })
