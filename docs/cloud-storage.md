@@ -90,6 +90,6 @@ OKX 完整覆盖对应 UTC 日后，工作流在发布的同一 Git 提交中清
 
 ## Bybit 逐笔成交缓存
 
-Bybit 归档按 UTC 日获取。用户从图表顶部打开「下载成交数据」后，可选择一个日期或含首尾两日的日期范围。开始和结束日期默认取最右侧可见 K 线的开盘时间所在日。对使用 Bybit 来源且未缓存的已结束日期，网页通过现有云端连接在 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json` 写入带 `requestedManually: true` 的请求。同品种同日共用一个请求。页面写入请求后直接触发 GitHub Actions，定时扫描和临时失败重试只处理明确手动申请的日期。旧自动请求保留在原处，点击同日时可转为手动请求。后台使用现有 `CLOUD_STORAGE_TOKEN` 下载并发布，归档就绪后主图刷新对应日期的成交量指标。图表浏览、框选和回放使用手动加载的日期及 WebSocket 实时成交。
+Bybit 归档按 UTC 日获取。用户从图表顶部打开「下载成交数据」后，以最右侧可见 K 线的开盘时间所在 UTC 日为默认锚点，往前和往后天数默认各 1 天。下载包含锚点当天，范围截止到当前 UTC 日期。对使用 Bybit 来源且未缓存的已结束日期，网页通过现有云端连接在 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json` 写入带 `requestedManually: true` 的请求。同品种同日共用一个请求。页面写入请求后直接触发 GitHub Actions，定时扫描和临时失败重试只处理明确手动申请的日期。旧自动请求保留在原处，点击同日时可转为手动请求。后台使用现有 `CLOUD_STORAGE_TOKEN` 下载并发布，归档就绪后主图刷新对应日期的成交量指标。图表浏览、框选和回放使用手动加载的日期及 WebSocket 实时成交。
 
 归档只写入 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/<品种>/<UTC日期>/`。原始数据按成交时间排序后转存为保留交易 ID、方向、时间、价格、数量的 gzip 分片。分片按小时读取，大文件进一步拆分，并由当天清单记录每个分片的笔数、大小和 SHA-256。完整归档与请求移除在同一 Git 提交发布，非强制推送。网页通过 GitHub Raw 读取，刚发布的归档以同一个提交读取清单和分片，避开分支地址暂时缓存的 404。日档和下载请求属于行情缓存运行数据，独立于配置、存档、会话和旧行情清单。无云端写权限时仍可读取已有公开缓存。

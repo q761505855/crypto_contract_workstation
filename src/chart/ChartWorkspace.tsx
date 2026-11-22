@@ -14,6 +14,7 @@ import {
   type ChartIndicatorPreferences,
 } from './indicator-preferences'
 import type { GitHubContentsClient } from '../github-sync/github-client'
+import { BYBIT_DAY_MS, bybitDay, bybitDayStart } from '../market-data/bybit/trades'
 import { orderFlowLabel, orderFlowMapping } from '../market-data/okx/trades'
 import {
   ProChartAdapter,
@@ -60,6 +61,32 @@ export interface ChartWorkspaceProps {
 
 const demoDatafeed = new DemoDatafeed()
 
+interface DayDownloadSelection {
+  anchor: string
+  before: string
+  after: string
+  error?: string
+}
+
+function resolveDayDownloadRange({ anchor, before, after }: DayDownloadSelection, today: string) {
+  let anchorMs: number
+  try { anchorMs = bybitDayStart(anchor) }
+  catch { return { error: '请选择有效的锚点日期' } }
+  if (anchor > today) return { error: '锚点日期不能晚于当前 UTC 日期' }
+  const beforeDays = Number(before)
+  const afterDays = Number(after)
+  if (!before || !after || ![beforeDays, afterDays].every(days => Number.isSafeInteger(days) && days >= 0)) {
+    return { error: '往前和往后天数须为大于或等于 0 的整数' }
+  }
+  const start = anchorMs - beforeDays * BYBIT_DAY_MS
+  if (start < bybitDayStart('0000-01-01')) return { error: '往前天数超出可用日期范围' }
+  const todayMs = bybitDayStart(today)
+  const daysAvailableAfterAnchor = (todayMs - anchorMs) / BYBIT_DAY_MS
+  const clipped = afterDays > daysAvailableAfterAnchor
+  const end = clipped ? todayMs : anchorMs + afterDays * BYBIT_DAY_MS
+  return { start: bybitDay(start), end: bybitDay(end), clipped }
+}
+
 export function ChartWorkspace({
   createAdapter = () => new ProChartAdapter(),
   datafeed = demoDatafeed,
@@ -91,7 +118,7 @@ export function ChartWorkspace({
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
   const [dayDownloadMessage, setDayDownloadMessage] = useState('')
-  const [dayDownloadRange, setDayDownloadRange] = useState<{ start: string; end: string; error?: string } | null>(null)
+  const [dayDownloadSelection, setDayDownloadSelection] = useState<DayDownloadSelection | null>(null)
   const dayDownloadRequest = useRef(0)
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
@@ -490,28 +517,35 @@ export function ChartWorkspace({
   function openBybitDownload(): void {
     try {
       const day = adapterRef.current?.getVisibleBybitDay?.() ?? ''
-      setDayDownloadRange({ start: day, end: day })
+      setDayDownloadSelection({ anchor: day, before: '1', after: '1' })
     } catch (error) {
       setDayDownloadMessage(error instanceof Error ? error.message : '当前图表暂无可见 K 线')
     }
   }
 
   function downloadBybitDays(): void {
-    if (!dayDownloadRange) return
+    if (!dayDownloadSelection) return
+    const range = resolveDayDownloadRange(dayDownloadSelection, bybitDay(Date.now()))
+    if (range.error !== undefined) {
+      setDayDownloadSelection({ ...dayDownloadSelection, error: range.error })
+      return
+    }
     const request = ++dayDownloadRequest.current
     const report = (message: string) => {
       if (dayDownloadRequest.current === request) setDayDownloadMessage(message)
     }
     try {
-      const download = adapterRef.current?.downloadBybitDays?.(dayDownloadRange.start, dayDownloadRange.end, report)
+      const download = adapterRef.current?.downloadBybitDays?.(range.start, range.end, report)
       if (!download) return
-      setDayDownloadRange(null)
+      setDayDownloadSelection(null)
       void download.then(report, error => report(error instanceof Error ? error.message : '无法加载逐笔成交'))
     } catch (error) {
-      setDayDownloadRange({ ...dayDownloadRange, error: error instanceof Error ? error.message : '无法加载逐笔成交' })
+      setDayDownloadSelection({ ...dayDownloadSelection, error: error instanceof Error ? error.message : '无法加载逐笔成交' })
     }
   }
 
+  const today = bybitDay(Date.now())
+  const downloadPreview = dayDownloadSelection && resolveDayDownloadRange(dayDownloadSelection, today)
   const dayDownload = (
     <>
       <button className="chart-day-download" type="button" disabled={!mapping}
@@ -599,21 +633,26 @@ export function ChartWorkspace({
           <span aria-hidden="true"><i /><i /><i /></span>
         </button>, drawingToolbar,
       )}
-      <WorkspaceDialog open={dayDownloadRange !== null} title="下载成交数据" onClose={() => setDayDownloadRange(null)}
+      <WorkspaceDialog open={dayDownloadSelection !== null} title="下载成交数据" onClose={() => setDayDownloadSelection(null)}
         className="bybit-download-dialog">
-        {dayDownloadRange && <form className="bybit-download-form" onSubmit={event => {
+        {dayDownloadSelection && <form className="bybit-download-form" noValidate onSubmit={event => {
           event.preventDefault()
           downloadBybitDays()
         }}>
-          <p>{mapping && orderFlowLabel(mapping)} · UTC 日期 · 只填一个日期即可下载当天</p>
-          <p>日期在 OKX 接口范围内时直接读取，当天取至请求时刻。较早日期使用 Git 日档。</p>
+          <p>{mapping && orderFlowLabel(mapping)} · UTC 日期</p>
+          <label>锚点日期<input type="date" value={dayDownloadSelection.anchor} max={today} required
+            onChange={event => setDayDownloadSelection({ ...dayDownloadSelection, anchor: event.target.value, error: undefined })} /></label>
           <div>
-            <label>开始日期<input type="date" value={dayDownloadRange.start}
-              onChange={event => setDayDownloadRange({ start: event.target.value, end: dayDownloadRange.end })} /></label>
-            <label>结束日期<input type="date" value={dayDownloadRange.end}
-              onChange={event => setDayDownloadRange({ start: dayDownloadRange.start, end: event.target.value })} /></label>
+            <label>往前天数<input type="number" min="0" step="1" value={dayDownloadSelection.before} required
+              onChange={event => setDayDownloadSelection({ ...dayDownloadSelection, before: event.target.value, error: undefined })} /></label>
+            <label>往后天数<input type="number" min="0" step="1" value={dayDownloadSelection.after} required
+              onChange={event => setDayDownloadSelection({ ...dayDownloadSelection, after: event.target.value, error: undefined })} /></label>
           </div>
-          {dayDownloadRange.error && <p role="alert">{dayDownloadRange.error}</p>}
+          {downloadPreview?.start && <p>下载范围 <strong>{downloadPreview.start === downloadPreview.end
+            ? downloadPreview.start : `${downloadPreview.start} 至 ${downloadPreview.end}`}</strong>
+            {downloadPreview.clipped && ' · 未来日期已跳过'}</p>}
+          <p>日期在 OKX 接口范围内时直接读取，当天取至请求时刻。较早日期使用 Git 日档。</p>
+          {dayDownloadSelection.error && <p role="alert">{dayDownloadSelection.error}</p>}
           <button type="submit">下载</button>
         </form>}
       </WorkspaceDialog>
