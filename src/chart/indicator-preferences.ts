@@ -6,7 +6,7 @@ import { validateStyleColors } from './colors'
 import { validateRsiLevels } from './rsi'
 import { writePreference } from '../storage/preference-events'
 import { ctraderStorage } from '../storage/ctrader-storage'
-import { BIG_TRADES, bigTradeMinimum } from './order-flow'
+import { BIG_TRADES, bigTradeMinimum, validateBigTradeStyles } from './order-flow'
 
 export const CHART_INDICATORS_PREFERENCE = 'chart.indicators.v1'
 
@@ -118,9 +118,11 @@ function indicator(
   let validatedStyles = jsonValue(item.styles ?? null, `${field}.styles`)
   validateStyleColors(validatedStyles, `${field}.styles`)
   if (item.name === MARKET_SESSIONS) validateMarketSessionStyles(validatedStyles)
-  if (item.name === 'RSI' || item.name === MARKET_SESSIONS) {
+  if (item.name === BIG_TRADES) validateBigTradeStyles(validatedStyles)
+  if (item.name === 'RSI' || item.name === MARKET_SESSIONS || item.name === BIG_TRADES) {
     const prior = previous.find(setting => setting.name === item.name)?.styles
-    const keys = item.name === 'RSI' ? ['rsiLevels', 'rsiLines'] : ['sessionVisibility', 'sessionFills', 'sessionLines']
+    const keys = item.name === 'RSI' ? ['rsiLevels', 'rsiLines']
+      : item.name === BIG_TRADES ? ['bubbleColors'] : ['sessionVisibility', 'sessionFills', 'sessionLines']
     for (const key of keys) {
       const incoming = validatedStyles !== null && typeof validatedStyles === 'object' && !Array.isArray(validatedStyles) ? validatedStyles : null
       if (incoming?.[key] === undefined && prior && typeof prior === 'object' && !Array.isArray(prior) && prior[key] !== undefined) {

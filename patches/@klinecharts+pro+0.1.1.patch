@@ -43,7 +43,7 @@ index 1cb6404..8a1a4be 100644
  declare function load(key: string, ls: any): void;
  
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..aeabf26 100644
+index 6f78d0e..7dcfd0f 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 @@ -2294,7 +2294,35 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
@@ -523,7 +523,7 @@ index 6f78d0e..aeabf26 100644
    AO: [
      { paramNameKey: "params_1", precision: 0, min: 1, default: 5 },
      { paramNameKey: "params_2", precision: 0, min: 1, default: 34 }
-@@ -3242,9 +3655,92 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3242,9 +3655,96 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
    ]
  }, xl = /* @__PURE__ */ g('<div class="klinecharts-pro-indicator-setting-modal-content"></div>'), kl = /* @__PURE__ */ g("<span></span>"), Al = (e) => {
    const [t, n] = $(B.clone(e.params.calcParams)), r = (a) => bl[a];
@@ -533,8 +533,11 @@ index 6f78d0e..aeabf26 100644
 +  const isMarketSessions = e.params.indicatorName === "MARKET_SESSIONS";
 +  const sessionFillDefaults = ["#f5bb5538", "#57b5fc38", "#ce83ef38"];
 +  const sessionLineDefaults = [{ style: "solid", size: 1 }];
++  const bubbleColorDefaults = ["#49d4ae6b", "#ff827e6b", "#49d4aee6", "#ff827ee6"];
 +  const colorControls = isMarketSessions ? ["session_tokyo_fill", "session_london_fill", "session_new_york_fill"].map((key, index) =>
-+    [l(key, e.locale), "sessionFills", index, "color", sessionFillDefaults[index]]) : e.params.indicatorName === "KC" ? [
++    [l(key, e.locale), "sessionFills", index, "color", sessionFillDefaults[index]]) : e.params.indicatorName === "BIG_TRADES" ?
++    ["主动买入填充", "主动卖出填充", "主动买入描边", "主动卖出描边"].map((label, index) =>
++      [label, "bubbleColors", index, "color", bubbleColorDefaults[index]]) : e.params.indicatorName === "KC" ? [
 +    ["上轨颜色", "lines", 0, "color", "#ff9800"],
 +    ["中轨颜色", "lines", 1, "color", "#2196f3"],
 +    ["下轨颜色", "lines", 2, "color", "#ab47bc"]
@@ -559,7 +562,7 @@ index 6f78d0e..aeabf26 100644
 +    const labelElement = document.createElement("span");
 +    labelElement.textContent = label;
 +    const input = alphaColorControl(label, editableStyles[group]?.[index]?.[key] ?? (isWave && key === "positiveColor" ? editableStyles[group]?.[index]?.noChangeColor : undefined) ?? fallback, (color) => {
-+      editableStyles[group] ??= group === "sessionFills" ? sessionFillDefaults.map(color => ({ color })) : [];
++      editableStyles[group] ??= (group === "sessionFills" ? sessionFillDefaults : group === "bubbleColors" ? bubbleColorDefaults : []).map(color => ({ color }));
 +      editableStyles[group][index] ??= {};
 +      editableStyles[group][index][key] = color;
 +    });
@@ -613,11 +616,12 @@ index 6f78d0e..aeabf26 100644
      get title() {
 -      return e.params.indicatorName;
 +      if (e.params.indicatorName === "MARKET_SESSIONS") return l("market_sessions", e.locale);
++      if (e.params.indicatorName === "BIG_TRADES") return l("big_trades", e.locale);
 +      return e.params.indicatorName.replace(/^TTM_WAVE_([ABC])$/, "TTM Wave $1");
      },
      width: 360,
      get buttons() {
-@@ -3255,7 +3751,20 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3255,7 +3755,20 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
            const a = r(e.params.indicatorName), i = [];
            B.clone(t()).forEach((o, s) => {
              !B.isValid(o) || o === "" ? "default" in a[s] && i.push(a[s].default) : i.push(o);
@@ -639,7 +643,7 @@ index 6f78d0e..aeabf26 100644
          }
        }];
      },
-@@ -3264,15 +3773,18 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3264,15 +3777,18 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
      },
      get children() {
        const a = xl.cloneNode(!0);
@@ -661,7 +665,7 @@ index 6f78d0e..aeabf26 100644
          },
          get precision() {
            return i.precision;
-@@ -3280,11 +3792,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3280,11 +3796,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
          get min() {
            return i.min;
          },
@@ -677,7 +681,7 @@ index 6f78d0e..aeabf26 100644
      }
    });
  }, Ml = /* @__PURE__ */ g('<svg viewBox="0 0 1024 1024"><path d="M945.066667 898.133333l-189.866667-189.866666c55.466667-64 87.466667-149.333333 87.466667-241.066667 0-204.8-168.533333-373.333333-373.333334-373.333333S96 264.533333 96 469.333333 264.533333 842.666667 469.333333 842.666667c91.733333 0 174.933333-34.133333 241.066667-87.466667l189.866667 189.866667c6.4 6.4 14.933333 8.533333 23.466666 8.533333s17.066667-2.133333 23.466667-8.533333c8.533333-12.8 8.533333-34.133333-2.133333-46.933334zM469.333333 778.666667C298.666667 778.666667 160 640 160 469.333333S298.666667 160 469.333333 160 778.666667 298.666667 778.666667 469.333333 640 778.666667 469.333333 778.666667z"></path></svg>'), wl = /* @__PURE__ */ g('<img alt="symbol">'), Sl = /* @__PURE__ */ g("<li><div><span></span></div></li>"), Tl = (e) => {
-@@ -3341,6 +3856,65 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3341,6 +3860,65 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
  };
  q(["click"]);
  const Il = /* @__PURE__ */ g('<i class="icon-close klinecharts-pro-load-icon"></i>'), Nl = /* @__PURE__ */ g('<div class="klinecharts-pro-content"><div class="klinecharts-pro-widget"></div></div>');
@@ -743,7 +747,7 @@ index 6f78d0e..aeabf26 100644
  function V1(e, t, n, r) {
    return t === "VOL" && (r = {
      gap: {
-@@ -3349,6 +3923,7 @@ function V1(e, t, n, r) {
+@@ -3349,6 +3927,7 @@ function V1(e, t, n, r) {
      ...r
    }), (e == null ? void 0 : e.createIndicator({
      name: t,
@@ -751,7 +755,7 @@ index 6f78d0e..aeabf26 100644
      // @ts-expect-error
      createTooltipDataSource: ({
        indicator: a,
-@@ -3359,10 +3934,11 @@ function V1(e, t, n, r) {
+@@ -3359,10 +3938,11 @@ function V1(e, t, n, r) {
          icons: o
        };
      }
@@ -764,7 +768,7 @@ index 6f78d0e..aeabf26 100644
    const [i, o] = $(e.theme), [s, c] = $(e.styles), [C, u] = $(e.locale), [y, p] = $(e.symbol), [L, M] = $(e.period), [P, K] = $(!1), [w, Q] = $([...e.mainIndicators]), [S, A] = $({}), [b, O] = $(!1), [H, t1] = $({
      key: e.timezone,
      text: b9(e.timezone, e.locale)
-@@ -3389,7 +3965,9 @@ const Dl = (e) => {
+@@ -3389,7 +3969,9 @@ const Dl = (e) => {
      setSymbol: p,
      getSymbol: () => y(),
      setPeriod: M,
@@ -775,7 +779,7 @@ index 6f78d0e..aeabf26 100644
    });
    const c1 = () => {
      n == null || n.resize();
-@@ -3405,28 +3983,23 @@ const Dl = (e) => {
+@@ -3405,28 +3987,23 @@ const Dl = (e) => {
          break;
        }
        case "day": {
@@ -812,7 +816,7 @@ index 6f78d0e..aeabf26 100644
          break;
        }
      }
-@@ -3475,10 +4048,37 @@ const Dl = (e) => {
+@@ -3475,10 +4052,37 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -854,7 +858,7 @@ index 6f78d0e..aeabf26 100644
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3503,7 +4103,8 @@ const Dl = (e) => {
+@@ -3503,7 +4107,8 @@ const Dl = (e) => {
                visible: !0,
                indicatorName: f.indicatorName,
                paneId: f.paneId,
@@ -864,7 +868,7 @@ index 6f78d0e..aeabf26 100644
              });
              break;
            }
-@@ -3520,25 +4121,33 @@ const Dl = (e) => {
+@@ -3520,25 +4125,33 @@ const Dl = (e) => {
          }
      });
    }), k0(() => {
@@ -911,7 +915,7 @@ index 6f78d0e..aeabf26 100644
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3654,6 +4263,7 @@ const Dl = (e) => {
+@@ -3654,6 +4267,7 @@ const Dl = (e) => {
      },
      get children() {
        return d(hl, {
@@ -919,7 +923,7 @@ index 6f78d0e..aeabf26 100644
          get locale() {
            return e.locale;
          },
-@@ -3725,7 +4335,7 @@ const Dl = (e) => {
+@@ -3725,7 +4339,7 @@ const Dl = (e) => {
            const f = {};
            h.forEach((v) => {
              const _ = v.key;
@@ -928,7 +932,7 @@ index 6f78d0e..aeabf26 100644
            }), n == null || n.setStyles(f);
          }
        });
-@@ -3767,11 +4377,12 @@ const Dl = (e) => {
+@@ -3767,11 +4381,12 @@ const Dl = (e) => {
              calcParams: []
            });
          },
@@ -943,7 +947,7 @@ index 6f78d0e..aeabf26 100644
            }, f.paneId);
          }
        });
-@@ -3875,7 +4486,7 @@ class jl {
+@@ -3875,7 +4490,7 @@ class jl {
        this._container = t.container;
      this._container.classList.add("klinecharts-pro"), this._container.setAttribute("data-theme", t.theme ?? "light");
      const n = this;
@@ -952,7 +956,7 @@ index 6f78d0e..aeabf26 100644
        ref: (r) => {
          n._chartApi = r;
        },
-@@ -3894,6 +4505,9 @@ class jl {
+@@ -3894,6 +4509,9 @@ class jl {
        get drawingBarVisible() {
          return t.drawingBarVisible ?? !0;
        },
@@ -962,7 +966,7 @@ index 6f78d0e..aeabf26 100644
        get symbol() {
          return t.symbol;
        },
-@@ -3994,6 +4608,16 @@ class jl {
+@@ -3994,6 +4612,16 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }

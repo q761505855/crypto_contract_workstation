@@ -27,7 +27,7 @@ cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、Bybit 大单气泡最低成交额） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、Bybit 大单气泡最低成交额、买卖填充与描边） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
@@ -48,7 +48,9 @@ cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID
 
 主图大单气泡 `BIG_TRADES` 的选择、可见性和最低成交额沿用既有 `chartIndicators`，默认 25,000 USDT，非负有限数，显式 0 表示无成交额下限，`visible: false` 原样恢复。旧版独立工作区保存的同名指标由主图直接恢复。旧档带指标列表时按列表恢复，缺少整个指标配置时保留本地值。非法参数在写入前拒绝。应用配置、完整 JSON、GitHub 应用配置全部支持往返。自动恢复会重建图表，手动恢复仍按界面提示刷新。品种映射属于程序随附的行情目录，无额外用户配置字段。
 
-框选成交分布是绘图业务数据，使用两个 IC 时间和价格锚点，随 IC 品种或回放会话保存。继承本地绘图、完整 JSON 和 GitHub 绘图同步。旧版独立工作区的 Bybit 价格锚点按原作用域保存在绘图存档。实际逐笔数据和计算后的分布从行情重建。
+大单气泡的 `styles.bubbleColors` 按主动买入填充、主动卖出填充、主动买入描边和主动卖出描边的顺序保存四个颜色对象。每项使用标准图表颜色格式，透明度 0% 和 100% 原样往返。含气泡指标但缺少该样式组的旧存档会保留本地样式，本地无设置时使用默认绿红配色和透明度。提供该组时，空数组、`null` 和非法颜色在写入前拒绝。应用配置、完整 JSON 和 GitHub 应用配置均覆盖该样式组。
+
+框选成交分布是绘图业务数据，使用两个 IC 时间和价格锚点，随 IC 品种或回放会话保存。继承本地绘图、完整 JSON 和 GitHub 绘图同步。旧版独立工作区的 Bybit 价格锚点按原作用域保存在绘图存档。实际逐笔数据和计算后的分布从行情重建。成交量和 Delta 横条使用半透明配色，透明度由绘制规则决定。
 
 副图窗口默认大小保存为 `chartWindowSize: { width, height }`，宽和高都是正的安全整数，单位为浏览器内容区 CSS 像素。点击“设为默认大小”会捕获两项并作为一个设置同步。新开副图读取最新值，因此保存或恢复后下一次打开就生效。应用配置、全部数据 JSON 和 GitHub“应用配置”均可导出和恢复。旧存档缺字段时保留本地值，本地缺失或损坏则使用 1100 × 760。导入时出现 `null`、空对象、缺少任一尺寸、零、负值或小数会在任何写入前拒绝。存档保持 Schema 1。
 

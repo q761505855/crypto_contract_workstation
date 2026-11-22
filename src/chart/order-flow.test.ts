@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { validateDrawings } from './drawings'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
-import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator } from './order-flow'
+import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator, bigTradeColors } from './order-flow'
+import { drawVolumeProfile } from './order-flow-renderers'
 import type { BybitTrade } from '../market-data/bybit/trades'
 
 const trade = (price: number, size: number, side: BybitTrade['side']): BybitTrade =>
@@ -33,5 +34,42 @@ describe('Bybit 成交指标', () => {
     for (const calcParams of [[-1], [NaN], [], ['100'], [null]]) {
       expect(() => validateChartIndicatorPreferences({ ...valid, main: [{ ...valid.main[0], calcParams }] })).toThrow()
     }
+  })
+
+  it('大单气泡颜色保留透明色，旧档缺少样式时沿用本地设置', () => {
+    const appearance = { bubbleColors: ['#01234500', '#23456780', 'transparent', '#456789'].map(color => ({ color })) }
+    const settings = { schemaVersion: 1, main: [{ name: BIG_TRADES, calcParams: [0], visible: false, styles: appearance }], sub: [] }
+    const validated = validateChartIndicatorPreferences(settings)
+    expect(validated).toEqual(settings)
+    expect(bigTradeColors(validated.main[0].styles)).toEqual({
+      buy: { fill: '#01234500', outline: 'transparent' }, sell: { fill: '#23456780', outline: '#456789' },
+    })
+    expect(bigTradeColors(null)).toEqual({
+      buy: { fill: '#49d4ae6b', outline: '#49d4aee6' }, sell: { fill: '#ff827e6b', outline: '#ff827ee6' },
+    })
+    for (const styles of [null, {}]) {
+      const legacy = { ...settings, main: [{ ...settings.main[0], styles }] }
+      expect(validateChartIndicatorPreferences(legacy, validated)).toEqual(settings)
+      expect(validateChartIndicatorPreferences(legacy)).toEqual(legacy)
+    }
+    for (const bubbleColors of [[], null, [1, 2, 3, 4], [{ color: '#fff' }], [{ color: '#fff' }, {}, {}, {}]]) {
+      expect(() => validateChartIndicatorPreferences({ ...settings, main: [{ ...settings.main[0], styles: { bubbleColors } }] }))
+        .toThrow(/BIG_TRADES.*bubbleColors/)
+    }
+  })
+
+  it('成交量和 Delta 横条使用半透明颜色，保留价位线', () => {
+    const accumulator = new VolumeProfileAccumulator(100, 104, 4)
+    accumulator.add(trade(101.5, 4, 'buy'))
+    accumulator.add(trade(103.5, 1, 'sell'))
+    const figures = drawVolumeProfile({
+      overlay: { extendData: { profile: accumulator.profile() } },
+      coordinates: [{ x: 50, y: 20 }, { x: 250, y: 220 }],
+      yAxis: { convertToPixel: (price: number) => (104 - price) * 50 + 20 },
+      precision: { price: 2, volume: 0 },
+    } as Parameters<typeof drawVolumeProfile>[0])
+    expect(figures.filter(figure => figure.type === 'rect').slice(1).map(figure => figure.styles?.color))
+      .toEqual(['#5e93d67a', '#49d4ae66', '#3b54766b', '#ff827e66'])
+    expect(figures.filter(figure => figure.type === 'line')).toHaveLength(3)
   })
 })

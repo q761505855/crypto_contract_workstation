@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { gzipSync } from 'node:zlib'
 import { expect, test, type WebSocketRoute } from '@playwright/test'
 import { connectFixture } from './ctrader-fixture'
@@ -14,6 +15,77 @@ const manifest = { version: 1, symbol: 'SPYUSDT', day, rows: 2,
     sha256: createHash('sha256').update(part).digest('hex') }],
 }
 const headers = { 'access-control-allow-origin': '*' }
+
+test('大单气泡样式保存后可刷新恢复，也支持配置导出和导入', async ({ page }) => {
+  await connectFixture(page)
+  await page.addInitScript(() => {
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (text === '\ue902' && this.canvas.closest('[data-pane-id="candle_pane"]')) {
+        const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        Object.assign(window, { bubbleGear: { x: rect.left + point.x / devicePixelRatio, y: rect.top + point.y / devicePixelRatio } })
+      }
+      if (maxWidth === undefined) fillText.call(this, text, x, y)
+      else fillText.call(this, text, x, y, maxWidth)
+    }
+  })
+  const chart = page.getByTestId('chart-host')
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  const buyFill = settings.getByLabel('主动买入填充', { exact: true })
+  const buyTransparency = settings.getByLabel('主动买入填充透明度')
+  const confirm = page.getByText('确定', { exact: true })
+  const openSettings = async () => {
+    const showInfo = page.getByRole('button', { name: '显示主图指标信息', exact: true })
+    if (await showInfo.isVisible()) await showInfo.click()
+    await expect(async () => {
+      const gear = await page.evaluate(() => (window as unknown as { bubbleGear?: { x: number; y: number } }).bubbleGear)
+      expect(gear).toBeDefined()
+      await page.mouse.click(gear!.x + 3, gear!.y + 3)
+      await expect(buyFill).toBeVisible({ timeout: 400 })
+    }).toPass({ timeout: 5000 })
+  }
+  await page.goto('/')
+  await expect(page.getByRole('contentinfo')).toContainText('EURUSD')
+  await chart.getByText('指标', { exact: true }).click()
+  await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await openSettings()
+  await expect(buyFill).toHaveValue('#49d4ae')
+  await expect(buyTransparency).toHaveValue('58')
+  await buyFill.fill('#123456')
+  await buyTransparency.fill('100')
+  await settings.getByLabel('主动卖出描边透明度').fill('0')
+  await confirm.click()
+
+  await page.reload()
+  await openSettings()
+  await expect(buyFill).toHaveValue('#123456')
+  await expect(buyTransparency).toHaveValue('100')
+  await expect(settings.getByLabel('主动卖出描边透明度')).toHaveValue('0')
+  await confirm.click()
+
+  await page.getByRole('button', { name: '工具', exact: true }).click()
+  await page.getByTestId('open-data-manager').click()
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '导出应用配置' }).click(),
+  ])
+  const archive = JSON.parse(await readFile((await download.path())!, 'utf8'))
+  const styles = archive.data.preferences.chartIndicators.main.find((setting: { name: string }) => setting.name === 'BIG_TRADES').styles
+  expect(styles.bubbleColors.map(({ color }: { color: string }) => color))
+    .toEqual(['#12345600', '#ff827e6b', '#49d4aee6', '#ff827e'])
+  styles.bubbleColors[0].color = '#654321'
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByTestId('import-backup-file').setInputFiles({
+    name: 'big-trades-style.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)),
+  })
+  await expect(page.getByTestId('backup-status')).toContainText('刷新页面')
+  await page.reload()
+  await openSettings()
+  await expect(buyFill).toHaveValue('#654321')
+  await expect(buyTransparency).toHaveValue('0')
+})
 
 test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', async ({ page }) => {
   let futureReads = 0

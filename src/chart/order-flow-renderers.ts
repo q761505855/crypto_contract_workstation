@@ -1,6 +1,6 @@
 import { registerIndicator, registerOverlay, type IndicatorDrawParams, type IndicatorTooltipData,
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
-import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, type VolumeProfile } from './order-flow'
+import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, type VolumeProfile } from './order-flow'
 import type { TradeRange } from '../market-data/bybit/combined-source'
 import type { BybitTrade } from '../market-data/bybit/trades'
 import { drawingIndexAt } from './drawing-coordinates'
@@ -9,8 +9,6 @@ import { nextOpenTime } from '../market-data/intervals'
 
 export const CANDLE_PANE = 'candle_pane'
 export const bigTradesTitle = '大单气泡（Big Trades）'
-const BUY = '#49d4ae'
-const SELL = '#ff827e'
 const VALUE_AREA = '#aabcda'
 const POC = '#ffcc70'
 
@@ -62,11 +60,11 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
     const delta = row.buy - row.sell
     const volumeWidth = volume / maxVolume * barWidth
     const deltaWidth = maxDelta ? Math.abs(delta) / maxDelta * barWidth : 0
-    const color = row.low < profile.vah && row.high > profile.val ? '#5e93d6' : '#3b5476'
+    const color = row.low < profile.vah && row.high > profile.val ? '#5e93d67a' : '#3b54766b'
     figures.push({ type: 'rect', attrs: { x, y: top, width: volumeWidth, height: rowHeight },
       styles: { color }, ignoreEvent: true })
     if (deltaWidth) figures.push({ type: 'rect', attrs: { x: x - deltaWidth, y: top, width: deltaWidth, height: rowHeight },
-      styles: { color: delta > 0 ? BUY : SELL }, ignoreEvent: true })
+      styles: { color: delta > 0 ? '#49d4ae66' : '#ff827e66' }, ignoreEvent: true })
   }
   const levels = [['VAH', profile.vah], ['POC', profile.poc], ['VAL', profile.val]] as const
   let lastLabel = -Infinity
@@ -87,7 +85,9 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
   const display = indicator.extendData as BubbleDisplay | undefined
   if (!display?.timeframe || (!display.bars?.size && !display.updating)) return true
   const minimum = indicator.calcParams[0] as number
+  const colors = bigTradeColors(indicator.styles)
   ctx.save()
+  ctx.globalAlpha = 1
   ctx.beginPath()
   ctx.rect(0, 0, bounding.width, bounding.height)
   ctx.clip()
@@ -126,14 +126,12 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
       const radius = tradeBubbleRadius(trade, minimum)
       const y = yAxis.convertToPixel(trade.price * scale)
       if (y + radius < 0 || y - radius > bounding.height) continue
-      const color = trade.side === 'buy' ? BUY : SELL
+      const { fill, outline } = colors[trade.side]
       ctx.beginPath()
       ctx.arc(xAxis.convertToPixel(index + tradeBubbleOffset(point, candle.timestamp, end)), y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = color
-      ctx.globalAlpha = 0.42
+      ctx.fillStyle = fill
       ctx.fill()
-      ctx.globalAlpha = 0.9
-      ctx.strokeStyle = color
+      ctx.strokeStyle = outline
       ctx.stroke()
     }
   }

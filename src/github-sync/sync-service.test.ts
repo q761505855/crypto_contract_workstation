@@ -84,7 +84,9 @@ function backup(): BackupEnvelope {
       schemaVersion: 1,
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
-        { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: null },
+        { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
+          bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
+        } },
         { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#12345600', size: 0 }] } },
         { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
         { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
@@ -803,6 +805,16 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
 
+    const bubbleChanged = structuredClone(indicators)
+    bubbleChanged.main.find(i => i.name === 'BIG_TRADES')!.styles = {
+      bubbleColors: [{ color: '#ab451200' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
+    }
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(bubbleChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(bubbleChanged)
+
     const marketsHidden = structuredClone(indicators)
     const marketSessions = marketsHidden.main.find(i => i.name === 'MARKET_SESSIONS')!
     marketSessions.styles = { ...(marketSessions.styles as Record<string, JsonValue>), sessionVisibility: [false, false, false] }
@@ -859,6 +871,7 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicators)
     const legacyDefaults = structuredClone(indicators)
+    legacyDefaults.main.find(i => i.name === 'BIG_TRADES')!.styles = null
     legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
     const legacySessions = legacyDefaults.main.find(i => i.name === 'MARKET_SESSIONS')!
     legacySessions.calcParams = [45, 0]
@@ -872,7 +885,14 @@ describe('GitHubSyncService', () => {
       .toEqual(['#fb8c00', '#ef5350', '#26a69a', true, '#445566', '#aa7777', '#77aa77'])
     expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'MARKET_SESSIONS'))
       .toEqual(indicators.main.find(i => i.name === 'MARKET_SESSIONS'))
+    expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
+      .toEqual(indicators.main.find(i => i.name === 'BIG_TRADES'))
     const before = (await targetBackups.exportAll()).data
+    const invalidBubbles = structuredClone(indicators)
+    invalidBubbles.main.find(i => i.name === 'BIG_TRADES')!.styles = { bubbleColors: [] }
+    await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidBubbles })
+    await expect(target.pull(client(remote))).rejects.toThrow(/BIG_TRADES.*bubbleColors/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
     for (const params of [[60], [null, 60], [1441, 60]]) {
       const invalidSessions = structuredClone(indicators)
       invalidSessions.main.find(i => i.name === 'MARKET_SESSIONS')!.calcParams = params

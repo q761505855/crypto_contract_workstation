@@ -278,7 +278,9 @@ function indicatorPreferences(): ChartIndicatorPreferences {
         styles: { lines: [{ color: '#f00' }] },
       },
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
-      { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: null },
+      { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
+        bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
+      } },
       { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
       { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
         sessionVisibility: [true, false, true],
@@ -566,11 +568,14 @@ describe('WorkstationBackupService', () => {
     const legacySessions = archive.data.preferences!.chartIndicators.main.find(i => i.name === 'MARKET_SESSIONS')!
     legacySessions.calcParams = [0, 95]
     legacySessions.styles = null
+    archive.data.preferences!.chartIndicators.main.find(i => i.name === 'BIG_TRADES')!.styles = null
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'PIVOTS')!.calcParams.slice(30))
       .toEqual(['#fb8c00', '#ef5350', '#26a69a', true, '#445566', '#aa7777', '#77aa77'])
     expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'MARKET_SESSIONS'))
       .toEqual(indicatorPreferences().main.find(i => i.name === 'MARKET_SESSIONS'))
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
+      .toEqual(indicatorPreferences().main.find(i => i.name === 'BIG_TRADES'))
     archive.data.preferences!.chartIndicators = { schemaVersion: 1, main: [], sub: [] }
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
@@ -586,6 +591,11 @@ describe('WorkstationBackupService', () => {
       await expect(target.import(archive)).rejects.toThrow(/MARKET_SESSIONS/)
       expect((await target.exportAll()).data).toEqual(before)
     }
+    const invalidBubbles = indicatorPreferences()
+    invalidBubbles.main.find(i => i.name === 'BIG_TRADES')!.styles = { bubbleColors: null }
+    archive.data.preferences!.chartIndicators = invalidBubbles
+    await expect(target.import(archive)).rejects.toThrow(/BIG_TRADES.*bubbleColors/)
+    expect((await target.exportAll()).data).toEqual(before)
   })
 
   it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS', 'BIG_TRADES'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
