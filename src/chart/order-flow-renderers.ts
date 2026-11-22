@@ -1,8 +1,11 @@
 import { registerIndicator, registerOverlay, type IndicatorDrawParams, type IndicatorTooltipData,
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, type VolumeProfile } from './order-flow'
+import type { TradeRange } from '../market-data/bybit/combined-source'
 import type { BybitTrade } from '../market-data/bybit/trades'
-import type { TradeBar } from './order-flow-bars'
+import { drawingIndexAt } from './drawing-coordinates'
+import { tradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
+import { nextOpenTime } from '../market-data/intervals'
 
 export const CANDLE_PANE = 'candle_pane'
 export const bigTradesTitle = '大单气泡（Big Trades）'
@@ -14,12 +17,18 @@ const POC = '#ffcc70'
 export interface ProfileDisplay { profile?: VolumeProfile; message?: string }
 export interface BubbleDisplay {
   bars?: ReadonlyMap<number, TradeBar>
+  updating?: TradeRange
+  timeframe?: string
   projectToCandle?: boolean
   message?: string
 }
 
 export function tradeBubbleRadius(trade: BybitTrade, minimum: number): number {
   return Math.min(20, 5 * Math.sqrt(trade.price * trade.size / Math.max(1, minimum)))
+}
+
+export function tradeBubbleOffset(point: TradeBubble, start: number, end: number): number {
+  return point.offset ?? (point.trade.timeUs / 1000 - start) / (end - start) - 0.5
 }
 
 export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {
@@ -76,24 +85,50 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
 
 function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, kLineDataList }: IndicatorDrawParams): boolean {
   const display = indicator.extendData as BubbleDisplay | undefined
-  if (!display?.bars?.size) return true
+  if (!display?.timeframe || (!display.bars?.size && !display.updating)) return true
   const minimum = indicator.calcParams[0] as number
   ctx.save()
   ctx.beginPath()
   ctx.rect(0, 0, bounding.width, bounding.height)
   ctx.clip()
+  if (display.updating && kLineDataList.length) {
+    const { fromUs, untilUs } = display.updating
+    const x = xAxis.convertToPixel(drawingIndexAt(kLineDataList, fromUs / 1000, display.timeframe) - 0.5)
+    const right = xAxis.convertToPixel(drawingIndexAt(kLineDataList, untilUs / 1000, display.timeframe) - 0.5)
+    if (right > 0 && x < bounding.width) {
+      const left = Math.max(0, x)
+      const width = Math.max(2, Math.min(bounding.width, right) - left)
+      ctx.fillStyle = 'rgba(90, 150, 230, 0.16)'
+      ctx.fillRect(left, 0, width, bounding.height)
+      ctx.fillStyle = '#81b5f2'
+      ctx.fillRect(left, 0, width, 2)
+      ctx.fillRect(left, 0, 1, bounding.height)
+      ctx.font = '12px sans-serif'
+      ctx.textBaseline = 'top'
+      const label = '计算中'
+      const labelWidth = ctx.measureText(label).width + 12
+      if (width >= labelWidth) {
+        ctx.fillStyle = '#243f60'
+        ctx.fillRect(left, 2, labelWidth, 20)
+        ctx.fillStyle = '#cce3fc'
+        ctx.fillText(label, left + 6, 6)
+      }
+    }
+  }
   for (let index = Math.max(0, visibleRange.from); index < Math.min(kLineDataList.length, visibleRange.to); index++) {
     const candle = kLineDataList[index]
-    const bar = display.bars.get(candle.timestamp)
-    if (!bar?.points.length) continue
+    const bar = display.bars?.get(candle.timestamp)
+    if (!bar?.firstPrice) continue
+    const end = nextOpenTime(candle.timestamp, display.timeframe)
     const scale = display.projectToCandle ? candle.open / bar.firstPrice! : 1
-    for (const { trade, offset } of bar.points) {
+    for (const point of tradeBubbles(bar)) {
+      const { trade } = point
       const radius = tradeBubbleRadius(trade, minimum)
       const y = yAxis.convertToPixel(trade.price * scale)
       if (y + radius < 0 || y - radius > bounding.height) continue
       const color = trade.side === 'buy' ? BUY : SELL
       ctx.beginPath()
-      ctx.arc(xAxis.convertToPixel(index + offset), y, radius, 0, Math.PI * 2)
+      ctx.arc(xAxis.convertToPixel(index + tradeBubbleOffset(point, candle.timestamp, end)), y, radius, 0, Math.PI * 2)
       ctx.fillStyle = color
       ctx.globalAlpha = 0.42
       ctx.fill()

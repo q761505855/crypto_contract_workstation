@@ -4,8 +4,14 @@ import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combi
 import type { BybitTrade } from '../market-data/bybit/trades'
 
 export interface TradeBubble {
-  offset: number
+  offset?: number
   trade: BybitTrade
+}
+
+interface BubbleRange {
+  points: readonly TradeBubble[]
+  from: number
+  until: number
 }
 
 export interface TradeBar {
@@ -13,8 +19,19 @@ export interface TradeBar {
   volume: number
   firstPrice?: number
   points: TradeBubble[]
+  pointRanges?: BubbleRange[]
   complete: boolean
   archived: boolean
+}
+
+export function* tradeBubbles(bar: TradeBar): Iterable<TradeBubble> {
+  if (!bar.pointRanges) {
+    yield* bar.points
+    return
+  }
+  for (const { points, from, until } of bar.pointRanges) {
+    for (let index = from; index < until; index++) yield points[index]
+  }
 }
 
 interface BarCache extends DBSchema {
@@ -56,7 +73,7 @@ export class OrderFlowBars {
   }
 
   async load(starts: readonly number[], cursor: number, source: CombinedBybitSource, signal: AbortSignal,
-    onUpdate: () => void): Promise<void> {
+    onUpdate: (range?: TradeRange) => void): Promise<void> {
     const pending = starts.filter(start => start * 1000 < cursor && !this.checked.has(start))
     if (pending.length) {
       await this.restore(pending, signal)
@@ -78,6 +95,7 @@ export class OrderFlowBars {
     }
     for (const group of groups) {
       signal.throwIfAborted()
+      onUpdate({ fromUs: group[0].fromUs, untilUs: group.at(-1)!.untilUs })
       await this.scan(group, source, signal)
       onUpdate()
     }

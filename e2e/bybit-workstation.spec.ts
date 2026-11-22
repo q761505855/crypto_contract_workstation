@@ -8,6 +8,7 @@ const day = '2026-11-20'
 const start = Date.parse(day + 'T14:20:00Z')
 const second = start / 1000
 const part = gzipSync(`${second + 1},first,Buy,710,40\n${second + 61},next,Sell,711,50\n`)
+const future = gzipSync(`${Date.parse(day + 'T22:00:01Z') / 1000},future,Buy,712,60\n`)
 const manifest = { version: 1, symbol: 'SPYUSDT', day, rows: 2,
   parts: [{ file: '14-000.csv.gz', hour: 14, rows: 2, bytes: part.byteLength,
     sha256: createHash('sha256').update(part).digest('hex') }],
@@ -15,6 +16,9 @@ const manifest = { version: 1, symbol: 'SPYUSDT', day, rows: 2,
 const headers = { 'access-control-allow-origin': '*' }
 
 test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', async ({ page }) => {
+  let futureReads = 0
+  let finishRead: () => void = () => {}
+  const futureReady = new Promise<void>(resolve => { finishRead = resolve })
   const inspect = await installViewportProbe(page)
   await page.clock.setFixedTime(new Date(start + 86_400_000 + 30_000))
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= start - 86_400_000 })
@@ -22,14 +26,24 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await page.routeWebSocket('wss://stream.bybit.com/v5/public/linear', socket => socket.onMessage(message => {
     if (JSON.parse(message.toString()).op === 'subscribe') socket.send(JSON.stringify({ op: 'subscribe', success: true }))
   }))
-  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', route => {
+  await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', async route => {
     const url = route.request().url()
-    if (url.endsWith(`/SPYUSDT/${day}/manifest.json`)) return route.fulfill({ headers, json: manifest })
+    if (url.endsWith(`/SPYUSDT/${day}/manifest.json`)) return route.fulfill({ headers, json: {
+      ...manifest, rows: 3, parts: [...manifest.parts, { file: '22-000.csv.gz', hour: 22, rows: 1,
+        bytes: future.byteLength, sha256: createHash('sha256').update(future).digest('hex') }],
+    } })
     if (url.endsWith(`/SPYUSDT/${day}/14-000.csv.gz`)) return route.fulfill({ headers, body: part })
+    if (url.endsWith(`/SPYUSDT/${day}/22-000.csv.gz`)) {
+      futureReads++
+      await futureReady
+      return route.fulfill({ headers, body: future })
+    }
     return route.fulfill({ status: 404, headers })
   })
   await page.goto('/')
   const chart = page.getByTestId('chart-host')
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
   const symbolButton = chart.locator('.symbol')
   await symbolButton.click()
   const picker = page.getByRole('dialog', { name: '选择交易对' })
@@ -39,8 +53,6 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await expect(picker.getByTestId('symbol-picker-row-USDCHF')).toContainText('暂无成交量')
   await picker.getByRole('button', { name: '选择 US500', exact: true }).click()
 
-  await page.getByRole('button', { name: '图表周期', exact: true }).click()
-  await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
   const controls = page.getByTestId('replay-controls')
   await controls.getByRole('button', { name: '时间定位', exact: true }).click()
   const inputTime = await page.evaluate(timestamp => {
@@ -63,16 +75,39 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     const bubbles = panes.get('candle_pane')?.get('BIG_TRADES')
     const bars = bubbles?.extendData?.bars as import('../src/chart/order-flow-renderers').BubbleDisplay['bars']
     const candles = coreChart.getDataList()
-    return { volumeName: volume?.shortName, volume: volume?.result.at(-1)?.volume,
+    return { volumeName: volume?.shortName, volume: volume?.result.at(-1)?.volume, updating: bubbles?.extendData?.updating,
       points: Array.from(bars ?? []).flatMap(([stamp, row]) => {
         const open = candles.find(candle => candle.timestamp === stamp)?.open ?? 0
-        return row.points.map(({ trade }) => [trade.id, trade.price, Math.round(trade.price * (open / row.firstPrice!) * 1e5) / 1e5])
+        const points = row.pointRanges?.flatMap(({ points, from, until }) => points.slice(from, until)) ?? row.points
+        return points.map(({ trade }) => [trade.id, trade.price, Math.round(trade.price * (open / row.firstPrice!) * 1e5) / 1e5])
       }) }
   })
+  try {
+    await expect.poll(() => futureReads).toBeGreaterThan(0)
+    await expect.poll(async () => (await combined()).updating).toEqual({
+      fromUs: Date.parse(day) * 1000, untilUs: Date.parse('2026-11-21') * 1000,
+    })
+  } finally { finishRead() }
   await expect.poll(async () => (await inspect()).last).toMatchObject({ timestamp: start, open: 1.1002, close: 1.1005 })
   await expect.poll(combined).toMatchObject({ volumeName: 'Bybit 成交量', volume: 40, points: [['first', 710, 1.1002]] })
+  expect((await combined()).updating).toBeUndefined()
+  const readsBeforeStep = futureReads
+  await page.evaluate(() => {
+    const state = window as unknown as { __replayStepScans: number; __viewportTestAdapter: {
+      source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
+    } }
+    const { source } = state.__viewportTestAdapter
+    state.__replayStepScans = 0
+    const visit = source.visitTrades.bind(source)
+    source.visitTrades = (...args) => {
+      state.__replayStepScans++
+      return visit(...args)
+    }
+  })
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
   await expect.poll(combined).toMatchObject({ volume: 50, points: [['first', 710, 1.1002], ['next', 711, 1.1002]] })
+  expect(futureReads).toBe(readsBeforeStep)
+  expect(await page.evaluate(() => (window as unknown as { __replayStepScans: number }).__replayStepScans)).toBe(0)
   const tool = chart.locator('.klinecharts-pro-drawing-bar').getByRole('button', { name: '框选成交分布' })
   await expect(tool).toBeEnabled()
   const rail = (await chart.locator('.klinecharts-pro-drawing-bar').boundingBox())!

@@ -37,6 +37,7 @@ export class CombinedBybitSource {
   private context: ReplayContext | null = null
   private selection = ''
   private readonly pending = new Map<string, PendingDay>()
+  private readonly downloaded = new Map<BybitSymbol, Set<number>>()
   private released = false
   private nextWake = 0
   private pendingLiveUpdate?: ReturnType<typeof setTimeout>
@@ -45,6 +46,8 @@ export class CombinedBybitSource {
     private readonly archive = new BybitArchive(cloud.getTarget()), private readonly now = Date.now) {}
 
   get mapping(): BybitMapping | undefined { return this.active }
+  get replaying(): boolean { return this.context !== null }
+  get downloadedDays(): Iterable<number> { return this.active && this.downloaded.get(this.active.symbol) || [] }
   get archiveCacheKey(): string {
     const { owner, repository, branch, root } = this.cloud.getTarget()
     return JSON.stringify([owner, repository, branch, root, this.active?.symbol])
@@ -53,6 +56,18 @@ export class CombinedBybitSource {
     if (this.context) return replayConfirmedUntil(this.context) * 1000
     const last = this.live?.lastTradeUs
     return last === undefined ? this.now() * 1000 + 1 : Math.min(last + 1, (this.now() - liveSettlementMs) * 1000)
+  }
+
+  hasArchivedDay(start: number): Promise<boolean> {
+    return this.active ? this.archive.hasDay(this.active.symbol, bybitDay(start)) : Promise.resolve(false)
+  }
+
+  readArchivedHour(start: number): Promise<BybitTrade[] | null> {
+    return this.active ? this.archive.loadHour(this.active.symbol, start) : Promise.resolve(null)
+  }
+
+  readReplayLive({ fromUs, untilUs }: TradeRange): BybitTrade[] {
+    return this.live?.read(fromUs, untilUs) ?? []
   }
 
   select(symbol: SymbolInfo, context: ReplayContext | null): void {
@@ -198,6 +213,9 @@ export class CombinedBybitSource {
     }, abort.signal, this.wakeWorker).then(() => {
       abort.signal.throwIfAborted()
       const start = bybitDayStart(day)
+      const downloaded = this.downloaded.get(symbol) ?? new Set<number>()
+      downloaded.add(start)
+      this.downloaded.set(symbol, downloaded)
       if (this.active?.symbol === symbol) this.changed(true, { fromUs: start * 1000, untilUs: (start + BYBIT_DAY_MS) * 1000 })
       return `${symbol} ${day} UTC 日档已缓存`
     }).finally(() => {

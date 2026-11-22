@@ -1,10 +1,11 @@
 import { DomPosition, type ActionType, type Chart, type Indicator, type KLineData } from 'klinecharts'
 import { alignOpenTime, nextOpenTime } from '../market-data/intervals'
-import type { BybitTrade } from '../market-data/bybit/trades'
+import { BYBIT_DAY_MS, type BybitTrade } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator } from './order-flow'
-import { CANDLE_PANE, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
-import { OrderFlowBars, type TradeBar } from './order-flow-bars'
+import { CANDLE_PANE, tradeBubbleOffset, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
+import { OrderFlowBars, tradeBubbles, type TradeBar } from './order-flow-bars'
+import { ReplayOrderFlow } from './order-flow-replay'
 import type { DrawingPoint } from './drawings'
 
 const dataReady = 'onDataReady' as ActionType
@@ -49,6 +50,9 @@ function bybitVolumeCalc(native: Indicator['calc'], volumes?: ReadonlyMap<number
 export class OrderFlowChart {
   private readonly profiles = new Map<string, ProfileRequest>()
   private flow?: OrderFlowBars
+  private replayFlow?: ReplayOrderFlow
+  private flowSource?: string
+  private updating?: TradeRange
   private flowOperation?: AbortController
   private flowPending = false
   private timer?: number
@@ -102,12 +106,15 @@ export class OrderFlowChart {
 
   refresh(reset = false, affected?: TradeRange): void {
     if (reset) {
-      if (affected) this.flow?.invalidate(affected)
+      if (affected) {
+        this.flow?.invalidate(affected)
+        this.replayFlow?.invalidate(affected)
+      }
       else {
         this.showBubbles({})
         this.showVolume()
       }
-      this.flowOperation?.abort()
+      if (!this.replayFlow || !this.feed.replaying || this.flowSource !== this.feed.archiveCacheKey) this.cancelFlow()
       this.invalidateProfiles(affected)
     }
     this.schedule()
@@ -159,7 +166,7 @@ export class OrderFlowChart {
     this.tooltip?.remove()
     clearTimeout(this.timer)
     if (this.pendingFrame !== undefined) cancelAnimationFrame(this.pendingFrame)
-    this.flowOperation?.abort()
+    this.cancelFlow()
     for (const id of this.profiles.keys()) this.removeProfile(id)
   }
 
@@ -173,6 +180,13 @@ export class OrderFlowChart {
       request.prices?.clear()
       request.accumulator = new VolumeProfileAccumulator(request.low, request.high)
     }
+  }
+
+  private cancelFlow(): void {
+    this.flowOperation?.abort()
+    this.flowOperation = undefined
+    this.flowPending = false
+    this.updating = undefined
   }
 
   private schedule(): void {
@@ -244,10 +258,12 @@ export class OrderFlowChart {
     let sameBars = previous?.bars?.size === display.bars?.size
     for (const [start, bar] of display.bars ?? []) {
       count += bar.points.length
+      for (const { from, until } of bar.pointRanges ?? []) count += until - from
       sameBars &&= previous?.bars?.get(start) === bar
     }
     if (sameBars && count === this.displayedBubbleCount &&
-        previous?.message === display.message && previous?.projectToCandle === display.projectToCandle) return
+        previous?.message === display.message && previous?.projectToCandle === display.projectToCandle &&
+        previous?.timeframe === display.timeframe && previous?.updating === display.updating) return
     this.displayedBubbleCount = count
     this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: display }, CANDLE_PANE)
   }
@@ -300,14 +316,15 @@ export class OrderFlowChart {
     return candles.slice(Math.max(0, from), Math.max(0, to))
   }
 
-  private displayFlow(flow: OrderFlowBars, cursor: number, message?: string): void {
+  private displayFlow(timeframe: string, read: (start: number, until: number) => TradeBar | undefined, message?: string): void {
+    const cursor = this.feed.tradeCursorUs
     const bars = new Map<number, TradeBar>()
     const volumes = new Map<number, number>()
     let partial = false
     for (const { timestamp } of this.visibleCandles()) {
-      const target = Math.min(cursor, nextOpenTime(timestamp, flow.timeframe) * 1000)
+      const target = Math.min(cursor, nextOpenTime(timestamp, timeframe) * 1000)
       if (target <= timestamp * 1000) break
-      const bar = flow.read(timestamp, target)
+      const bar = read(timestamp, target)
       if (!bar) continue
       bars.set(timestamp, bar)
       if (bar.firstPrice !== undefined) volumes.set(timestamp, bar.volume)
@@ -316,8 +333,8 @@ export class OrderFlowChart {
     const previous = this.displayedVolumes
     const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
     this.showVolume(volumeChanged ? volumes : previous)
-    this.showBubbles({ bars, projectToCandle: this.feed.mapping?.relation === 'etf',
-      message: message ?? (partial ? 'Bybit 逐笔成交不完整 · 可在顶部下载日档' : undefined) })
+    this.showBubbles({ bars, timeframe, updating: this.updating, projectToCandle: this.feed.mapping?.relation === 'etf',
+      message: message ?? (this.updating ? '正在计算大单气泡…' : partial ? 'Bybit 逐笔成交不完整 · 可在顶部下载日档' : undefined) })
   }
 
   private async updateBubbles(): Promise<void> {
@@ -333,31 +350,55 @@ export class OrderFlowChart {
     if ((!indicator?.visible && !showVolume) || !visible.length) return
     const timeframe = this.timeframe()
     const minimum = Number(indicator?.calcParams[0] ?? DEFAULT_BIG_TRADE_NOTIONAL)
-    const key = JSON.stringify([this.feed.archiveCacheKey, timeframe, minimum])
-    if (this.flow?.key !== key) {
-      this.flowOperation?.abort()
-      this.flow = new OrderFlowBars(key, timeframe, minimum)
+    const source = this.feed.archiveCacheKey
+    const key = JSON.stringify([source, timeframe, minimum])
+    const replaying = this.feed.replaying
+    if ((replaying ? this.replayFlow : this.flow)?.key !== key) {
+      this.cancelFlow()
+      this.flowSource = source
+      this.replayFlow = replaying ? new ReplayOrderFlow(key, minimum) : undefined
+      this.flow = replaying ? undefined : new OrderFlowBars(key, timeframe, minimum)
     }
     const flow = this.flow
+    const replay = this.replayFlow
     const cursor = this.feed.tradeCursorUs
-    this.displayFlow(flow, cursor)
+    const read = (start: number, until: number) => replay?.read(start, until, this.feed) ?? flow?.read(start, until)
+    this.displayFlow(timeframe, read)
     if (this.flowOperation) {
       this.flowPending = true
       return
     }
     const operation = new AbortController()
     this.flowOperation = operation
+    const update = (range?: TradeRange) => {
+      if (operation.signal.aborted) return
+      this.updating = range
+      if (this.hasCurrentCandles()) this.displayFlow(timeframe, read)
+    }
     try {
-      await flow.load(visible.map(bar => bar.timestamp), cursor, this.feed, operation.signal, () => {
-        if (!operation.signal.aborted && this.hasCurrentCandles()) this.displayFlow(flow, this.feed.tradeCursorUs)
-      })
+      if (replay) {
+        const days = new Set(this.feed.downloadedDays)
+        const end = Math.min(cursor / 1000, nextOpenTime(visible.at(-1)!.timestamp, timeframe))
+        const firstDay = Math.floor(visible[0].timestamp / BYBIT_DAY_MS) * BYBIT_DAY_MS
+        const lastDay = Math.ceil(end / BYBIT_DAY_MS - 1) * BYBIT_DAY_MS
+        for (let day = lastDay; day >= firstDay; day -= BYBIT_DAY_MS) days.add(day)
+        await replay.prepare(days, this.feed, operation.signal, update)
+      } else {
+        await flow?.load(visible.map(bar => bar.timestamp), cursor, this.feed, operation.signal, update)
+      }
     } catch (error) {
-      if (!operation.signal.aborted) this.displayFlow(flow, this.feed.tradeCursorUs, errorText(error))
+      if (!operation.signal.aborted) {
+        this.updating = undefined
+        this.displayFlow(timeframe, read, errorText(error))
+      }
     } finally {
-      this.flowOperation = undefined
-      if (this.flowPending) {
-        this.flowPending = false
-        this.schedule()
+      if (this.flowOperation === operation) {
+        this.updating = undefined
+        this.flowOperation = undefined
+        if (this.flowPending) {
+          this.flowPending = false
+          this.schedule()
+        }
       }
     }
   }
@@ -368,7 +409,7 @@ export class OrderFlowChart {
     if (!this.pane || !this.tooltip) return
     const indicator = this.chart.getIndicatorByPaneId(CANDLE_PANE, BIG_TRADES) as Indicator | null | undefined
     const display = indicator?.extendData as BubbleDisplay | undefined
-    if (!indicator?.visible || !display?.bars?.size) { this.hideTooltip(); return }
+    if (!indicator?.visible || !display?.bars?.size || !display.timeframe) { this.hideTooltip(); return }
     const { left, top, width } = this.pane.getBoundingClientRect()
     const cursorX = event.clientX - left
     const cursorY = event.clientY - top
@@ -382,9 +423,12 @@ export class OrderFlowChart {
     for (let index = Math.max(0, indexAtPointer - margin); index < Math.min(candles.length, indexAtPointer + margin + 1); index++) {
       const candle = candles[index]
       const bar = display.bars.get(candle.timestamp)
-      if (!bar?.points.length) continue
+      if (!bar?.firstPrice) continue
+      const end = nextOpenTime(candle.timestamp, display.timeframe)
       const scale = display.projectToCandle ? candle.open / bar.firstPrice! : 1
-      for (const { offset, trade } of bar.points) {
+      for (const bubble of tradeBubbles(bar)) {
+        const { trade } = bubble
+        const offset = tradeBubbleOffset(bubble, candle.timestamp, end)
         const point = this.chart.convertToPixel({ dataIndex: index + offset, value: trade.price * scale }, { paneId: CANDLE_PANE }) as { x?: number; y?: number }
         const distance = Math.hypot((point.x ?? Infinity) - cursorX, (point.y ?? Infinity) - cursorY)
         const radius = tradeBubbleRadius(trade, Number(indicator.calcParams[0]))
