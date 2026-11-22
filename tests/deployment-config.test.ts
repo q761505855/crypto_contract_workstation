@@ -97,7 +97,7 @@ describe('deployment configuration', () => {
     const deployJob = capture(workflow, /^  deploy:\n([\s\S]*)$/m)
     expect(triggers).toMatch(/^  workflow_dispatch:$/m)
     expect(triggers).toMatch(/^  push:\n    branches:\n      - main$/m)
-    for (const permission of ['contents: read', 'pages: write', 'id-token: write']) expect(permissions).toContain(permission)
+    for (const permission of ['actions: read', 'contents: read', 'pages: write', 'id-token: write']) expect(permissions).toContain(permission)
     expect(workflow.match(/^  [a-z]+:\n    (?:runs-on|environment):/gm)).toHaveLength(1)
     expect(workflow).toContain('cancel-in-progress: true')
     expect(deployJob).toContain('runs-on: ubuntu-24.04')
@@ -109,17 +109,22 @@ describe('deployment configuration', () => {
       '        uses: actions/configure-pages@v5',
       '        run: npx vite build',
       '        uses: actions/upload-pages-artifact@v4',
+      '      - name: Wait for Pages artifact',
       '        uses: actions/deploy-pages@v4',
     ])
     expect(captureStep(deployJob, 'Build Pages artifact')).toContain('VITE_BASE_PATH: /crypto_contract_workstation/')
     expect(captureStep(deployJob, 'Build Pages artifact')).toContain('CLOUD_STORAGE_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}')
     expect(captureStep(deployJob, 'Build Pages artifact')).toContain("REQUIRE_CTRADER_CONNECTION: '1'")
     expect(captureStep(deployJob, 'Upload Pages artifact')).toContain('path: ./dist')
+    const artifactWait = captureStep(deployJob, 'Wait for Pages artifact')
+    expect(artifactWait).toContain('GH_TOKEN: ${{ github.token }}')
+    expect(artifactWait).toContain('actions/runs/$GITHUB_RUN_ID/artifacts')
     expect(captureStep(deployJob, 'Deploy')).toContain('id: deployment')
     expect(workflow.match(/^        run: npx vite build$/gm)).toHaveLength(1)
     expect(workflow).not.toMatch(/^        run: .*?(?:npm run (?:check|test|typecheck|verify)|playwright|tsc)/m)
     expect(workflow).not.toContain('e2e-mock-storage-token')
     expect(workflow).not.toContain('needs:')
-    expectNoSecrets(workflow.replace('          CLOUD_STORAGE_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}\n', ''))
+    expectNoSecrets(workflow.replace('          CLOUD_STORAGE_TOKEN: ${{ secrets.CLOUD_STORAGE_TOKEN }}\n', '')
+      .replace(artifactWait, artifactWait.replace('          GH_TOKEN: ${{ github.token }}\n', '')))
   })
 })
