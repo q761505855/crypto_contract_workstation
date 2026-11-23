@@ -32,7 +32,7 @@ import { registerTtmSqueezeIndicator } from './ttm-squeeze'
 import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
-import { CombinedBybitSource } from '../market-data/bybit/combined-source'
+import { CombinedBybitSource, type TradeDownloadReview } from '../market-data/bybit/combined-source'
 import { bybitDay } from '../market-data/bybit/trades'
 import type { GitHubContentsClient } from '../github-sync/github-client'
 import { OrderFlowChart } from './order-flow-chart'
@@ -96,7 +96,7 @@ export interface ChartAdapterPort {
   setOrderFlowPreferences?(preferences: OrderFlowPreferences): void
   startVolumeProfile?(): boolean
   getVisibleBybitDay?(): string
-  downloadBybitDays?(start: string, end: string, report: (message: string) => void): Promise<string>
+  downloadBybitDays?(start: string, end: string, report: (message: string) => void, review?: TradeDownloadReview): Promise<string>
   getPeriod(): Period
   getSymbol(): SymbolInfo
   setPeriod(period: Period): void
@@ -318,7 +318,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     return bybitDay(timestamp)
   }
 
-  downloadBybitDays(start: string, end: string, report: (message: string) => void): Promise<string> {
+  downloadBybitDays(start: string, end: string, report: (message: string) => void, review?: TradeDownloadReview): Promise<string> {
     if (!this.source) throw new Error('当前品种暂无成交量')
     const timeframe = this.getPeriod().text
     const context = (this.datafeed as Datafeed & { getReplayContext?(): ReplayContext | null }).getReplayContext?.()
@@ -329,7 +329,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       candleTime,
       until: Math.min(nextOpenTime(candleTime, timeframe), replayUntil ?? Date.now()),
     }
-    return this.source.downloadDays(start, end, report, anchor)
+    return this.source.downloadDays(start, end, report, anchor, review)
   }
 
   private hasCurrentCandles(): boolean {

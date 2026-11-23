@@ -150,6 +150,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   let historyRequests = 0
   let historyProbes = 0
   let archiveRequests = 0
+  let confirmedHistory = false
   await page.route('https://api.bybit.com/**', route => {
     if (new URL(route.request().url()).searchParams.get('symbol') === 'SPYUSDT') bybitRequests++
     return route.fulfill({ headers, json: { retCode: 0, result: { list: [] } } })
@@ -171,6 +172,7 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   let finishApiPage!: () => void
   const apiPage = new Promise<void>(resolve => { finishApiPage = resolve })
   await page.route('https://www.okx.com/api/v5/market/history-trades?*', async route => {
+    expect(confirmedHistory).toBe(true)
     const query = new URL(route.request().url()).searchParams
     expect(query.get('instId')).toBe(instrument)
     // The live clock can advance between capturing the chart anchor and starting the download.
@@ -196,6 +198,9 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
     officialChecks++
     const query = new URL(route.request().url()).searchParams
     expect(query.get('instFamilyList')).toBe('US500-USDT')
+    if (query.get('begin') === String(Date.parse('2027-02-17T00:00:00+08:00'))) {
+      return route.fulfill({ status: 503, headers })
+    }
     expect(query.get('begin')).toBe(String(Date.parse(`${day}T00:00:00+08:00`)))
     expect(query.get('end')).toBe(String(Date.parse(`${recentDay}T00:00:00+08:00`)))
     return route.fulfill({ headers, json: { code: '0', data: [{ details: [{ groupDetails:
@@ -299,12 +304,35 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await chart.getByRole('button', { name: '下载成交数据' }).click()
   const dialog = page.getByRole('dialog', { name: '下载成交数据' })
   await expect(dialog.getByLabel('锚点日期')).toHaveValue('2027-02-20')
+  await expect(dialog.getByLabel('往前天数')).toHaveValue('0')
+  await expect(dialog.getByLabel('往后天数')).toHaveValue('0')
+  await expect(dialog.getByText('2027-02-20', { exact: true })).toBeVisible()
+  await dialog.getByLabel('往前天数').fill('1')
+  await dialog.getByLabel('往后天数').fill('1')
   await expect(dialog.getByText('2027-02-19 至 2027-02-20')).toBeVisible()
   await expect(dialog.getByText('未来日期已跳过', { exact: false })).toBeVisible()
   expect(historyRequests).toBe(0)
   expect(historyProbes).toBe(0)
   expect(archiveRequests).toBe(0)
-  await dialog.getByRole('button', { name: '下载', exact: true }).click()
+  const confirmRange = () => dialog.getByRole('button', { name: '下载', exact: true }).click()
+  const review = dialog.getByRole('table', { name: '成交数据日期状态' })
+  const dateRow = (date: string) => review.getByRole('row').filter({ hasText: date })
+  async function answerHistoryPrompt(accept: boolean, archivedStatus: string) {
+    await confirmRange()
+    await expect(review.getByRole('row')).toHaveCount(3)
+    await expect(dateRow(recentDay)).toContainText(archivedStatus)
+    await expect(dateRow('2027-02-20')).toContainText('平台未归档')
+    expect(historyRequests + historyProbes).toBe(0)
+    confirmedHistory = accept
+    await dialog.getByRole('button', { name: accept ? '下载归档并补齐近期数据' : '只下载归档' }).click()
+  }
+  await answerHistoryPrompt(false, 'Git 已缓存')
+  await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
+  await expect(chart.getByRole('status')).toContainText('已跳过')
+  expect(historyRequests + historyProbes).toBe(0)
+  await chart.getByRole('button', { name: '下载成交数据' }).click()
+  await dialog.getByLabel('往前天数').fill('1')
+  await answerHistoryPrompt(true, '已加载')
   try {
     await expect.poll(() => historyRequests).toBe(2)
     await expect.poll(volume).toBe(13)
@@ -332,10 +360,19 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   expect(rawParts).toEqual([])
 
   await chart.getByRole('button', { name: '下载成交数据' }).click()
+  await confirmRange()
+  await expect(dateRow('2027-02-20')).toContainText('已加载至')
+  await dialog.getByRole('button', { name: '只下载归档' }).click()
+  expect(historyRequests).toBe(2)
+
+  await chart.getByRole('button', { name: '下载成交数据' }).click()
   await dialog.getByLabel('锚点日期').fill(day)
   await dialog.getByLabel('往前天数').fill('0')
   await dialog.getByLabel('往后天数').fill('0')
-  await dialog.getByRole('button', { name: '下载', exact: true }).click()
+  await confirmRange()
+  await expect(dateRow(day)).toContainText('Git 未缓存')
+  expect(dispatched).toBe(false)
+  await dialog.getByRole('button', { name: '只下载归档' }).click()
   await expect.poll(() => dispatched).toBe(true)
   expect(officialChecks).toBe(1)
   expect(historyRequests).toBe(2)
@@ -352,9 +389,31 @@ test('手动下载优先复用 OKX 日档，接口与实时按成交 ID 去重',
   await dialog.getByLabel('锚点日期').fill(day)
   await dialog.getByLabel('往前天数').fill('0')
   await dialog.getByLabel('往后天数').fill('0')
-  await dialog.getByRole('button', { name: '下载', exact: true }).click()
+  await confirmRange()
+  await expect(dateRow(day)).toContainText('已加载')
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
   await expect(chart.getByRole('status')).toContainText('OKX 日档 1 天')
   expect(requested).toHaveLength(1)
   expect(historyRequests).toBe(2)
   expect(officialChecks).toBe(1)
+
+  await chart.getByRole('button', { name: '下载成交数据' }).click()
+  await dialog.getByLabel('锚点日期').fill('2020-01-01')
+  await dialog.getByLabel('往前天数').fill('0')
+  await dialog.getByLabel('往后天数').fill('0')
+  await confirmRange()
+  await expect(dateRow('2020-01-01')).toContainText('平台未归档')
+  await expect(dateRow('2020-01-01')).toContainText('超出 OKX 接口覆盖范围')
+  await expect(dialog.getByRole('button', { name: '下载归档并补齐近期数据' })).toHaveCount(0)
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
+  expect(historyRequests).toBe(2)
+
+  await chart.getByRole('button', { name: '下载成交数据' }).click()
+  await dialog.getByLabel('锚点日期').fill('2027-02-17')
+  await confirmRange()
+  await expect(dateRow('2027-02-17')).toContainText('检查失败')
+  await expect(dateRow('2027-02-17')).toContainText('HTTP 503')
+  await expect(dialog.getByRole('button', { name: '下载归档并补齐近期数据' })).toHaveCount(0)
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
+  expect(historyRequests).toBe(2)
 })

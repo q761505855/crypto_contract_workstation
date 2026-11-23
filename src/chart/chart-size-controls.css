@@ -134,6 +134,25 @@
   color: #edf6ff;
 }
 .bybit-download-form button { justify-self: end; cursor: pointer; }
+.day-download-review > .day-download-table {
+  display: block;
+  max-height: min(52dvh, 420px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #35465e;
+  border-radius: 6px;
+}
+.day-download-table table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+.day-download-table thead { position: sticky; top: 0; background: #182638; }
+.day-download-table th, .day-download-table td { padding: 8px 10px; border-bottom: 1px solid #29394d; vertical-align: top; }
+.day-download-table tbody th { white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 400; }
+.day-download-table small { display: block; margin-top: 2px; color: #aebdd0; overflow-wrap: anywhere; }
+.day-download-table [data-download-status="loaded"] { color: #8cdeb2; }
+.day-download-table [data-download-status="cached"] { color: #9ac7ff; }
+.day-download-table [data-download-status="uncached"] { color: #ffd990; }
+.day-download-table [data-download-status="unarchived"], .day-download-table [data-download-status="error"] { color: #ffb4b4; }
+.day-download-actions { justify-content: flex-end; }
+.day-download-actions button:last-child { border-color: #6486af; }
 .bybit-trade-tooltip {
   position: absolute;
   z-index: 8;

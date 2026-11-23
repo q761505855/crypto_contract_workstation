@@ -12,6 +12,18 @@ import { compareTrades, mergeOkxTrades, orderFlowMapping, type OrderFlowMapping 
 export interface TradeRange { fromUs: number; untilUs: number; replaceArchive?: boolean; historyPage?: boolean }
 export interface TradeCoverage extends TradeRange { complete: boolean; archived: boolean; fallbackArchive?: boolean }
 export interface TradeDownloadAnchor { candleTime: number; until: number }
+export type TradeDownloadDay = { day: string } & (
+  | { status: 'loaded'; source: TradeDataSource; through?: number; canExtendHistory?: boolean }
+  | { status: 'cached'; source: ArchiveVenue }
+  | { status: 'uncached'; canCache: boolean }
+  | { status: 'unarchived'; canUseHistory: boolean; bybitFallback: boolean }
+  | { status: 'error'; message: string }
+)
+export type TradeDownloadChoice = 'archives' | 'includeHistory' | 'cancel'
+export interface TradeDownloadReview {
+  signal: AbortSignal
+  choose(days: readonly TradeDownloadDay[]): Promise<TradeDownloadChoice>
+}
 
 interface PendingDay {
   abort: AbortController
@@ -20,6 +32,8 @@ interface PendingDay {
   done: Promise<string>
 }
 type ArchiveVenue = 'OKX 日档' | 'Bybit 日档'
+type TradeDataSource = ArchiveVenue | 'OKX 接口'
+class TradeArchiveUnavailableError extends Error {}
 const wakeIntervalMs = 60_000
 const liveSettlementMs = 250
 const cacheWorker = { owner: 'q761505855', repository: 'crypto_contract_workstation' }
@@ -59,6 +73,7 @@ export class CombinedBybitSource {
   private readonly archiveDownloads = new AbortController()
   private readonly downloaded = new Map<string, Map<number, ArchiveVenue>>()
   private readonly history = new Map<string, Map<number, OkxTradePage[]>>()
+  private readonly lastHistoryDownload = new Map<string, { start: number; untilUs: number }>()
   private readonly anchors = new Map<string, TradeDownloadAnchor>()
   private readonly nextWake = new Map<string, number>()
   private pendingLiveUpdate?: ReturnType<typeof setTimeout>
@@ -292,7 +307,8 @@ export class CombinedBybitSource {
     return true
   }
 
-  downloadDays(start: string, end: string, report: (message: string) => void, anchor?: TradeDownloadAnchor): Promise<string> {
+  downloadDays(start: string, end: string, report: (message: string) => void, anchor?: TradeDownloadAnchor,
+    review?: TradeDownloadReview): Promise<string> {
     const mapping = this.active
     if (!mapping) throw new Error('当前品种暂无成交量')
     const first = start || end
@@ -302,130 +318,172 @@ export class CombinedBybitSource {
     const to = bybitDayStart(last)
     if (from > to) throw new Error('开始日期不能晚于结束日期')
     const now = this.now()
-    const today = dayStart(now)
-    if (to > today) throw new Error('结束日期不能晚于当前 UTC 日期')
+    if (to > dayStart(now)) throw new Error('结束日期不能晚于当前 UTC 日期')
     const snapshot = { candleTime: anchor?.candleTime ?? now, until: Math.min(anchor?.until ?? now, now) }
-    this.anchors.set(mapping.symbol, snapshot)
-    return this.downloadRange(mapping, from, to, now, snapshot.until * 1000, report)
+    return this.downloadRange(mapping, from, to, now, snapshot, report, review)
   }
 
-  private async downloadRange(mapping: OrderFlowMapping, from: number, to: number, now: number, pivot: number,
-    report: (message: string) => void): Promise<string> {
-    const signal = this.archiveDownloads.signal
-    const total = 1 + (to - from) / BYBIT_DAY_MS
-    const earliest = firstOkxHistoryDay(now)
-    const today = dayStart(now)
-    const instrument = mapping.okx
-    const counts = { 'OKX 接口': 0, 'OKX 日档': 0, 'Bybit 日档': 0 }
-    const unavailable: string[] = []
-    const firstRest = instrument ? Math.max(from, earliest, bybitDayStart(instrument.firstDay)) : to + BYBIT_DAY_MS
-    const recentDays = this.orderedDays(firstRest, to, pivot)
-    const progressFor = (start: number) => (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${total} 天 · ${message}`)
-    const cachedDays = new Map<number, Promise<boolean>>()
-    const checkCachedDay = (start: number): Promise<boolean> => {
-      if (!instrument || start >= today) return Promise.resolve(false)
-      const existing = cachedDays.get(start)
-      if (existing) return existing
-      const checking = this.okxArchive.hasCloudDay(instrument, bybitDay(start)).catch(() => false).then(cached => {
-        signal.throwIfAborted()
-        if (cached) {
-          this.markDownloaded(mapping.symbol, start, 'OKX 日档')
-          counts['OKX 日档']++
-        }
-        return cached
-      })
-      cachedDays.set(start, checking)
-      return checking
+  private async downloadRange(mapping: OrderFlowMapping, from: number, to: number, now: number, anchor: TradeDownloadAnchor,
+    report: (message: string) => void, review?: TradeDownloadReview): Promise<string> {
+    const signal = review ? AbortSignal.any([review.signal, this.archiveDownloads.signal]) : this.archiveDownloads.signal
+    const pivot = anchor.until * 1000
+    const dates = this.orderedDays(from, to, pivot)
+    const plans: { start: number; entry: TradeDownloadDay }[] = []
+    for (let i = 0; i < dates.length; i += 8) {
+      plans.push(...await Promise.all(dates.slice(i, i + 8).map(async start => ({
+        start, entry: await this.inspectDownloadDay(mapping, start, now, signal),
+      }))))
     }
+    signal.throwIfAborted()
+    const choice = review ? await review.choose(plans.map(({ entry }) => entry).sort((a, b) => a.day.localeCompare(b.day))) : 'archives'
+    if (choice === 'cancel') return ''
+    signal.throwIfAborted()
+    this.anchors.set(mapping.symbol, anchor)
 
-    const fallbacks: Promise<void>[] = []
-    const load = async (start: number, useRest: boolean) => {
+    const counts: Record<TradeDataSource, number> = { 'OKX 接口': 0, 'OKX 日档': 0, 'Bybit 日档': 0 }
+    const unavailable: string[] = []
+    const skipped: string[] = []
+    const useHistoryFor = ({ entry }: typeof plans[number]) =>
+      choice === 'includeHistory' && (
+        (entry.status === 'unarchived' && entry.canUseHistory) || (entry.status === 'loaded' && entry.canExtendHistory)
+      )
+    const historyPlans = plans.filter(useHistoryFor)
+    const archivePlans = plans.filter(plan => !useHistoryFor(plan))
+    const load = async ({ start, entry }: typeof plans[number], useHistory: boolean) => {
       signal.throwIfAborted()
-      const day = bybitDay(start)
-      const progress = progressFor(start)
+      const progress = (message: string) => report(`${(start - from) / BYBIT_DAY_MS + 1}/${plans.length} 天 · ${message}`)
       try {
-        if (instrument && useRest) {
-          if (start < today) {
-            progress(`正在检查 OKX ${day} UTC 日档缓存…`)
-            if (await checkCachedDay(start)) return
-          }
+        if (useHistory && mapping.okx) {
           try {
-            const untilUs = Math.min(start + BYBIT_DAY_MS, now) * 1000
-            progress(`正在读取 OKX ${day} UTC 历史逐笔…`)
-            let count = 0
-            let lastReport = 0
-            const reportPage = (page: OkxTradePage) => {
-              count += page.rows.length
-              this.publishHistoryPage(mapping.symbol, page)
-              if (this.now() - lastReport >= 350) {
-                lastReport = this.now()
-                progress(`OKX ${day} UTC 已读取 ${count.toLocaleString()} 笔…`)
-              }
-            }
-            const split = Math.min(untilUs, Math.max(start * 1000, pivot))
-            await this.readHistoryRange(mapping.symbol, instrument, start * 1000, split, false, signal, reportPage)
-            await this.readHistoryRange(mapping.symbol, instrument, split, untilUs, true, signal, reportPage)
+            await this.loadHistoryDay(mapping.symbol, mapping.okx, start, now, pivot, signal, progress)
             counts['OKX 接口']++
             return
           } catch (error) {
             signal.throwIfAborted()
-            if (start === today) throw error
-            return false
+            if (entry.status !== 'unarchived' || !entry.bybitFallback) throw error
           }
         }
-        if (start === today) throw new Error(`${day} UTC 尚无可按日期读取的逐笔接口，日档在该日结束后提供`)
-        const venue = await this.downloadArchive(mapping, start, progress, signal)
-        counts[venue]++
+        switch (entry.status) {
+          case 'loaded':
+            counts[entry.source]++
+            return
+          case 'cached':
+            this.markDownloaded(mapping.symbol, start, entry.source)
+            counts[entry.source]++
+            return
+          case 'uncached':
+            if (!entry.canCache) throw new Error('下载日档需要可写的云端缓存连接')
+            counts[await this.downloadArchive(mapping, start, progress, signal, true)]++
+            return
+          case 'error':
+            throw new Error(entry.message)
+          case 'unarchived':
+            if (entry.bybitFallback) {
+              counts[await this.downloadArchive(mapping, start, progress, signal, false)]++
+              return
+            }
+            if (entry.canUseHistory) skipped.push(entry.day)
+            else unavailable.push(entry.day)
+        }
       } catch (error) {
         signal.throwIfAborted()
-        if (from === to) throw error
-        unavailable.push(day)
-        progress(error instanceof Error ? error.message : `${day} 下载失败`)
-      }
-    }
-    // Page the REST API one day at a time. Archive requests can wait on Git in parallel.
-    const checkRecent = async () => {
-      for (let batch = 0; batch < recentDays.length; batch += 8) {
-        await Promise.all(recentDays.slice(batch, batch + 8).map(checkCachedDay))
-      }
-    }
-    const loadArchived = async () => {
-      const oldDays = this.orderedDays(from, Math.min(to, firstRest - BYBIT_DAY_MS), pivot)
-      for (let batch = 0; batch < oldDays.length; batch += 8) {
-        await Promise.all(oldDays.slice(batch, batch + 8).map(start => load(start, false)))
-      }
-    }
-    const loadRecent = async () => {
-      for (const start of recentDays) {
-        if (instrument && start < today && this.cloud.canWrite()) {
-          if (await checkCachedDay(start)) continue
-          const progress = progressFor(start)
-          const day = bybitDay(start)
-          progress(`正在检查 OKX ${day} UTC 官方日档…`)
-          const listed = await this.okxArchive.hasSourceDay(instrument, day, signal).catch(() => false)
-          signal.throwIfAborted()
-          if (listed) {
-            fallbacks.push((async () => {
-              const ready = await this.requestOkxDay(mapping.symbol, instrument, start, progress, signal).catch(() => false)
-              signal.throwIfAborted()
-              if (ready) counts['OKX 日档']++
-              else if (await load(start, true) === false) await load(start, false)
-            })())
-            if (fallbacks.length === 8) await Promise.all(fallbacks.splice(0))
-            continue
-          }
+        if (entry.status === 'unarchived' && entry.canUseHistory && !useHistory && error instanceof TradeArchiveUnavailableError) {
+          skipped.push(entry.day)
+          return
         }
-        if (await load(start, true) !== false) continue
-        if (from === to) { await load(start, false); return }
-        fallbacks.push(load(start, false).then(() => undefined))
-        if (fallbacks.length === 8) await Promise.all(fallbacks.splice(0))
+        if (plans.length === 1 && !(error instanceof TradeArchiveUnavailableError)) throw error
+        unavailable.push(entry.day)
+        progress(error instanceof Error ? error.message : `${entry.day} 下载失败`)
       }
-      await Promise.all(fallbacks)
     }
-    await Promise.all([loadArchived(), checkRecent(), loadRecent()])
+
+    await Promise.all([
+      (async () => {
+        for (let i = 0; i < archivePlans.length; i += 8) {
+          await Promise.all(archivePlans.slice(i, i + 8).map(plan => load(plan, false)))
+        }
+      })(),
+      (async () => {
+        for (const plan of historyPlans) await load(plan, true)
+      })(),
+    ])
     const summary = Object.entries(counts).filter(([, count]) => count > 0).map(([label, count]) => `${label} ${count} 天`)
     if (unavailable.length) summary.push(`日期暂不可用 ${unavailable.sort().join('、')}`)
+    if (skipped.length) summary.push(`已跳过未归档日期 ${skipped.sort().join('、')}`)
     return summary.join(' · ')
+  }
+
+  private async inspectDownloadDay(mapping: OrderFlowMapping, start: number, now: number, signal: AbortSignal): Promise<TradeDownloadDay> {
+    signal.throwIfAborted()
+    const day = bybitDay(start)
+    const loadedArchive = this.downloaded.get(mapping.symbol)?.get(start)
+    if (loadedArchive) return { day, status: 'loaded', source: loadedArchive }
+    const untilUs = Math.min(start + BYBIT_DAY_MS, now) * 1000
+    const ended = start < dayStart(now)
+    const loadedHistory = this.lastHistoryDownload.get(mapping.symbol)
+    if (!ended && loadedHistory?.start === start) {
+      return { day, status: 'loaded', source: 'OKX 接口', through: loadedHistory.untilUs / 1000,
+        canExtendHistory: loadedHistory.untilUs < untilUs }
+    }
+    if (this.history.has(mapping.symbol) && start * 1000 < untilUs &&
+        !this.missingHistoryRanges(this.history.get(mapping.symbol), start * 1000, untilUs).length) {
+      return { day, status: 'loaded', source: 'OKX 接口' }
+    }
+    const instrument = mapping.okx
+    const bybit = mapping.bybit
+    const canCache = this.cloud.canWrite()
+    const bybitFallback = ended && (!instrument || canCache) && !!bybit && day >= bybitFirstDay(bybit.symbol)
+    let failure: string | undefined
+    const check = async (lookup: () => Promise<boolean>): Promise<boolean> => {
+      signal.throwIfAborted()
+      try {
+        const found = await lookup()
+        signal.throwIfAborted()
+        return found
+      } catch (error) {
+        signal.throwIfAborted()
+        failure ??= error instanceof Error ? error.message : '无法查询日档'
+        return false
+      }
+    }
+    if (ended) {
+      let sourceListed = false
+      if (instrument && day >= instrument.firstDay) {
+        if (await check(() => this.okxArchive.hasCloudDay(instrument, day))) return { day, status: 'cached', source: 'OKX 日档' }
+        sourceListed = await check(() => this.okxArchive.hasSourceDay(instrument, day, signal))
+        if (sourceListed && canCache && !failure) return { day, status: 'uncached', canCache }
+      }
+      if (bybit && day >= bybitFirstDay(bybit.symbol) &&
+          await check(() => this.archive.hasDay(bybit.symbol, day))) return { day, status: 'cached', source: 'Bybit 日档' }
+      if (!failure && sourceListed) return { day, status: 'uncached', canCache }
+    }
+    if (failure) return { day, status: 'error', message: failure }
+    const canUseHistory = !!instrument && day >= instrument.firstDay && start >= firstOkxHistoryDay(now) && untilUs > start * 1000
+    return { day, status: 'unarchived', canUseHistory, bybitFallback }
+  }
+
+  private async loadHistoryDay(symbol: string, instrument: NonNullable<OrderFlowMapping['okx']>, start: number, now: number,
+    pivot: number, signal: AbortSignal, progress: (message: string) => void): Promise<void> {
+    const day = bybitDay(start)
+    const untilUs = Math.min(start + BYBIT_DAY_MS, now) * 1000
+    progress(`正在读取 OKX ${day} UTC 历史逐笔…`)
+    let count = 0
+    let lastReport = 0
+    const reportPage = (page: OkxTradePage) => {
+      count += page.rows.length
+      this.publishHistoryPage(symbol, page)
+      if (this.now() - lastReport >= 350) {
+        lastReport = this.now()
+        progress(`OKX ${day} UTC 已读取 ${count.toLocaleString()} 笔…`)
+      }
+    }
+    const split = Math.min(untilUs, Math.max(start * 1000, pivot))
+    await this.readHistoryRange(symbol, instrument, start * 1000, split, false, signal, reportPage)
+    await this.readHistoryRange(symbol, instrument, split, untilUs, true, signal, reportPage)
+    if (start === dayStart(now)) {
+      const previous = this.lastHistoryDownload.get(symbol)
+      if (!previous || previous.untilUs < untilUs) this.lastHistoryDownload.set(symbol, { start, untilUs })
+    }
   }
 
   private orderedDays(from: number, to: number, pivot: number): number[] {
@@ -499,12 +557,12 @@ export class CombinedBybitSource {
   }
 
   private async downloadArchive(mapping: OrderFlowMapping, start: number, progress: (message: string) => void,
-    signal: AbortSignal): Promise<ArchiveVenue> {
+    signal: AbortSignal, tryOkx: boolean): Promise<ArchiveVenue> {
     const instrument = mapping.okx
     const day = bybitDay(start)
     const published = (ref?: string) => instrument ? this.okxArchive.hasCloudDay(instrument, day, ref) : Promise.resolve(false)
     let primaryError: unknown
-    if (instrument && day >= instrument.firstDay) {
+    if (tryOkx && instrument && day >= instrument.firstDay) {
       try {
         if (await this.requestOkxDay(mapping.symbol, instrument, start, progress, signal)) return 'OKX 日档'
       } catch (error) {
@@ -513,12 +571,16 @@ export class CombinedBybitSource {
       }
     }
     if (mapping.bybit && day >= bybitFirstDay(mapping.bybit.symbol)) {
-      await this.requestDay(mapping.bybit.symbol, day, progress, published)
-      const venue = await published().catch(() => false) ? 'OKX 日档' : 'Bybit 日档'
-      this.markDownloaded(mapping.symbol, start, venue)
-      return venue
+      try {
+        await this.requestDay(mapping.bybit.symbol, day, progress, published)
+        const venue = await published().catch(() => false) ? 'OKX 日档' : 'Bybit 日档'
+        this.markDownloaded(mapping.symbol, start, venue)
+        return venue
+      } catch (error) {
+        if (!(error instanceof TradeArchiveUnavailableError)) throw error
+      }
     }
-    throw primaryError ?? new Error(`${mapping.symbol} ${day} UTC 暂无逐笔归档`)
+    throw primaryError ?? new TradeArchiveUnavailableError(`${mapping.symbol} ${day} UTC 暂无逐笔归档`)
   }
 
   private markDownloaded(symbol: string, start: number, venue: ArchiveVenue): void {
@@ -558,7 +620,7 @@ export class CombinedBybitSource {
       pending.report(progress)
     }, abort.signal, () => this.wakeWorker('bybit-trades-requested')).then(ready => {
       abort.signal.throwIfAborted()
-      if (!ready) throw new Error(`Bybit 未提供 ${symbol} ${day} UTC 逐笔归档`)
+      if (!ready) throw new TradeArchiveUnavailableError(`Bybit 未提供 ${symbol} ${day} UTC 逐笔归档`)
       return `${symbol} ${day} UTC 日档已缓存`
     }).finally(() => {
       if (this.pending.get(key)?.abort === abort) this.pending.delete(key)

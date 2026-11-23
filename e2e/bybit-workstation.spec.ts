@@ -302,6 +302,7 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await downloadDialog.getByLabel('往前天数').fill('0')
   await downloadDialog.getByLabel('往后天数').fill('0')
   await downloadDialog.getByRole('button', { name: '下载', exact: true }).click()
+  await downloadDialog.getByRole('button', { name: '只下载归档' }).click()
   try {
     try {
       await expect.poll(() => [anchorReads, nearbyReads]).toEqual([1, 1])
@@ -541,13 +542,6 @@ test('通过 UTC 锚点和前后天数选择日期范围并复用已缓存日档
     }
     if (path.endsWith('/git/ref/heads/main')) return route.fulfill({ headers, json: { object: { sha: 'test-commit' } } })
     if (path.endsWith('/git/commits/test-commit')) return route.fulfill({ headers, json: { tree: { sha: 'test-tree' } } })
-    const okxEntry = /\/okx-requests\/BTC-USDT-SWAP\/(\d{4}-\d\d-\d\d)\.json$/.exec(path)
-    if (okxEntry && request.method() === 'PUT') {
-      const content = Buffer.from(JSON.stringify({ version: 1, requestedManually: true, state: 'unavailable',
-        symbol: 'BTC-USDT-SWAP', day: okxEntry[1] })).toString('base64')
-      files.set(path, content)
-      return route.fulfill({ headers, status: 201, json: { content: { sha: 'test-file' } } })
-    }
     const entry = /\/bybit-requests\/BTCUSDT\/(\d{4}-\d\d-\d\d)\.json$/.exec(path)
     if (entry && request.method() === 'PUT') {
       const { content } = request.postDataJSON()
@@ -555,7 +549,7 @@ test('通过 UTC 锚点和前后天数选择日期范围并复用已缓存日档
       files.set(path, content)
       return route.fulfill({ headers, status: 201, json: { content: { sha: 'test-file' } } })
     }
-    if ((okxEntry || (entry && !published)) && files.has(path)) return route.fulfill({ headers, json: { type: 'file', path, sha: 'test-file',
+    if (entry && !published && files.has(path)) return route.fulfill({ headers, json: { type: 'file', path, sha: 'test-file',
       encoding: 'base64', content: files.get(path) } })
     return route.fulfill({ headers, status: 404, body: '' })
   })
@@ -579,8 +573,11 @@ test('通过 UTC 锚点和前后天数选择日期范围并复用已缓存日档
   const confirm = dialog.getByRole('button', { name: '下载', exact: true })
   await download.click()
   await expect(anchor).toHaveValue('2026-11-22')
-  await expect(before).toHaveValue('1')
-  await expect(after).toHaveValue('1')
+  await expect(before).toHaveValue('0')
+  await expect(after).toHaveValue('0')
+  await expect(dialog.getByText('2026-11-22', { exact: true })).toBeVisible()
+  await before.fill('1')
+  await after.fill('1')
   await expect(dialog.getByText('2026-11-21 至 2026-11-22')).toBeVisible()
   await anchor.fill('2026-11-23')
   await confirm.click()
@@ -606,18 +603,18 @@ test('通过 UTC 锚点和前后天数选择日期范围并复用已缓存日档
   expect(dispatched).toEqual([])
   await download.click()
   await expect(anchor).toHaveValue(day)
+  await before.fill('1')
+  await after.fill('1')
   await expect(dialog.getByText('2026-11-19 至 2026-11-21')).toBeVisible()
   await before.fill('0')
   await confirm.click()
-  await expect.poll(() => dispatched).toEqual(['okx-trades-requested'])
-  await expect.poll(() => files.size).toBe(2)
-  await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
-  await page.clock.fastForward(13_000)
+  await dialog.getByRole('button', { name: '只下载归档' }).click()
   await expect.poll(() => requested).toEqual(expect.arrayContaining([day, '2026-11-21'].map(day => ({
     version: 1, symbol: 'BTCUSDT', day, requestedManually: true,
   }))))
   expect(requested).toHaveLength(2)
-  await expect.poll(() => dispatched).toEqual(['okx-trades-requested', 'bybit-trades-requested'])
+  await expect.poll(() => dispatched).toEqual(['bybit-trades-requested'])
+  await expect(status).toContainText('等待后台下载并缓存 BTCUSDT')
   published = true
   await page.clock.fastForward(13_000)
   await expect(status).toContainText('Bybit 日档 2 天')
@@ -626,17 +623,15 @@ test('通过 UTC 锚点和前后天数选择日期范围并复用已缓存日档
   await before.fill('0')
   await after.fill('0')
   await confirm.click()
-  await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
-  await page.clock.fastForward(13_000)
-  await expect(status).toContainText('Bybit 日档 1 天')
+  await expect(dialog.getByRole('row').filter({ hasText: day })).toContainText('已加载')
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
   await download.click()
   await anchor.fill('2026-11-21')
   await before.fill('0')
   await after.fill('0')
   await confirm.click()
-  await expect(status).toContainText('等待后台下载并缓存 BTC-USDT-SWAP')
-  await page.clock.fastForward(13_000)
-  await expect(status).toContainText('Bybit 日档 1 天')
+  await expect(dialog.getByRole('row').filter({ hasText: '2026-11-21' })).toContainText('已加载')
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
   expect(requested).toHaveLength(2)
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
 })
@@ -692,7 +687,14 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
     await dialog.getByLabel('往前天数').fill('0')
     await dialog.getByLabel('往后天数').fill('0')
     await dialog.getByRole('button', { name: '下载', exact: true }).click()
-    await expect(chart.getByRole('status')).toContainText('Bybit 日档 1 天')
+    const row = dialog.getByRole('row').filter({ hasText: day })
+    await expect(row).toContainText(/Git 已缓存|已加载/)
+    if ((await row.textContent())?.includes('已加载')) {
+      await dialog.getByRole('button', { name: '完成', exact: true }).click()
+    } else {
+      await dialog.getByRole('button', { name: '只下载归档' }).click()
+      await expect(chart.getByRole('status')).toContainText('Bybit 日档 1 天')
+    }
   }
   await zoom(3)
   expect(partReads).toBe(0)

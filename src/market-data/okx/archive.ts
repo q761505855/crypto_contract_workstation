@@ -52,9 +52,9 @@ export class OkxArchive {
       begin: String(start - offset), end: String(start + BYBIT_DAY_MS - offset) })
     const response = await this.fetcher.call(globalThis, `https://www.okx.com/api/v5/public/market-data-history?${query}`,
       { credentials: 'omit', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]) })
-    if (!response.ok) return false
+    if (!response.ok) throw new Error(`OKX 官方日档查询失败（HTTP ${response.status}）`)
     const result: { code?: string; data?: { details: { groupDetails: { filename: string }[] }[] }[] } = await response.json()
-    if (result.code !== '0' || !Array.isArray(result.data)) return false
+    if (result.code !== '0' || !Array.isArray(result.data)) throw new Error('OKX 官方日档查询返回无效结果')
     const files = new Set(result.data.flatMap(group => group.details.flatMap(item =>
       item.groupDetails.map(file => file.filename))))
     return [day, next].every(date => symbols(date).every(symbol => files.has(`${symbol}-trades-${date}.zip`)))

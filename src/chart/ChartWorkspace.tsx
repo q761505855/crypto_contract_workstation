@@ -14,6 +14,7 @@ import {
   type ChartIndicatorPreferences,
 } from './indicator-preferences'
 import type { GitHubContentsClient } from '../github-sync/github-client'
+import type { TradeDownloadChoice, TradeDownloadDay } from '../market-data/bybit/combined-source'
 import { BYBIT_DAY_MS, bybitDay, bybitDayStart } from '../market-data/bybit/trades'
 import { orderFlowLabel, orderFlowMapping } from '../market-data/okx/trades'
 import {
@@ -74,6 +75,36 @@ interface DayDownloadSelection {
   error?: string
 }
 
+interface DayDownloadReview {
+  days: readonly TradeDownloadDay[]
+  choose(choice: TradeDownloadChoice): void
+}
+
+const tradeDownloadStatus: Record<TradeDownloadDay['status'], string> = {
+  unarchived: '平台未归档',
+  uncached: 'Git 未缓存',
+  cached: 'Git 已缓存',
+  loaded: '已加载',
+  error: '检查失败',
+}
+
+function tradeDownloadDetail(day: TradeDownloadDay, today: string): string | undefined {
+  switch (day.status) {
+    case 'loaded':
+      return day.through === undefined ? day.source : `${day.source} · 已加载至 ${new Date(day.through).toISOString().slice(11, 19)} UTC`
+    case 'cached':
+      return day.source
+    case 'uncached':
+      return day.canCache ? 'OKX 日档可下载' : '需要可写的云端缓存连接'
+    case 'unarchived': {
+      const history = day.canUseHistory ? '可用 OKX 接口补齐' : day.day < today ? '超出 OKX 接口覆盖范围' : '当前暂无可读取的成交'
+      return day.bybitFallback ? `${history} · 可尝试 Bybit 日档` : history
+    }
+    case 'error':
+      return day.message
+  }
+}
+
 function resolveDayDownloadRange({ anchor, before, after }: DayDownloadSelection, today: string) {
   let anchorMs: number
   try { anchorMs = bybitDayStart(anchor) }
@@ -126,6 +157,8 @@ export function ChartWorkspace({
   const [drawingSelection, setDrawingSelection] = useState<DrawingSelection | null>(null)
   const [dayDownloadMessage, setDayDownloadMessage] = useState('')
   const [dayDownloadSelection, setDayDownloadSelection] = useState<DayDownloadSelection | null>(null)
+  const [dayDownloadReview, setDayDownloadReview] = useState<DayDownloadReview | 'checking' | null>(null)
+  const dayDownloadReviewAbort = useRef<AbortController | null>(null)
   const dayDownloadRequest = useRef(0)
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
@@ -263,6 +296,7 @@ export function ChartWorkspace({
       host.removeEventListener('click', openSymbolPicker, true)
       drawingSlot?.remove()
       dayDownloadRequest.current++
+      dayDownloadReviewAbort.current?.abort()
       adapter?.dispose?.()
     }
   }, [])
@@ -531,7 +565,7 @@ export function ChartWorkspace({
   function openBybitDownload(): void {
     try {
       const day = adapterRef.current?.getVisibleBybitDay?.() ?? ''
-      setDayDownloadSelection({ anchor: day, before: '1', after: '1' })
+      setDayDownloadSelection({ anchor: day, before: '0', after: '0' })
     } catch (error) {
       setDayDownloadMessage(error instanceof Error ? error.message : '当前图表暂无可见 K 线')
     }
@@ -548,14 +582,54 @@ export function ChartWorkspace({
     const report = (message: string) => {
       if (dayDownloadRequest.current === request) setDayDownloadMessage(message)
     }
+    const abort = mapping && mapping.okx ? new AbortController() : undefined
     try {
-      const download = adapterRef.current?.downloadBybitDays?.(range.start, range.end, report)
+      const download = adapterRef.current?.downloadBybitDays?.(range.start, range.end, report, abort && {
+        signal: abort.signal,
+        choose: days => new Promise<TradeDownloadChoice>(resolve => {
+          if (abort.signal.aborted) { resolve('cancel'); return }
+          const cancel = () => resolve('cancel')
+          abort.signal.addEventListener('abort', cancel, { once: true })
+          setDayDownloadReview({ days, choose: choice => {
+            abort.signal.removeEventListener('abort', cancel)
+            resolve(choice)
+          } })
+        }),
+      })
       if (!download) return
+      if (abort) {
+        dayDownloadReviewAbort.current = abort
+        setDayDownloadReview('checking')
+      }
       setDayDownloadSelection(null)
-      void download.then(report, error => report(error instanceof Error ? error.message : '无法加载逐笔成交'))
+      void download.then(message => { if (message) report(message) }, error => {
+        if (abort?.signal.aborted) return
+        if (abort && dayDownloadReviewAbort.current === abort) {
+          dayDownloadReviewAbort.current = null
+          setDayDownloadReview(null)
+        }
+        report(error instanceof Error ? error.message : '无法加载逐笔成交')
+      })
     } catch (error) {
       setDayDownloadSelection({ ...dayDownloadSelection, error: error instanceof Error ? error.message : '无法加载逐笔成交' })
     }
+  }
+
+  const reviewedDays = dayDownloadReview && dayDownloadReview !== 'checking' ? dayDownloadReview.days : null
+  const canDownloadArchives = reviewedDays?.some(day => day.status === 'cached' ||
+    (day.status === 'uncached' && day.canCache) || (day.status === 'unarchived' && day.bybitFallback))
+  const canDownloadHistory = reviewedDays?.some(day =>
+    (day.status === 'unarchived' && day.canUseHistory) || (day.status === 'loaded' && day.canExtendHistory))
+
+  function finishDayDownloadReview(choice: TradeDownloadChoice): void {
+    if (dayDownloadReview && dayDownloadReview !== 'checking') {
+      dayDownloadReview.choose(choice)
+    } else {
+      dayDownloadReviewAbort.current?.abort()
+    }
+    dayDownloadReviewAbort.current = null
+    setDayDownloadReview(null)
+    setDayDownloadSelection(null)
   }
 
   const today = bybitDay(Date.now())
@@ -665,7 +739,8 @@ export function ChartWorkspace({
           <span aria-hidden="true"><i /><i /><i /></span>
         </button>, drawingToolbar,
       )}
-      <WorkspaceDialog open={dayDownloadSelection !== null} title="下载成交数据" onClose={() => setDayDownloadSelection(null)}
+      <WorkspaceDialog open={dayDownloadSelection !== null || dayDownloadReview !== null} title="下载成交数据"
+        onClose={() => finishDayDownloadReview(canDownloadHistory ? 'archives' : 'cancel')}
         className="bybit-download-dialog">
         {dayDownloadSelection && <form className="bybit-download-form" noValidate onSubmit={event => {
           event.preventDefault()
@@ -683,10 +758,37 @@ export function ChartWorkspace({
           {downloadPreview?.start && <p>下载范围 <strong>{downloadPreview.start === downloadPreview.end
             ? downloadPreview.start : `${downloadPreview.start} 至 ${downloadPreview.end}`}</strong>
             {downloadPreview.clipped && ' · 未来日期已跳过'}</p>}
-          <p>优先使用已缓存或已发布的 OKX 日档。近日期无可用日档时走接口，当天取至请求时刻。</p>
+          {mapping && mapping.okx && <p>选择范围后可查看逐日归档状态。</p>}
           {dayDownloadSelection.error && <p role="alert">{dayDownloadSelection.error}</p>}
           <button type="submit">下载</button>
         </form>}
+        {dayDownloadReview === 'checking' && <p role="status">正在检查日期状态…</p>}
+        {reviewedDays && (
+          <div className="bybit-download-form day-download-review">
+            <div className="day-download-table" tabIndex={0}>
+              <table aria-label="成交数据日期状态">
+                <thead><tr><th scope="col">UTC 日期</th><th scope="col">状态</th></tr></thead>
+                <tbody>{reviewedDays.map(day => (
+                  <tr key={day.day}>
+                    <th scope="row">{day.day}</th>
+                    <td>
+                      <span data-download-status={day.status}>{tradeDownloadStatus[day.status]}</span>
+                      <small>{tradeDownloadDetail(day, today)}</small>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <div className="day-download-actions">
+              {canDownloadArchives || canDownloadHistory ? (
+                <button type="button" autoFocus onClick={() => finishDayDownloadReview('archives')}>只下载归档</button>
+              ) : <button type="button" autoFocus onClick={() => finishDayDownloadReview('cancel')}>完成</button>}
+              {canDownloadHistory && (
+                <button type="button" onClick={() => finishDayDownloadReview('includeHistory')}>下载归档并补齐近期数据</button>
+              )}
+            </div>
+          </div>
+        )}
       </WorkspaceDialog>
       {onChartHeightChange !== undefined ? (
         <div
