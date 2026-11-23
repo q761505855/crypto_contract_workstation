@@ -1,5 +1,5 @@
 diff --git a/node_modules/@klinecharts/pro/dist/index.d.ts b/node_modules/@klinecharts/pro/dist/index.d.ts
-index 1cb6404..8a1a4be 100644
+index 1cb6404..eac8448 100644
 --- a/node_modules/@klinecharts/pro/dist/index.d.ts
 +++ b/node_modules/@klinecharts/pro/dist/index.d.ts
 @@ -1,4 +1,4 @@
@@ -33,7 +33,7 @@ index 1cb6404..8a1a4be 100644
  	constructor(options: ChartProOptions);
  	private _container;
  	private _chartApi;
-@@ -79,6 +83,8 @@ export declare class KLineChartPro implements ChartPro {
+@@ -79,9 +83,13 @@ export declare class KLineChartPro implements ChartPro {
  	getSymbol(): SymbolInfo;
  	setPeriod(period: Period): void;
  	getPeriod(): Period;
@@ -42,8 +42,13 @@ index 1cb6404..8a1a4be 100644
  }
  declare function load(key: string, ls: any): void;
  
++export declare function createChartColorPicker(label: string, value: string, onChange: (value: string) => void): HTMLDivElement & { value: string };
++
+ export {
+ 	load as loadLocales,
+ };
 diff --git a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
-index 6f78d0e..519ee03 100644
+index 6f78d0e..d412637 100644
 --- a/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 +++ b/node_modules/@klinecharts/pro/dist/klinecharts-pro.js
 @@ -2294,7 +2294,35 @@ const Rr = /* @__PURE__ */ g('<div><i class="thumb"></i></div>'), zr = (e) => ((
@@ -126,16 +131,60 @@ index 6f78d0e..519ee03 100644
    parallelogram: Nc,
    threeWaves: Bc,
    fiveWaves: Oc,
-@@ -2816,7 +2873,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
-         return [(() => {
+@@ -2813,10 +2870,50 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
+     return d(n0, {
+       class: "klinecharts-pro-indicator-modal-list",
+       get children() {
+-        return [(() => {
++        const orderFlowRows = () => {
++          if (!e.orderFlow) return [];
++          const title = L9.cloneNode(!0);
++          title.textContent = "订单流";
++          return [title, ...[
++            ["footprint", "足迹图（Footprint）", "FOOTPRINT", false],
++            ["bubbles", l("big_trades", e.locale), "BIG_TRADES", false],
++            ["profile", "框选成交分布（Profile）", "", false],
++            ["cvd", "累计成交量差（CVD）", "CVD", true]
++          ].map(([group, label, name, sub]) => {
++            const row = $9.cloneNode(!0);
++            row.classList.add("order-flow-indicator-row");
++            const paneId = sub ? e.subIndicators[name] ?? "" : "candle_pane";
++            if (name) {
++              const checked = sub ? !!paneId : e.mainIndicators.includes(name);
++              const toggle = document.createElement("button");
++              toggle.type = "button";
++              toggle.className = "order-flow-indicator-toggle";
++              toggle.setAttribute("aria-pressed", String(checked));
++              toggle.append(checked ? wr() : Sr(), document.createTextNode(label));
++              toggle.addEventListener("click", () => {
++                (sub ? e.onSubIndicatorChange : e.onMainIndicatorChange)({ name, paneId, added: !checked });
++              });
++              row.append(toggle);
++            } else {
++              const name = document.createElement("span");
++              name.textContent = label;
++              row.append(name);
++            }
++            const settings = document.createElement("button");
++            settings.type = "button";
++            settings.textContent = "⚙";
++            settings.title = label + "设置";
++            settings.setAttribute("aria-label", label + "设置");
++            settings.className = "order-flow-indicator-gear";
++            settings.addEventListener("click", () => e.onOrderFlowSettings?.(group));
++            row.append(settings);
++            return row;
++          })];
++        };
++        return [F(orderFlowRows), (() => {
            const t = L9.cloneNode(!0);
            return m(t, () => l("main_indicator", e.locale)), t;
 -        })(), F(() => ["MA", "EMA", "SMA", "BOLL", "SAR", "BBI"].map((t) => {
-+        })(), F(() => ["MA", "EMA", "SMA", "BOLL", "SAR", "BBI", "SUPERTREND", "PIVOTS", "KC", "MARKET_SESSIONS", ...(e.orderFlow ? ["BIG_TRADES"] : [])].map((t) => {
++        })(), F(() => ["MA", "EMA", "SMA", "BOLL", "SAR", "BBI", "SUPERTREND", "PIVOTS", "KC", "MARKET_SESSIONS"].map((t) => {
            const n = e.mainIndicators.includes(t);
            return (() => {
              const r = $9.cloneNode(!0);
-@@ -2836,7 +2893,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
+@@ -2836,7 +2933,7 @@ const L9 = /* @__PURE__ */ g('<li class="title"></li>'), $9 = /* @__PURE__ */ g(
          })), (() => {
            const t = L9.cloneNode(!0);
            return m(t, () => l("sub_indicator", e.locale)), t;
@@ -144,7 +193,7 @@ index 6f78d0e..519ee03 100644
            const n = t in e.subIndicators;
            return (() => {
              const r = $9.cloneNode(!0);
-@@ -2967,6 +3024,7 @@ function x9(e) {
+@@ -2967,6 +3064,7 @@ function x9(e) {
        component: "select",
        dataSource: [
          { key: "candle_solid", text: l("candle_solid", e) },
@@ -152,7 +201,7 @@ index 6f78d0e..519ee03 100644
          { key: "candle_stroke", text: l("candle_stroke", e) },
          { key: "candle_up_stroke", text: l("candle_up_stroke", e) },
          { key: "candle_down_stroke", text: l("candle_down_stroke", e) },
-@@ -3058,7 +3116,8 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3058,7 +3156,8 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
              case "select": {
                c = d(o5, {
                  style: {
@@ -162,7 +211,7 @@ index 6f78d0e..519ee03 100644
                  },
                  get value() {
                    return l(C, e.locale);
-@@ -3115,6 +3174,360 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3115,6 +3214,360 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
      return Z(() => G(t, "src", e.url)), t;
    }
  }), bl = {
@@ -523,7 +572,7 @@ index 6f78d0e..519ee03 100644
    AO: [
      { paramNameKey: "params_1", precision: 0, min: 1, default: 5 },
      { paramNameKey: "params_2", precision: 0, min: 1, default: 34 }
-@@ -3242,9 +3655,107 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3242,9 +3695,107 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
    ]
  }, xl = /* @__PURE__ */ g('<div class="klinecharts-pro-indicator-setting-modal-content"></div>'), kl = /* @__PURE__ */ g("<span></span>"), Al = (e) => {
    const [t, n] = $(B.clone(e.params.calcParams)), r = (a) => bl[a];
@@ -632,7 +681,7 @@ index 6f78d0e..519ee03 100644
      },
      width: 360,
      get buttons() {
-@@ -3255,7 +3766,20 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3255,7 +3806,20 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
            const a = r(e.params.indicatorName), i = [];
            B.clone(t()).forEach((o, s) => {
              !B.isValid(o) || o === "" ? "default" in a[s] && i.push(a[s].default) : i.push(o);
@@ -654,7 +703,7 @@ index 6f78d0e..519ee03 100644
          }
        }];
      },
-@@ -3264,15 +3788,18 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3264,15 +3828,18 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
      },
      get children() {
        const a = xl.cloneNode(!0);
@@ -676,7 +725,7 @@ index 6f78d0e..519ee03 100644
          },
          get precision() {
            return i.precision;
-@@ -3280,11 +3807,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3280,11 +3847,14 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
          get min() {
            return i.min;
          },
@@ -692,7 +741,7 @@ index 6f78d0e..519ee03 100644
      }
    });
  }, Ml = /* @__PURE__ */ g('<svg viewBox="0 0 1024 1024"><path d="M945.066667 898.133333l-189.866667-189.866666c55.466667-64 87.466667-149.333333 87.466667-241.066667 0-204.8-168.533333-373.333333-373.333334-373.333333S96 264.533333 96 469.333333 264.533333 842.666667 469.333333 842.666667c91.733333 0 174.933333-34.133333 241.066667-87.466667l189.866667 189.866667c6.4 6.4 14.933333 8.533333 23.466666 8.533333s17.066667-2.133333 23.466667-8.533333c8.533333-12.8 8.533333-34.133333-2.133333-46.933334zM469.333333 778.666667C298.666667 778.666667 160 640 160 469.333333S298.666667 160 469.333333 160 778.666667 298.666667 778.666667 469.333333 640 778.666667 469.333333 778.666667z"></path></svg>'), wl = /* @__PURE__ */ g('<img alt="symbol">'), Sl = /* @__PURE__ */ g("<li><div><span></span></div></li>"), Tl = (e) => {
-@@ -3341,6 +3871,65 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
+@@ -3341,6 +3911,65 @@ const pl = /* @__PURE__ */ g('<div class="klinecharts-pro-setting-modal-content"
  };
  q(["click"]);
  const Il = /* @__PURE__ */ g('<i class="icon-close klinecharts-pro-load-icon"></i>'), Nl = /* @__PURE__ */ g('<div class="klinecharts-pro-content"><div class="klinecharts-pro-widget"></div></div>');
@@ -758,15 +807,15 @@ index 6f78d0e..519ee03 100644
  function V1(e, t, n, r) {
    return t === "VOL" && (r = {
      gap: {
-@@ -3349,6 +3938,7 @@ function V1(e, t, n, r) {
+@@ -3349,6 +3978,7 @@ function V1(e, t, n, r) {
      ...r
    }), (e == null ? void 0 : e.createIndicator({
      name: t,
-+    ...(["PIVOTS", "SUPERTREND", "TTM_SQUEEZE", "MARKET_SESSIONS", "BIG_TRADES"].includes(t) ? {} : {
++    ...(["PIVOTS", "SUPERTREND", "TTM_SQUEEZE", "MARKET_SESSIONS", "BIG_TRADES", "FOOTPRINT", "CVD"].includes(t) ? {} : {
      // @ts-expect-error
      createTooltipDataSource: ({
        indicator: a,
-@@ -3359,10 +3949,11 @@ function V1(e, t, n, r) {
+@@ -3359,10 +3989,11 @@ function V1(e, t, n, r) {
          icons: o
        };
      }
@@ -779,7 +828,7 @@ index 6f78d0e..519ee03 100644
    const [i, o] = $(e.theme), [s, c] = $(e.styles), [C, u] = $(e.locale), [y, p] = $(e.symbol), [L, M] = $(e.period), [P, K] = $(!1), [w, Q] = $([...e.mainIndicators]), [S, A] = $({}), [b, O] = $(!1), [H, t1] = $({
      key: e.timezone,
      text: b9(e.timezone, e.locale)
-@@ -3389,7 +3980,9 @@ const Dl = (e) => {
+@@ -3389,7 +4020,9 @@ const Dl = (e) => {
      setSymbol: p,
      getSymbol: () => y(),
      setPeriod: M,
@@ -790,7 +839,7 @@ index 6f78d0e..519ee03 100644
    });
    const c1 = () => {
      n == null || n.resize();
-@@ -3405,28 +3998,23 @@ const Dl = (e) => {
+@@ -3405,28 +4038,23 @@ const Dl = (e) => {
          break;
        }
        case "day": {
@@ -827,7 +876,7 @@ index 6f78d0e..519ee03 100644
          break;
        }
      }
-@@ -3475,10 +4063,37 @@ const Dl = (e) => {
+@@ -3475,10 +4103,37 @@ const Dl = (e) => {
      e.subIndicators.forEach((f) => {
        const v = V1(n, f, !0);
        v && (h[f] = v);
@@ -869,7 +918,16 @@ index 6f78d0e..519ee03 100644
        })();
      }), n == null || n.subscribeAction(g5.OnTooltipIconClick, (f) => {
        if (f.indicatorName)
-@@ -3503,7 +4118,8 @@ const Dl = (e) => {
+@@ -3498,12 +4153,17 @@ const Dl = (e) => {
+             break;
+           }
+           case "setting": {
++            if (e.onOrderFlowSettings && (f.indicatorName === "FOOTPRINT" || f.indicatorName === "CVD")) {
++              e.onOrderFlowSettings(f.indicatorName === "FOOTPRINT" ? "footprint" : "cvd");
++              break;
++            }
+             const v = n == null ? void 0 : n.getIndicatorByPaneId(f.paneId, f.indicatorName);
+             W({
                visible: !0,
                indicatorName: f.indicatorName,
                paneId: f.paneId,
@@ -879,7 +937,7 @@ index 6f78d0e..519ee03 100644
              });
              break;
            }
-@@ -3520,25 +4136,33 @@ const Dl = (e) => {
+@@ -3520,25 +4180,33 @@ const Dl = (e) => {
          }
      });
    }), k0(() => {
@@ -926,15 +984,16 @@ index 6f78d0e..519ee03 100644
    }), a1(() => {
      const h = i();
      n == null || n.setStyles(h);
-@@ -3654,6 +4278,7 @@ const Dl = (e) => {
+@@ -3654,6 +4322,8 @@ const Dl = (e) => {
      },
      get children() {
        return d(hl, {
 +        get orderFlow() { return e.orderFlowEnabled; },
++        get onOrderFlowSettings() { return e.onOrderFlowSettings; },
          get locale() {
            return e.locale;
          },
-@@ -3725,7 +4350,7 @@ const Dl = (e) => {
+@@ -3725,7 +4395,7 @@ const Dl = (e) => {
            const f = {};
            h.forEach((v) => {
              const _ = v.key;
@@ -943,7 +1002,7 @@ index 6f78d0e..519ee03 100644
            }), n == null || n.setStyles(f);
          }
        });
-@@ -3767,11 +4392,12 @@ const Dl = (e) => {
+@@ -3767,11 +4437,12 @@ const Dl = (e) => {
              calcParams: []
            });
          },
@@ -958,7 +1017,7 @@ index 6f78d0e..519ee03 100644
            }, f.paneId);
          }
        });
-@@ -3875,7 +4501,7 @@ class jl {
+@@ -3875,7 +4546,7 @@ class jl {
        this._container = t.container;
      this._container.classList.add("klinecharts-pro"), this._container.setAttribute("data-theme", t.theme ?? "light");
      const n = this;
@@ -967,17 +1026,20 @@ index 6f78d0e..519ee03 100644
        ref: (r) => {
          n._chartApi = r;
        },
-@@ -3894,6 +4520,9 @@ class jl {
+@@ -3894,6 +4565,12 @@ class jl {
        get drawingBarVisible() {
          return t.drawingBarVisible ?? !0;
        },
 +      get orderFlowEnabled() {
 +        return t.orderFlowEnabled;
 +      },
++      get onOrderFlowSettings() {
++        return t.onOrderFlowSettings;
++      },
        get symbol() {
          return t.symbol;
        },
-@@ -3994,6 +4623,16 @@ class jl {
+@@ -3994,12 +4671,23 @@ class jl {
    getPeriod() {
      return this._chartApi.getPeriod();
    }
@@ -994,3 +1056,10 @@ index 6f78d0e..519ee03 100644
  }
  D5.forEach((e) => {
    h5(e);
+ });
+ export {
+   Kl as DefaultDatafeed,
++  alphaColorControl as createChartColorPicker,
+   jl as KLineChartPro,
+   Fl as loadLocales
+ };

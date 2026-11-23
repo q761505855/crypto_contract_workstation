@@ -31,7 +31,7 @@ export function* tradeBubbles(bar: TradeBar): Iterable<TradeBubble> {
 const aggregatedBubbles = new WeakMap<TradeBar, { minimum: number; points: TradeBubble[] }>()
 
 export function displayedTradeBubbles(bar: TradeBar, mode: BigTradeMode, minimum: number): Iterable<TradeBubble> {
-  if (mode === 'volume') return tradeBubbles(bar)
+  if (mode === 'volume') return tradesAboveMinimum(bar, minimum)
   const cached = aggregatedBubbles.get(bar)
   if (cached?.minimum === minimum) return cached.points
   const points: TradeBubble[] = []
@@ -61,6 +61,12 @@ export function displayedTradeBubbles(bar: TradeBar, mode: BigTradeMode, minimum
   flush()
   aggregatedBubbles.set(bar, { minimum, points })
   return points
+}
+
+function* tradesAboveMinimum(bar: TradeBar, minimum: number): Iterable<TradeBubble> {
+  for (const point of tradeBubbles(bar)) {
+    if (point.trade.price * point.trade.size >= minimum) yield point
+  }
 }
 
 export interface HourSamples {

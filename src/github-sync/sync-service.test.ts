@@ -86,8 +86,15 @@ function backup(): BackupEnvelope {
     selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },
     chartIndicators: {
       schemaVersion: 1,
+      orderFlow: {
+        footprint: { type: 'bidAsk', plotType: 'delta', layout: 'histogram', showText: false, minNotional: 0, columnWidth: 128 },
+        bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxNotional: 0 },
+        profile: { type: 'bidAsk', rows: 26, valueArea: 82, showPoc: false, pocColor: '#ffcc7000' },
+        cvd: { reset: 'continuous', showZero: false, plot: 'histogram' },
+      },
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
+        { name: 'FOOTPRINT', calcParams: [], visible: false, styles: null },
         { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
           bubbleMode: 'aggregate',
           bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -106,6 +113,7 @@ function backup(): BackupEnvelope {
       { height: 180, indicators: [{ name: 'TTM_WAVE_A', calcParams: [5, 21, 34], visible: false, styles: { bars: [{ noChangeColor: '#123456', positiveColor: '#12ab34', negativeColor: '#ed1234', borderSize: 0 }, { positiveColor: '#34ab56', negativeColor: '#ed5678' }] } }] },
       { height: 190, indicators: [{ name: 'TTM_WAVE_B', calcParams: [5, 55, 89], visible: true, styles: null }] },
       { height: 200, indicators: [{ name: 'TTM_WAVE_C', calcParams: [5, 144, 233], visible: true, styles: null }] },
+      { height: 140, indicators: [{ name: 'CVD', calcParams: [], visible: true, styles: null }] },
       { height: 190, indicators: [{ name: 'RSI', calcParams: [6, 12, 24], visible: false, styles: { rsiLevels: { oversold: 0, overbought: 100 }, rsiLines: [{ color: '#26a69a00', size: 0 }, { color: '#76808f80' }, { color: '#ef5350' }] } }] }],
     },
   }
@@ -833,6 +841,14 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
 
+    const footprintChanged = structuredClone(indicators)
+    footprintChanged.orderFlow!.footprint!.plotType = 'matchText'
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(footprintChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(footprintChanged)
+
     const modeChanged = structuredClone(indicators)
     const bubbles = modeChanged.main.find(i => i.name === 'BIG_TRADES')!
     bubbles.styles = { ...(bubbles.styles as Record<string, JsonValue>), bubbleMode: 'volume' }
@@ -874,6 +890,7 @@ describe('GitHubSyncService', () => {
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(pivotChanged)
 
     const changed = structuredClone(indicators)
+    changed.orderFlow!.profile!.rows = 60
     changed.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = {
       sessionVisibility: [true, false, true],
       sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
@@ -891,7 +908,7 @@ describe('GitHubSyncService', () => {
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(empty))
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
-    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(empty)
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual({ ...empty, orderFlow: changed.orderFlow })
 
     const remotePreferences = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     const rewrite = async (value: unknown) => {
@@ -910,6 +927,7 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicators)
     const legacyDefaults = structuredClone(indicators)
+    delete legacyDefaults.orderFlow
     legacyDefaults.main.find(i => i.name === 'BIG_TRADES')!.styles = null
     legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
     const legacySessions = legacyDefaults.main.find(i => i.name === 'MARKET_SESSIONS')!
@@ -918,6 +936,7 @@ describe('GitHubSyncService', () => {
     legacyDefaults.sub[1].indicators[0].styles = { bars: [{ positiveColor: '#26a69a', negativeColor: '#ef5350', borderSize: 0 }] }
     await rewrite({ ...remotePreferences, chartIndicators: legacyDefaults })
     await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.orderFlow).toEqual(indicators.orderFlow)
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).sub[1].indicators[0].styles)
       .toEqual({ bars: [{ positiveColor: '#168c72', negativeColor: '#d93654', borderSize: 0 }] })
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).main.find((i: { name: string }) => i.name === 'PIVOTS').calcParams.slice(30))
@@ -928,6 +947,12 @@ describe('GitHubSyncService', () => {
       .toEqual(indicators.main.find(i => i.name === 'BIG_TRADES'))
     const before = (await targetBackups.exportAll()).data
     const invalidBubbles = structuredClone(indicators)
+    await rewrite({ ...remotePreferences, chartIndicators: { ...indicators, orderFlow: { footprint: { plotType: '' } } } })
+    await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.footprint.plotType/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
+    await rewrite({ ...remotePreferences, chartIndicators: { ...indicators, orderFlow: { cvd: { lineWidth: 0 } } } })
+    await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.cvd.lineWidth/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
     invalidBubbles.main.find(i => i.name === 'BIG_TRADES')!.styles = { bubbleColors: [] }
     await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidBubbles })
     await expect(target.pull(client(remote))).rejects.toThrow(/BIG_TRADES.*bubbleColors/)

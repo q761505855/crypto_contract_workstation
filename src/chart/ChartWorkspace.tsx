@@ -28,6 +28,10 @@ import type { DrawingStore } from './drawings'
 import type { DrawingSelection } from './drawing-overlays'
 import { DrawingSelectionToolbar } from './DrawingSelectionToolbar'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
+import { OrderFlowSettingsDialog } from './OrderFlowSettingsDialog'
+import { bubblePreferenceDefaults, type OrderFlowGroup } from './order-flow-preferences'
+import { BIG_TRADES } from './order-flow'
+import { PREFERENCES_RESTORED } from '../storage/preference-events'
 import './chart-size-controls.css'
 
 export interface ChartWorkspaceProps {
@@ -126,6 +130,8 @@ export function ChartWorkspace({
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
+  const [orderFlowDialog, setOrderFlowDialog] = useState<OrderFlowGroup | null>(null)
+  const indicatorSavingPaused = useRef(false)
   const [indicatorInfoVisible, setIndicatorInfoVisible] = useState(() => !(window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches ?? false))
   const [paneSizes, setPaneSizes] = useState<{ id: string; label: string; height: number }[]>([])
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -168,7 +174,7 @@ export function ChartWorkspace({
         symbol,
         period,
         initialIndicatorPreferences,
-      ), orderFlowCloud,
+      ), orderFlowCloud, onOrderFlowSettings: setOrderFlowDialog,
     })
     if (initialIndicatorPreferences !== null) {
       adapter?.applyIndicatorPreferences?.(
@@ -430,8 +436,10 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     if (adapter?.getIndicatorPreferences === undefined) return
     let previous = JSON.stringify(adapter.getIndicatorPreferences())
+    const restored = () => { indicatorSavingPaused.current = true }
     const synchronize = () => {
       synchronizeLayoutRef.current?.()
+      if (indicatorSavingPaused.current) return
       const preferences = adapter.getIndicatorPreferences?.()
       if (preferences === undefined) return
       const serialized = JSON.stringify(preferences)
@@ -441,9 +449,11 @@ export function ChartWorkspace({
     }
     const interval = window.setInterval(synchronize, 250)
     window.addEventListener('beforeunload', synchronize)
+    window.addEventListener(PREFERENCES_RESTORED, restored)
     return () => {
       window.clearInterval(interval)
       window.removeEventListener('beforeunload', synchronize)
+      window.removeEventListener(PREFERENCES_RESTORED, restored)
     }
   }, [])
 
@@ -512,7 +522,7 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     adapter?.setIndicatorPaneHeight?.(paneId, height)
     const preferences = adapter?.getIndicatorPreferences?.()
-    if (!auxiliary && preferences !== undefined) saveChartIndicatorPreferences(preferences)
+    if (!auxiliary && !indicatorSavingPaused.current && preferences !== undefined) saveChartIndicatorPreferences(preferences)
     setPaneSizes(adapter?.getIndicatorPaneSizes?.() ?? [])
     synchronizeLayoutRef.current?.()
     adapter?.resize?.()
@@ -609,6 +619,12 @@ export function ChartWorkspace({
 
   const periodSelector = <PeriodSelector value={period.text} onChange={selectCompactPeriod} allowPinning={!auxiliary} />
   const expanded = chartHeight !== null && canExpand
+  const settingsSnapshot = orderFlowDialog ? adapterRef.current?.getIndicatorPreferences?.() : undefined
+  const bubble = settingsSnapshot?.main.find(setting => setting.name === BIG_TRADES)
+  const orderFlowSettings = bubble ? {
+    ...settingsSnapshot?.orderFlow,
+    bubbles: { ...settingsSnapshot?.orderFlow?.bubbles, ...bubblePreferenceDefaults(bubble.calcParams, bubble.styles) },
+  } : settingsSnapshot?.orderFlow
 
   return (
     <section className="chart-workspace" aria-label="行情图表" data-price-range-auto={priceRangeAuto}>
@@ -633,6 +649,15 @@ export function ChartWorkspace({
           onSelect={selectSymbol}
         />
       ) : null}
+      {orderFlowDialog && <OrderFlowSettingsDialog key={orderFlowDialog} group={orderFlowDialog}
+        preferences={orderFlowSettings}
+        onClose={() => setOrderFlowDialog(null)} onSave={preferences => {
+          const adapter = adapterRef.current
+          adapter?.setOrderFlowPreferences?.(preferences)
+          const snapshot = adapter?.getIndicatorPreferences?.()
+          if (!auxiliary && !indicatorSavingPaused.current && snapshot) saveChartIndicatorPreferences(snapshot)
+          setOrderFlowDialog(null)
+        }} />}
       {orderFlowCloud && drawingToolbar && createPortal(
         <button type="button" className="chart-volume-profile-tool" aria-label="框选成交分布"
           title={mapping ? `框选成交分布 · ${orderFlowLabel(mapping)}` : '当前品种暂无成交量'} disabled={!mapping}

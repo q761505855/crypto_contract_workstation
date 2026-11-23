@@ -1453,6 +1453,24 @@ button:disabled {
 .workspace-dialog { width: min(480px, 100%); max-height: calc(var(--workspace-viewport-height, 100dvh) - 48px); overflow: hidden; display: flex; flex-direction: column; border: 1px solid #35465e; border-radius: 12px; background: #141f2e; color: #d8e4f3; box-shadow: 0 18px 70px #0008; }
 .workspace-dialog > .panel-heading { padding: 14px 18px; margin: 0; border-bottom: 1px solid #2f4058; flex-shrink: 0; }
 .workspace-dialog-body { overflow: auto; overscroll-behavior: contain; padding: 16px 20px; min-height: 0; }
+.chart-host .order-flow-indicator-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.order-flow-indicator-row > span { padding-inline-start: 9px; }
+.order-flow-indicator-row button { background: transparent; color: inherit; border: 0; cursor: pointer; min-height: 36px; }
+.order-flow-indicator-toggle { display: flex; flex: 1; align-items: center; gap: 10px; text-align: left; padding: 4px 8px; }
+.order-flow-indicator-toggle .icon { width: 16px; height: 16px; fill: currentColor; }
+.order-flow-indicator-toggle[aria-pressed=true] .icon { color: #65b7ff; }
+.order-flow-indicator-gear { min-width: 36px; font-size: 17px; }
+.order-flow-indicator-row button:hover { background: #65b7ff20; }
+.workspace-dialog.order-flow-dialog { width: min(580px, 100%); }
+.order-flow-form > p { margin: 0 0 14px; color: #b3c3d8; }
+.order-flow-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px; }
+.order-flow-fields label, .order-flow-color-field { display: grid; gap: 6px; align-content: start; font-size: 13px; }
+.order-flow-fields input[type=number] { width: 100%; min-width: 0; padding: 8px; color: #dae6f7; background: #0c1420; border: 1px solid #34465f; }
+.order-flow-fields .order-flow-toggle { display: flex; align-items: center; justify-content: space-between; }
+.order-flow-toggle input { width: 17px; accent-color: #65b7ff; }
+.order-flow-color-field input[type=color] { height: 34px; padding: 2px; background: #0c1420; border: 1px solid #34465f; border-radius: 3px; cursor: pointer; }
+.order-flow-form footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.order-flow-form [role=alert] { margin-top: 12px; color: #ffabb1; }
 .workspace-dialog button { min-height: 36px; padding: 7px 12px; cursor: pointer; }
 .dialog-done { display: block; width: 100%; margin-top: 18px; background: #20466c; border-color: #3b719e; color: #dcefff; }
 .workspace-panel-toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0; }

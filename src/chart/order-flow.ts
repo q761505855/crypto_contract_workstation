@@ -66,7 +66,7 @@ export class VolumeProfileAccumulator {
     this.rows[index][trade.side] += trade.size
   }
 
-  profile(): VolumeProfile | undefined {
+  profile(valueArea = 70): VolumeProfile | undefined {
     const volume = this.rows.map(row => row.buy + row.sell)
     const total = volume.reduce((sum, value) => sum + value, 0)
     if (!total) return undefined
@@ -74,7 +74,7 @@ export class VolumeProfileAccumulator {
     let lower = peak
     let higher = peak
     let area = volume[peak]
-    while (area < total * 0.7 && (lower > 0 || higher < this.rows.length - 1)) {
+    while (area < total * valueArea / 100 && (lower > 0 || higher < this.rows.length - 1)) {
       if ((volume[higher + 1] ?? -1) > (volume[lower - 1] ?? -1)) area += volume[++higher]
       else area += volume[--lower]
     }

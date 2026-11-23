@@ -104,6 +104,113 @@ test('大单气泡模式和样式保存后可刷新恢复，也支持配置导�
   await expect(buyTransparency).toHaveValue('0')
 })
 
+test('订单流分组和设置可独立使用并随配置恢复', async ({ page }) => {
+  await connectFixture(page)
+  await page.goto('/')
+  const chart = page.getByTestId('chart-host')
+  const list = page.locator('.klinecharts-pro-indicator-modal-list')
+  const footprint = '足迹图（Footprint）'
+  const profile = '框选成交分布（Profile）'
+  const cvd = '累计成交量差（CVD）'
+  const bubbles = '大单气泡（Big Trades）'
+  const open = () => chart.getByText('指标', { exact: true }).click()
+  const close = () => page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  const settings = async (name: string) => {
+    await list.getByRole('button', { name: name + '设置', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: name + '设置' })
+    await expect(dialog).toBeVisible()
+    return dialog
+  }
+
+  await open()
+  await expect(list.locator('li.title').first()).toHaveText('订单流')
+  await list.getByText(profile, { exact: true }).click()
+  await expect(page.getByRole('dialog', { name: profile + '设置' })).toHaveCount(0)
+  const profileDialog = await settings(profile)
+  await expect(profileDialog.getByLabel('POC 线色', { exact: true })).toHaveAttribute('type', 'color')
+  await profileDialog.getByLabel('价位档数').fill('64')
+  await profileDialog.getByLabel('显示 POC').uncheck()
+  await profileDialog.getByRole('button', { name: '保存', exact: true }).click()
+  const bubbleDialog = await settings(bubbles)
+  await expect(bubbleDialog.getByLabel('主动买入填充色', { exact: true })).toHaveAttribute('type', 'color')
+  await bubbleDialog.getByLabel('标记形状').selectOption('diamond')
+  await bubbleDialog.getByLabel('空心标记').check()
+  await bubbleDialog.getByLabel('最小半径').fill('0')
+  await bubbleDialog.getByLabel('大单模式').selectOption('aggregate')
+  await bubbleDialog.getByLabel('最低成交额（USDT）').fill('1200')
+  await bubbleDialog.getByRole('button', { name: '保存', exact: true }).click()
+  const bubbleToggle = list.getByRole('button', { name: bubbles, exact: true })
+  await expect(bubbleToggle).toHaveAttribute('aria-pressed', 'false')
+  await bubbleToggle.click()
+  const activeBubbles = await settings(bubbles)
+  await expect(activeBubbles.getByLabel('大单模式')).toHaveValue('aggregate')
+  await expect(activeBubbles.getByLabel('最低成交额（USDT）')).toHaveValue('1200')
+  await activeBubbles.getByRole('button', { name: '取消', exact: true }).click()
+  await bubbleToggle.click()
+
+  const footprintDialog = await settings(footprint)
+  await expect(footprintDialog.getByLabel('失衡色', { exact: true })).toHaveAttribute('type', 'color')
+  await footprintDialog.getByLabel('失衡色', { exact: true }).fill('#345678')
+  await footprintDialog.getByLabel('失衡色透明度', { exact: true }).fill('100')
+  await expect(footprintDialog.getByLabel('图形内容', { exact: true })).toHaveValue('matchText')
+  await footprintDialog.getByLabel('数值内容', { exact: true }).selectOption('bidAsk')
+  await footprintDialog.getByLabel('图形内容', { exact: true }).selectOption('delta')
+  await footprintDialog.getByLabel('显示样式').selectOption('histogram')
+  await footprintDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(list.getByRole('button', { name: footprint, exact: true })).toHaveAttribute('aria-pressed', 'false')
+  await list.getByRole('button', { name: footprint, exact: true }).click()
+  await list.getByRole('button', { name: cvd, exact: true }).click()
+  await expect(list.getByRole('button', { name: cvd, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const cvdDialog = await settings(cvd)
+  await expect(cvdDialog.getByLabel('正值色', { exact: true })).toHaveAttribute('type', 'color')
+  await cvdDialog.getByRole('button', { name: '取消', exact: true }).click()
+  await close()
+
+  await page.reload()
+  await open()
+  await expect(list.getByRole('button', { name: footprint, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(list.getByRole('button', { name: cvd, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const restored = await settings(footprint)
+  await expect(restored.getByLabel('失衡色', { exact: true })).toHaveValue('#345678')
+  await expect(restored.getByLabel('失衡色透明度', { exact: true })).toHaveValue('100')
+  await expect(restored.getByLabel('数值内容', { exact: true })).toHaveValue('bidAsk')
+  await expect(restored.getByLabel('图形内容', { exact: true })).toHaveValue('delta')
+  await expect(restored.getByLabel('显示样式')).toHaveValue('histogram')
+  await restored.getByRole('button', { name: '取消', exact: true }).click()
+  await close()
+
+  await page.getByRole('button', { name: '工具', exact: true }).click()
+  await page.getByTestId('open-data-manager').click()
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '导出应用配置' }).click(),
+  ])
+  const archive = JSON.parse(await readFile((await download.path())!, 'utf8'))
+  const orderFlow = archive.data.preferences.chartIndicators.orderFlow
+  expect(orderFlow.profile).toMatchObject({ rows: 64, showPoc: false })
+  expect(orderFlow.bubbles).toMatchObject({ marker: 'diamond', hollow: true, minRadius: 0, mode: 'aggregate', minNotional: 1200 })
+  expect(orderFlow.footprint).toMatchObject({ type: 'bidAsk', plotType: 'delta', layout: 'histogram', imbalanceColor: '#34567800' })
+  orderFlow.profile.rows = 35
+  orderFlow.footprint.plotType = 'volume'
+  orderFlow.footprint.imbalanceColor = 'rgba(18,52,86,0.25)'
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByTestId('import-backup-file').setInputFiles({
+    name: 'order-flow.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)),
+  })
+  await expect(page.getByTestId('backup-status')).toContainText('刷新页面')
+  await page.reload()
+  await open()
+  const imported = await settings(profile)
+  await expect(imported.getByLabel('价位档数')).toHaveValue('35')
+  await expect(imported.getByLabel('显示 POC')).not.toBeChecked()
+  await imported.getByRole('button', { name: '取消', exact: true }).click()
+  const importedFootprint = await settings(footprint)
+  await expect(importedFootprint.getByLabel('失衡色', { exact: true })).toHaveValue('#123456')
+  await expect(importedFootprint.getByLabel('失衡色透明度', { exact: true })).toHaveValue('75')
+  await expect(importedFootprint.getByLabel('数值内容', { exact: true })).toHaveValue('bidAsk')
+  await expect(importedFootprint.getByLabel('图形内容', { exact: true })).toHaveValue('volume')
+})
+
 test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', async ({ page }) => {
   let futureReads = 0
   let anchorReads = 0
@@ -277,6 +384,18 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   const preview = await profileState('store')
   await page.mouse.up()
   await expect.poll(() => profileState('read')).toMatchObject({ sameProfile: true, savedLow: preview.low })
+  await chart.getByText('指标', { exact: true }).click()
+  await page.getByRole('button', { name: '框选成交分布（Profile）设置', exact: true }).click()
+  const profileSettings = page.getByRole('dialog', { name: '框选成交分布（Profile）设置' })
+  await profileSettings.getByLabel('价位档数').fill('16')
+  await profileSettings.getByRole('button', { name: '保存', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await expect.poll(() => page.evaluate(() => {
+    const adapter = (window as unknown as { __viewportTestAdapter: {
+      coreChart: import('klinecharts').Chart; orderFlow: { profiles: Map<string, unknown> }
+    } }).__viewportTestAdapter
+    return adapter.coreChart.getOverlayById([...adapter.orderFlow.profiles.keys()][0])?.extendData?.profile?.rows.length
+  })).toBe(16)
 
   await page.evaluate(() => {
     const state = window as unknown as { __periodArchiveReads: number; __viewportTestAdapter: {
@@ -295,6 +414,48 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await expect.poll(async () => (await combined()).points.map(point => point[0])).toEqual(['first', 'next'])
   await expect.poll(async () => (await combined()).volume).toBe(90)
   expect(await page.evaluate(() => (window as unknown as { __periodArchiveReads: number }).__periodArchiveReads)).toBe(0)
+  await page.evaluate(() => {
+    const state = window as unknown as {
+      __viewportTestAdapter: { coreChart: import('klinecharts').Chart }
+      __footprintTextLayers: Record<string, number>
+    }
+    state.__footprintTextLayers = {}
+    const native = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (text === '40' && this.fillStyle === '#e7eef8') {
+        const pane = state.__viewportTestAdapter.coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)
+        const layer = Array.from(pane?.querySelectorAll('canvas') ?? []).indexOf(this.canvas)
+        if (layer >= 0) state.__footprintTextLayers[text] = layer
+      }
+      if (maxWidth === undefined) native.call(this, text, x, y)
+      else native.call(this, text, x, y, maxWidth)
+    }
+  })
+  await chart.getByText('指标', { exact: true }).click()
+  const list = page.locator('.klinecharts-pro-indicator-modal-list')
+  await list.getByRole('button', { name: '足迹图（Footprint）', exact: true }).click()
+  await list.getByRole('button', { name: '足迹图（Footprint）设置', exact: true }).click()
+  const mixedFootprint = page.getByRole('dialog', { name: '足迹图（Footprint）设置' })
+  await mixedFootprint.getByRole('combobox', { name: '图形内容', exact: true }).selectOption('delta')
+  await mixedFootprint.getByRole('combobox', { name: '显示样式', exact: true }).selectOption('histogram')
+  await mixedFootprint.getByRole('button', { name: '保存', exact: true }).click()
+  await list.getByRole('button', { name: '累计成交量差（CVD）', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await expect.poll(() => page.evaluate(start => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const panes = coreChart.getIndicatorByPaneId() as Map<string, Map<string, import('klinecharts').Indicator>>
+    const footprint = panes.get('candle_pane')?.get('FOOTPRINT')?.extendData as import('../src/chart/order-flow-indicators').FootprintDisplay | undefined
+    const cvd = [...panes.values()].find(pane => pane.has('CVD'))?.get('CVD')
+    const rows = footprint?.rows?.get(start)
+    return {
+      spacing: coreChart.getBarSpace(),
+      volume: rows?.reduce((total, row) => total + row.buy + row.sell, 0),
+      delta: cvd?.result.at(-1)?.delta,
+    }
+  }, start)).toMatchObject({ spacing: 110, volume: 90, delta: -9 })
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __footprintTextLayers: Record<string, number> }
+  ).__footprintTextLayers), { timeout: 3000 }).toEqual({ '40': 1 })
 })
 
 test('实时成交只更新映射品种的成交量，切到未匹配品种时恢复报价量', async ({ page }) => {

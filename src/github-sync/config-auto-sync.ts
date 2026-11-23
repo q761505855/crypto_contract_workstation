@@ -16,6 +16,10 @@ function stable(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)
 }
 const equal = (left: unknown, right: unknown) => stable(left) === stable(right)
+const atomicFields = new Set([
+  'chartWindowSize', 'selectedSymbol', 'okxSelectedSymbol',
+  'chartIndicators.orderFlow.footprint', 'chartIndicators.orderFlow.bubbles',
+])
 
 /** A product and its metadata move together, as do arrays and captured window sizes. */
 export function mergeConfig(base: BackupPreferences | undefined, local: BackupPreferences, remote: BackupPreferences, resolution?: 'local' | 'remote', remoteBase = base): { preferences: BackupPreferences; conflicts: string[] } {
@@ -24,7 +28,7 @@ export function mergeConfig(base: BackupPreferences | undefined, local: BackupPr
     // Absent remote optional fields are legacy omissions, never deletion commands.
     if (there === undefined) return here
     if (equal(here, there)) return here
-    if (path !== 'chartWindowSize' && path !== 'selectedSymbol' && path !== 'okxSelectedSymbol' && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
+    if (!atomicFields.has(path) && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
       return Object.fromEntries([...new Set([...Object.keys(here), ...Object.keys(there)])].map(key => [
         key, merge(object(beforeHere) ? beforeHere[key] : undefined, object(beforeThere) ? beforeThere[key] : undefined, here[key], there[key], path ? `${path}.${key}` : key),
       ]))

@@ -51,6 +51,13 @@ import { DrawingOverlays, type DrawingChange, type DrawingSelection } from './dr
 import type { DrawingStore } from './drawings'
 import { CandleReadout } from './candle-readout'
 import { formatDisplayTime } from '../format-display-time'
+import { CVD, FOOTPRINT, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
+import { BIG_TRADES } from './order-flow'
+
+type OrderFlowChartOptions = ChartProOptions & {
+  orderFlowCloud?: GitHubContentsClient
+  onOrderFlowSettings?: (group: OrderFlowGroup) => void
+}
 
 const DASHED_LINE = 'dashed' as LineType
 const ON_DATA_READY = 'onDataReady' as ActionType
@@ -85,7 +92,8 @@ const formatPnl = new Intl.NumberFormat('zh-CN', {
 
 export interface ChartAdapterPort {
   dispose?(): void
-  mount(options: ChartProOptions & { orderFlowCloud?: GitHubContentsClient }): void
+  mount(options: OrderFlowChartOptions): void
+  setOrderFlowPreferences?(preferences: OrderFlowPreferences): void
   startVolumeProfile?(): boolean
   getVisibleBybitDay?(): string
   downloadBybitDays?(start: string, end: string, report: (message: string) => void): Promise<string>
@@ -212,7 +220,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.datafeed = null
   }
 
-  mount({ orderFlowCloud, ...options }: ChartProOptions & { orderFlowCloud?: GitHubContentsClient }): void {
+  mount({ orderFlowCloud, ...options }: OrderFlowChartOptions): void {
     if (this.chart !== null) {
       throw new Error('KLineChart Pro is already mounted.')
     }
@@ -233,7 +241,11 @@ export class ProChartAdapter implements ChartAdapterPort {
         return typeof value === 'function' ? value.bind(target) : value
       },
     })
-    const combinedOptions = { ...options, datafeed, orderFlowEnabled: !!orderFlowCloud }
+    const combinedOptions = {
+      ...options, datafeed, orderFlowEnabled: !!orderFlowCloud,
+      mainIndicators: orderFlowCloud ? options.mainIndicators : options.mainIndicators?.filter(name => name !== FOOTPRINT && name !== BIG_TRADES),
+      subIndicators: orderFlowCloud ? options.subIndicators : options.subIndicators?.filter(name => name !== CVD),
+    }
     this.chart = this.factory(combinedOptions)
     this.coreChart = this.chart.getChart()
     if (orderFlowCloud) {
@@ -755,6 +767,7 @@ export class ProChartAdapter implements ChartAdapterPort {
         ),
       })
     }
+    const orderFlow = this.orderFlow?.preferences
     return {
       schemaVersion: 1,
       main:
@@ -764,6 +777,7 @@ export class ProChartAdapter implements ChartAdapterPort {
             )
           : [],
       sub: sub.filter((pane) => pane.indicators.length > 0),
+      ...(orderFlow === undefined ? {} : { orderFlow }),
     }
   }
 
@@ -771,6 +785,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     preferences: ChartIndicatorPreferences,
   ): void {
     const chart = this.requireCoreChart()
+    this.orderFlow?.setPreferences(preferences.orderFlow)
     const panes = chart.getIndicatorByPaneId()
     if (!(panes instanceof Map)) return
     const apply = (
@@ -793,6 +808,7 @@ export class ProChartAdapter implements ChartAdapterPort {
         if (main.has(setting.name)) apply(setting, 'candle_pane')
       }
     }
+    this.orderFlow?.applyBubblePreferences()
     for (const pane of preferences.sub) {
       let heightApplied = false
       for (const setting of pane.indicators) {
@@ -814,6 +830,11 @@ export class ProChartAdapter implements ChartAdapterPort {
         }
       }
     }
+  }
+
+  setOrderFlowPreferences(preferences: OrderFlowPreferences): void {
+    this.orderFlow?.setPreferences(preferences)
+    this.orderFlow?.applyBubblePreferences()
   }
 
   setSimulationOverlays(state: SimulationOverlayState): void {

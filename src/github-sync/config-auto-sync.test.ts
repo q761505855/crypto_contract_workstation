@@ -59,6 +59,20 @@ describe('automatic configuration sync', () => {
     expect(mergeConfig(before, local, remote, 'remote').preferences).toEqual(remote)
     expect(mergeConfig(before, local, base).preferences).toEqual(local)
   })
+  it('resolves concurrent bubble bounds together and merges independent order-flow groups', () => {
+    const chartIndicators = { schemaVersion: 1 as const, main: [], sub: [] }
+    const withBounds = (minRadius: number, maxRadius: number): BackupPreferences => ({
+      ...base, chartIndicators: { ...chartIndicators, orderFlow: { bubbles: { minRadius, maxRadius } } },
+    })
+    const before = withBounds(5, 20)
+    const local = withBounds(18, 20)
+    const remote = withBounds(5, 10)
+    remote.chartIndicators!.orderFlow!.profile = { rows: 64 }
+    const unresolved = mergeConfig(before, local, remote)
+    expect(unresolved.conflicts).toEqual(['chartIndicators.orderFlow.bubbles'])
+    expect(unresolved.preferences.chartIndicators!.orderFlow).toEqual({ bubbles: { minRadius: 18, maxRadius: 20 }, profile: { rows: 64 } })
+    expect(mergeConfig(before, local, remote, 'remote').preferences).toEqual(remote)
+  })
   it('keeps cTrader product identity and display precision together across concurrent edits', () => {
     const before = { ...base, selectedSymbol: { ticker: 'EURUSD', exchange: 'CTRADER', pricePrecision: 5 } }
     const local = { ...base, selectedSymbol: { ticker: 'XAUUSD', exchange: 'CTRADER', pricePrecision: 2 } }

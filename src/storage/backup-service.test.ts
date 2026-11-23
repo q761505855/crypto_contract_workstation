@@ -340,6 +340,12 @@ async function seed(databaseName: string, preferences: MemoryPreferences) {
 function indicatorPreferences(): ChartIndicatorPreferences {
   return {
     schemaVersion: 1,
+    orderFlow: {
+      footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
+      bubbles: { marker: 'square', minRadius: 0, showText: true },
+      profile: { rows: 16, valueArea: 85, showLabels: false },
+      cvd: { reset: 'continuous', showZero: false },
+    },
     main: [
       {
         name: 'MA',
@@ -639,6 +645,7 @@ describe('WorkstationBackupService', () => {
     await target.import(archive)
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicatorPreferences())
     archive.data.preferences!.chartIndicators = indicatorPreferences()
+    delete archive.data.preferences!.chartIndicators.orderFlow
     archive.data.preferences!.chartIndicators.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
     const legacySessions = archive.data.preferences!.chartIndicators.main.find(i => i.name === 'MARKET_SESSIONS')!
     legacySessions.calcParams = [0, 95]
@@ -651,15 +658,23 @@ describe('WorkstationBackupService', () => {
       .toEqual(indicatorPreferences().main.find(i => i.name === 'MARKET_SESSIONS'))
     expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
       .toEqual(indicatorPreferences().main.find(i => i.name === 'BIG_TRADES'))
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators!.orderFlow).toEqual(indicatorPreferences().orderFlow)
     archive.data.preferences!.chartIndicators = { schemaVersion: 1, main: [], sub: [] }
     await target.import(archive)
-    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators)
+      .toEqual({ schemaVersion: 1, main: [], sub: [], orderFlow: indicatorPreferences().orderFlow })
     const invalid = indicatorPreferences()
     const invalidStyles: JsonValue[] = [
       { sessionLines: [] }, { sessionVisibility: null }, { sessionVisibility: [] }, { sessionVisibility: [false, 0, true] },
     ]
     const before = (await target.exportAll()).data
     archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { profile: { showPoc: null } } } as unknown as ChartIndicatorPreferences
+    await expect(target.import(archive)).rejects.toThrow(/orderFlow.profile.showPoc/)
+    expect((await target.exportAll()).data).toEqual(before)
+    archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { footprint: { plotType: null } } } as unknown as ChartIndicatorPreferences
+    await expect(target.import(archive)).rejects.toThrow(/orderFlow.footprint.plotType/)
+    expect((await target.exportAll()).data).toEqual(before)
     for (const styles of invalidStyles) {
       invalid.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = styles
       archive.data.preferences!.chartIndicators = invalid
