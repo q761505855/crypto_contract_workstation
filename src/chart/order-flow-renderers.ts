@@ -1,87 +1,144 @@
 import { registerIndicator, registerOverlay, type IndicatorDrawParams, type IndicatorTooltipData,
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
-import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, bigTradeMode,
-  type BigTradeMode, type VolumeProfile } from './order-flow'
+import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, bigTradeMode, bigTradeThresholdUnits,
+  volumeProfileBarColor, volumeProfileBounds, volumeProfileCenter, volumeProfilePriceLines,
+  type BigTradeMode, type BigTradeThreshold, type BigTradeUnits, type VolumeProfile, type VolumeProfileBounds } from './order-flow'
 import type { TradeRange } from '../market-data/bybit/combined-source'
-import type { BybitTrade } from '../market-data/bybit/trades'
 import { drawingIndexAt } from './drawing-coordinates'
-import { displayedTradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
+import { tradeBubblePrice, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { nextOpenTime } from '../market-data/intervals'
+import { bigTradeThreshold, orderFlowSettings } from './order-flow-preferences'
+import { formatFlowAmount, registerOrderFlowIndicators } from './order-flow-indicators'
+import type { DisplayedTradeBubble } from './order-flow-bubbles'
 
 export const CANDLE_PANE = 'candle_pane'
 export const bigTradesTitle = '大单气泡（Big Trades）'
-const VALUE_AREA = '#aabcda'
-const POC = '#ffcc70'
+type BubbleSettings = ReturnType<typeof orderFlowSettings<'bubbles'>>
+type ProfileSettings = ReturnType<typeof orderFlowSettings<'profile'>>
+const bubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 4 })
+const shortBubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 1 })
+const bubbleLabelWidth = { circle: 1.7, square: 2, diamond: 1.35 }
 
-export interface ProfileDisplay { profile?: VolumeProfile; message?: string }
-export interface BubbleDisplay {
+export interface ProfileDisplay { profile?: VolumeProfile; bounds?: VolumeProfileBounds; message?: string; settings?: ProfileSettings }
+export function profileDisplayCenter(display?: ProfileDisplay): number | undefined {
+  return volumeProfileCenter(display?.profile, display?.bounds)
+}
+
+export interface BubbleDisplay extends BigTradeUnits {
   bars?: ReadonlyMap<number, TradeBar>
+  points?: ReadonlyMap<number, readonly DisplayedTradeBubble[]>
+  minimumNotional?: number
   mode?: BigTradeMode
   updating?: TradeRange
   timeframe?: string
-  projectToCandle?: boolean
   message?: string
+  settings?: BubbleSettings
 }
 
-export function tradeBubbleRadius(trade: BybitTrade, minimum: number): number {
-  return Math.min(20, 5 * Math.sqrt(trade.price * trade.size / Math.max(1, minimum)))
+function tradeBubbleScale(amount: number, threshold: BigTradeThreshold): number {
+  const scale = threshold.unit === 'notional' ? Math.max(1, threshold.minimum) : threshold.minimum || 1
+  return amount / scale
+}
+
+export function tradeBubbleRadius(amount: number, threshold: BigTradeThreshold, settings: BubbleSettings): number {
+  if (!settings.sizeByVolume) return settings.fixedRadius
+  return Math.min(settings.maxRadius, Math.max(settings.minRadius, 5 * Math.sqrt(tradeBubbleScale(amount, threshold))))
+}
+
+export function tradeBubbleOpacity(amount: number, threshold: BigTradeThreshold, settings: BubbleSettings): number {
+  return settings.opacityByVolume ? 1 - 0.7 / (1 + tradeBubbleScale(amount, threshold)) : 1
+}
+
+export function drawTradeBubbleLabel(ctx: CanvasRenderingContext2D, amount: number, x: number, y: number, radius: number,
+  marker: BubbleSettings['marker']): void {
+  const width = Math.floor(radius * bubbleLabelWidth[marker]) - 2
+  if (width < 8) return
+  ctx.font = '10px system-ui'
+  const label = bubbleAmountFormat.format(amount)
+  if (ctx.measureText(label).width <= width) {
+    ctx.fillText(label, x, y, width)
+    return
+  }
+  ctx.font = '8px system-ui'
+  const candidates = [label, shortBubbleAmountFormat.format(amount), amount.toExponential(0).replace('e+', 'e')]
+  const fitting = candidates.find(candidate => ctx.measureText(candidate).width <= width)
+  if (fitting) ctx.fillText(fitting, x, y, width)
 }
 
 export function tradeBubbleOffset(point: TradeBubble, start: number, end: number): number {
   return (point.trade.timeUs / 1000 - start) / (end - start) - 0.5
 }
 
-export function tradeBubblePrice(trade: BybitTrade, bar: TradeBar, open: number, project?: boolean): number {
-  return project && !trade.venue && bar.firstBybitPrice ? trade.price * open / bar.firstBybitPrice : trade.price
-}
-
-export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {
+export function drawVolumeProfile({ overlay, coordinates, bounding, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {
   if (coordinates.length < 2) return []
   const [first, second] = coordinates
   const x = Math.min(first.x, second.x)
   const right = Math.max(first.x, second.x)
-  const y = Math.min(first.y, second.y)
-  const height = Math.abs(second.y - first.y)
-  const width = right - x
+  const { profile, bounds = volumeProfileBounds(profile), message, settings = orderFlowSettings('profile') } = overlay.extendData as ProfileDisplay ?? {}
+  const paneHeight = bounding?.height ?? Infinity
+  const low = bounds && yAxis ? yAxis.convertToPixel(bounds.low) : Math.min(first.y, bounding.height - 6)
+  const high = bounds && yAxis ? yAxis.convertToPixel(bounds.high) : low
+  const top = Math.max(0, Math.min(paneHeight - 6, Math.min(low, high) - (low === high ? 3 : 0)))
+  const height = Math.max(6, Math.min(paneHeight, Math.max(low, high)) - top)
+  const width = Math.max(2, right - x)
   const figures: OverlayFigure[] = [{
-    type: 'rect', attrs: { x, y, width, height },
+    type: 'rect', attrs: { x, y: top, width, height },
     styles: { style: 'stroke_fill' },
   }]
-  const { profile, message } = overlay.extendData as ProfileDisplay ?? {}
   const text = (label: string, labelX: number, labelY: number, color: string) => {
     figures.push({ type: 'text', attrs: { x: labelX, y: labelY, text: label, baseline: 'bottom' },
       styles: { color, size: 11, backgroundColor: 'rgba(18,26,39,0.86)', paddingLeft: 3, paddingRight: 3 }, ignoreEvent: true })
   }
-  if (message) text(message, x + 4, y + 17, VALUE_AREA)
+  if (message) text(message, x + 4, Math.min(paneHeight - 2, top + 17), settings.levelColor)
   if (!profile || !yAxis) return figures
-  text('Delta / 成交量', x + 4, y + (message ? 30 : 17), VALUE_AREA)
+  const { type } = settings
+  text({ volumeDelta: 'Delta / 成交量', volume: '成交量', bidAsk: 'Bid / Ask', delta: 'Delta' }[type],
+    x + 4, Math.min(paneHeight - 2, top + (message ? 30 : 17)), settings.levelColor)
   const maxVolume = Math.max(...profile.rows.map(row => row.buy + row.sell))
   const maxDelta = Math.max(...profile.rows.map(row => Math.abs(row.buy - row.sell)))
-  const barWidth = Math.min(160, Math.max(10, width * 0.42))
+  const maxSide = Math.max(...profile.rows.map(row => Math.max(row.buy, row.sell)))
+  const barWidth = width * settings.width / 100
+  const addBar = (left: number, top: number, width: number, height: number, color: string) => {
+    if (width > 0) figures.push({ type: 'rect', attrs: { x: left, y: top, width, height }, styles: { color }, ignoreEvent: true })
+  }
   for (const row of profile.rows) {
     const volume = row.buy + row.sell
     if (!volume) continue
-    const top = yAxis.convertToPixel(row.high)
-    const rowHeight = Math.max(1, Math.abs(yAxis.convertToPixel(row.low) - top) - 0.7)
+    const first = yAxis.convertToPixel(row.high)
+    const last = yAxis.convertToPixel(row.low)
+    if (Math.max(first, last) < 0 || Math.min(first, last) >= paneHeight) continue
+    const top = Math.max(0, Math.min(first, last))
+    const rowHeight = Math.max(1, Math.min(paneHeight, Math.max(first, last)) - top - 0.7)
     const delta = row.buy - row.sell
     const volumeWidth = volume / maxVolume * barWidth
     const deltaWidth = maxDelta ? Math.abs(delta) / maxDelta * barWidth : 0
-    const color = row.low < profile.vah && row.high > profile.val ? '#5e93d67a' : '#3b54766b'
-    figures.push({ type: 'rect', attrs: { x, y: top, width: volumeWidth, height: rowHeight },
-      styles: { color }, ignoreEvent: true })
-    if (deltaWidth) figures.push({ type: 'rect', attrs: { x: x - deltaWidth, y: top, width: deltaWidth, height: rowHeight },
-      styles: { color: delta > 0 ? '#49d4ae66' : '#ff827e66' }, ignoreEvent: true })
+    if (type === 'volume' || type === 'volumeDelta') {
+      addBar(x, top, volumeWidth, rowHeight, volumeProfileBarColor(row, profile, settings))
+    }
+    if (type === 'delta' || type === 'volumeDelta') {
+      const left = type === 'volumeDelta' || delta < 0 ? x - deltaWidth : x
+      addBar(left, top, deltaWidth, rowHeight, delta > 0 ? settings.askColor : settings.bidColor)
+    }
+    if (type === 'bidAsk') {
+      const sellWidth = row.sell / maxSide * barWidth
+      addBar(x - sellWidth, top, sellWidth, rowHeight, settings.bidColor)
+      addBar(x, top, row.buy / maxSide * barWidth, rowHeight, settings.askColor)
+    }
+    if (settings.showValues && rowHeight >= 13) {
+      const value = type === 'bidAsk' ? `${formatFlowAmount(row.sell)} / ${formatFlowAmount(row.buy)}`
+        : type === 'volumeDelta' ? `${formatFlowAmount(delta)} / ${formatFlowAmount(volume)}`
+          : formatFlowAmount(type === 'delta' ? delta : volume)
+      text(value, x + 4, top + rowHeight, '#e7eef8')
+    }
   }
-  const levels = [['VAH', profile.vah], ['POC', profile.poc], ['VAL', profile.val]] as const
   let lastLabel = -Infinity
-  for (const [name, value] of levels) {
-    const level = yAxis.convertToPixel(value)
-    const color = name === 'POC' ? POC : VALUE_AREA
+  for (const { name, value, color, solid, y: level } of volumeProfilePriceLines(profile, settings, value => yAxis.convertToPixel(value))) {
+    if (level < 0 || level >= paneHeight) continue
     figures.push({ type: 'line', attrs: { coordinates: [{ x, y: level }, { x: right, y: level }] },
-      styles: { color, size: name === 'POC' ? 1.5 : 1, style: name === 'POC' ? 'solid' : 'dashed', dashedValue: [4, 3] },
+      styles: { color, size: solid ? 1.5 : 1, style: solid ? 'solid' : 'dashed', dashedValue: [4, 3] },
       ignoreEvent: true })
     const labelY = Math.max(level, lastLabel + 13)
-    text(`${name} ${value.toFixed(precision.price)}`, x + 4, labelY, color)
+    if (settings.showLabels) text(`${name} ${value.toFixed(precision.price)}`, x + 4, labelY, color)
     lastLabel = labelY
   }
   return figures
@@ -90,8 +147,10 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
 function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, kLineDataList }: IndicatorDrawParams): boolean {
   const display = indicator.extendData as BubbleDisplay | undefined
   const mode = bigTradeMode(indicator.styles)
-  if (!display?.timeframe || display.mode !== mode || (!display.bars?.size && !display.updating)) return true
+  if (!display?.timeframe || display.mode !== mode || (!display.points?.size && !display.updating)) return true
   const minimum = indicator.calcParams[0] as number
+  const settings = display.settings ?? orderFlowSettings('bubbles')
+  const threshold = bigTradeThreshold(settings, minimum)
   const colors = bigTradeColors(indicator.styles)
   ctx.save()
   ctx.globalAlpha = 1
@@ -124,21 +183,42 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
   }
   for (let index = Math.max(0, visibleRange.from); index < Math.min(kLineDataList.length, visibleRange.to); index++) {
     const candle = kLineDataList[index]
+    const points = display.points?.get(candle.timestamp)
+    if (!points) continue
     const bar = display.bars?.get(candle.timestamp)
-    if (!bar?.firstPrice) continue
+    if (!bar) continue
     const end = nextOpenTime(candle.timestamp, display.timeframe)
-    for (const point of displayedTradeBubbles(bar, mode, minimum)) {
-      const { trade } = point
-      const radius = tradeBubbleRadius(trade, minimum)
+    for (const point of points) {
+      const { trade, amount } = point
+      const radius = tradeBubbleRadius(amount, threshold, settings)
       const y = yAxis.convertToPixel(tradeBubblePrice(trade, bar, candle.open, display.projectToCandle))
       if (y + radius < 0 || y - radius > bounding.height) continue
+      const x = xAxis.convertToPixel(index + tradeBubbleOffset(point, candle.timestamp, end))
       const { fill, outline } = colors[trade.side]
+      ctx.globalAlpha = tradeBubbleOpacity(amount, threshold, settings)
       ctx.beginPath()
-      ctx.arc(xAxis.convertToPixel(index + tradeBubbleOffset(point, candle.timestamp, end)), y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = fill
-      ctx.fill()
+      if (settings.marker === 'circle') ctx.arc(x, y, radius, 0, Math.PI * 2)
+      else if (settings.marker === 'square') ctx.rect(x - radius, y - radius, 2 * radius, 2 * radius)
+      else {
+        ctx.moveTo(x - radius, y)
+        ctx.lineTo(x, y - radius)
+        ctx.lineTo(x + radius, y)
+        ctx.lineTo(x, y + radius)
+        ctx.closePath()
+      }
+      if (!settings.hollow) {
+        ctx.fillStyle = fill
+        ctx.fill()
+      }
       ctx.strokeStyle = outline
       ctx.stroke()
+      if (settings.showText) {
+        ctx.globalAlpha = 1
+        ctx.fillStyle = settings.textColor
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        drawTradeBubbleLabel(ctx, threshold.unit === 'notional' ? trade.size : amount, x, y, radius, settings.marker)
+      }
     }
   }
   ctx.restore()
@@ -146,19 +226,28 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
 }
 
 export function registerOrderFlow(): void {
+  registerOrderFlowIndicators()
   registerOverlay({
     name: VOLUME_PROFILE_TOOL, totalStep: 3, needDefaultPointFigure: true, createPointFigures: drawVolumeProfile,
+    performEventMoveForDrawing({ points, performPoint }) {
+      const value = profileDisplayCenter(this.extendData as ProfileDisplay | undefined) ?? points[0]?.value
+      if (value !== undefined) performPoint.value = value
+    },
     styles: { rect: { color: 'rgba(99,145,208,0.07)', borderColor: 'rgba(151,184,226,0.65)', borderSize: 1 } },
   })
   registerIndicator({
     name: BIG_TRADES, shortName: bigTradesTitle, calcParams: [DEFAULT_BIG_TRADE_NOTIONAL], figures: [],
     calc: () => [], draw: drawBigTrades,
-    createTooltipDataSource: ({ indicator, defaultStyles }): IndicatorTooltipData => ({
-      name: bigTradesTitle, calcParamsText: `${bigTradeMode(indicator.styles) === 'aggregate' ? 'Aggregate' : 'Volume'} · ${indicator.calcParams[0]} USDT`,
-      icons: defaultStyles.tooltip.icons.filter(icon => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
-      values: indicator.extendData
-        ? ((indicator.extendData as BubbleDisplay).message ? [{ title: '', value: (indicator.extendData as BubbleDisplay).message! }] : [])
-        : [{ title: '', value: '使用交易所逐笔成交' }],
-    }),
+    createTooltipDataSource: ({ indicator, defaultStyles }): IndicatorTooltipData => {
+      const display = indicator.extendData as BubbleDisplay | undefined
+      const { unit, minimum } = bigTradeThreshold(display?.settings ?? orderFlowSettings('bubbles'), Number(indicator.calcParams[0]))
+      const message = display ? display.message : '使用交易所逐笔成交'
+      return {
+        name: bigTradesTitle,
+        calcParamsText: `${bigTradeMode(indicator.styles) === 'aggregate' ? 'Aggregate' : 'Volume'} · ${minimum} ${bigTradeThresholdUnits[unit]}`,
+        icons: defaultStyles.tooltip.icons.filter(icon => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
+        values: message ? [{ title: '', value: message }] : [],
+      }
+    },
   })
 }

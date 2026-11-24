@@ -7,6 +7,7 @@ import { validateRsiLevels } from './rsi'
 import { writePreference } from '../storage/preference-events'
 import { ctraderStorage } from '../storage/ctrader-storage'
 import { BIG_TRADES, bigTradeMinimum, validateBigTradeStyles } from './order-flow'
+import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, validateOrderFlowPreferences, withoutBubbleDefaults, type OrderFlowPreferences } from './order-flow-preferences'
 
 export const CHART_INDICATORS_PREFERENCE = 'chart.indicators.v1'
 
@@ -34,6 +35,7 @@ export interface ChartIndicatorPreferences {
   schemaVersion: 1
   main: ChartIndicatorSetting[]
   sub: ChartIndicatorPaneSetting[]
+  orderFlow?: OrderFlowPreferences
 }
 
 type ReadableStorage = Pick<Storage, 'getItem'>
@@ -83,6 +85,10 @@ function indicator(
     throw new Error(`${field}.calcParams 必须是数组`)
   }
   let calcParams = item.calcParams
+  const fixedTradeIndicator = item.name === VWAP || item.name === VISIBLE_VOLUME_PROFILE
+  if ((item.name === FOOTPRINT || item.name === CVD || fixedTradeIndicator) && calcParams.length !== 0) {
+    throw new Error(`${field}.calcParams 必须为空数组`)
+  }
   if (item.name === MARKET_SESSIONS) calcParams = normalizeMarketSessionParams(calcParams)
   if (item.name === BIG_TRADES) {
     if (calcParams.length !== 1) throw new Error(`${field}.calcParams 必须包含最低成交额`)
@@ -116,6 +122,10 @@ function indicator(
     throw new Error(`${field}.visible 必须是布尔值`)
   }
   let validatedStyles = jsonValue(item.styles ?? null, `${field}.styles`)
+  if (fixedTradeIndicator && validatedStyles !== null) {
+    if (Object.keys(record(validatedStyles, `${field}.styles`)).length) throw new Error(`${field}.styles 必须为空`)
+    validatedStyles = null
+  }
   validateStyleColors(validatedStyles, `${field}.styles`)
   if (item.name === MARKET_SESSIONS) validateMarketSessionStyles(validatedStyles)
   if (item.name === BIG_TRADES) validateBigTradeStyles(validatedStyles)
@@ -210,7 +220,17 @@ export function validateChartIndicatorPreferences(
       ),
     }
   })
-  return { schemaVersion: 1, main, sub }
+  if (main.some(setting => setting.name === CVD) || sub.some(pane => pane.indicators.some(setting => setting.name === FOOTPRINT))) {
+    throw new Error('足迹图须在主图，CVD 须在副图')
+  }
+  for (const name of [VWAP, VISIBLE_VOLUME_PROFILE]) {
+    if (sub.some(pane => pane.indicators.some(setting => setting.name === name)) || main.filter(setting => setting.name === name).length > 1) {
+      throw new Error(`${name} 只能在主图添加一次`)
+    }
+  }
+  const priorFlow = main.some(setting => setting.name === BIG_TRADES) ? withoutBubbleDefaults(previous?.orderFlow) : previous?.orderFlow
+  const orderFlow = item.orderFlow === undefined ? priorFlow : validateOrderFlowPreferences(item.orderFlow, priorFlow)
+  return { schemaVersion: 1, main, sub, ...(orderFlow === undefined ? {} : { orderFlow }) }
 }
 
 export function loadChartIndicatorPreferences(

@@ -204,7 +204,7 @@ describe('OKX 成交来源', () => {
       expect(await scan()).toBe(true)
       expect(trades).toEqual([primary, secondary])
       expect(readFallback).toHaveBeenCalledExactlyOnceWith('SPYUSDT', start + 2 * hour)
-      expect(published).toHaveBeenCalledExactlyOnceWith(instrument, '2026-10-20', undefined)
+      expect(published).toHaveBeenCalledExactlyOnceWith(instrument, '2026-10-20')
       expect(request).not.toHaveBeenCalled()
     } finally { source.release() }
   })

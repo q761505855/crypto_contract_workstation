@@ -22,32 +22,46 @@ export interface TradeBar {
   complete: boolean
 }
 
-export function* tradeBubbles(bar: TradeBar): Iterable<TradeBubble> {
+export function* tradeBubbles(bar: TradeBar, fromUs = -Infinity, untilUs = Infinity): Iterable<TradeBubble> {
   for (const { points, from, until } of bar.pointRanges) {
-    for (let index = from; index < until; index++) yield points[index]
+    if (from >= until || points[until - 1].trade.timeUs < fromUs || points[from].trade.timeUs >= untilUs) continue
+    const start = points[from].trade.timeUs >= fromUs ? from
+      : from + lowerBound(until - from, fromUs, index => points[from + index].trade.timeUs)
+    const end = points[until - 1].trade.timeUs < untilUs ? until
+      : start + lowerBound(until - start, untilUs, index => points[start + index].trade.timeUs)
+    for (let index = start; index < end; index++) yield points[index]
   }
+}
+
+export function tradeBubblePrice(trade: BybitTrade, bar: TradeBar, open: number, project?: boolean): number {
+  return project && !trade.venue && bar.firstBybitPrice ? trade.price * open / bar.firstBybitPrice : trade.price
 }
 
 const aggregatedBubbles = new WeakMap<TradeBar, { minimum: number; points: TradeBubble[] }>()
 
 export function displayedTradeBubbles(bar: TradeBar, mode: BigTradeMode, minimum: number): Iterable<TradeBubble> {
-  if (mode === 'volume') return tradeBubbles(bar)
+  if (mode === 'volume') return tradesAboveMinimum(bar, minimum)
   const cached = aggregatedBubbles.get(bar)
   if (cached?.minimum === minimum) return cached.points
-  const points: TradeBubble[] = []
+  const points = [...aggregateTradeBubbles(tradeBubbles(bar), minimum)]
+  aggregatedBubbles.set(bar, { minimum, points })
+  return points
+}
+
+export function* aggregateTradeBubbles(trades: Iterable<TradeBubble>, minimum: number): Iterable<TradeBubble> {
   const groups = new Map<string, TradeBubble>()
   let millisecond: number | undefined
-  const flush = () => {
+  function* flush() {
     for (const point of groups.values()) {
-      if (point.trade.price * point.trade.size >= minimum) points.push(point)
+      if (point.trade.price * point.trade.size >= minimum) yield point
     }
     groups.clear()
   }
   // The bar has already clipped its ordered trade ranges at the replay cursor.
-  for (const { trade } of tradeBubbles(bar)) {
+  for (const { trade } of trades) {
     const time = Math.floor(trade.timeUs / 1000)
     if (millisecond !== time) {
-      flush()
+      yield* flush()
       millisecond = time
     }
     const key = `${trade.venue ?? 'Bybit'}:${trade.side}:${trade.price}`
@@ -58,9 +72,13 @@ export function displayedTradeBubbles(bar: TradeBar, mode: BigTradeMode, minimum
       point.count = (point.count ?? 1) + 1
     } else groups.set(key, { trade })
   }
-  flush()
-  aggregatedBubbles.set(bar, { minimum, points })
-  return points
+  yield* flush()
+}
+
+function* tradesAboveMinimum(bar: TradeBar, minimum: number): Iterable<TradeBubble> {
+  for (const point of tradeBubbles(bar)) {
+    if (point.trade.price * point.trade.size >= minimum) yield point
+  }
 }
 
 export interface HourSamples {
@@ -321,7 +339,7 @@ export class OrderFlowBars {
       if (untilUs <= fromUs) continue
       const scan = { hour, fromUs, untilUs, samples: new AccumulatedHour(), complete: true, archived: true, fallbackArchive: false }
       const group = groups.at(-1)
-      if (group && group.length < 6 && group.at(-1)?.untilUs === fromUs &&
+      if (group && group.length < (source.localArchive ? 24 : 6) && group.at(-1)?.untilUs === fromUs &&
           !source.isArchiveRequested(hour) && !source.isArchiveRequested(group[0].hour)) group.push(scan)
       else groups.push([scan])
     }
@@ -390,7 +408,7 @@ export class OrderFlowBars {
       const fallbackArchive = (previous?.fallbackArchive ?? false) || scan.fallbackArchive
       const section = { cursor, samples: sealed ? samples.pack() : samples, complete, archived, fallbackArchive }
       this.hours.set(hour, section)
-      if (sealed) persist.push({ ...section, hour })
+      if (sealed && !source.localArchive) persist.push({ ...section, hour })
     }
     this.invalidateBars({ fromUs: range.fromUs, untilUs: scannedUntil })
     if (persist.length) void this.save(persist)

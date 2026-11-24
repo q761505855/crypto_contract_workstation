@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { priceSourceLabel } from '../market-data/price-source-preferences'
 import type { MarketDataRuntime } from '../market-data/runtime'
 import { BackupSyncPanel } from './BackupSyncPanel'
 import { DrawingStorage } from './DrawingStorage'
@@ -9,7 +10,10 @@ interface DataManagerProps {
 }
 
 export function DataManager({ runtime, onClose }: DataManagerProps) {
-  const okx = runtime.service?.source === 'okx'
+  const source = runtime.service.source
+  const marketDescription = source === 'okx-local' ? '从此设备的 OKX 官方逐笔成交 ZIP 生成图表和回放 K 线。'
+    : source === 'okx' ? '使用 OKX 公开行情接口读取 USDT 永续合约目录和成交价 K 线。'
+    : '网页直连所选 cTrader 账户，按图表或回放周期读取原生 K 线。行情缓存在当前页面。'
   const refreshRequest = useRef<AbortController | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -40,9 +44,8 @@ export function DataManager({ runtime, onClose }: DataManagerProps) {
           <button data-testid="close-data-manager" onClick={onClose} type="button">关闭</button>
         </header>
         <section>
-          <h3>{okx ? 'OKX 行情' : 'cTrader 行情'}</h3>
-          <p className="muted-text">{okx ? '使用 OKX 公开行情接口读取 USDT 永续合约目录和成交价 K 线。'
-            : '网页直连所选 cTrader 账户，按图表或回放周期读取原生 K 线。行情缓存在当前页面。'}</p>
+          <h3>{priceSourceLabel(source)} 行情</h3>
+          <p className="muted-text">{marketDescription}</p>
           <button disabled={loading} onClick={() => void refreshSymbols()} type="button">刷新品种列表</button>
           {loading && <span role="status">正在读取品种…</span>}
           {error && <p className="data-error" role="alert">{error}</p>}

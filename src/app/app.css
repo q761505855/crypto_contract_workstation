@@ -1453,6 +1453,14 @@ button:disabled {
 .workspace-dialog { width: min(480px, 100%); max-height: calc(var(--workspace-viewport-height, 100dvh) - 48px); overflow: hidden; display: flex; flex-direction: column; border: 1px solid #35465e; border-radius: 12px; background: #141f2e; color: #d8e4f3; box-shadow: 0 18px 70px #0008; }
 .workspace-dialog > .panel-heading { padding: 14px 18px; margin: 0; border-bottom: 1px solid #2f4058; flex-shrink: 0; }
 .workspace-dialog-body { overflow: auto; overscroll-behavior: contain; padding: 16px 20px; min-height: 0; }
+.chart-host .order-flow-indicator-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.order-flow-indicator-row > span { padding-inline-start: 9px; }
+.order-flow-indicator-row button { background: transparent; color: inherit; border: 0; cursor: pointer; min-height: 36px; }
+.order-flow-indicator-toggle { display: flex; flex: 1; align-items: center; gap: 10px; text-align: left; padding: 4px 8px; }
+.order-flow-indicator-toggle .icon { width: 16px; height: 16px; fill: currentColor; }
+.order-flow-indicator-toggle[aria-pressed=true] .icon { color: #65b7ff; }
+.order-flow-indicator-gear { min-width: 36px; font-size: 17px; }
+.order-flow-indicator-row button:hover { background: #65b7ff20; }
 .workspace-dialog button { min-height: 36px; padding: 7px 12px; cursor: pointer; }
 .dialog-done { display: block; width: 100%; margin-top: 18px; background: #20466c; border-color: #3b719e; color: #dcefff; }
 .workspace-panel-toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0; }

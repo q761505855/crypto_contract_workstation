@@ -10,6 +10,7 @@ import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil, type CreateReplaySessionIn
 import { isCTraderReplayStepPeriod, isFineStepPeriod, type CTraderReplayStepPeriod, type ReplayStepPeriod } from './step-periods'
 import type { ReplayCandleEvent, ReplayCandleListener, ReplayController } from './useReplayController'
 import type { MarketCandle } from '../market-data/models'
+import { isOkxPriceSource, priceSourceLabel } from '../market-data/price-source-preferences'
 
 interface CTraderReplayRuntime {
   service: CTraderReplayMarket & {
@@ -49,7 +50,7 @@ function message(reason: unknown): string {
 
 function stepPeriod(session: ReplaySession, requested?: ReplayStepPeriod): CTraderReplayStepPeriod {
   if (requested !== undefined && isCTraderReplayStepPeriod(requested) &&
-      (session.marketSource !== 'okx' || !isFineStepPeriod(requested))) return requested
+      (!isOkxPriceSource(session.marketSource) || !isFineStepPeriod(requested))) return requested
   return session.cursorTimeframe ?? (isCTraderTimeframe(session.period.text) ? session.period.text : '1m')
 }
 
@@ -59,7 +60,7 @@ export function useCTraderReplayController(
 ): ReplayController<ReplayStepPeriod> {
   const { service, replaySessions, replayTicks } = runtime
   const source = service.source ?? 'ctrader'
-  const sourceLabel = source === 'okx' ? 'OKX' : 'cTrader'
+  const sourceLabel = priceSourceLabel(source)
   const history = useMemo(() => new CTraderReplayBars(service), [service])
   const ticks = useMemo(() => replayTicks ?? new CTraderReplayTicks(service, history), [replayTicks, service, history])
   const cursorRef = useRef<ReplayCursor | null>(null)
@@ -137,7 +138,7 @@ export function useCTraderReplayController(
 
   const hydrate = useCallback(async (saved: ReplaySession, signal: AbortSignal): Promise<ReplayCursor> => {
     if (saved.marketSource !== source) {
-      const origin = saved.marketSource === 'okx' ? 'OKX' : saved.marketSource === 'ctrader' ? 'cTrader' : '币安'
+      const origin = saved.marketSource === 'ctrader' || isOkxPriceSource(saved.marketSource) ? priceSourceLabel(saved.marketSource) : '币安'
       throw new Error(`这是 ${origin} 会话。可从数据管理查看或导出存档，${sourceLabel} 无法继续此会话。`)
     }
     const symbol = saved.symbol.ticker
@@ -161,7 +162,8 @@ export function useCTraderReplayController(
     void run('恢复回放会话失败', async signal => {
       const saved = await replaySessions.list()
       signal.throwIfAborted()
-      setSessions(saved.filter(item => source === 'okx' ? item.marketSource === 'okx' : item.marketSource !== 'okx'))
+      setSessions(saved.filter(item => source === 'ctrader' ? !isOkxPriceSource(item.marketSource) : item.marketSource === source))
+      if (source === 'okx-local') return
       const active = saved.find(item => item.active && item.status !== 'completed' && item.marketSource === source)
       if (active !== undefined) {
         const cursor = await hydrate(active, signal)
@@ -198,7 +200,9 @@ export function useCTraderReplayController(
   const createSession = useCallback((input: CreateReplaySessionInput) => run(
     '创建回放失败',
     async signal => {
-      const endTime = Math.min(input.endTime ?? Date.now(), Date.now() - 1)
+      const bounds = await service.historyBounds?.(input.symbol.ticker, signal)
+      if (service.historyBounds && !bounds) throw new Error('请先在本地数据管理中添加此品种的逐笔成交归档。')
+      const endTime = Math.min(input.endTime ?? Date.now(), Date.now() - 1, bounds?.to ?? Infinity)
       if (!Number.isSafeInteger(input.startTime) || !Number.isSafeInteger(endTime) || input.startTime >= endTime) {
         throw new Error('回放结束时间必须晚于图表起点')
       }
@@ -245,7 +249,7 @@ export function useCTraderReplayController(
       }
       await activate({ session: next, candle, initial: candle }, signal, true)
     },
-    `正在准备回放行情和 ${source === 'okx' ? 'OKX' : 'IC Markets'} 交易规格…`,
+    `正在准备回放行情和 ${isOkxPriceSource(source) ? 'OKX' : 'IC Markets'} 交易规格…`,
   ), [activate, history, run, service, source])
 
   const loadSession = useCallback((id: string) => run('加载回放会话失败', async signal => {
@@ -299,7 +303,7 @@ export function useCTraderReplayController(
       return false
     }
     const sameTimeTick = tickIndex !== undefined && candle.openTime === saved.currentTime
-    const okxRisk = source === 'okx' && saved.hasTrades ? await service.getReplayRisk?.(candle, sessionVisibleUntil(saved), signal) : undefined
+    const okxRisk = isOkxPriceSource(source) && saved.hasTrades ? await service.getReplayRisk?.(candle, sessionVisibleUntil(saved), signal) : undefined
     signal.throwIfAborted()
     moveCursor(cursor, candle, saved.currentIndex + 1)
     // Publish the reached cursor even if simulation reports an error, so a

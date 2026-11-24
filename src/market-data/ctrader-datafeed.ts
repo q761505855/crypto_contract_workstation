@@ -16,6 +16,8 @@ interface ChartSubscription {
 }
 
 export interface ChartPriceMarket {
+  historyBounds?(symbol: string, signal?: AbortSignal): Promise<{ from: number; to: number } | undefined>
+  historyPageSize?(timeframe: string): number
   getSymbols(options?: { forceRefresh?: boolean; signal?: AbortSignal }): Promise<MarketSymbol[]>
   loadCandles(kind: 'trade', symbol: string, timeframe: string, start: number, end: number, options?: { signal?: AbortSignal }): Promise<MarketCandle[]>
   loadRecentCandles(symbol: string, timeframe: string, to: number, options: { signal?: AbortSignal }): Promise<MarketCandle[]>
@@ -37,6 +39,7 @@ export class CTraderDatafeed implements Datafeed {
   private historyCandle?: MarketCandle
   private latestLiveCandle?: MarketCandle
   private detachedHistoryKey?: string
+  private initialArchiveOnly = false
   private olderHistoryCursor?: { key: string; before: number; to: number }
   private newerHistoryCursor?: { key: string; after: number; from: number }
   private readonly subscriptions = new Map<string, ChartSubscription>()
@@ -50,6 +53,10 @@ export class CTraderDatafeed implements Datafeed {
   hasLiveTail(symbol: SymbolInfo, period: Period): boolean {
     return this.liveEnabled && this.detachedHistoryKey !== this.selectionKey(symbol, period)
   }
+
+  isShowingLatestArchive(): boolean { return this.initialArchiveOnly }
+
+  allowOlderArchives(): void { this.initialArchiveOnly = false }
 
   setSelectionListener(listener?: (selection: MarketSelection) => void): void {
     this.onSelection = listener
@@ -93,15 +100,18 @@ export class CTraderDatafeed implements Datafeed {
 
   async getHistoryKLineData(
     symbol: SymbolInfo, period: Period, from: number, to: number, notifySelection = true, signal?: AbortSignal,
+    preferLatestArchive = true,
   ): Promise<KLineData[]> {
     signal?.throwIfAborted()
     const timeframe = CTRADER_TIMEFRAMES.find(value => value === period.text)
     if (!timeframe || !Number.isFinite(from) || !Number.isFinite(to)) return []
     const end = Math.min(to, Date.now())
-    const start = Math.max(0, from, shiftOpenTime(alignOpenTime(end, timeframe, 'floor'), timeframe, 1 - HISTORY_CANDLES))
+    const pageSize = this.service.historyPageSize?.(timeframe) ?? HISTORY_CANDLES
+    const start = Math.max(0, from, shiftOpenTime(alignOpenTime(end, timeframe, 'floor'), timeframe, 1 - pageSize))
     if (start > end) return []
     const sequence = notifySelection ? ++this.historySequence : this.historySequence
     if (notifySelection) {
+      this.initialArchiveOnly = preferLatestArchive && !!this.service.historyBounds && end >= Date.now() - 60_000
       this.olderHistoryCursor = undefined
       this.newerHistoryCursor = undefined
       this.onSelection?.({ symbol, period })
@@ -110,8 +120,11 @@ export class CTraderDatafeed implements Datafeed {
       if (notifySelection && sequence === this.historySequence && !signal?.aborted) this.onWarning?.(message)
     }
     try {
-      let candles = await this.service.loadCandles('trade', symbol.ticker, timeframe, start, end, { signal })
-      if (notifySelection && candles.length === 0 && end >= Date.now() - 60_000) {
+      if (this.service.historyBounds) publish('正在读取并聚合本地逐笔成交…')
+      let candles = notifySelection && this.initialArchiveOnly
+        ? await this.service.loadRecentCandles(symbol.ticker, timeframe, end, { signal })
+        : await this.service.loadCandles('trade', symbol.ticker, timeframe, start, end, { signal })
+      if (!this.service.historyBounds && notifySelection && candles.length === 0 && end >= Date.now() - 60_000) {
         candles = await this.service.loadRecentCandles(symbol.ticker, timeframe, end, { signal })
       }
       signal?.throwIfAborted()
@@ -136,6 +149,10 @@ export class CTraderDatafeed implements Datafeed {
   }
 
   async getOlderHistory(symbol: SymbolInfo, period: Period, before: number, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    // The chart asks for an older page automatically if the latest archive
+    // does not fill the viewport. Keep paging open for a later manual pan.
+    if (this.initialArchiveOnly) return { candles: [], hasMore: true }
     const key = this.selectionKey(symbol, period)
     const cursor = this.olderHistoryCursor
     const to = cursor?.key === key && cursor.before === before ? cursor.to : before - 1
@@ -148,7 +165,7 @@ export class CTraderDatafeed implements Datafeed {
       const { candles, nextTo } = await this.service.loadRecentCandlesPage(symbol.ticker, period.text, to, { signal })
       signal?.throwIfAborted()
       if (sequence !== this.historySequence) return { candles: [], hasMore: true }
-      const hasMore = candles.length > 0 ? candles[0].openTime > 0 : nextTo >= 0
+      const hasMore = this.service.historyBounds || candles.length === 0 ? nextTo >= 0 : candles[0].openTime > 0
       this.olderHistoryCursor = candles.length === 0 && hasMore ? { key, before, to: nextTo } : undefined
       publish(!hasMore ? '已到最早历史数据' : candles.length === 0 ? '此区间无报价，继续向左查看' : '')
       return { candles: candles.map(toChartCandle), hasMore }
@@ -169,10 +186,12 @@ export class CTraderDatafeed implements Datafeed {
     if (this.liveEnabled && this.detachedHistoryKey !== key) return { candles: [], hasMore: true }
     const sequence = this.historySequence
     const cursor = this.newerHistoryCursor
-    const latest = Date.now()
+    const bounds = this.service.historyBounds ? await this.service.historyBounds(symbol.ticker, signal) : undefined
+    if (this.service.historyBounds && !bounds) return { candles: [], hasMore: false }
+    const latest = bounds?.to ?? Date.now()
     let from = cursor?.key === key && cursor.after === after ? cursor.from : after + 1
     for (let window = 0; window < NEWER_HISTORY_MAX_WINDOWS && from <= latest; window++) {
-      const to = Math.min(latest, shiftOpenTime(from, timeframe, HISTORY_CANDLES) - 1)
+      const to = Math.min(latest, shiftOpenTime(from, timeframe, this.service.historyPageSize?.(timeframe) ?? HISTORY_CANDLES) - 1)
       let candles = await this.service.loadCandles('trade', symbol.ticker, timeframe, from, to, { signal })
       signal?.throwIfAborted()
       if (sequence !== this.historySequence) return { candles: [], hasMore: true }

@@ -3,6 +3,8 @@ import { drawingIndexAt, drawingTimeAt } from './drawing-coordinates'
 import { hasDrawingPoints, isDrawingTool, sameDrawingData, type ChartDrawing, type DrawingStore } from './drawings'
 import { VOLUME_PROFILE_TOOL } from './order-flow'
 import type { OrderFlowChart } from './order-flow-chart'
+import { profileDisplayCenter, type ProfileDisplay } from './order-flow-renderers'
+import { nextOpenTime } from '../market-data/intervals'
 
 const GROUP = 'drawing_tools'
 const PANE = 'candle_pane'
@@ -46,7 +48,7 @@ export class DrawingOverlays {
   private selectedId?: string
   private selection: DrawingSelection | null = null
   private readonly toolStyles = new WeakMap<Overlay, Overlay['styles']>()
-  private editing?: { id: string; x?: number; moved: boolean; preview?: ChartDrawing['points'] }
+  private editing?: { id: string; x?: number; lastX?: number; profilePrice?: number; wholeProfile?: boolean; moved: boolean; preview?: ChartDrawing['points'] }
   private queued = false
   private disposed = false
   private applying = false
@@ -217,9 +219,11 @@ export class DrawingOverlays {
         const previous = this.rendered.get(id)
         if (existing && !reproject && sameDrawingData(previous, drawing)) continue
         const lock = Boolean(this.appearance.lock || locked)
+        const center = name === VOLUME_PROFILE_TOOL ? profileDisplayCenter(existing?.extendData as ProfileDisplay | undefined) : undefined
         const points = drawing.points.map(({ timestamp, value }) => {
           const dataIndex = drawingIndexAt(candles, timestamp, period)
-          return candles[dataIndex]?.timestamp === timestamp ? { timestamp, dataIndex, value } : { dataIndex, value }
+          const coordinates = { dataIndex, value: center ?? value }
+          return candles[dataIndex]?.timestamp === timestamp ? { timestamp, ...coordinates } : coordinates
         })
         if (existing) {
           const stylesChanged = !sameDrawingData(previous?.styles, styles)
@@ -270,9 +274,18 @@ export class DrawingOverlays {
         if (this.selectedId === id) this.select()
         return false
       },
-      onPressedMoveStart: ({ x }) => { this.editing = { id, x, moved: false }; return false },
+      onPressedMoveStart: ({ overlay, x, figureKey }) => {
+        const profilePrice = overlay.name === VOLUME_PROFILE_TOOL ? profileDisplayCenter(overlay.extendData as ProfileDisplay | undefined) : undefined
+        this.editing = { id, x, lastX: x, profilePrice, wholeProfile: overlay.name === VOLUME_PROFILE_TOOL && !figureKey?.includes('point_'), moved: false }
+        return false
+      },
       onPressedMoving: ({ overlay, x }) => {
-        if (this.editing?.id === id) this.editing.moved = true
+        const edit = this.editing
+        if (edit?.id === id) {
+          if (overlay.name === VOLUME_PROFILE_TOOL && x !== undefined && edit.lastX !== undefined && Math.abs(x - edit.lastX) < 1) return true
+          edit.lastX = x
+          edit.moved = true
+        }
         this.previewProfile(overlay, x)
         return false
       },
@@ -304,16 +317,25 @@ export class DrawingOverlays {
       if (this.disposed || !this.chart.getOverlayById(overlay.id)) return
       const edit = this.editing?.id === overlay.id ? this.editing : undefined
       if (this.draft !== overlay.id && !edit) return
+      const center = profileDisplayCenter(overlay.extendData as ProfileDisplay | undefined) ?? edit?.profilePrice
+      if (center !== undefined) for (const point of overlay.points) point.value = center
       const keepTime = x !== undefined && edit?.x !== undefined && Math.abs(x - edit.x) < 1
-      const points = this.readPoints(overlay, keepTime)
+      const points = this.readPoints(overlay, keepTime, edit?.wholeProfile)
       if (points) {
         if (edit) edit.preview = points
-        this.orderFlow?.setProfile(overlay.id, points)
+        const candles = this.chart.getDataList()
+        const period = this.period()
+        for (const [index, { timestamp }] of points.entries()) {
+          const point = overlay.points[index]
+          point.dataIndex = drawingIndexAt(candles, timestamp, period)
+          point.timestamp = candles[point.dataIndex]?.timestamp === timestamp ? timestamp : undefined
+        }
+        this.orderFlow?.setProfile(overlay.id, points, true)
       }
     })
   }
 
-  private readPoints(overlay: Overlay, keepTime = false): ChartDrawing['points'] | undefined {
+  private readPoints(overlay: Overlay, keepTime = false, wholeProfile = false): ChartDrawing['points'] | undefined {
     const candles = this.chart.getDataList()
     if (!candles.length || !overlay.points.length) return
     const period = this.period()
@@ -324,10 +346,19 @@ export class DrawingOverlays {
         Math.abs(point.dataIndex - drawingIndexAt(candles, prior.timestamp, period)) < 1e-6))
       const timestamp = unchangedTime ? prior.timestamp : point.timestamp ??
         (typeof point.dataIndex === 'number' ? drawingTimeAt(candles, point.dataIndex, period) : undefined)
-      return { timestamp, value: point.value }
+      // The existing drawing format includes a price. Keep that metadata stable for time-only edits.
+      const value = overlay.name === VOLUME_PROFILE_TOOL && prior ? prior.value : point.value
+      return { timestamp, value }
     })
     if (points.some(point => !Number.isSafeInteger(point.timestamp) || !Number.isFinite(point.value))) return
-    return points as ChartDrawing['points']
+    const valid = points as ChartDrawing['points']
+    if (overlay.name !== VOLUME_PROFILE_TOOL) return valid
+    const first = candles[0].timestamp
+    const last = nextOpenTime(candles.at(-1)!.timestamp, period) - 1
+    const low = Math.min(...valid.map(point => point.timestamp))
+    const high = Math.max(...valid.map(point => point.timestamp))
+    const shift = !wholeProfile ? 0 : low < first ? first - low : high > last ? last - high : 0
+    return valid.map(point => ({ ...point, timestamp: Math.min(last, Math.max(first, point.timestamp + shift)) }))
   }
 
   private capture(overlay: Overlay, scope: string, isNew: boolean, keepTime = false, preview?: ChartDrawing['points']): void {
@@ -336,7 +367,7 @@ export class DrawingOverlays {
     const previous = this.rendered.get(overlay.id)
     const drawing = previous ? { ...previous, points } : { id: overlay.id, name: overlay.name, scope, points,
       ...(overlay.styles !== null ? { styles: structuredClone(overlay.styles) } : {}) }
-    if (overlay.name === VOLUME_PROFILE_TOOL && !preview) this.orderFlow?.setProfile(overlay.id, points)
+    if (overlay.name === VOLUME_PROFILE_TOOL) this.orderFlow?.setProfile(overlay.id, points)
     this.write(isNew ? this.store.save(drawing, this.epoch) : this.store.edit(drawing, this.epoch, previous), !isNew)
   }
 

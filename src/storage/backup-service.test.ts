@@ -124,7 +124,7 @@ function session(): ReplaySession {
   }
 }
 
-it('round-trips OKX preferences and a simulated perpetual session, including funding and mark-price liquidation', async () => {
+it.each(['okx', 'okx-local'] as const)('round-trips %s preferences and a simulated perpetual session, including funding and mark-price liquidation', async marketSource => {
   const terms: OkxTradingTerms = {
     accountCurrency: 'USDT', contractValue: '0.01', contractStep: '0.1', minContracts: '0.1',
     tickSize: '0.5', maxOrderContracts: '100', maxLeverage: 50,
@@ -132,7 +132,7 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
       { maxContracts: '1000', maxLeverage: 25.5, maintenanceMarginRate: '0.005' }],
   }
   const saved: ReplaySession = {
-    ...session(), symbol: DEFAULT_OKX_SYMBOL, marketSource: 'okx', cursorTimeframe: '1m',
+    ...session(), symbol: DEFAULT_OKX_SYMBOL, marketSource, cursorTimeframe: '1m',
     visibleUntil: 60_000, endTime: 179_999,
     tradingConfig: { ...session().tradingConfig, okx: terms, feeRate: OKX_SIMULATION_TAKER_FEE, liquidationFeeRate: OKX_SIMULATION_TAKER_FEE },
   }
@@ -159,7 +159,8 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
   expect(readPriceSource(storage)).toBe('ctrader')
   storage.setItem(PRICE_SOURCE_KEY, '"invalid"')
   expect(readPriceSource(storage)).toBe('ctrader')
-  storage.setItem(PRICE_SOURCE_KEY, '"okx"')
+  storage.setItem(PRICE_SOURCE_KEY, JSON.stringify(marketSource))
+  expect(readPriceSource(storage)).toBe(marketSource)
   storage.setItem(OKX_SYMBOL_STORAGE_KEY, JSON.stringify(DEFAULT_OKX_SYMBOL))
   const sourceName = `okx-source-${crypto.randomUUID()}`
   await new IndexedDbReplaySessionStore(sourceName).put({ ...saved, currentTime: 60_000, visibleUntil: 120_000, currentIndex: 1 })
@@ -171,6 +172,7 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
   for (const archive of [await source.exportPreferences(), full]) {
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences).toEqual(full.data.preferences)
+    expect(readPriceSource(targetStorage)).toBe(marketSource)
   }
   expect((await target.exportAll()).data).toEqual(full.data)
   const legacy = await source.exportPreferences()
@@ -187,6 +189,14 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
   const invalid = structuredClone(full)
   invalid.data.sessions![0].tradingConfig.okx!.contractStep = '0'
   await expect(target.import(invalid)).rejects.toThrow(/OKX 回放交易规格/)
+  expect((await target.exportAll()).data).toEqual(full.data)
+  const fineCursor = structuredClone(full)
+  Object.assign(fineCursor.data.sessions![0], { cursorTimeframe: '1s', visibleUntil: 61_000 })
+  await expect(target.import(fineCursor)).rejects.toThrow(/cursorTimeframe/)
+  expect((await target.exportAll()).data).toEqual(full.data)
+  const feeMismatch = structuredClone(full)
+  feeMismatch.data.sessions![0].tradingConfig.feeRate = '0.0006'
+  await expect(target.import(feeMismatch)).rejects.toThrow(/OKX 交易规格不一致/)
   expect((await target.exportAll()).data).toEqual(full.data)
 })
 
@@ -340,6 +350,16 @@ async function seed(databaseName: string, preferences: MemoryPreferences) {
 function indicatorPreferences(): ChartIndicatorPreferences {
   return {
     schemaVersion: 1,
+    orderFlow: {
+      footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
+      bubbles: { marker: 'square', minRadius: 0, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
+        minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 280 },
+      profile: { rows: 16, valueArea: 85, showLabels: false },
+      visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false,
+        showPoc: true, showValueArea: false, valueArea: 86, showLabels: false, pocColor: '#ff8321', levelColor: '#abcdef',
+        volumeColor: '#12345600', valueAreaColor: '#23457800', positiveColor: '#23456780', negativeColor: '#345678' },
+      cvd: { reset: 'continuous', showZero: false },
+    },
     main: [
       {
         name: 'MA',
@@ -348,6 +368,8 @@ function indicatorPreferences(): ChartIndicatorPreferences {
         styles: { lines: [{ color: '#f00' }] },
       },
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
+      { name: 'VWAP', calcParams: [], visible: true, styles: null },
+      { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
       { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
         bubbleMode: 'aggregate',
         bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -380,6 +402,22 @@ function indicatorPreferences(): ChartIndicatorPreferences {
 }
 
 describe('WorkstationBackupService', () => {
+  it('keeps the display count from the device when old archives omit it and rejects invalid counts before writes', async () => {
+    const storage = new MemoryPreferences()
+    const service = new WorkstationBackupService(`bubble-limit-${crypto.randomUUID()}`, storage)
+    storage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(indicatorPreferences()))
+    const legacy = await service.exportPreferences()
+    delete legacy.data.preferences!.chartIndicators!.orderFlow!.bubbles!.maxBubbles
+    await service.import(legacy)
+    expect((await service.exportPreferences()).data.preferences!.chartIndicators!.orderFlow!.bubbles!.maxBubbles).toBe(280)
+
+    for (const maxBubbles of [null, 0, 1001]) {
+      const prefs = { ...legacy.data.preferences, binanceRestBaseUrl: 'https://changed.test', favoriteSymbols: [],
+        chartIndicators: { ...legacy.data.preferences!.chartIndicators!, orderFlow: { bubbles: { maxBubbles } } } }
+      await expect(service.import({ ...legacy, data: { preferences: prefs } })).rejects.toThrow(/maxBubbles/)
+      expect(storage.getItem('marketData.binanceBaseUrl')).not.toBe('"https://changed.test"')
+    }
+  })
   it.each([{ oversold: 50, overbought: 70 }, { oversold: 30, overbought: 101 }, null])('rejects invalid RSI levels before importing business data (%j)', async levels => {
     const storage = new MemoryPreferences()
     const service = new WorkstationBackupService(`rsi-invalid-${crypto.randomUUID()}`, storage)
@@ -638,7 +676,13 @@ describe('WorkstationBackupService', () => {
     delete archive.data.preferences!.chartIndicators
     await target.import(archive)
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicatorPreferences())
+    const legacyIndicators = indicatorPreferences()
+    legacyIndicators.main = legacyIndicators.main.filter(({ name }) => name !== 'VWAP' && name !== 'VISIBLE_VOLUME_PROFILE')
+    archive.data.preferences!.chartIndicators = legacyIndicators
+    await target.import(archive)
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual(legacyIndicators)
     archive.data.preferences!.chartIndicators = indicatorPreferences()
+    delete archive.data.preferences!.chartIndicators.orderFlow
     archive.data.preferences!.chartIndicators.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
     const legacySessions = archive.data.preferences!.chartIndicators.main.find(i => i.name === 'MARKET_SESSIONS')!
     legacySessions.calcParams = [0, 95]
@@ -651,15 +695,35 @@ describe('WorkstationBackupService', () => {
       .toEqual(indicatorPreferences().main.find(i => i.name === 'MARKET_SESSIONS'))
     expect((await target.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
       .toEqual(indicatorPreferences().main.find(i => i.name === 'BIG_TRADES'))
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators!.orderFlow).toEqual(indicatorPreferences().orderFlow)
     archive.data.preferences!.chartIndicators = { schemaVersion: 1, main: [], sub: [] }
     await target.import(archive)
-    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual({ schemaVersion: 1, main: [], sub: [] })
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators)
+      .toEqual({ schemaVersion: 1, main: [], sub: [], orderFlow: indicatorPreferences().orderFlow })
     const invalid = indicatorPreferences()
     const invalidStyles: JsonValue[] = [
       { sessionLines: [] }, { sessionVisibility: null }, { sessionVisibility: [] }, { sessionVisibility: [false, 0, true] },
     ]
     const before = (await target.exportAll()).data
     archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    for (const visibleProfile of [null, { placement: 'center' }, { showHeaders: null }, { width: 0 },
+      { showLabels: 0 }, { showValueArea: null }, { valueArea: 0 }, { pocColor: null }, { valueAreaColor: 'invalid' }]) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { visibleProfile } } as unknown as ChartIndicatorPreferences
+      await expect(target.import(archive)).rejects.toThrow(/orderFlow.visibleProfile/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
+    for (const bubbles of [{ thresholdUnit: null }, { maxQuantity: '10' }, { minLots: 2, maxLots: 1 },
+      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 0 }]) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { bubbles } } as unknown as ChartIndicatorPreferences
+      await expect(target.import(archive)).rejects.toThrow(/orderFlow.bubbles/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
+    archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { profile: { showPoc: null } } } as unknown as ChartIndicatorPreferences
+    await expect(target.import(archive)).rejects.toThrow(/orderFlow.profile.showPoc/)
+    expect((await target.exportAll()).data).toEqual(before)
+    archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { footprint: { plotType: null } } } as unknown as ChartIndicatorPreferences
+    await expect(target.import(archive)).rejects.toThrow(/orderFlow.footprint.plotType/)
+    expect((await target.exportAll()).data).toEqual(before)
     for (const styles of invalidStyles) {
       invalid.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = styles
       archive.data.preferences!.chartIndicators = invalid
@@ -678,7 +742,7 @@ describe('WorkstationBackupService', () => {
     }
   })
 
-  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS', 'BIG_TRADES'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
+  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS', 'BIG_TRADES', 'VWAP', 'VISIBLE_VOLUME_PROFILE'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
     const storage = new MemoryPreferences()
     storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
     const databaseName = `bad-indicator-${crypto.randomUUID()}`

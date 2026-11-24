@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Decimal from 'decimal.js'
-import type { PriceSource } from '../market-data/price-source-preferences'
+import { isOkxPriceSource, priceSourceLabel, type PriceSource } from '../market-data/price-source-preferences'
 import type { MarketSelection } from '../market-data/models'
 import { CTRADER_TIMEFRAMES } from '../market-data/intervals'
 import type {
@@ -37,15 +37,17 @@ interface ReplayControlsProps {
 }
 
 function sessionName(session: ReplaySession): string {
-  return `${session.symbol.ticker} ${session.period.text} · ${formatDisplayTime(
-    session.startTime,
-  )}${session.marketSource === 'okx' ? ' · OKX' : session.marketSource !== 'ctrader' ? ' · 币安存档' : session.tradingConfig.ctrader ? '' : ' · 旧模拟规则'}`
+  const { marketSource } = session
+  const time = formatDisplayTime(session.startTime)
+  const label = isOkxPriceSource(marketSource) ? priceSourceLabel(marketSource)
+    : marketSource !== 'ctrader' ? '币安存档' : session.tradingConfig.ctrader ? undefined : '旧模拟规则'
+  return `${session.symbol.ticker} ${session.period.text} · ${time}${label === undefined ? '' : ` · ${label}`}`
 }
 
 const HOLD_TO_PLAY_MS = 450
 
 function ReplayTradingTerms({ terms, waiting, source }: { terms?: TradingTerms; waiting?: string; source: PriceSource }) {
-  if (source === 'okx') {
+  if (isOkxPriceSource(source)) {
     const okx = terms && 'tickSize' in terms ? terms : undefined
     return <details className="replay-advanced">
       <summary>OKX 逐仓交易规格</summary>
@@ -303,6 +305,7 @@ export function ReplayControls({
     const startLabel = chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(chartStartTime)
     return <section className="replay-controls replay-setup" data-testid="replay-controls">
       <TimeJumpControl compact disabled={interactionLocked}
+        defaultTimestamp={priceSource === 'okx-local' ? chartStartTime ?? undefined : undefined}
         onJump={timestamp => { pauseViewport(); onJumpToTime(timestamp) }}
         onLocateLatest={() => { pauseViewport(); onLocateLatest() }} />
       <button type="button" disabled={viewportLocked} onClick={() => { pauseViewport(); onChartStep(-1) }}>上一根</button>
@@ -373,13 +376,14 @@ export function ReplayControls({
     </section>
   }
 
-  const native = session.marketSource === 'ctrader' || session.marketSource === 'okx'
+  const native = session.marketSource === 'ctrader' || isOkxPriceSource(session.marketSource)
   const onTick = session.cursorTimeframe === 'tick'
   const currentTime = onTick ? session.currentTime : sessionVisibleUntil(session) - (native ? 0 : 60_000)
   const precision = onTick ? 'millisecond' : isFineStepPeriod(session.cursorTimeframe) ? 'second' : 'minute'
   return (
     <section className="replay-controls" data-testid="replay-controls">
       <TimeJumpControl compact
+        defaultTimestamp={priceSource === 'okx-local' ? session.currentTime : undefined}
         disabled={interactionLocked}
         onJump={onJumpToTime}
         onLocateLatest={onLocateLatest}

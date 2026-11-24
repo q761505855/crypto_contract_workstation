@@ -58,7 +58,7 @@ import { IndexedDbSimulationStateStore } from './simulation-state-store'
 import { ctraderStorage } from './ctrader-storage'
 import { CTRADER_ACCOUNT_KEY, readCTraderAccount, validateCTraderAccount } from '../market-data/ctrader-account-preferences'
 import { CTRADER_PERIODS } from '../chart/chart-config'
-import { PRICE_SOURCE_KEY, readPriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
+import { isOkxPriceSource, PRICE_SOURCE_KEY, readPriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
 
 export const BACKUP_FILE_TYPE = 'crypto-contract-workstation-backup'
 export const BACKUP_SCHEMA_VERSION = 1
@@ -349,12 +349,13 @@ function validateSession(value: unknown, index: number): ReplaySession {
     .toUpperCase()
   const timeframe = stringValue(period.text, `${field}.period.text`)
   const marketSource = item.marketSource
-  if (marketSource !== undefined && marketSource !== 'binance' && marketSource !== 'ctrader' && marketSource !== 'okx') {
+  const okxSource = isOkxPriceSource(marketSource)
+  if (marketSource !== undefined && marketSource !== 'binance' && marketSource !== 'ctrader' && !okxSource) {
     throw new Error(`${field}.marketSource 无效`)
   }
-  const native = marketSource === 'ctrader' || marketSource === 'okx'
-  const nativeSymbol = marketSource === 'okx' ? validateSelectedOkxSymbol(symbol) : native ? validateSelectedSymbol(symbol) : undefined
-  if (native ? nativeSymbol?.exchange !== (marketSource === 'okx' ? 'OKX' : 'CTRADER') || !CTRADER_TIMEFRAMES.some(period => period === timeframe)
+  const native = marketSource === 'ctrader' || okxSource
+  const nativeSymbol = okxSource ? validateSelectedOkxSymbol(symbol) : native ? validateSelectedSymbol(symbol) : undefined
+  if (native ? nativeSymbol?.exchange !== (okxSource ? 'OKX' : 'CTRADER') || !CTRADER_TIMEFRAMES.some(period => period === timeframe)
     : !ticker.endsWith('USDT') || !SUPPORTED_TIMEFRAMES.includes(timeframe)) {
     throw new Error(`${field} 的交易对或周期无效`)
   }
@@ -363,7 +364,7 @@ function validateSession(value: unknown, index: number): ReplaySession {
   if ((native && cursorPeriod === undefined) || (!native && item.cursorTimeframe !== undefined)) {
     throw new Error(`${field}.cursorTimeframe 无效`)
   }
-  if (marketSource === 'okx' && isFineStepPeriod(cursorPeriod)) throw new Error(`${field}.cursorTimeframe 无效`)
+  if (okxSource && isFineStepPeriod(cursorPeriod)) throw new Error(`${field}.cursorTimeframe 无效`)
   const cursorTickIndex = item.cursorTickIndex === undefined ? undefined : nonNegativeInteger(item.cursorTickIndex, `${field}.cursorTickIndex`)
   if ((cursorPeriod === 'tick') !== (cursorTickIndex !== undefined) ||
     (cursorTickIndex !== undefined && !Number.isSafeInteger(cursorTickIndex))) {
@@ -414,7 +415,7 @@ function validateSession(value: unknown, index: number): ReplaySession {
   )
   const ctrader = tradingConfig.ctrader
   const okx = tradingConfig.okx
-  if (marketSource === 'okx') validateOkxTradingTerms(okx)
+  if (okxSource) validateOkxTradingTerms(okx)
   else if (okx !== undefined) throw new Error(`${field}.tradingConfig.okx 要求 OKX 会话`)
   if (ctrader !== undefined) {
     if (marketSource !== 'ctrader') throw new Error(`${field}.tradingConfig.ctrader 要求 cTrader 会话`)
@@ -875,7 +876,7 @@ export function validateBackupEnvelope(value: unknown, currentIndicators?: Chart
     if (!sameCTraderTradingTerms(session.tradingConfig.ctrader, simulation.config.ctrader)) {
       throw new Error(`模拟状态 ${simulation.sessionId} 与会话的 IC Markets 交易规格不匹配`)
     }
-    if (!sameOkxTradingTerms(session.tradingConfig.okx, simulation.config.okx) || (session.marketSource === 'okx' &&
+    if (!sameOkxTradingTerms(session.tradingConfig.okx, simulation.config.okx) || (isOkxPriceSource(session.marketSource) &&
         (session.tradingConfig.feeRate !== simulation.config.feeRate ||
           session.tradingConfig.liquidationFeeRate !== simulation.config.liquidationFeeRate))) {
       throw new Error('回放会话与模拟状态的 OKX 交易规格不一致')

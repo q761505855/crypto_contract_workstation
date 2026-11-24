@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import {
@@ -14,8 +14,12 @@ import {
   type ChartIndicatorPreferences,
 } from './indicator-preferences'
 import type { GitHubContentsClient } from '../github-sync/github-client'
-import { BYBIT_DAY_MS, bybitDay, bybitDayStart } from '../market-data/bybit/trades'
+import type { TradeDownloadChoice, TradeDownloadDay } from '../market-data/bybit/combined-source'
+import { bybitDay } from '../market-data/bybit/trades'
+import { okxArchiveDay } from '../market-data/okx/archive'
 import { orderFlowLabel, orderFlowMapping } from '../market-data/okx/trades'
+import type { OkxLocalMarket } from '../market-data/okx/local-market'
+import type { OkxLocalDownloads } from '../market-data/okx/local-downloads'
 import {
   ProChartAdapter,
   type ChartAdapterPort,
@@ -28,6 +32,12 @@ import type { DrawingStore } from './drawings'
 import type { DrawingSelection } from './drawing-overlays'
 import { DrawingSelectionToolbar } from './DrawingSelectionToolbar'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
+import { OkxLocalDataDialog } from '../components/OkxLocalDataDialog'
+import { resolveDayDownloadRange, TradeDownloadRange, type DayDownloadSelection } from '../components/TradeDownloadRange'
+import { OrderFlowSettingsDialog } from './OrderFlowSettingsDialog'
+import { bubblePreferenceDefaults, type OrderFlowGroup } from './order-flow-preferences'
+import { BIG_TRADES } from './order-flow'
+import { PREFERENCES_RESTORED } from '../storage/preference-events'
 import './chart-size-controls.css'
 
 export interface ChartWorkspaceProps {
@@ -43,14 +53,10 @@ export interface ChartWorkspaceProps {
   }, userSelectedSymbol?: boolean) => void
   simulationOverlays?: SimulationOverlayState
   showTradeOverlays?: boolean
-  jumpRequest?: {
-    id: string
-    timestamp: number
-    followLatest: boolean
-  } | null
+  jumpRequest?: ChartJumpRequest | null
   onJumpComplete?: (timestamp: number | null) => void
   onReplayStartTimeChange?: (timestamp: number | null) => void
-  viewportRef?: Ref<{ step(direction: -1 | 1): number | null }>
+  viewportRef?: Ref<ChartViewportActions>
   layoutSettingsOpen?: boolean
   onCloseLayoutSettings?: () => void
   chartHeight?: number | null
@@ -59,34 +65,56 @@ export interface ChartWorkspaceProps {
   drawingStore?: DrawingStore
   drawingScope?: string | null
   orderFlowCloud?: GitHubContentsClient
+  localTradeMarket?: OkxLocalMarket
+  localDownloads?: OkxLocalDownloads
+  onLocalFolderChange?: (replaced: boolean) => void
+  onLoadLocalArchives?: (symbol: string, days: readonly string[], append: boolean) => Promise<void>
+  getOrderFlowLotSize?: (ticker: string) => number | undefined
 }
 
+export interface ChartJumpRequest {
+  id: string
+  timestamp: number
+  followLatest: boolean
+}
+
+export interface ChartViewportActions {
+  step(direction: -1 | 1): number | null
+  loadLocalArchives(ticker: string, days: readonly string[], append: boolean): Promise<void>
+}
+
+const noDownloadSubscription = () => () => {}
+const noDownloadSnapshot = () => undefined
 const demoDatafeed = new DemoDatafeed()
 
-interface DayDownloadSelection {
-  anchor: string
-  before: string
-  after: string
-  error?: string
+interface DayDownloadReview {
+  days: readonly TradeDownloadDay[]
+  choose(choice: TradeDownloadChoice): void
 }
 
-function resolveDayDownloadRange({ anchor, before, after }: DayDownloadSelection, today: string) {
-  let anchorMs: number
-  try { anchorMs = bybitDayStart(anchor) }
-  catch { return { error: '请选择有效的锚点日期' } }
-  if (anchor > today) return { error: '锚点日期不能晚于当前 UTC 日期' }
-  const beforeDays = Number(before)
-  const afterDays = Number(after)
-  if (!before || !after || ![beforeDays, afterDays].every(days => Number.isSafeInteger(days) && days >= 0)) {
-    return { error: '往前和往后天数须为大于或等于 0 的整数' }
+const tradeDownloadStatus: Record<TradeDownloadDay['status'], string> = {
+  unarchived: '平台未归档',
+  uncached: 'Git 未缓存',
+  cached: 'Git 已缓存',
+  loaded: '已加载',
+  error: '检查失败',
+}
+
+function tradeDownloadDetail(day: TradeDownloadDay, today: string): string | undefined {
+  switch (day.status) {
+    case 'loaded':
+      return day.through === undefined ? day.source : `${day.source} · 已加载至 ${new Date(day.through).toISOString().slice(11, 19)} UTC`
+    case 'cached':
+      return day.source
+    case 'uncached':
+      return day.canCache ? 'OKX 日档可下载' : '需要可写的云端缓存连接'
+    case 'unarchived': {
+      const history = day.canUseHistory ? '可用 OKX 接口补齐' : day.day < today ? '超出 OKX 接口覆盖范围' : '当前暂无可读取的成交'
+      return day.bybitFallback ? `${history} · 可尝试 Bybit 日档` : history
+    }
+    case 'error':
+      return day.message
   }
-  const start = anchorMs - beforeDays * BYBIT_DAY_MS
-  if (start < bybitDayStart('0000-01-01')) return { error: '往前天数超出可用日期范围' }
-  const todayMs = bybitDayStart(today)
-  const daysAvailableAfterAnchor = (todayMs - anchorMs) / BYBIT_DAY_MS
-  const clipped = afterDays > daysAvailableAfterAnchor
-  const end = clipped ? todayMs : anchorMs + afterDays * BYBIT_DAY_MS
-  return { start: bybitDay(start), end: bybitDay(end), clipped }
 }
 
 export function ChartWorkspace({
@@ -111,6 +139,11 @@ export function ChartWorkspace({
   drawingStore,
   drawingScope = null,
   orderFlowCloud,
+  localTradeMarket,
+  localDownloads,
+  onLocalFolderChange,
+  onLoadLocalArchives,
+  getOrderFlowLotSize,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const scrollPortRef = useRef<HTMLDivElement | null>(null)
@@ -120,12 +153,18 @@ export function ChartWorkspace({
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
   const [drawingSelection, setDrawingSelection] = useState<DrawingSelection | null>(null)
+  const [localDownload, setLocalDownload] = useState<{ anchor: string; symbol: string } | null>(null)
+  const localJob = useSyncExternalStore(localDownloads?.subscribe ?? noDownloadSubscription, localDownloads?.snapshot ?? noDownloadSnapshot)
   const [dayDownloadMessage, setDayDownloadMessage] = useState('')
   const [dayDownloadSelection, setDayDownloadSelection] = useState<DayDownloadSelection | null>(null)
+  const [dayDownloadReview, setDayDownloadReview] = useState<DayDownloadReview | 'checking' | null>(null)
+  const dayDownloadReviewAbort = useRef<AbortController | null>(null)
   const dayDownloadRequest = useRef(0)
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
+  const [orderFlowDialog, setOrderFlowDialog] = useState<OrderFlowGroup | null>(null)
+  const indicatorSavingPaused = useRef(false)
   const [indicatorInfoVisible, setIndicatorInfoVisible] = useState(() => !(window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches ?? false))
   const [paneSizes, setPaneSizes] = useState<{ id: string; label: string; height: number }[]>([])
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -152,7 +191,10 @@ export function ChartWorkspace({
 
   useImperativeHandle(viewportRef, () => ({
     step: direction => adapterRef.current?.stepViewport?.(direction) ?? null,
-  }), [])
+    async loadLocalArchives(ticker, days, append) {
+      if (localTradeMarket) await adapterRef.current?.loadLocalArchives?.(localTradeMarket, ticker, days, append)
+    },
+  }), [localTradeMarket])
 
   useEffect(() => {
     if (hostRef.current === null) {
@@ -168,7 +210,7 @@ export function ChartWorkspace({
         symbol,
         period,
         initialIndicatorPreferences,
-      ), orderFlowCloud,
+      ), orderFlowCloud, localTradeMarket, getOrderFlowLotSize, onOrderFlowSettings: setOrderFlowDialog,
     })
     if (initialIndicatorPreferences !== null) {
       adapter?.applyIndicatorPreferences?.(
@@ -257,6 +299,7 @@ export function ChartWorkspace({
       host.removeEventListener('click', openSymbolPicker, true)
       drawingSlot?.remove()
       dayDownloadRequest.current++
+      dayDownloadReviewAbort.current?.abort()
       adapter?.dispose?.()
     }
   }, [])
@@ -430,8 +473,10 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     if (adapter?.getIndicatorPreferences === undefined) return
     let previous = JSON.stringify(adapter.getIndicatorPreferences())
+    const restored = () => { indicatorSavingPaused.current = true }
     const synchronize = () => {
       synchronizeLayoutRef.current?.()
+      if (indicatorSavingPaused.current) return
       const preferences = adapter.getIndicatorPreferences?.()
       if (preferences === undefined) return
       const serialized = JSON.stringify(preferences)
@@ -441,9 +486,11 @@ export function ChartWorkspace({
     }
     const interval = window.setInterval(synchronize, 250)
     window.addEventListener('beforeunload', synchronize)
+    window.addEventListener(PREFERENCES_RESTORED, restored)
     return () => {
       window.clearInterval(interval)
       window.removeEventListener('beforeunload', synchronize)
+      window.removeEventListener(PREFERENCES_RESTORED, restored)
     }
   }, [])
 
@@ -512,16 +559,23 @@ export function ChartWorkspace({
     const adapter = adapterRef.current
     adapter?.setIndicatorPaneHeight?.(paneId, height)
     const preferences = adapter?.getIndicatorPreferences?.()
-    if (!auxiliary && preferences !== undefined) saveChartIndicatorPreferences(preferences)
+    if (!auxiliary && !indicatorSavingPaused.current && preferences !== undefined) saveChartIndicatorPreferences(preferences)
     setPaneSizes(adapter?.getIndicatorPaneSizes?.() ?? [])
     synchronizeLayoutRef.current?.()
     adapter?.resize?.()
   }
 
-  function openBybitDownload(): void {
+  function openTradeDownload(): void {
+    if (localTradeMarket) {
+      const today = okxArchiveDay(Date.now())
+      const visible = adapterRef.current?.getRightmostVisibleCandleTime?.()
+      const day = visible == null ? today : okxArchiveDay(visible)
+      setLocalDownload({ anchor: day > today ? today : day, symbol: symbol.ticker })
+      return
+    }
     try {
       const day = adapterRef.current?.getVisibleBybitDay?.() ?? ''
-      setDayDownloadSelection({ anchor: day, before: '1', after: '1' })
+      setDayDownloadSelection({ anchor: day, before: '0', after: '0' })
     } catch (error) {
       setDayDownloadMessage(error instanceof Error ? error.message : '当前图表暂无可见 K 线')
     }
@@ -538,25 +592,68 @@ export function ChartWorkspace({
     const report = (message: string) => {
       if (dayDownloadRequest.current === request) setDayDownloadMessage(message)
     }
+    const abort = mapping && mapping.okx ? new AbortController() : undefined
     try {
-      const download = adapterRef.current?.downloadBybitDays?.(range.start, range.end, report)
+      const download = adapterRef.current?.downloadBybitDays?.(range.start, range.end, report, abort && {
+        signal: abort.signal,
+        choose: days => new Promise<TradeDownloadChoice>(resolve => {
+          if (abort.signal.aborted) { resolve('cancel'); return }
+          const cancel = () => resolve('cancel')
+          abort.signal.addEventListener('abort', cancel, { once: true })
+          setDayDownloadReview({ days, choose: choice => {
+            abort.signal.removeEventListener('abort', cancel)
+            resolve(choice)
+          } })
+        }),
+      })
       if (!download) return
+      if (abort) {
+        dayDownloadReviewAbort.current = abort
+        setDayDownloadReview('checking')
+      }
       setDayDownloadSelection(null)
-      void download.then(report, error => report(error instanceof Error ? error.message : '无法加载逐笔成交'))
+      void download.then(message => { if (message) report(message) }, error => {
+        if (abort?.signal.aborted) return
+        if (abort && dayDownloadReviewAbort.current === abort) {
+          dayDownloadReviewAbort.current = null
+          setDayDownloadReview(null)
+        }
+        report(error instanceof Error ? error.message : '无法加载逐笔成交')
+      })
     } catch (error) {
       setDayDownloadSelection({ ...dayDownloadSelection, error: error instanceof Error ? error.message : '无法加载逐笔成交' })
     }
   }
 
+  const reviewedDays = dayDownloadReview && dayDownloadReview !== 'checking' ? dayDownloadReview.days : null
+  const canDownloadArchives = reviewedDays?.some(day => day.status === 'cached' ||
+    (day.status === 'uncached' && day.canCache) || (day.status === 'unarchived' && day.bybitFallback))
+  const canDownloadHistory = reviewedDays?.some(day =>
+    (day.status === 'unarchived' && day.canUseHistory) || (day.status === 'loaded' && day.canExtendHistory))
+
+  function finishDayDownloadReview(choice: TradeDownloadChoice): void {
+    if (dayDownloadReview && dayDownloadReview !== 'checking') {
+      dayDownloadReview.choose(choice)
+    } else {
+      dayDownloadReviewAbort.current?.abort()
+    }
+    dayDownloadReviewAbort.current = null
+    setDayDownloadReview(null)
+    setDayDownloadSelection(null)
+  }
+
   const today = bybitDay(Date.now())
-  const downloadPreview = dayDownloadSelection && resolveDayDownloadRange(dayDownloadSelection, today)
   const dayDownload = (
     <>
-      <button className="chart-day-download" type="button" disabled={!mapping}
-        title={mapping ? `选择 ${orderFlowLabel(mapping)} 逐笔成交的下载日期` : '当前品种暂无成交量'}
-        onClick={openBybitDownload}>
+      <button className="chart-day-download" type="button" disabled={!localTradeMarket && !mapping}
+        title={localTradeMarket ? `下载 ${symbol.ticker} 官方逐笔归档到本地目录`
+          : mapping ? `选择 ${orderFlowLabel(mapping)} 逐笔成交的下载日期` : '当前品种暂无成交量'}
+        onClick={openTradeDownload}>
         下载成交数据
       </button>
+      {localJob && (localJob.status === 'running' || localJob.status === 'stopping') && (
+        <div className="chart-day-download-status" role="status">下载成交数据 {localJob.results.length} / {localJob.total}</div>
+      )}
       {dayDownloadMessage && (
         <div className="chart-day-download-status">
           <span role="status">{dayDownloadMessage}</span>
@@ -609,6 +706,12 @@ export function ChartWorkspace({
 
   const periodSelector = <PeriodSelector value={period.text} onChange={selectCompactPeriod} allowPinning={!auxiliary} />
   const expanded = chartHeight !== null && canExpand
+  const settingsSnapshot = orderFlowDialog ? adapterRef.current?.getIndicatorPreferences?.() : undefined
+  const bubble = settingsSnapshot?.main.find(setting => setting.name === BIG_TRADES)
+  const orderFlowSettings = bubble ? {
+    ...settingsSnapshot?.orderFlow,
+    bubbles: { ...settingsSnapshot?.orderFlow?.bubbles, ...bubblePreferenceDefaults(bubble.calcParams, bubble.styles) },
+  } : settingsSnapshot?.orderFlow
 
   return (
     <section className="chart-workspace" aria-label="行情图表" data-price-range-auto={priceRangeAuto}>
@@ -633,6 +736,15 @@ export function ChartWorkspace({
           onSelect={selectSymbol}
         />
       ) : null}
+      {orderFlowDialog && <OrderFlowSettingsDialog key={orderFlowDialog} group={orderFlowDialog}
+        preferences={orderFlowSettings}
+        onClose={() => setOrderFlowDialog(null)} onSave={preferences => {
+          const adapter = adapterRef.current
+          adapter?.setOrderFlowPreferences?.(preferences)
+          const snapshot = adapter?.getIndicatorPreferences?.()
+          if (!auxiliary && !indicatorSavingPaused.current && snapshot) saveChartIndicatorPreferences(snapshot)
+          setOrderFlowDialog(null)
+        }} />}
       {orderFlowCloud && drawingToolbar && createPortal(
         <button type="button" className="chart-volume-profile-tool" aria-label="框选成交分布"
           title={mapping ? `框选成交分布 · ${orderFlowLabel(mapping)}` : '当前品种暂无成交量'} disabled={!mapping}
@@ -640,29 +752,51 @@ export function ChartWorkspace({
           <span aria-hidden="true"><i /><i /><i /></span>
         </button>, drawingToolbar,
       )}
-      <WorkspaceDialog open={dayDownloadSelection !== null} title="下载成交数据" onClose={() => setDayDownloadSelection(null)}
+      <WorkspaceDialog open={dayDownloadSelection !== null || dayDownloadReview !== null} title="下载成交数据"
+        onClose={() => finishDayDownloadReview(canDownloadHistory ? 'archives' : 'cancel')}
         className="bybit-download-dialog">
         {dayDownloadSelection && <form className="bybit-download-form" noValidate onSubmit={event => {
           event.preventDefault()
           downloadBybitDays()
         }}>
           <p>{mapping && orderFlowLabel(mapping)} · UTC 日期</p>
-          <label>锚点日期<input type="date" value={dayDownloadSelection.anchor} max={today} required
-            onChange={event => setDayDownloadSelection({ ...dayDownloadSelection, anchor: event.target.value, error: undefined })} /></label>
-          <div>
-            <label>往前天数<input type="number" min="0" step="1" value={dayDownloadSelection.before} required
-              onChange={event => setDayDownloadSelection({ ...dayDownloadSelection, before: event.target.value, error: undefined })} /></label>
-            <label>往后天数<input type="number" min="0" step="1" value={dayDownloadSelection.after} required
-              onChange={event => setDayDownloadSelection({ ...dayDownloadSelection, after: event.target.value, error: undefined })} /></label>
-          </div>
-          {downloadPreview?.start && <p>下载范围 <strong>{downloadPreview.start === downloadPreview.end
-            ? downloadPreview.start : `${downloadPreview.start} 至 ${downloadPreview.end}`}</strong>
-            {downloadPreview.clipped && ' · 未来日期已跳过'}</p>}
-          <p>优先使用已缓存或已发布的 OKX 日档。近日期无可用日档时走接口，当天取至请求时刻。</p>
+          <TradeDownloadRange selection={dayDownloadSelection} onChange={setDayDownloadSelection} today={today} />
+          {mapping && mapping.okx && <p>选择范围后可查看逐日归档状态。</p>}
           {dayDownloadSelection.error && <p role="alert">{dayDownloadSelection.error}</p>}
           <button type="submit">下载</button>
         </form>}
+        {dayDownloadReview === 'checking' && <p role="status">正在检查日期状态…</p>}
+        {reviewedDays && (
+          <div className="bybit-download-form day-download-review">
+            <div className="day-download-table" tabIndex={0}>
+              <table aria-label="成交数据日期状态">
+                <thead><tr><th scope="col">UTC 日期</th><th scope="col">状态</th></tr></thead>
+                <tbody>{reviewedDays.map(day => (
+                  <tr key={day.day}>
+                    <th scope="row">{day.day}</th>
+                    <td>
+                      <span data-download-status={day.status}>{tradeDownloadStatus[day.status]}</span>
+                      <small>{tradeDownloadDetail(day, today)}</small>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <div className="day-download-actions">
+              {canDownloadArchives || canDownloadHistory ? (
+                <button type="button" autoFocus onClick={() => finishDayDownloadReview('archives')}>只下载归档</button>
+              ) : <button type="button" autoFocus onClick={() => finishDayDownloadReview('cancel')}>完成</button>}
+              {canDownloadHistory && (
+                <button type="button" onClick={() => finishDayDownloadReview('includeHistory')}>下载归档并补齐近期数据</button>
+              )}
+            </div>
+          </div>
+        )}
       </WorkspaceDialog>
+      {localDownload && localTradeMarket && localDownloads && onLoadLocalArchives && <OkxLocalDataDialog
+        files={localTradeMarket.files} downloads={localDownloads}
+        symbol={localDownload.symbol} anchor={localDownload.anchor} onClose={() => setLocalDownload(null)}
+        onFolderChange={replaced => onLocalFolderChange?.(replaced)} onLoad={onLoadLocalArchives} />}
       {onChartHeightChange !== undefined ? (
         <div
           aria-label="图表高度"

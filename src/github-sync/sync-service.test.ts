@@ -72,7 +72,7 @@ function backup(): BackupEnvelope {
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     ctraderAccount: 'live:19',
-    priceSource: 'okx',
+    priceSource: 'okx-local',
     okxSelectedSymbol: { ticker: 'ETH-USDT-SWAP', exchange: 'OKX', priceCurrency: 'USDT', type: 'PERPETUAL', pricePrecision: 2, volumePrecision: 3 },
     pinnedPeriods: ['1m', '1d'],
     replayStepPeriod: '1M',
@@ -86,8 +86,22 @@ function backup(): BackupEnvelope {
     selectedSymbol: { ticker: 'ETHUSDT', pricePrecision: 2, volumePrecision: 3 },
     chartIndicators: {
       schemaVersion: 1,
+      orderFlow: {
+        footprint: { type: 'bidAsk', plotType: 'delta', layout: 'histogram', showText: false, minNotional: 0, columnWidth: 128 },
+        bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxNotional: 0, thresholdUnit: 'contracts',
+          minQuantity: 0, maxQuantity: 2.5, minContracts: 10, maxContracts: 0, minLots: 0.01, maxLots: 0.5,
+          sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 320 },
+        profile: { type: 'bidAsk', rows: 26, valueArea: 82, showPoc: false, pocColor: '#ffcc7000' },
+        visibleProfile: { placement: 'left', offset: 0, width: 30, rows: 56, type: 'volumeDelta', showHeaders: false,
+          showPoc: false, showValueArea: true, valueArea: 83, showLabels: false, pocColor: '#ffe192', levelColor: '#aabbcc00',
+          volumeColor: '#12345600', valueAreaColor: '#13568080', positiveColor: '#23456780', negativeColor: '#345678' },
+        cvd: { reset: 'continuous', showZero: false, plot: 'histogram' },
+      },
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
+        { name: 'FOOTPRINT', calcParams: [], visible: false, styles: null },
+        { name: 'VWAP', calcParams: [], visible: true, styles: null },
+        { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
         { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
           bubbleMode: 'aggregate',
           bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -106,6 +120,7 @@ function backup(): BackupEnvelope {
       { height: 180, indicators: [{ name: 'TTM_WAVE_A', calcParams: [5, 21, 34], visible: false, styles: { bars: [{ noChangeColor: '#123456', positiveColor: '#12ab34', negativeColor: '#ed1234', borderSize: 0 }, { positiveColor: '#34ab56', negativeColor: '#ed5678' }] } }] },
       { height: 190, indicators: [{ name: 'TTM_WAVE_B', calcParams: [5, 55, 89], visible: true, styles: null }] },
       { height: 200, indicators: [{ name: 'TTM_WAVE_C', calcParams: [5, 144, 233], visible: true, styles: null }] },
+      { height: 140, indicators: [{ name: 'CVD', calcParams: [], visible: true, styles: null }] },
       { height: 190, indicators: [{ name: 'RSI', calcParams: [6, 12, 24], visible: false, styles: { rsiLevels: { oversold: 0, overbought: 100 }, rsiLines: [{ color: '#26a69a00', size: 0 }, { color: '#76808f80' }, { color: '#ef5350' }] } }] }],
     },
   }
@@ -769,12 +784,12 @@ describe('GitHubSyncService', () => {
 
     const okxSymbol = backup().data.preferences!.okxSelectedSymbol!
     sourceStorage.setItem(OKX_SYMBOL_STORAGE_KEY, JSON.stringify(okxSymbol))
-    sourceStorage.setItem(PRICE_SOURCE_KEY, '"okx"')
+    sourceStorage.setItem(PRICE_SOURCE_KEY, '"okx-local"')
     await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
-    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx"')
+    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx-local"')
     expect(JSON.parse(targetStorage.getItem(OKX_SYMBOL_STORAGE_KEY)!)).toEqual(okxSymbol)
     sourceStorage.setItem(PRICE_SOURCE_KEY, '"ctrader"')
     await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
@@ -798,7 +813,7 @@ describe('GitHubSyncService', () => {
     targetStorage.setItem(PINNED_PERIODS_KEY, '["1h"]')
     await target.pull(client(remote))
     expect(targetStorage.getItem(PINNED_PERIODS_KEY)).toBe('["1h"]')
-    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx"')
+    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx-local"')
     expect(JSON.parse(targetStorage.getItem(OKX_SYMBOL_STORAGE_KEY)!)).toEqual(okxSymbol)
 
     // A correct checksum is insufficient: validate configuration before applying any of it.
@@ -832,6 +847,46 @@ describe('GitHubSyncService', () => {
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
+
+    const appearanceChanged = structuredClone(indicators)
+    Object.assign(appearanceChanged.orderFlow!.bubbles!, { sizeByVolume: true, opacityByVolume: false, fixedRadius: 24 })
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(appearanceChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(appearanceChanged)
+
+    const thresholdChanged = structuredClone(indicators)
+    Object.assign(thresholdChanged.orderFlow!.bubbles!, { thresholdUnit: 'lots', minLots: 0, maxLots: 0 })
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(thresholdChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(thresholdChanged)
+
+    const changedVisibility = structuredClone(indicators)
+    changedVisibility.main.find(i => i.name === 'VISIBLE_VOLUME_PROFILE')!.visible = true
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(changedVisibility))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(changedVisibility)
+
+    const profileChanged = structuredClone(changedVisibility)
+    Object.assign(profileChanged.orderFlow!.visibleProfile!, { width: 19, type: 'delta', showHeaders: true })
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(profileChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(profileChanged)
+
+    const footprintChanged = structuredClone(indicators)
+    footprintChanged.orderFlow!.footprint!.plotType = 'matchText'
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(footprintChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(footprintChanged)
 
     const modeChanged = structuredClone(indicators)
     const bubbles = modeChanged.main.find(i => i.name === 'BIG_TRADES')!
@@ -874,6 +929,7 @@ describe('GitHubSyncService', () => {
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(pivotChanged)
 
     const changed = structuredClone(indicators)
+    changed.orderFlow!.profile!.rows = 60
     changed.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = {
       sessionVisibility: [true, false, true],
       sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
@@ -891,7 +947,7 @@ describe('GitHubSyncService', () => {
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(empty))
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
-    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(empty)
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual({ ...empty, orderFlow: changed.orderFlow })
 
     const remotePreferences = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     const rewrite = async (value: unknown) => {
@@ -910,6 +966,8 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicators)
     const legacyDefaults = structuredClone(indicators)
+    legacyDefaults.main = legacyDefaults.main.filter(({ name }) => name !== 'VWAP' && name !== 'VISIBLE_VOLUME_PROFILE')
+    delete legacyDefaults.orderFlow
     legacyDefaults.main.find(i => i.name === 'BIG_TRADES')!.styles = null
     legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
     const legacySessions = legacyDefaults.main.find(i => i.name === 'MARKET_SESSIONS')!
@@ -918,6 +976,8 @@ describe('GitHubSyncService', () => {
     legacyDefaults.sub[1].indicators[0].styles = { bars: [{ positiveColor: '#26a69a', negativeColor: '#ef5350', borderSize: 0 }] }
     await rewrite({ ...remotePreferences, chartIndicators: legacyDefaults })
     await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.orderFlow).toEqual(indicators.orderFlow)
+    expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.map(i => i.name)).toEqual(legacyDefaults.main.map(i => i.name))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).sub[1].indicators[0].styles)
       .toEqual({ bars: [{ positiveColor: '#168c72', negativeColor: '#d93654', borderSize: 0 }] })
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).main.find((i: { name: string }) => i.name === 'PIVOTS').calcParams.slice(30))
@@ -927,7 +987,32 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
       .toEqual(indicators.main.find(i => i.name === 'BIG_TRADES'))
     const before = (await targetBackups.exportAll()).data
+    for (const visibleProfile of [null, { rows: 201 }, { offset: null }, { type: 'unknown' }, { showHeaders: 0 },
+      { showPoc: null }, { showValueArea: 0 }, { valueArea: 101 }, { valueAreaColor: '' }]) {
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { visibleProfile } } })
+      await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.visibleProfile/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    for (const bubbles of [{ thresholdUnit: '' }, { minContracts: null }, { minLots: 4, maxLots: 2 },
+      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 41 }]) {
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { bubbles } } })
+      await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.bubbles/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    for (const name of ['VWAP', 'VISIBLE_VOLUME_PROFILE']) {
+      const invalidTradeIndicator = structuredClone(indicators)
+      invalidTradeIndicator.main.find(i => i.name === name)!.calcParams = [null]
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidTradeIndicator })
+      await expect(target.pull(client(remote))).rejects.toThrow(/calcParams/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     const invalidBubbles = structuredClone(indicators)
+    await rewrite({ ...remotePreferences, chartIndicators: { ...indicators, orderFlow: { footprint: { plotType: '' } } } })
+    await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.footprint.plotType/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
+    await rewrite({ ...remotePreferences, chartIndicators: { ...indicators, orderFlow: { cvd: { lineWidth: 0 } } } })
+    await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.cvd.lineWidth/)
+    expect((await targetBackups.exportAll()).data).toEqual(before)
     invalidBubbles.main.find(i => i.name === 'BIG_TRADES')!.styles = { bubbleColors: [] }
     await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidBubbles })
     await expect(target.pull(client(remote))).rejects.toThrow(/BIG_TRADES.*bubbleColors/)
@@ -984,13 +1069,13 @@ describe('GitHubSyncService', () => {
     }
   })
 
-  it('round-trips an OKX session with its contract specification and funding ledger in session-only sync', async () => {
+  it.each(['okx', 'okx-local'] as const)('round-trips a %s session with its contract specification and funding ledger in session-only sync', async marketSource => {
     const envelope = backup()
     const symbol = envelope.data.preferences!.okxSelectedSymbol!
     const first = { ...candle(60_000), source: 'okx' as const, symbol: symbol.ticker }
     const session = {
-      schemaVersion: 2, id: 'okx-cloud-session', symbol, period: SUPPORTED_PERIODS[0],
-      marketSource: 'okx', cursorTimeframe: '1m', startTime: 60_000, currentTime: 120_000,
+      schemaVersion: 2, id: `${marketSource}-cloud-session`, symbol, period: SUPPORTED_PERIODS[0],
+      marketSource, cursorTimeframe: '1m', startTime: 60_000, currentTime: 120_000,
       endTime: 300_000, visibleUntil: 180_000, currentIndex: 1, candleCount: 2,
       speed: 1, status: 'paused', hasTrades: true, active: true, createdAt: 1, updatedAt: 2,
       tradingConfig: { initialBalance: '1000', leverage: 10, feeRate: '0.0005', slippageRate: '0',

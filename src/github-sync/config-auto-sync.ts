@@ -7,7 +7,7 @@ import { configurationEnvelope, type GitHubSyncService } from './sync-service'
 export const CONFIG_BASELINE_KEY = 'github.configBaseline.v1'
 type LocalStorage = Pick<Storage, 'getItem' | 'setItem'>
 export interface ConfigSyncStatus {
-  phase: 'checking' | 'pending' | 'syncing' | 'synced' | 'error' | 'conflict'
+  phase: 'checking' | 'pending' | 'syncing' | 'synced' | 'read-only' | 'error' | 'conflict'
   message: string
 }
 
@@ -16,6 +16,10 @@ function stable(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)
 }
 const equal = (left: unknown, right: unknown) => stable(left) === stable(right)
+const atomicFields = new Set([
+  'chartWindowSize', 'selectedSymbol', 'okxSelectedSymbol',
+  'chartIndicators.orderFlow.footprint', 'chartIndicators.orderFlow.bubbles',
+])
 
 /** A product and its metadata move together, as do arrays and captured window sizes. */
 export function mergeConfig(base: BackupPreferences | undefined, local: BackupPreferences, remote: BackupPreferences, resolution?: 'local' | 'remote', remoteBase = base): { preferences: BackupPreferences; conflicts: string[] } {
@@ -24,7 +28,7 @@ export function mergeConfig(base: BackupPreferences | undefined, local: BackupPr
     // Absent remote optional fields are legacy omissions, never deletion commands.
     if (there === undefined) return here
     if (equal(here, there)) return here
-    if (path !== 'chartWindowSize' && path !== 'selectedSymbol' && path !== 'okxSelectedSymbol' && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
+    if (!atomicFields.has(path) && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
       return Object.fromEntries([...new Set([...Object.keys(here), ...Object.keys(there)])].map(key => [
         key, merge(object(beforeHere) ? beforeHere[key] : undefined, object(beforeThere) ? beforeThere[key] : undefined, here[key], there[key], path ? `${path}.${key}` : key),
       ]))
@@ -151,6 +155,11 @@ export class ConfigAutoSync {
       }
       const local = await this.local()
       const pending = storage.getItem(CONFIG_PENDING_KEY) === 'true' || (base !== undefined && !equal(base, local))
+      if (this.stopped) return
+      if (pending && !client.canWrite()) {
+        this.setStatus('read-only', '配置已保存在本机，云端连接只读')
+        return
+      }
       const remote = await sync.readConfig(client, this.controller.signal)
       if (this.stopped) return
       if (!equal(local, await this.local())) { this.again = true; return }

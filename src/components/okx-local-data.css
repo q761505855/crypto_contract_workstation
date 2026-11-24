@@ -1,0 +1,97 @@
+.workspace-dialog.okx-local-dialog { width: min(560px, 100%); }
+
+.okx-local-content {
+  display: grid;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.okx-local-content section {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #34465f;
+  border-radius: 8px;
+  background: #101b2a;
+}
+
+.okx-local-content h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.okx-local-note, .okx-local-error { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+.okx-local-note { color: #a8b9cf; }
+.okx-local-error { color: #ffabb1; }
+
+.okx-local-section-heading, .okx-local-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.okx-local-section-heading { justify-content: space-between; }
+.okx-local-section-heading > div { min-width: 0; }
+.okx-local-section-heading h3 + .okx-local-note { margin-top: 4px; }
+.okx-local-content form { display: grid; gap: 10px; }
+.okx-local-content form > .okx-local-actions { justify-content: end; }
+
+.okx-local-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.okx-local-dates label { display: grid; gap: 5px; }
+.okx-local-dates input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 5px 8px;
+  color: #e5eefb;
+  color-scheme: dark;
+  border: 1px solid #3a4e69;
+  border-radius: 6px;
+  background: #0c1420;
+}
+
+.okx-local-content button {
+  border-color: #435b78;
+  border-radius: 6px;
+  color: #dbe8f8;
+  background: #23344b;
+}
+
+.okx-local-content button.okx-local-primary {
+  border-color: #9bd2ff;
+  color: #081a30;
+  background: #82bfff;
+  font-weight: 650;
+}
+
+.okx-local-content button:hover:not(:disabled) { filter: brightness(1.12); }
+
+.okx-local-list {
+  max-height: 154px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid #2f4058;
+}
+
+.okx-local-list li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #2f4058;
+}
+
+.okx-local-list time { font-variant-numeric: tabular-nums; }
+.okx-local-archive-choice { display: flex; align-items: center; gap: 6px; }
+.okx-local-list li span { color: #a8b9cf; overflow-wrap: anywhere; }
+.okx-local-list li [data-download-status=saved] { color: #84d5b0; }
+.okx-local-list li [data-download-status=failed] { color: #ffabb1; }
+
+@media (max-width: 360px) {
+  .okx-local-dates { grid-template-columns: minmax(0, 1fr); }
+}

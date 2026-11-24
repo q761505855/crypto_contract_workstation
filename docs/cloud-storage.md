@@ -39,7 +39,7 @@ projects/
 
 实验版的 K 线由浏览器访问 cTrader，短期缓存留在内存。GitHub 同步跳过旧清单中的行情条目并保留相应文件。JSON 旧备份里的行情必须通过校验，随后跳过恢复。应用配置、会话、交易和绘图仍可使用 JSON 与云端存档，连接 cTrader 的配置和 GitHub 凭据留在应用存档之外。
 
-OKX 行情来源和当前 OKX 品种沿用实验目录下的 `config/preferences.json`。OKX 回放和模拟记录沿用“会话与交易”，按会话 ID 与 cTrader 会话隔离。原始 K 线、标记价格、目录和资金费率由 OKX 公开接口读取。可重放的资金费结算流水和开仓所用的规格快照随会话保存。
+OKX 和 OKX-本地的行情来源与共用的当前品种沿用实验目录下的 `config/preferences.json`。两套 OKX 来源的回放和模拟记录沿用“会话与交易”，通过各自的来源标记区分。在线 OKX 的原始 K 线、标记价格、目录和资金费率由 OKX 公开接口读取。可重放的资金费结算流水和开仓所用的规格快照随会话保存。OKX-本地的官方逐笔成交 ZIP 和目录授权留在各设备。
 
 ## 主分支行情存档
 
@@ -90,7 +90,9 @@ Git 月分片可能尚未覆盖整月；创建、恢复回放先复用普通价�
 
 ## OKX 逐笔成交缓存
 
-下载界面使用 UTC 日期。点击下载后，已结束的日期优先复用 Git 中的 OKX 日档。Git 缺档时会检查官方归档清单，可完整覆盖的日期通过现有可写连接申请缓存。近日期无可用归档时通过 OKX 历史逐笔接口分页读取，结果保留在当前页面。较早的日期走 Git 日档。需要创建日档时，网页提交 `projects/crypto-contract-workstation/experiments/ctrader/data/okx-requests/<品种>/<UTC日期>.json`，并触发工作流。OKX 官方逐笔归档按 UTC+8 切日，后台验证覆盖对应 UTC 日的两份源日档，按 UTC 小时编排并校验 gzip 分片，发布到同一项目的 `data/okx-trades/<品种>/<UTC日期>/`。黄金更名日同时读取旧代码和新代码的文件。手动加载的日期优先读取已发布的 OKX 分片，也兼容浏览器里已有的 OKX 旧版缓存。
+下载界面使用 UTC 日期。确认前会逐日检查当前页面已加载的数据、Git 日档以及 OKX 官方归档清单，显示「已加载」「Git 已缓存」「Git 未缓存」「平台未归档」。可完整覆盖但 Git 未缓存的 OKX 日档，通过现有可写连接申请缓存。已有 Bybit 日档也会显示来源。近期缺档只有选择「下载归档并补齐近期数据」才会调用 OKX 历史逐笔接口，结果保留在当前页面。超出接口范围且无 OKX 归档的日期会在当天的状态里注明。归档查询失败单独显示，便于重试。
+
+需要创建日档时，网页提交 `projects/crypto-contract-workstation/experiments/ctrader/data/okx-requests/<品种>/<UTC日期>.json`，并触发工作流。OKX 官方逐笔归档按 UTC+8 切日，后台验证覆盖对应 UTC 日的两份源日档，按 UTC 小时编排并校验 gzip 分片，发布到同一项目的 `data/okx-trades/<品种>/<UTC日期>/`。黄金更名日同时读取旧代码和新代码的文件。手动加载的日期优先读取已发布的 OKX 分片，也兼容浏览器里已有的 OKX 旧版缓存。
 
 OKX 完整覆盖对应 UTC 日后，工作流在发布的同一 Git 提交中清理同品种同日的 Bybit 分片及清单。映射有歧义、OKX 上市首日、源日档缺失或校验失败时保留 Bybit 日档。清理只涉及缓存目录，Git 的旧提交可用于恢复。OKX 日档、Bybit 日档、近期回补及映射都属于行情数据，与用户配置及 JSON 存档独立。旧归档仍由顶部按钮按需申请。
 
@@ -98,6 +100,6 @@ OKX 完整覆盖对应 UTC 日后，工作流在发布的同一 Git 提交中清
 
 ## Bybit 逐笔成交缓存
 
-Bybit 归档按 UTC 日获取。用户从图表顶部打开「下载成交数据」后，以最右侧可见 K 线的开盘时间所在 UTC 日为默认锚点，往前和往后天数默认各 1 天。下载包含锚点当天，范围截止到当前 UTC 日期。对使用 Bybit 来源且未缓存的已结束日期，网页通过现有云端连接在 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json` 写入带 `requestedManually: true` 的请求。同品种同日共用一个请求。页面写入请求后直接触发 GitHub Actions，定时扫描和临时失败重试只处理明确手动申请的日期。旧自动请求保留在原处，点击同日时可转为手动请求。后台使用现有 `CLOUD_STORAGE_TOKEN` 下载并发布，归档就绪后主图刷新对应日期的成交量指标。图表浏览、框选和回放使用手动加载的日期及 WebSocket 实时成交。
+Bybit 归档按 UTC 日获取。用户从图表顶部打开「下载成交数据」后，以最右侧可见 K 线的开盘时间所在 UTC 日为默认锚点，往前和往后天数默认各 0 天。下载包含锚点当天，范围截止到当前 UTC 日期。对使用 Bybit 来源且未缓存的已结束日期，网页通过现有云端连接在 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-requests/<品种>/<UTC日期>.json` 写入带 `requestedManually: true` 的请求。同品种同日共用一个请求。页面写入请求后直接触发 GitHub Actions，定时扫描和临时失败重试只处理明确手动申请的日期。旧自动请求保留在原处，点击同日时可转为手动请求。后台使用现有 `CLOUD_STORAGE_TOKEN` 下载并发布，归档就绪后主图刷新对应日期的成交量指标。图表浏览、框选和回放使用手动加载的日期及 WebSocket 实时成交。
 
 Bybit 归档写入 `projects/crypto-contract-workstation/experiments/ctrader/data/bybit-trades/<品种>/<UTC日期>/`。OKX 和 Bybit 共用分片逻辑，原始数据按小时排序后，以压缩前最多 16 MiB 切分，并在发布前确认每个 gzip 文件严格小于 20 MB。当天清单记录每个分片的笔数、大小和 SHA-256。完整归档与请求移除在同一 Git 提交发布，采用非强制推送。刚发布的归档通过同一个提交读取清单和分片，避开分支地址暂时缓存的 404。日档和下载请求属于行情缓存运行数据，独立于配置、存档、会话和旧行情清单。无云端写权限时仍可读取已有公开缓存。

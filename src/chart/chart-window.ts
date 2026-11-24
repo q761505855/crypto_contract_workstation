@@ -17,6 +17,7 @@ interface HostChartState {
   replay: ReplayContext | null
   simulationOverlays: SimulationOverlayState
   configRevision: number
+  dataRevision?: number
 }
 
 interface ChartWindowSnapshot {
@@ -26,12 +27,14 @@ interface ChartWindowSnapshot {
   chartRevision: number
   configRevision: number
   drawingScope: string | null
+  dataRevision?: number
 }
 
 export interface ChartWindowConnection {
   datafeed: CTraderReplayDatafeed
   liveDatafeed: CTraderDatafeed
   initialPeriod: Period
+  localArchives?: boolean
   setPeriod(period: Period): void
   saveDefaultSize(size: ChartWindowSize): void
   subscribe(listener: () => void): () => void
@@ -113,6 +116,7 @@ export class ChartWindowHost {
       initialPeriod,
       datafeed,
       liveDatafeed,
+      localArchives: this.runtime.service.source === 'okx-local',
       setPeriod(next: Period) { period = next },
       saveDefaultSize(size: ChartWindowSize) { saveChartWindowSize(size) },
       getSnapshot: () => snapshot,
@@ -126,6 +130,7 @@ export class ChartWindowHost {
         const visibleUntil = next === null ? null : replayVisibleUntil(next)
         const reload = snapshot !== null && (
           snapshot.symbol.ticker !== state.symbol.ticker ||
+          snapshot.dataRevision !== state.dataRevision ||
           (replay === null) !== (next === null) ||
           (replay !== null && next !== null && (
             replay.sessionId !== next.sessionId || compareReplayPositions(next, replay) < 0 ||
@@ -142,7 +147,7 @@ export class ChartWindowHost {
             snapshot.visibleUntil === visibleUntil && snapshot.chartRevision === chartRevision &&
             snapshot.configRevision === state.configRevision && snapshot.simulationOverlays === state.simulationOverlays) return
         snapshot = { symbol: state.symbol, visibleUntil, simulationOverlays: state.simulationOverlays,
-          chartRevision, configRevision: state.configRevision,
+          chartRevision, configRevision: state.configRevision, dataRevision: state.dataRevision,
           drawingScope: drawingScope(next === null ? 'live' : 'history', state.symbol.ticker, next?.sessionId ?? null, state.symbol.exchange) }
         notify()
       },

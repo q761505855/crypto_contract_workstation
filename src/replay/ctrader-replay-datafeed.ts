@@ -34,6 +34,8 @@ type LoadHistoryPage = (symbol: SymbolInfo, period: Period, edge: number, signal
 
 type BaseDatafeed = Datafeed & {
   hasLiveTail?: (symbol: SymbolInfo, period: Period) => boolean
+  isShowingLatestArchive?: () => boolean
+  allowOlderArchives?: () => void
   setWarningListener?: (listener?: (message: string) => void) => void
   getOlderHistory?: LoadHistoryPage
   getNewerHistory?: LoadHistoryPage
@@ -134,9 +136,15 @@ export class CTraderReplayDatafeed implements Datafeed {
     return this.base.searchSymbols(search)
   }
 
+  isShowingLatestArchive(): boolean {
+    return this.context === null && (this.base.isShowingLatestArchive?.() ?? false)
+  }
+
+  allowOlderArchives(): void { this.base.allowOlderArchives?.() }
+
   async getHistoryKLineData(
     symbol: SymbolInfo, period: Period, from: number, to: number,
-    notifySelection = true, signal?: AbortSignal,
+    notifySelection = true, signal?: AbortSignal, preferLatestArchive?: boolean,
   ): Promise<KLineData[]> {
     signal?.throwIfAborted()
     const context = this.context
@@ -147,14 +155,15 @@ export class CTraderReplayDatafeed implements Datafeed {
     if (notifySelection) this.onSelectionChange?.({ symbol, period })
     const generation = this.generation
     if (context === null) {
-      const rows = await readChartHistory(this.base, symbol, period, from, to, notifySelection, signal)
+      const rows = await readChartHistory(this.base, symbol, period, from, to, notifySelection, signal, preferLatestArchive)
       signal?.throwIfAborted()
       return generation === this.generation ? rows : this.getHistoryKLineData(symbol, period, from, to, false, signal)
     }
     const until = replayVisibleUntil(context)
     const nativeUntil = replayConfirmedUntil(context)
     const upper = Math.min(to, until - 1)
-    const recent = Math.max(0, shiftOpenTime(upper + 1, period.text, -PAGE_SIZE))
+    const pageSize = this.service.historyPageSize?.(period.text) ?? PAGE_SIZE
+    const recent = Math.max(0, shiftOpenTime(upper + 1, period.text, -pageSize))
     const lower = from < 0 || from > upper ? recent : Math.max(from, notifySelection ? recent : 0)
     let bars = await loadClosedReplayBars(this.service, context.symbol, period.text, lower, upper, signal)
     let visible = bars.filter(bar => bar.closeTime < nativeUntil)
@@ -243,14 +252,18 @@ export class CTraderReplayDatafeed implements Datafeed {
   private async olderPage(context: ReplayContext, period: Period, before: number, signal?: AbortSignal) {
     const until = replayConfirmedUntil(context)
     let cursor = Math.min(before, until)
-    for (let page = 0; page < MAX_EMPTY_PAGES && cursor > 0; page += 1) {
-      const from = Math.max(0, shiftOpenTime(cursor - 1, period.text, -PAGE_SIZE))
+    const bounds = await this.service.historyBounds?.(context.symbol, signal)
+    if (this.service.historyBounds && !bounds) return { bars: [], hasMore: false, cursor }
+    const earliest = bounds ? alignOpenTime(bounds.from, period.text, 'floor') : 0
+    const count = this.service.historyPageSize?.(period.text) ?? PAGE_SIZE
+    for (let page = 0; page < MAX_EMPTY_PAGES && cursor > earliest; page += 1) {
+      const from = Math.max(earliest, shiftOpenTime(cursor - 1, period.text, -count))
       const bars = (await loadClosedReplayBars(this.service, context.symbol, period.text, from, cursor - 1, signal))
         .filter(bar => bar.closeTime < until)
-      if (bars.length !== 0) return { bars, hasMore: from > 0, cursor: from }
+      if (bars.length !== 0) return { bars, hasMore: from > earliest, cursor: from }
       cursor = from
     }
-    return { bars: [], hasMore: cursor > 0, cursor }
+    return { bars: [], hasMore: cursor > earliest, cursor }
   }
 
   private async readFormingBar(
@@ -312,7 +325,8 @@ export class CTraderReplayDatafeed implements Datafeed {
         let page = subscription.buffered
         if (page === undefined || page.to < until - 1) {
           const from = Math.max(0, shiftOpenTime(since, timeframe, -1))
-          const pageEnd = Math.min(shiftOpenTime(from, timeframe, FORWARD_PAGE_SIZE) - 1, from + FORWARD_MAX_SPAN_MS - 1)
+          const count = Math.min(this.service.historyPageSize?.(timeframe) ?? FORWARD_PAGE_SIZE, FORWARD_PAGE_SIZE)
+          const pageEnd = Math.min(shiftOpenTime(from, timeframe, count) - 1, from + FORWARD_MAX_SPAN_MS - 1)
           const to = Math.min(context.endTime ?? Date.now(), Math.max(until - 1, pageEnd))
           const bars = await loadClosedReplayBars(this.service, context.symbol, timeframe, from, to, request.signal)
           if (request.signal.aborted || this.subscription !== subscription) return
