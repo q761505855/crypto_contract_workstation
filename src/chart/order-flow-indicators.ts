@@ -1,5 +1,5 @@
 import { registerIndicator, type IndicatorDrawParams, type IndicatorTooltipData } from 'klinecharts'
-import type { VolumeProfileRow } from './order-flow'
+import { volumeProfileBarColor, volumeProfilePriceLines, type VolumeProfilePrices, type VolumeProfileRow } from './order-flow'
 import type { FootprintRow, VwapPoint } from './order-flow-metrics'
 import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, orderFlowSettings, type FootprintType } from './order-flow-preferences'
 
@@ -28,6 +28,8 @@ export interface VwapDisplay {
 
 export interface VisibleProfileDisplay {
   rows?: readonly VolumeProfileRow[]
+  prices?: VolumeProfilePrices
+  precision: number
   axisInset: () => number
   settings?: typeof defaultVisibleProfile
   message?: string
@@ -203,7 +205,7 @@ function drawVwap({ ctx, indicator, visibleRange, xAxis, yAxis, barSpace }: Indi
 export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: IndicatorDrawParams): boolean {
   const display = indicator.extendData as VisibleProfileDisplay | undefined
   if (!display?.rows?.length) return true
-  const { settings = defaultVisibleProfile, rows } = display
+  const { settings = defaultVisibleProfile, rows, prices } = display
   const showVolume = settings.type !== 'delta'
   const showDelta = settings.type !== 'volume'
   const both = showVolume && showDelta
@@ -222,6 +224,7 @@ export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: In
   ctx.rect(left, 0, totalWidth, bounding.height)
   ctx.clip()
   for (const { low, high, buy, sell } of rows) {
+    if (!(buy + sell)) continue
     const y1 = yAxis.convertToPixel(low)
     const y2 = yAxis.convertToPixel(high)
     const top = Math.min(y1, y2)
@@ -229,7 +232,7 @@ export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: In
     if (top >= bounding.height || top + height <= 0) continue
     if (maxVolume > 0) {
       const volumeWidth = (buy + sell) / maxVolume * columnWidth
-      ctx.fillStyle = settings.volumeColor
+      ctx.fillStyle = volumeProfileBarColor({ low, high }, prices, settings)
       ctx.fillRect(left + columnWidth - volumeWidth, top, volumeWidth, height)
     }
     const delta = buy - sell
@@ -252,11 +255,43 @@ export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: In
     }
   }
   ctx.restore()
+  if (prices) {
+    const lineRight = settings.placement === 'right' ? left + totalWidth : right
+    const lineLeft = settings.placement === 'right' ? 0 : left
+    const lines = volumeProfilePriceLines(prices, settings, value => yAxis.convertToPixel(value))
+    ctx.save()
+    ctx.font = '11px system-ui'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'bottom'
+    let lastLabel = settings.showHeaders && columnWidth >= 32 ? 15 : 0
+    for (const { name, value, color, solid, y } of lines) {
+      if (y < 0 || y > bounding.height) continue
+      ctx.strokeStyle = color
+      ctx.lineWidth = solid ? 1.5 : 1
+      ctx.setLineDash(solid ? [] : [4, 3])
+      ctx.beginPath()
+      ctx.moveTo(lineRight, y)
+      ctx.lineTo(lineLeft, y)
+      ctx.stroke()
+      if (settings.showLabels && totalWidth > 6) {
+        const label = `${name} ${value.toFixed(display.precision)}`
+        lastLabel = Math.max(y, lastLabel + 13)
+        const labelWidth = Math.min(totalWidth, ctx.measureText(label).width + 6)
+        ctx.fillStyle = 'rgba(18,26,39,0.86)'
+        ctx.fillRect(left, lastLabel - 12, labelWidth, 13)
+        ctx.fillStyle = color
+        ctx.fillText(label, left + 3, lastLabel, totalWidth - 6)
+      }
+    }
+    ctx.restore()
+  }
   return true
 }
 
-function flowTooltip(name: string, defaultStyles: IndicatorDrawParams['defaultStyles'], values: IndicatorTooltipData['values'], configurable = false): IndicatorTooltipData {
-  const icons = configurable ? defaultStyles.tooltip.icons : defaultStyles.tooltip.icons.filter(icon => icon.id !== 'setting')
+function flowTooltip(name: string, defaultStyles: IndicatorDrawParams['defaultStyles'], visible: boolean,
+  values: IndicatorTooltipData['values'], configurable = false): IndicatorTooltipData {
+  const icons = defaultStyles.tooltip.icons.filter(icon =>
+    icon.id !== (visible ? 'visible' : 'invisible') && (configurable || icon.id !== 'setting'))
   return { name, calcParamsText: '', icons, values }
 }
 
@@ -274,7 +309,7 @@ export function registerOrderFlowIndicators(): void {
       const values: IndicatorTooltipData['values'] = []
       if (price !== undefined) values.push({ title: '', value: price.toFixed(display?.precision ?? 2) })
       if (display?.message) values.push({ title: '', value: display.message })
-      return flowTooltip(VWAP, defaultStyles, values)
+      return flowTooltip(VWAP, defaultStyles, indicator.visible, values)
     },
   })
   registerIndicator({
@@ -282,7 +317,7 @@ export function registerOrderFlowIndicators(): void {
     draw: drawVisibleVolumeProfile,
     createTooltipDataSource: ({ indicator, defaultStyles }) => {
       const message = (indicator.extendData as VisibleProfileDisplay | undefined)?.message
-      return flowTooltip(visibleProfileTitle, defaultStyles, message ? [{ title: '', value: message }] : [], true)
+      return flowTooltip(visibleProfileTitle, defaultStyles, indicator.visible, message ? [{ title: '', value: message }] : [], true)
     },
   })
   registerIndicator({

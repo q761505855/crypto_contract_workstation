@@ -3,15 +3,16 @@ import type { ChartPriceMarket } from '../ctrader-datafeed'
 import { alignOpenTime, isCTraderTimeframe, nextOpenTime, shiftOpenTime } from '../intervals'
 import type { MarketCandle, MarketSymbol } from '../models'
 import type { OkxReplayRisk } from '../../simulation/okx-trading'
-import { okxArchiveDay } from './archive'
+import { okxArchiveDay, okxArchiveDayStart as fileStart } from './archive'
 import catalog from './instruments.json'
 import type { OkxLocalFile, OkxLocalFiles, OkxLocalTrade } from './local-files'
 import type { OkxMarketService } from './market'
-import { compareTrades, orderFlowMapping } from './trades'
+import { orderFlowMapping } from './trades'
+import { OkxLocalTradeCache } from './local-trade-cache'
+import { visitIndexedPriceSizes, visitIndexedTrades, type LocalTradeIndex } from './local-trade-index'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
-const OFFSET = 8 * HOUR
 const MINUTE_CACHE_DAYS = 24
 const RECENT_BARS = 499
 
@@ -30,7 +31,6 @@ type ArchiveFile = OkxLocalFile & { start: number }
 
 const instruments = new Map<string, string>()
 for (const [symbol, , first] of Object.values(catalog) as [string, number, string][]) instruments.set(symbol, first)
-const fileStart = (day: string) => Date.parse(day) - OFFSET
 
 function basePeriod(timeframe: string): BasePeriod {
   if (timeframe.endsWith('m')) return '1m'
@@ -100,20 +100,62 @@ export class OkxLocalMarket implements ChartPriceMarket {
   private readonly minutes = new Map<string, FileBars>()
   private readonly scans = new Map<string, Promise<FileBars | undefined>>()
   private readonly specs = new Map<string, MarketSymbol>()
+  private readonly selectedDays = new Map<string, Set<string>>()
+  private readonly selectionListeners = new Set<() => void>()
+  private selectionRevision = 0
+  private catalogRevision = -1
   private revision = -1
   private revisionAbort = new AbortController()
+  private tradeCache: OkxLocalTradeCache
   private index?: Promise<ArchiveFile[]>
 
-  constructor(readonly files: OkxLocalFiles, private readonly exchange: OkxMarketService) {}
+  constructor(readonly files: OkxLocalFiles, private readonly exchange: OkxMarketService) {
+    this.tradeCache = new OkxLocalTradeCache(files, this.revisionAbort.signal)
+  }
 
-  get historyRevision(): number { return this.files.revision }
+  get historyRevision(): number { return this.files.revision + this.selectionRevision }
+
+  subscribeArchives(listener: () => void): () => void {
+    this.selectionListeners.add(listener)
+    const unsubscribeFiles = this.files.subscribe(listener)
+    return () => {
+      this.selectionListeners.delete(listener)
+      unsubscribeFiles()
+    }
+  }
+
+  activeDays(symbol: string): readonly string[] {
+    return [...(this.selectedDays.get(symbol) ?? [])].sort()
+  }
+
+  setActiveDays(symbol: string, days: readonly string[], append = false): boolean {
+    const previous = this.selectedDays.get(symbol)
+    const next = new Set(append ? [...(previous ?? []), ...days] : days)
+    if (next.size === (previous?.size ?? 0) && [...next].every(day => previous?.has(day))) return false
+    if (next.size) this.selectedDays.set(symbol, next)
+    else this.selectedDays.delete(symbol)
+    this.selectionRevision++
+    for (const listener of this.selectionListeners) listener()
+    return true
+  }
+
+  clearActiveDays(): void {
+    if (!this.selectedDays.size) return
+    this.selectedDays.clear()
+    this.selectionRevision++
+    for (const listener of this.selectionListeners) listener()
+  }
 
   private syncRevision(): void {
-    if (this.revision === this.files.revision) return
-    this.revision = this.files.revision
+    if (this.catalogRevision !== this.files.revision) {
+      this.catalogRevision = this.files.revision
+      this.index = undefined
+    }
+    if (this.revision === this.files.scanRevision) return
+    this.revision = this.files.scanRevision
     this.revisionAbort.abort()
     this.revisionAbort = new AbortController()
-    this.index = undefined
+    this.tradeCache = new OkxLocalTradeCache(this.files, this.revisionAbort.signal)
     this.scans.clear()
     this.summaries.clear()
     this.minutes.clear()
@@ -124,12 +166,21 @@ export class OkxLocalMarket implements ChartPriceMarket {
     await this.files.restore()
     signal?.throwIfAborted()
     this.syncRevision()
-    const rows = await (this.index ??= this.files.list()
+    const pending = this.index ??= this.files.list()
       .then(files => files.filter(file => file.symbol.endsWith('-USDT-SWAP'))
         .map(file => ({ ...file, start: fileStart(file.day) })).sort((a, b) => a.start - b.start))
-      .catch(error => { this.index = undefined; throw error }))
+    const rows = await pending.catch(error => {
+      if (this.index === pending) this.index = undefined
+      throw error
+    })
     signal?.throwIfAborted()
     return symbol ? rows.filter(file => file.symbol === symbol) : rows
+  }
+
+  private async activeArchives(symbol: string, signal?: AbortSignal): Promise<ArchiveFile[]> {
+    const days = this.selectedDays.get(symbol)
+    if (!days?.size) return []
+    return (await this.archives(symbol, signal)).filter(file => days.has(file.day))
   }
 
   async getSymbols({ forceRefresh = false, signal }: { forceRefresh?: boolean; signal?: AbortSignal } = {}): Promise<MarketSymbol[]> {
@@ -178,7 +229,7 @@ export class OkxLocalMarket implements ChartPriceMarket {
   }
 
   async historyBounds(symbol: string, signal?: AbortSignal): Promise<{ from: number; to: number } | undefined> {
-    const files = await this.archives(symbol, signal)
+    const files = await this.activeArchives(symbol, signal)
     if (files.length) return { from: files[0].start, to: files.at(-1)!.start + DAY - 1 }
   }
 
@@ -227,7 +278,12 @@ export class OkxLocalMarket implements ChartPriceMarket {
     if (from > to || !isCTraderTimeframe(timeframe)) return []
     const start = alignOpenTime(from, timeframe, 'ceil')
     const end = nextOpenTime(alignOpenTime(to, timeframe, 'floor'), timeframe)
-    const files = (await this.archives(symbol, signal)).filter(file => file.start < end && file.start + DAY > start)
+    const files = (await this.activeArchives(symbol, signal)).filter(file => file.start < end && file.start + DAY > start)
+    return this.candlesFromFiles(files, symbol, timeframe, start, end, signal)
+  }
+
+  private async candlesFromFiles(files: ArchiveFile[], symbol: string, timeframe: string, start: number, end: number,
+    signal?: AbortSignal): Promise<MarketCandle[]> {
     if (!files.length || start >= end) return []
     const base = basePeriod(timeframe)
     const value = await this.contractValue(symbol, signal)
@@ -254,12 +310,20 @@ export class OkxLocalMarket implements ChartPriceMarket {
   }
 
   async loadRecentCandles(symbol: string, timeframe: string, to: number, options: { signal?: AbortSignal }) {
-    return (await this.loadRecentCandlesPage(symbol, timeframe, to, options)).candles
+    if (!isCTraderTimeframe(timeframe)) return []
+    const files = await this.activeArchives(symbol, options.signal)
+    let index = files.length - 1
+    while (index >= 0 && files[index].start > to) index--
+    const latest = files[index]
+    if (!latest) return []
+    const from = alignOpenTime(latest.start, timeframe, 'floor')
+    const end = nextOpenTime(alignOpenTime(to, timeframe, 'floor'), timeframe)
+    return this.candlesFromFiles([latest], symbol, timeframe, from, end, options.signal)
   }
 
   async loadRecentCandlesPage(symbol: string, timeframe: string, to: number, { signal }: { signal?: AbortSignal }) {
     if (!isCTraderTimeframe(timeframe)) return { candles: [], nextTo: -1 }
-    const files = await this.archives(symbol, signal)
+    const files = await this.activeArchives(symbol, signal)
     const key = alignOpenTime(to, timeframe, 'floor')
     const end = nextOpenTime(key, timeframe)
     const base = basePeriod(timeframe)
@@ -282,30 +346,47 @@ export class OkxLocalMarket implements ChartPriceMarket {
   }
 
   async tradeDays(symbol: string): Promise<Set<string>> {
-    return new Set((await this.archives(symbol)).map(file => file.day))
+    return new Set((await this.activeArchives(symbol)).map(file => file.day))
   }
 
-  async visitTrades(symbol: string, from: number, to: number, accept: (trade: BybitTrade) => void,
+  visitTrades(symbol: string, from: number, to: number, accept: (trade: BybitTrade) => unknown,
     signal: AbortSignal, onCoverage?: (from: number, to: number, found: boolean) => void): Promise<boolean> {
-    const files = new Map((await this.archives(symbol, signal)).map(file => [file.start, file]))
+    return this.visitIndexedDays(symbol, from, to, (index, begin, end, size, readSignal) =>
+      visitIndexedTrades(index, begin, end, size, accept, readSignal), signal, onCoverage)
+  }
+
+  visitPriceSizes(symbol: string, from: number, to: number, accept: (batch: Float64Array<ArrayBuffer>) => Promise<void>,
+    signal: AbortSignal): Promise<boolean> {
+    return this.visitIndexedDays(symbol, from, to, (index, begin, end, size, readSignal) =>
+      visitIndexedPriceSizes(index, begin, end, size, accept, readSignal), signal)
+  }
+
+  private async visitIndexedDays(symbol: string, from: number, to: number,
+    visit: (index: LocalTradeIndex, from: number, to: number, size: number, signal: AbortSignal) => Promise<void>,
+    signal: AbortSignal, onCoverage?: (from: number, to: number, found: boolean) => void): Promise<boolean> {
     if (from >= to) return true
+    const files = new Map((await this.activeArchives(symbol, signal))
+      .filter(file => file.start * 1000 < to && (file.start + DAY) * 1000 > from).map(file => [file.start, file]))
     const scanSignal = AbortSignal.any([signal, this.revisionAbort.signal])
     const value = files.size ? await this.contractValue(symbol, scanSignal) : 0
+    const cache = this.tradeCache
+    const jobs = new Map<number, ReturnType<OkxLocalTradeCache['read']>>()
     let complete = true
     for (let start = fileStart(okxArchiveDay(from / 1000)); start * 1000 < to; start += DAY) {
       scanSignal.throwIfAborted()
-      const file = files.get(start)
+      for (let offset = 0; offset < cache.parallelism; offset++) {
+        const day = start + offset * DAY
+        const file = files.get(day)
+        if (file && !jobs.has(day)) jobs.set(day, cache.read(file))
+      }
       const begin = Math.max(from, start * 1000)
       const end = Math.min(to, (start + DAY) * 1000)
-      const rows: BybitTrade[] = []
-      const found = file && await this.files.scan(symbol, file.day, trade => {
-        const timeUs = trade.time * 1000
-        if (timeUs >= begin && timeUs < end) rows.push({ timeUs, id: trade.id, price: Number(trade.price),
-          size: Number(trade.size) * value, side: trade.side === 'Buy' ? 'buy' : 'sell', venue: 'OKX' })
-      }, scanSignal)
-      for (const row of rows.sort(compareTrades)) accept(row)
-      onCoverage?.(begin, end, !!found)
-      complete &&= !!found
+      const index = await jobs.get(start)
+      jobs.delete(start)
+      scanSignal.throwIfAborted()
+      if (index) await visit(index, begin, end, value, scanSignal)
+      onCoverage?.(begin, end, !!index)
+      complete &&= !!index
     }
     return complete
   }

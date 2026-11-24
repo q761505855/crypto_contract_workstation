@@ -49,18 +49,24 @@ describe('chart indicator preferences', () => {
   it('persists independent visible Profile settings and preserves missing fields from legacy archives', () => {
     const legacy = { ...preferences, main: [{ name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null }],
       orderFlow: { profile: { rows: 35 } } }
-    const visibleProfile = { placement: 'left' as const, offset: 0, width: 20, rows: 64, showHeaders: false, volumeColor: '#12345600' }
+    const visibleProfile = { placement: 'left' as const, offset: 0, width: 20, rows: 64, showHeaders: false, volumeColor: '#12345600',
+      showPoc: false, showValueArea: true, valueArea: 81, showLabels: false, pocColor: '#123789', levelColor: '#abddff',
+      valueAreaColor: '#abc12300' }
     const value = { ...legacy, orderFlow: { ...legacy.orderFlow, visibleProfile } }
     const storage = new MemoryStorage()
     saveChartIndicatorPreferences(value, storage)
     expect(loadChartIndicatorPreferences(storage)).toEqual(value)
     expect(validateChartIndicatorPreferences(legacy, value)).toEqual(value)
     expect(validateChartIndicatorPreferences(legacy)).toEqual(legacy)
+    const oldViewport = { ...legacy, orderFlow: { ...legacy.orderFlow, visibleProfile: { placement: 'left' as const, offset: 0 } } }
+    expect(validateChartIndicatorPreferences(oldViewport, value)).toEqual(value)
+    expect(validateChartIndicatorPreferences(oldViewport)).toEqual(oldViewport)
     const resetOffset = { ...legacy, orderFlow: { visibleProfile: { offset: 0 } } }
     expect(validateChartIndicatorPreferences(resetOffset, { ...value, orderFlow: {
       ...value.orderFlow, visibleProfile: { ...visibleProfile, offset: 10 },
     } })).toEqual(value)
-    for (const invalid of [null, [], { placement: 'center' }, { rows: 0 }, { width: 55 }, { offset: -1 }, { type: '' }, { showHeaders: null }, { volumeColor: 'invalid' }]) {
+    for (const invalid of [null, [], { placement: 'center' }, { rows: 0 }, { width: 55 }, { offset: -1 }, { type: '' }, { showHeaders: null },
+      { volumeColor: 'invalid' }, { showPoc: 0 }, { valueArea: 70.5 }, { showLabels: null }, { levelColor: '' }]) {
       expect(() => validateChartIndicatorPreferences({ ...legacy, orderFlow: { visibleProfile: invalid } })).toThrow(/orderFlow.visibleProfile/)
     }
   })

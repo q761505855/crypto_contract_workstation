@@ -34,6 +34,8 @@ type LoadHistoryPage = (symbol: SymbolInfo, period: Period, edge: number, signal
 
 type BaseDatafeed = Datafeed & {
   hasLiveTail?: (symbol: SymbolInfo, period: Period) => boolean
+  isShowingLatestArchive?: () => boolean
+  allowOlderArchives?: () => void
   setWarningListener?: (listener?: (message: string) => void) => void
   getOlderHistory?: LoadHistoryPage
   getNewerHistory?: LoadHistoryPage
@@ -134,9 +136,15 @@ export class CTraderReplayDatafeed implements Datafeed {
     return this.base.searchSymbols(search)
   }
 
+  isShowingLatestArchive(): boolean {
+    return this.context === null && (this.base.isShowingLatestArchive?.() ?? false)
+  }
+
+  allowOlderArchives(): void { this.base.allowOlderArchives?.() }
+
   async getHistoryKLineData(
     symbol: SymbolInfo, period: Period, from: number, to: number,
-    notifySelection = true, signal?: AbortSignal,
+    notifySelection = true, signal?: AbortSignal, preferLatestArchive?: boolean,
   ): Promise<KLineData[]> {
     signal?.throwIfAborted()
     const context = this.context
@@ -147,7 +155,7 @@ export class CTraderReplayDatafeed implements Datafeed {
     if (notifySelection) this.onSelectionChange?.({ symbol, period })
     const generation = this.generation
     if (context === null) {
-      const rows = await readChartHistory(this.base, symbol, period, from, to, notifySelection, signal)
+      const rows = await readChartHistory(this.base, symbol, period, from, to, notifySelection, signal, preferLatestArchive)
       signal?.throwIfAborted()
       return generation === this.generation ? rows : this.getHistoryKLineData(symbol, period, from, to, false, signal)
     }

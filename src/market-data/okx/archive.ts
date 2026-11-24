@@ -7,6 +7,8 @@ import { compareTrades, okxTrade, type OkxInstrument } from './trades'
 
 const offset = 8 * BYBIT_HOUR_MS
 export const okxArchiveDay = (time: number): string => bybitDay(time + offset)
+export const okxArchiveDayStart = (day: string): number => bybitDayStart(day) - offset
+export const okxArchiveDayEnd = (day: string): number => okxArchiveDayStart(day) + BYBIT_DAY_MS - 1
 
 interface OkxArchiveDB extends DBSchema {
   days: { key: [string, string]; value: true }

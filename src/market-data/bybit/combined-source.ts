@@ -85,7 +85,7 @@ export class CombinedBybitSource {
   constructor(private readonly cloud: GitHubContentsClient, private readonly changed: (reset?: boolean, affected?: TradeRange) => void,
     private readonly archive = new BybitArchive(cloud), private readonly now = Date.now,
     private readonly okxArchive = new OkxArchive(cloud, fetch, now), readonly localArchive?: OkxLocalMarket) {
-    this.stopLocalUpdates = localArchive?.files.subscribe(() => this.updateLocalDays())
+    this.stopLocalUpdates = localArchive?.subscribeArchives(() => this.updateLocalDays())
   }
 
   get mapping(): OrderFlowMapping | undefined { return this.active }
@@ -260,7 +260,7 @@ export class CombinedBybitSource {
     this.pending.clear()
   }
 
-  async visitTrades({ fromUs, untilUs }: TradeRange, accept: (trade: BybitTrade) => void, signal: AbortSignal,
+  async visitTrades({ fromUs, untilUs }: TradeRange, accept: (trade: BybitTrade) => unknown, signal: AbortSignal,
     reportCoverage?: (coverage: TradeCoverage) => void, includeHistory = true): Promise<boolean> {
     if (!this.active) return false
     const end = Math.min(untilUs, this.tradeCursorUs)
@@ -278,12 +278,14 @@ export class CombinedBybitSource {
       const archived = primary ?? (this.isArchiveRequested(hour) && this.active.bybit
         ? await this.archive.loadHour(this.active.bybit.symbol, hour).catch(() => null) : null)
       signal.throwIfAborted()
-      if (archived) {
-        const last = lowerBound(archived, stop)
-        for (let i = lowerBound(archived, start); i < last; i++) accept(archived[i])
-      } else {
-        const rows = includeHistory ? this.readCapturedHour(hour, start, stop) : this.readSocketTrades(start, stop)
-        for (const trade of rows) accept(trade)
+      const rows = archived ?? (includeHistory ? this.readCapturedHour(hour, start, stop) : this.readSocketTrades(start, stop))
+      const last = archived ? lowerBound(rows, stop) : rows.length
+      for (let index = archived ? lowerBound(rows, start) : 0; index < last; index++) {
+        const backpressure = accept(rows[index])
+        if (backpressure instanceof Promise) {
+          await backpressure
+          signal.throwIfAborted()
+        }
       }
       const covered = archived !== null || this.hasCapturedCoverage(start, stop)
       complete &&= covered

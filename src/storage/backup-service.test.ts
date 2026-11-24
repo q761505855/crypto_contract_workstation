@@ -356,7 +356,8 @@ function indicatorPreferences(): ChartIndicatorPreferences {
         minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 280 },
       profile: { rows: 16, valueArea: 85, showLabels: false },
       visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false,
-        volumeColor: '#12345600', positiveColor: '#23456780', negativeColor: '#345678' },
+        showPoc: true, showValueArea: false, valueArea: 86, showLabels: false, pocColor: '#ff8321', levelColor: '#abcdef',
+        volumeColor: '#12345600', valueAreaColor: '#23457800', positiveColor: '#23456780', negativeColor: '#345678' },
       cvd: { reset: 'continuous', showZero: false },
     },
     main: [
@@ -705,7 +706,8 @@ describe('WorkstationBackupService', () => {
     ]
     const before = (await target.exportAll()).data
     archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
-    for (const visibleProfile of [null, { placement: 'center' }, { showHeaders: null }, { width: 0 }]) {
+    for (const visibleProfile of [null, { placement: 'center' }, { showHeaders: null }, { width: 0 },
+      { showLabels: 0 }, { showValueArea: null }, { valueArea: 0 }, { pocColor: null }, { valueAreaColor: 'invalid' }]) {
       archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { visibleProfile } } as unknown as ChartIndicatorPreferences
       await expect(target.import(archive)).rejects.toThrow(/orderFlow.visibleProfile/)
       expect((await target.exportAll()).data).toEqual(before)

@@ -93,7 +93,8 @@ function backup(): BackupEnvelope {
           sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 320 },
         profile: { type: 'bidAsk', rows: 26, valueArea: 82, showPoc: false, pocColor: '#ffcc7000' },
         visibleProfile: { placement: 'left', offset: 0, width: 30, rows: 56, type: 'volumeDelta', showHeaders: false,
-          volumeColor: '#12345600', positiveColor: '#23456780', negativeColor: '#345678' },
+          showPoc: false, showValueArea: true, valueArea: 83, showLabels: false, pocColor: '#ffe192', levelColor: '#aabbcc00',
+          volumeColor: '#12345600', valueAreaColor: '#13568080', positiveColor: '#23456780', negativeColor: '#345678' },
         cvd: { reset: 'continuous', showZero: false, plot: 'histogram' },
       },
       main: [
@@ -986,7 +987,8 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
       .toEqual(indicators.main.find(i => i.name === 'BIG_TRADES'))
     const before = (await targetBackups.exportAll()).data
-    for (const visibleProfile of [null, { rows: 201 }, { offset: null }, { type: 'unknown' }, { showHeaders: 0 }]) {
+    for (const visibleProfile of [null, { rows: 201 }, { offset: null }, { type: 'unknown' }, { showHeaders: 0 },
+      { showPoc: null }, { showValueArea: 0 }, { valueArea: 101 }, { valueAreaColor: '' }]) {
       await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { visibleProfile } } })
       await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.visibleProfile/)
       expect((await targetBackups.exportAll()).data).toEqual(before)

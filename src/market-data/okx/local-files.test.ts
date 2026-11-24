@@ -148,7 +148,7 @@ describe('OKX local daily archives', () => {
     const files = new OkxLocalFiles(fetcher)
     await files.pick()
     const results: OkxLocalDownloadResult[] = []
-    await files.download(ticker, day, '2025-01-03', result => results.push(result))
+    await files.download(ticker, day, '2025-01-03', result => { results.push(result) })
     expect(results.map(({ day, status }) => [day, status])).toEqual([
       [day, 'saved'], ['2025-01-02', 'existing'], ['2025-01-03', 'unavailable'],
     ])
@@ -175,6 +175,27 @@ describe('OKX local daily archives', () => {
       const query = new URL(String(url)).searchParams
       return [query.get('begin'), query.get('end')]
     })).toEqual([['1735660800000', '1736438400000'], ['1736524800000', '1736524800000']])
+  })
+
+  it('handles dates nearest to the anchor first and publishes each available date without resetting existing scans', async () => {
+    const days = ['2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04', '2025-01-05']
+    useDirectory(Object.fromEntries(days.map(day => [`${ticker}-trades-${day}.zip`, new Blob([example])])))
+    const files = new OkxLocalFiles()
+    await files.pick()
+    const scanRevision = files.scanRevision
+    const verifyOrder = async (anchor: string, expected: string[]) => {
+      const seen: string[] = []
+      const initial = files.revision
+      await files.download(ticker, days[0], days.at(-1)!, result => {
+        seen.push(result.day)
+        expect(result.status).toBe('existing')
+        expect(files.revision).toBe(initial + seen.length)
+        expect(files.scanRevision).toBe(scanRevision)
+      }, undefined, anchor)
+      expect(seen).toEqual(expected)
+    }
+    await verifyOrder('2025-01-03', [days[2], days[1], days[3], days[0], days[4]])
+    await verifyOrder('2025-01-06', [...days].reverse())
   })
 
   it('removes a newly-created file when the official download is incomplete', async () => {

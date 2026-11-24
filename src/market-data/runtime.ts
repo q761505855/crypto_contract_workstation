@@ -64,7 +64,7 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
     forPriceSource: source => {
       if (source === 'ctrader') return runtime
       okx ??= new OkxMarketService()
-      const market = source === 'okx-local' ? local ??= new OkxLocalMarket(okxLocalFiles, okx) : okx
+      const market = source === 'okx-local' ? new OkxLocalMarket(okxLocalFiles, okx) : okx
       const live = new CTraderDatafeed(market)
       const ticks = new CTraderReplayTicks(market)
       return { ...runtime, service: market, datafeed: live, replayTicks: ticks,
@@ -73,6 +73,5 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
     disposeMarketConnection: () => { service.dispose(); okx?.dispose() },
   }
   let okx: OkxMarketService | undefined
-  let local: OkxLocalMarket | undefined
   return runtime
 }

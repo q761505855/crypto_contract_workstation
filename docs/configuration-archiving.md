@@ -33,7 +33,7 @@ OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选 Profile、可见范围 Profile 的位置、分档与样式、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选与可见范围 Profile 的分档、关键价位与配色、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
@@ -52,7 +52,7 @@ OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx
 
 VWAP 和可见范围成交分布以 `VWAP` 和 `VISIBLE_VOLUME_PROFILE` 加入 `chartIndicators.main`，默认为关闭。二者保存选择和 `visible`，使用显式空 `calcParams` 和空样式。`visible: false` 原样保留。旧档缺少整个 `chartIndicators` 时保留本机指标设置，有指标清单时按清单恢复，其中没有这两项就不启用。空主图列表原样恢复，重复项、副图配置和非法值在任何写入前拒绝。应用配置／完整 JSON 和 GitHub「应用配置」沿用现有差异、校验和及冲突流程。自动恢复会重建图表，手动恢复后按提示刷新。计算结果和图表可见范围属于运行状态。
 
-可见范围 Profile 的参数以 `chartIndicators.orderFlow.visibleProfile` 保存，包括左右位置、距边缘偏移、总宽度、价位档数、显示内容、列标题显隐和三种配色。位置接受 `left` 或 `right`，偏移 0–40% 和宽度 5–50% 为整数，档数为 4–200 的整数。内容接受 `volumeDelta`、`volume` 或 `delta`。默认靠右、偏移 0%、宽度 26%、48 档、双列且显示标题。旧档缺字段时保留本机值，本机无值时使用默认值。显式偏移 0、列标题 `false` 和透明色原样恢复，非法值在任何写入前拒绝。关闭指标后仍保留设置。本地、配置／完整 JSON 和 GitHub「应用配置」沿用现有流程。框选 Profile 继续使用 `chartIndicators.orderFlow.profile`。
+可见范围 Profile 的参数以 `chartIndicators.orderFlow.visibleProfile` 保存。位置接受 `left` 或 `right`，偏移 0–40% 和宽度 5–50% 为整数，档数为 4–200 的整数。内容接受 `volumeDelta`、`volume` 或 `delta`。默认靠右、偏移 0%、宽度 26%、48 档、双列且显示标题。`showPoc`、`showValueArea` 和 `showLabels` 默认开启，`valueArea` 接受 1–100 的整数百分比，默认 70。`valueAreaColor`、`pocColor` 和 `levelColor` 分别保存价值区成交量、POC 线和 VAH／VAL 线的颜色。旧档缺字段时保留本机值，本机无值时使用默认值。显式偏移 0、`false` 和透明色原样恢复，空值和非法值在任何写入前拒绝。关闭指标后仍保留设置。本地、配置／完整 JSON 和 GitHub「应用配置」沿用现有流程。框选 Profile 的独立设置位于 `chartIndicators.orderFlow.profile`。
 
 Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或个别设置字段时保留本机值，本机没有该字段时运行时使用默认值。显式空指标列表、布尔 `false`、数字 `0` 和透明色原样恢复。提供的非法类型、空值、数值范围或枚举值在写入数据前拒绝。自动同步恢复会重建界面，手动恢复后按提示刷新。当前图表缩放、逐笔数据和计算缓存属于运行状态。
 
@@ -76,7 +76,7 @@ Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或�
 
 大单气泡的最大显示数量保存为 `chartIndicators.orderFlow.bubbles.maxBubbles`，接受 1–1000 的整数，默认 1000。旧档缺此字段时保留本机值，本机无设置时使用默认值。显式空值、0、小数和越界值在写入前拒绝。该字段随应用配置／完整 JSON 和 GitHub「应用配置」往返，沿用大单气泡设置组的合并与冲突处理。设置保存后图表即时应用，自动恢复随图表重建生效，手动恢复后按提示刷新。
 
-框选成交分布是绘图业务数据，使用两个 IC 时间和价格锚点，随 IC 品种或回放会话保存。继承本地绘图、完整 JSON 和 GitHub 绘图同步。旧版独立工作区的 Bybit 价格锚点按原作用域保存在绘图存档。实际逐笔数据和计算后的分布从行情重建。成交量和 Delta 横条使用半透明配色，透明度由绘制规则决定。
+框选成交分布是绘图业务数据，选区使用两个时间锚点，随品种或回放会话保存，继承本地绘图、完整 JSON 和 GitHub 绘图同步。原有绘图格式保留锚点中的价格字段，旧选区按原起止时间恢复，纵向范围由当时可用的成交价格重建。成交量和 Delta 横条使用半透明配色，透明度由绘制规则决定。
 
 副图窗口默认大小保存为 `chartWindowSize: { width, height }`，宽和高都是正的安全整数，单位为浏览器内容区 CSS 像素。点击“设为默认大小”会捕获两项并作为一个设置同步。新开副图读取最新值，因此保存或恢复后下一次打开就生效。应用配置、全部数据 JSON 和 GitHub“应用配置”均可导出和恢复。旧存档缺字段时保留本地值，本地缺失或损坏则使用 1100 × 760。导入时出现 `null`、空对象、缺少任一尺寸、零、负值或小数会在任何写入前拒绝。存档保持 Schema 1。
 

@@ -87,6 +87,7 @@
 }
 
 .okx-local-list time { font-variant-numeric: tabular-nums; }
+.okx-local-archive-choice { display: flex; align-items: center; gap: 6px; }
 .okx-local-list li span { color: #a8b9cf; overflow-wrap: anywhere; }
 .okx-local-list li [data-download-status=saved] { color: #84d5b0; }
 .okx-local-list li [data-download-status=failed] { color: #ffabb1; }

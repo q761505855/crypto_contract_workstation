@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { BYBIT_DAY_MS } from '../market-data/bybit/trades'
 import { okxArchiveDay } from '../market-data/okx/archive'
 import type { OkxLocalDownloadResult, OkxLocalFile, OkxLocalFiles } from '../market-data/okx/local-files'
+import type { OkxLocalDownloads } from '../market-data/okx/local-downloads'
 import { WorkspaceDialog } from './WorkspaceDialog'
+import { resolveDayDownloadRange, TradeDownloadRange, type DayDownloadSelection } from './TradeDownloadRange'
 import './okx-local-data.css'
 
 const downloadLabels: Record<OkxLocalDownloadResult['status'], string> = {
@@ -18,34 +20,45 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
-export function OkxLocalDataDialog({ files, symbol, onClose, onChange }: {
+export function OkxLocalDataDialog({ files, downloads, symbol, anchor, loadedDays = [], onClose, onFolderChange, onLoad }: {
   files: OkxLocalFiles
+  downloads: OkxLocalDownloads
   symbol: string
+  anchor?: string
+  loadedDays?: readonly string[]
   onClose(): void
-  onChange(): void
+  onFolderChange(replaced: boolean): void
+  onLoad(symbol: string, days: readonly string[], append: boolean): Promise<void>
 }) {
   const subscribe = useCallback((listener: () => void) => files.subscribe(listener), [files])
   const revision = useSyncExternalStore(subscribe, () => files.revision)
   const { ready, available, name } = files
-  const lastArchiveDay = okxArchiveDay(Date.now() - BYBIT_DAY_MS)
-  const [from, setFrom] = useState(lastArchiveDay)
-  const [to, setTo] = useState(lastArchiveDay)
-  const [operation, setOperation] = useState<'folder' | 'download'>()
-  const [stopping, setStopping] = useState(false)
+  const now = Date.now()
+  const today = okxArchiveDay(now)
+  const lastArchiveDay = okxArchiveDay(now - BYBIT_DAY_MS)
+  const [startDate, setStartDate] = useState(lastArchiveDay)
+  const [endDate, setEndDate] = useState(lastArchiveDay)
+  const [selection, setSelection] = useState<DayDownloadSelection>(() => ({
+    anchor: anchor ?? today, before: anchor === today ? '1' : '0', after: '0',
+  }))
+  const [operation, setOperation] = useState<'folder' | 'load'>()
   const [listing, setListing] = useState<Listing>({ status: 'loading' })
-  const [results, setResults] = useState<OkxLocalDownloadResult[]>([])
-  const [notice, setNotice] = useState('')
+  const [marked, setMarked] = useState(new Map<string, boolean>())
   const [folderError, setFolderError] = useState('')
-  const [downloadError, setDownloadError] = useState('')
-  const controller = useRef<AbortController | null>(null)
-  const downloading = operation === 'download'
-  const rangeError = from && to && from > to ? '开始日期必须早于或等于结束日期。'
-    : from > lastArchiveDay || to > lastArchiveDay ? '请选择昨天或更早的日期。' : ''
-  const totalDays = (Date.parse(to) - Date.parse(from)) / BYBIT_DAY_MS + 1
-  const entries = listing.status === 'ready' ? listing.entries : []
+  const job = useSyncExternalStore(downloads.subscribe, downloads.snapshot)
+  const downloading = job?.status === 'running' || job?.status === 'stopping'
+  const stopping = job?.status === 'stopping'
+  const anchored = anchor !== undefined
+  const range = anchored ? resolveDayDownloadRange(selection, today, lastArchiveDay) : undefined
+  const from = anchored ? range?.start : startDate
+  const to = anchored ? range?.end : endDate
+  const rangeError = anchored ? range?.error : startDate && endDate && startDate > endDate ? '开始日期必须早于或等于结束日期。'
+    : startDate > lastArchiveDay || endDate > lastArchiveDay ? '请选择昨天或更早的日期。' : ''
+  const entries = listing.status === 'ready' ? listing.entries.filter(file => file.symbol === symbol) : []
+  const selected = entries.filter(file => marked.get(file.day) ?? loadedDays.includes(file.day)).map(file => file.day)
 
   useEffect(() => {
-    if (!ready || downloading) return
+    if (!ready) return
     let active = true
     setListing({ status: 'loading' })
     files.list().then(entries => {
@@ -54,12 +67,10 @@ export function OkxLocalDataDialog({ files, symbol, onClose, onChange }: {
       if (active) setListing({ status: 'error', message: errorMessage(error, '无法读取文件夹。') })
     })
     return () => { active = false }
-  }, [files, ready, revision, downloading])
-
-  useEffect(() => () => controller.current?.abort(), [])
+  }, [files, ready, revision])
 
   async function openFolder(pick: boolean) {
-    if (operation) return
+    if (operation || downloading) return
     setOperation('folder')
     setFolderError('')
     const previousRevision = files.revision
@@ -74,47 +85,23 @@ export function OkxLocalDataDialog({ files, symbol, onClose, onChange }: {
     } finally {
       setOperation(undefined)
       if (files.revision !== previousRevision) {
-        setResults([])
-        setNotice('')
-        setDownloadError('')
-        onChange()
+        setMarked(new Map())
+        onFolderChange(pick)
       }
     }
   }
 
-  async function download(event: FormEvent<HTMLFormElement>) {
+  function download(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (operation || !symbol || !ready || !from || !to || rangeError) return
-    const batch = new AbortController()
-    controller.current = batch
-    setOperation('download')
-    setResults([])
-    setNotice('')
-    setDownloadError('')
-    let saved = false
-    try {
-      await files.download(symbol, from, to, result => {
-        if (result.status === 'saved') saved = true
-        setResults(current => [...current, result])
-      }, batch.signal)
-      setNotice(batch.signal.aborted ? '已停止下载。' : '本次下载任务已结束。')
-    } catch (error) {
-      if (batch.signal.aborted) setNotice('已停止下载。')
-      else setDownloadError(errorMessage(error, '下载中断，请重试。'))
-    } finally {
-      controller.current = null
-      setOperation(undefined)
-      setStopping(false)
-      if (saved) onChange()
-    }
+    if (operation || downloading || !symbol || !ready || !from || !to || rangeError) return
+    void downloads.start({
+      symbol, from, to, anchor: anchored ? selection.anchor : okxArchiveDay(Date.now()),
+      onArchive: anchored ? day => onLoad(symbol, [day], true) : undefined,
+    })
   }
 
-  function stopDownload() {
-    setStopping(true)
-    controller.current?.abort()
-  }
-
-  return <WorkspaceDialog open title="OKX 本地数据" className="okx-local-dialog" closeDisabled={!!operation} onClose={onClose}>
+  return <WorkspaceDialog open title={anchored ? '下载成交数据' : 'OKX 本地数据'}
+    className="okx-local-dialog" closeDisabled={!!operation} onClose={onClose}>
     <div className="okx-local-content">
       <section aria-label="本地文件夹">
         <div className="okx-local-section-heading">
@@ -123,8 +110,8 @@ export function OkxLocalDataDialog({ files, symbol, onClose, onChange }: {
             <p className="okx-local-note">{name ?? '尚未选择文件夹'}</p>
           </div>
           <div className="okx-local-actions">
-            {name && !ready && <button type="button" disabled={!!operation} onClick={() => void openFolder(false)}>授权访问</button>}
-            <button type="button" disabled={!available || !!operation} onClick={() => void openFolder(true)}>
+            {name && !ready && <button type="button" disabled={!!operation || downloading} onClick={() => void openFolder(false)}>授权访问</button>}
+            <button type="button" disabled={!available || !!operation || downloading} onClick={() => void openFolder(true)}>
               {name ? '更换文件夹' : '选择文件夹'}
             </button>
           </div>
@@ -137,25 +124,29 @@ export function OkxLocalDataDialog({ files, symbol, onClose, onChange }: {
       <section aria-label="下载官方归档">
         <h3>下载官方逐笔成交</h3>
         <p className="okx-local-note">{symbol ? `${symbol} · 归档日期按 UTC+8 计算。` : '请先选择交易对。'}</p>
-        <form onSubmit={download}>
-          <div className="okx-local-dates">
-            <label>开始日期<input type="date" value={from} max={lastArchiveDay} required disabled={downloading}
-              onChange={event => setFrom(event.target.value)} /></label>
-            <label>结束日期<input type="date" value={to} max={lastArchiveDay} required disabled={downloading}
-              onChange={event => setTo(event.target.value)} /></label>
-          </div>
+        <form className={anchored ? 'bybit-download-form' : undefined} onSubmit={download}>
+          {anchored ? <TradeDownloadRange selection={selection} onChange={setSelection} today={today}
+            lastDownloadDay={lastArchiveDay} disabled={downloading} /> : <div className="okx-local-dates">
+            <label>开始日期<input type="date" value={startDate} max={lastArchiveDay} required disabled={downloading}
+              onChange={event => setStartDate(event.target.value)} /></label>
+            <label>结束日期<input type="date" value={endDate} max={lastArchiveDay} required disabled={downloading}
+              onChange={event => setEndDate(event.target.value)} /></label>
+          </div>}
           {rangeError && <p className="okx-local-error" role="alert">{rangeError}</p>}
           <div className="okx-local-actions">
             {downloading
-              ? <button type="button" onClick={stopDownload} disabled={stopping}>停止下载</button>
-              : <button type="submit" className="okx-local-primary" disabled={!symbol || !ready || !!operation || !from || !to || !!rangeError}>下载 ZIP</button>}
+              ? <button type="button" onClick={() => downloads.stop()} disabled={stopping}>停止下载</button>
+              : <button type="submit" className="okx-local-primary" disabled={!symbol || !ready || !!operation || !from || !to || !!rangeError}>
+                {anchored ? '下载' : '下载 ZIP'}
+              </button>}
           </div>
         </form>
-        {(downloading || notice) && <p className="okx-local-note" role="status">{downloading
-          ? `${stopping ? '正在停止' : '正在下载'}，已处理 ${results.length} / ${totalDays} 天…` : notice}</p>}
-        {downloadError && <p className="okx-local-error" role="alert">{downloadError}</p>}
-        {results.length > 0 && <ul aria-label="下载结果" className="okx-local-list">
-          {results.map(result => <li key={result.day}>
+        {job && <p className="okx-local-note" role="status">{downloading
+          ? `${job.symbol} · ${stopping ? '正在停止' : '正在下载'}，已处理 ${job.results.length} / ${job.total} 天… 关闭窗口可继续下载。`
+          : job.status === 'stopped' ? '已停止下载。' : job.status === 'finished' ? '本次下载任务已结束。' : ''}</p>}
+        {job?.message && <p className="okx-local-error" role="alert">{job.message}</p>}
+        {!!job?.results.length && <ul aria-label="下载结果" className="okx-local-list">
+          {job.results.map(result => <li key={result.day}>
             <time dateTime={result.day}>{result.day}</time>
             <span data-download-status={result.status}>{downloadLabels[result.status]}{result.message && ` · ${result.message}`}</span>
           </li>)}
@@ -165,27 +156,34 @@ export function OkxLocalDataDialog({ files, symbol, onClose, onChange }: {
       <section aria-label="已下载日期">
         <div className="okx-local-section-heading">
           <h3>已下载日期</h3>
-          {ready && <button type="button" disabled={!!operation} onClick={() => { files.refresh(); onChange() }}>刷新列表</button>}
+          {ready && <button type="button" disabled={!!operation || downloading} onClick={() => { files.refresh(); onFolderChange(false) }}>刷新列表</button>}
         </div>
         {!ready && <p className="okx-local-note">打开文件夹后查看 ZIP。</p>}
         {ready && listing.status === 'loading' && <p className="okx-local-note" role="status">正在扫描文件夹…</p>}
         {ready && listing.status === 'error' && <p className="okx-local-error" role="alert">{listing.message}</p>}
-        {ready && listing.status === 'ready' && <DownloadedDates files={entries} symbol={symbol} />}
+        {ready && listing.status === 'ready' && (entries.length === 0 ? <p className="okx-local-note">文件夹中暂无该交易对的 ZIP。</p> : <>
+          <ul aria-label="本地 ZIP 文件" className="okx-local-list">
+            {entries.map(file => <li key={file.filename}>
+              {anchored ? <time dateTime={file.day}>{file.day}</time> : <label className="okx-local-archive-choice">
+                <input type="checkbox" checked={marked.get(file.day) ?? loadedDays.includes(file.day)} disabled={!!operation || downloading}
+                  onChange={event => {
+                    const checked = event.target.checked
+                    setMarked(current => new Map(current).set(file.day, checked))
+                  }} />
+                <time dateTime={file.day}>{file.day}</time>
+              </label>}
+              <span title={file.filename}>{file.filename}</span>
+            </li>)}
+          </ul>
+          {!anchored && <div className="okx-local-actions">
+            <button type="button" className="okx-local-primary" disabled={!selected.length || !!operation || downloading}
+              onClick={() => {
+                setOperation('load')
+                void onLoad(symbol, selected, false).then(() => setMarked(new Map())).finally(() => setOperation(undefined))
+              }}>{operation === 'load' ? '正在加载…' : '加载所选日期'}</button>
+          </div>}
+        </>)}
       </section>
     </div>
   </WorkspaceDialog>
-}
-
-function DownloadedDates({ files, symbol }: { files: OkxLocalFile[]; symbol: string }) {
-  const matches = files.filter(file => file.symbol === symbol).sort((a, b) => b.day.localeCompare(a.day))
-  if (matches.length === 0) return <p className="okx-local-note">文件夹中暂无该交易对的 ZIP。</p>
-  return <>
-    <p className="okx-local-note">{matches.length} 天</p>
-    <ul aria-label="本地 ZIP 文件" className="okx-local-list">
-      {matches.map(file => <li key={file.filename}>
-        <time dateTime={file.day}>{file.day}</time>
-        <span title={file.filename}>{file.filename}</span>
-      </li>)}
-    </ul>
-  </>
 }

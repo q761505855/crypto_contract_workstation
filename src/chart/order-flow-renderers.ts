@@ -1,24 +1,29 @@
 import { registerIndicator, registerOverlay, type IndicatorDrawParams, type IndicatorTooltipData,
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, bigTradeMode, bigTradeThresholdUnits,
-  tradeThresholdValue, type BigTradeMode, type BigTradeThreshold, type BigTradeUnits, type VolumeProfile } from './order-flow'
+  volumeProfileBarColor, volumeProfileBounds, volumeProfileCenter, volumeProfilePriceLines,
+  type BigTradeMode, type BigTradeThreshold, type BigTradeUnits, type VolumeProfile, type VolumeProfileBounds } from './order-flow'
 import type { TradeRange } from '../market-data/bybit/combined-source'
 import { drawingIndexAt } from './drawing-coordinates'
-import { displayedTradeBubbles, tradeBubblePrice, type TradeBar, type TradeBubble } from './order-flow-bars'
+import { tradeBubblePrice, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { nextOpenTime } from '../market-data/intervals'
-import { bigTradeThreshold, MAX_VISIBLE_BUBBLES, orderFlowSettings } from './order-flow-preferences'
+import { bigTradeThreshold, orderFlowSettings } from './order-flow-preferences'
 import { formatFlowAmount, registerOrderFlowIndicators } from './order-flow-indicators'
+import type { DisplayedTradeBubble } from './order-flow-bubbles'
 
 export const CANDLE_PANE = 'candle_pane'
 export const bigTradesTitle = '大单气泡（Big Trades）'
 type BubbleSettings = ReturnType<typeof orderFlowSettings<'bubbles'>>
-export type DisplayedTradeBubble = TradeBubble & { amount: number }
 type ProfileSettings = ReturnType<typeof orderFlowSettings<'profile'>>
 const bubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 4 })
 const shortBubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 1 })
 const bubbleLabelWidth = { circle: 1.7, square: 2, diamond: 1.35 }
 
-export interface ProfileDisplay { profile?: VolumeProfile; message?: string; settings?: ProfileSettings }
+export interface ProfileDisplay { profile?: VolumeProfile; bounds?: VolumeProfileBounds; message?: string; settings?: ProfileSettings }
+export function profileDisplayCenter(display?: ProfileDisplay): number | undefined {
+  return volumeProfileCenter(display?.profile, display?.bounds)
+}
+
 export interface BubbleDisplay extends BigTradeUnits {
   bars?: ReadonlyMap<number, TradeBar>
   points?: ReadonlyMap<number, readonly DisplayedTradeBubble[]>
@@ -60,75 +65,35 @@ export function drawTradeBubbleLabel(ctx: CanvasRenderingContext2D, amount: numb
   if (fitting) ctx.fillText(fitting, x, y, width)
 }
 
-export function* filteredTradeBubbles(bar: TradeBar, mode: BigTradeMode, filter: BigTradeThreshold & BigTradeUnits): Iterable<DisplayedTradeBubble> {
-  const { unit, minimum, maximum } = filter
-  for (const point of displayedTradeBubbles(bar, mode, unit === 'notional' ? minimum : 0)) {
-    const amount = tradeThresholdValue(point.trade, unit, filter)
-    if (amount === undefined || !Number.isFinite(amount)) continue
-    // Summing normalized quantities and dividing by the lot or contract size can round at a threshold.
-    const tolerance = unit === 'notional' ? 0 : amount * Number.EPSILON * 8
-    if (amount + tolerance >= minimum && (maximum === 0 || amount - tolerance <= maximum)) yield { ...point, amount }
-  }
-}
-
-export function selectVisibleTradeBubbles(bars: ReadonlyMap<number, TradeBar>, mode: BigTradeMode,
-  filter: BigTradeThreshold & BigTradeUnits, maximumCount: number): ReadonlyMap<number, readonly DisplayedTradeBubble[]> {
-  const limit = Number.isFinite(maximumCount) ? Math.max(1, Math.min(MAX_VISIBLE_BUBBLES, Math.floor(maximumCount))) : MAX_VISIBLE_BUBBLES
-  const candidates: { timestamp: number; point: DisplayedTradeBubble; order: number }[] = []
-  let order = 0
-  let smallest = -Infinity
-  const trim = () => {
-    if (candidates.length <= limit) return
-    candidates.sort((a, b) => b.point.amount - a.point.amount || a.order - b.order)
-    candidates.length = limit
-    smallest = candidates[limit - 1].point.amount
-  }
-  for (const [timestamp, bar] of bars) {
-    if (bar.firstPrice === undefined) continue
-    for (const point of filteredTradeBubbles(bar, mode, filter)) {
-      if (point.amount <= smallest) continue
-      candidates.push({ timestamp, point, order: order++ })
-      // Keep at most two batches in memory, even when millions of trades qualify.
-      if (candidates.length === 2 * limit) trim()
-    }
-  }
-  trim()
-
-  const points = new Map<number, DisplayedTradeBubble[]>()
-  for (const { timestamp, point } of candidates.sort((a, b) => a.order - b.order)) {
-    const candle = points.get(timestamp)
-    if (candle) candle.push(point)
-    else points.set(timestamp, [point])
-  }
-  return points
-}
-
 export function tradeBubbleOffset(point: TradeBubble, start: number, end: number): number {
   return (point.trade.timeUs / 1000 - start) / (end - start) - 0.5
 }
 
-export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {
+export function drawVolumeProfile({ overlay, coordinates, bounding, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {
   if (coordinates.length < 2) return []
   const [first, second] = coordinates
   const x = Math.min(first.x, second.x)
   const right = Math.max(first.x, second.x)
-  const y = Math.min(first.y, second.y)
-  const height = Math.abs(second.y - first.y)
-  const width = right - x
+  const { profile, bounds = volumeProfileBounds(profile), message, settings = orderFlowSettings('profile') } = overlay.extendData as ProfileDisplay ?? {}
+  const paneHeight = bounding?.height ?? Infinity
+  const low = bounds && yAxis ? yAxis.convertToPixel(bounds.low) : Math.min(first.y, bounding.height - 6)
+  const high = bounds && yAxis ? yAxis.convertToPixel(bounds.high) : low
+  const top = Math.max(0, Math.min(paneHeight - 6, Math.min(low, high) - (low === high ? 3 : 0)))
+  const height = Math.max(6, Math.min(paneHeight, Math.max(low, high)) - top)
+  const width = Math.max(2, right - x)
   const figures: OverlayFigure[] = [{
-    type: 'rect', attrs: { x, y, width, height },
+    type: 'rect', attrs: { x, y: top, width, height },
     styles: { style: 'stroke_fill' },
   }]
-  const { profile, message, settings = orderFlowSettings('profile') } = overlay.extendData as ProfileDisplay ?? {}
   const text = (label: string, labelX: number, labelY: number, color: string) => {
     figures.push({ type: 'text', attrs: { x: labelX, y: labelY, text: label, baseline: 'bottom' },
       styles: { color, size: 11, backgroundColor: 'rgba(18,26,39,0.86)', paddingLeft: 3, paddingRight: 3 }, ignoreEvent: true })
   }
-  if (message) text(message, x + 4, y + 17, settings.levelColor)
+  if (message) text(message, x + 4, Math.min(paneHeight - 2, top + 17), settings.levelColor)
   if (!profile || !yAxis) return figures
   const { type } = settings
   text({ volumeDelta: 'Delta / 成交量', volume: '成交量', bidAsk: 'Bid / Ask', delta: 'Delta' }[type],
-    x + 4, y + (message ? 30 : 17), settings.levelColor)
+    x + 4, Math.min(paneHeight - 2, top + (message ? 30 : 17)), settings.levelColor)
   const maxVolume = Math.max(...profile.rows.map(row => row.buy + row.sell))
   const maxDelta = Math.max(...profile.rows.map(row => Math.abs(row.buy - row.sell)))
   const maxSide = Math.max(...profile.rows.map(row => Math.max(row.buy, row.sell)))
@@ -141,14 +106,14 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
     if (!volume) continue
     const first = yAxis.convertToPixel(row.high)
     const last = yAxis.convertToPixel(row.low)
-    const top = Math.min(first, last)
-    const rowHeight = Math.max(1, Math.abs(last - first) - 0.7)
+    if (Math.max(first, last) < 0 || Math.min(first, last) >= paneHeight) continue
+    const top = Math.max(0, Math.min(first, last))
+    const rowHeight = Math.max(1, Math.min(paneHeight, Math.max(first, last)) - top - 0.7)
     const delta = row.buy - row.sell
     const volumeWidth = volume / maxVolume * barWidth
     const deltaWidth = maxDelta ? Math.abs(delta) / maxDelta * barWidth : 0
     if (type === 'volume' || type === 'volumeDelta') {
-      const inArea = settings.showValueArea && row.low < profile.vah && row.high > profile.val
-      addBar(x, top, volumeWidth, rowHeight, inArea ? settings.valueAreaColor : settings.volumeColor)
+      addBar(x, top, volumeWidth, rowHeight, volumeProfileBarColor(row, profile, settings))
     }
     if (type === 'delta' || type === 'volumeDelta') {
       const left = type === 'volumeDelta' || delta < 0 ? x - deltaWidth : x
@@ -166,13 +131,11 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
       text(value, x + 4, top + rowHeight, '#e7eef8')
     }
   }
-  const levels = [['VAH', profile.vah], ['POC', profile.poc], ['VAL', profile.val]] as const
   let lastLabel = -Infinity
-  for (const { name, value, level } of levels.map(([name, value]) => ({ name, value, level: yAxis.convertToPixel(value) })).sort((a, b) => a.level - b.level)) {
-    if (name === 'POC' ? !settings.showPoc : !settings.showValueArea) continue
-    const color = name === 'POC' ? settings.pocColor : settings.levelColor
+  for (const { name, value, color, solid, y: level } of volumeProfilePriceLines(profile, settings, value => yAxis.convertToPixel(value))) {
+    if (level < 0 || level >= paneHeight) continue
     figures.push({ type: 'line', attrs: { coordinates: [{ x, y: level }, { x: right, y: level }] },
-      styles: { color, size: name === 'POC' ? 1.5 : 1, style: name === 'POC' ? 'solid' : 'dashed', dashedValue: [4, 3] },
+      styles: { color, size: solid ? 1.5 : 1, style: solid ? 'solid' : 'dashed', dashedValue: [4, 3] },
       ignoreEvent: true })
     const labelY = Math.max(level, lastLabel + 13)
     if (settings.showLabels) text(`${name} ${value.toFixed(precision.price)}`, x + 4, labelY, color)
@@ -266,6 +229,10 @@ export function registerOrderFlow(): void {
   registerOrderFlowIndicators()
   registerOverlay({
     name: VOLUME_PROFILE_TOOL, totalStep: 3, needDefaultPointFigure: true, createPointFigures: drawVolumeProfile,
+    performEventMoveForDrawing({ points, performPoint }) {
+      const value = profileDisplayCenter(this.extendData as ProfileDisplay | undefined) ?? points[0]?.value
+      if (value !== undefined) performPoint.value = value
+    },
     styles: { rect: { color: 'rgba(99,145,208,0.07)', borderColor: 'rgba(151,184,226,0.65)', borderSize: 1 } },
   })
   registerIndicator({

@@ -13,9 +13,10 @@ function trade(id: string, time: number, price: number, size = 1): OkxLocalTrade
   return { id, time, price: String(price), size: String(size), side: 'Buy' }
 }
 
-function marketFor(days: Record<string, OkxLocalTrade[]>) {
+function marketFor(days: Record<string, OkxLocalTrade[]>, activate = true) {
   const files = {
     revision: 0,
+    get scanRevision() { return this.revision },
     restore: async () => {},
     list: async () => Object.keys(days).map(day => ({ day, symbol, filename: `${symbol}-trades-${day}.zip` })),
     scan: vi.fn(async (_symbol: string, date: string, accept: (trade: OkxLocalTrade) => void) => {
@@ -26,10 +27,32 @@ function marketFor(days: Record<string, OkxLocalTrade[]>) {
   }
   const exchange = { getSymbols: vi.fn() }
   const market = new OkxLocalMarket(files as unknown as OkxLocalFiles, exchange as unknown as OkxMarketService)
+  if (activate) market.setActiveDays(symbol, Object.keys(days))
   return { market, files, exchange }
 }
 
 describe('OKX local trade candles', () => {
+  it('starts empty and only opens dates explicitly activated for the symbol', async () => {
+    const { market, files } = marketFor({
+      '2025-01-02': [trade('1', day, 100), trade('2', day + 12 * hour, 110)],
+      '2025-01-03': [trade('3', day + 18 * hour, 130), trade('4', day + 25 * hour, 140)],
+    }, false)
+    expect(await market.loadRecentCandles(symbol, '1d', day + 4 * 24 * hour, {})).toEqual([])
+    expect(await market.tradeDays(symbol)).toEqual(new Set())
+    expect(files.scan).not.toHaveBeenCalled()
+    market.setActiveDays(symbol, ['2025-01-03'])
+    const newest = await market.loadRecentCandles(symbol, '1d', day + 4 * 24 * hour, {})
+    expect(newest.map(bar => [bar.open, bar.close, bar.isClosed])).toEqual([
+      ['130', '130', false], ['140', '140', false],
+    ])
+    expect(files.scan.mock.calls.map(([, date]) => date)).toEqual(['2025-01-03'])
+    expect((await market.loadRecentCandlesPage(symbol, '1m', day + 17 * hour, {})).candles).toEqual([])
+    market.setActiveDays(symbol, ['2025-01-02'], true)
+    const earlier = await market.loadRecentCandlesPage(symbol, '1m', day + 17 * hour, {})
+    expect(earlier.candles.map(bar => bar.close)).toContain('110')
+    expect(files.scan.mock.calls.map(([, date]) => date)).toEqual(['2025-01-03', '2025-01-02'])
+  })
+
   it('builds OHLC from millisecond and numeric trade ID order and reuses lower-period aggregation', async () => {
     const { market, files, exchange } = marketFor({
       '2025-01-02': [trade('10', day + 999, 105, 3), trade('9', day + 999, 100, 2),
@@ -66,7 +89,7 @@ describe('OKX local trade candles', () => {
   })
 
   it('streams local order flow in trade order and reports missing date coverage', async () => {
-    const { market } = marketFor({
+    const { market, files } = marketFor({
       '2025-01-02': [trade('10', day + minute, 105), trade('9', day + minute, 100), trade('8', day, 90)],
     })
     const rows: string[] = []
@@ -77,5 +100,13 @@ describe('OKX local trade candles', () => {
     expect(rows).toEqual(['9', '10'])
     expect(coverage).toEqual([true, false])
     expect(complete).toBe(false)
+    const overlap: string[] = []
+    await market.visitTrades(symbol, day * 1000, (day + minute) * 1000,
+      trade => overlap.push(trade.id), new AbortController().signal)
+    expect(overlap).toEqual(['8'])
+    expect(files.scan).toHaveBeenCalledOnce()
+    files.revision++
+    await market.visitTrades(symbol, day * 1000, (day + minute) * 1000, () => {}, new AbortController().signal)
+    expect(files.scan).toHaveBeenCalledTimes(2)
   })
 })

@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
 import Decimal from 'decimal.js'
 import { formatDisplayTime } from '../format-display-time'
@@ -13,7 +14,7 @@ import {
   DEFAULT_CTRADER_PERIOD,
   DEFAULT_OKX_SYMBOL,
 } from '../chart/chart-config'
-import { ChartWorkspace } from '../chart/ChartWorkspace'
+import { ChartWorkspace, type ChartJumpRequest, type ChartViewportActions } from '../chart/ChartWorkspace'
 import { ChartWindowHost, openChartWindow } from '../chart/chart-window'
 import { drawingScope } from '../chart/drawings'
 import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-overlay-preferences'
@@ -32,6 +33,7 @@ import { WorkspaceTools } from '../components/WorkspaceTools'
 import { PanelToggle } from '../components/PanelToggle'
 import { loadWorkspacePreferences, saveWorkspacePreferences, DEFAULT_WORKSPACE_PREFERENCES, type WorkspacePreferences } from '../workspace/preferences'
 import type { MarketSelection } from '../market-data/models'
+import { OkxLocalDownloads } from '../market-data/okx/local-downloads'
 import { readSelectedOkxSymbol, readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
 import { isOkxPriceSource, priceSourceLabel, readPriceSource, savePriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
 import { toSymbolInfo } from '../market-data/models'
@@ -120,6 +122,13 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
 }) {
   const sourceLabel = priceSourceLabel(source)
   const localMarket = source === 'okx-local' && marketRuntime.service.source === 'okx-local' ? marketRuntime.service : undefined
+  const subscribeArchives = useCallback((listener: () => void) => localMarket?.subscribeArchives(listener) ?? (() => {}), [localMarket])
+  const localDataRevision = useSyncExternalStore(subscribeArchives, () => localMarket?.historyRevision)
+  const localDownloads = useMemo(() => localMarket && new OkxLocalDownloads(localMarket.files), [localMarket])
+  useEffect(() => {
+    void localMarket?.files.restore().catch(() => undefined)
+    return () => localDownloads?.stop()
+  }, [localMarket, localDownloads])
   const shellRef = useRef<HTMLElement | null>(null)
   const [layout, setLayout] = useState(loadWorkspacePreferences)
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
@@ -191,12 +200,8 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   const [chartReloadKey, setChartReloadKey] = useState(0)
   const [chartReplayStartTime, setChartReplayStartTime] =
     useState<number | null>(null)
-  const viewportRef = useRef<{ step(direction: -1 | 1): number | null }>(null)
-  const [chartJumpRequest, setChartJumpRequest] = useState<{
-    id: string
-    timestamp: number
-    followLatest: boolean
-  } | null>(null)
+  const viewportRef = useRef<ChartViewportActions>(null)
+  const [chartJumpRequest, setChartJumpRequest] = useState<ChartJumpRequest | null>(null)
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
   const [stepPeriod, setStepPeriod] = useState(() => activeStepPeriod(source))
   const [showTradeOverlays, setShowTradeOverlays] = useState(readShowTradeOverlays)
@@ -214,12 +219,31 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   const simulation = { ...simulationController, busy: simulationController.busy || replay.busy }
   const replaySessionRef = useRef(replay.session)
   replaySessionRef.current = replay.session
-  const refreshLocalData = useCallback(() => {
+  const loadLocalArchives = useCallback(async (symbol: string, days: readonly string[], append: boolean) => {
+    if (!localMarket) return
+    const changed = localMarket.setActiveDays(symbol, days, append)
     setMarketWarning('')
     const datafeed = marketRuntime.replayDatafeed
-    datafeed.setReplayContext(datafeed.getReplayContext(), true)
-    setChartReloadKey(current => current + 1)
-  }, [marketRuntime])
+    const context = datafeed.getReplayContext()
+    if (context || replaySessionRef.current !== null) {
+      if (changed) {
+        datafeed.setReplayContext(context, true)
+        setChartReloadKey(current => current + 1)
+      }
+      return
+    }
+    try {
+      await viewportRef.current?.loadLocalArchives(symbol, days, append)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      setMarketWarning(error instanceof Error ? error.message : '无法加载所选的本地成交')
+    }
+  }, [localMarket, marketRuntime])
+  const refreshLocalFolder = useCallback((replaced: boolean) => {
+    if (replaced) localMarket?.clearActiveDays()
+    const symbol = marketSelection.symbol.ticker
+    void loadLocalArchives(symbol, localMarket?.activeDays(symbol) ?? [], false)
+  }, [loadLocalArchives, localMarket, marketSelection.symbol.ticker])
   useEffect(() => {
     const restored = (event: Event) => {
       setStepPeriod(activeStepPeriod(source))
@@ -433,7 +457,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         replay: nextContext,
         simulationOverlays,
         configRevision: configEpoch,
-        dataRevision: localMarket?.files.revision,
+        dataRevision: localDataRevision,
       })
     }
     if (previous !== null && nextContext === null) {
@@ -449,7 +473,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
       setChartReloadKey((current) => current + 1)
     }
     previousReplayContextRef.current = nextContext
-  }, [chartReloadKey, chartWindows, configEpoch, localMarket, marketRuntime, marketSelection, replay.busy, replay.preparationStatus, replay.session, simulationOverlays])
+  }, [chartReloadKey, chartWindows, configEpoch, localDataRevision, localMarket, marketRuntime, marketSelection, replay.busy, replay.preparationStatus, replay.session, simulationOverlays])
 
   useLayoutEffect(() => {
     const shell = shellRef.current
@@ -531,6 +555,9 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
             datafeed={marketRuntime.replayDatafeed}
             orderFlowCloud={marketRuntime.defaultGitHubClient}
             localTradeMarket={localMarket}
+            localDownloads={localDownloads}
+            onLocalFolderChange={refreshLocalFolder}
+            onLoadLocalArchives={loadLocalArchives}
             getOrderFlowLotSize={ticker => marketRuntime.service.source === 'ctrader' ? marketRuntime.service.getCachedLotSize?.(ticker) : undefined}
             jumpRequest={chartJumpRequest}
             onJumpComplete={completeChartTimeJump}
@@ -605,8 +632,9 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
       </WorkspaceDialog>
       {dataManagerOpen && <DataManager onClose={() => setDataManagerOpen(false)} runtime={marketRuntime} />}
-      {localDataOpen && localMarket && <OkxLocalDataDialog files={localMarket.files} symbol={marketSelection.symbol.ticker}
-        onClose={() => setLocalDataOpen(false)} onChange={refreshLocalData} />}
+      {localDataOpen && localMarket && localDownloads && <OkxLocalDataDialog files={localMarket.files}
+        downloads={localDownloads} symbol={marketSelection.symbol.ticker} loadedDays={localMarket.activeDays(marketSelection.symbol.ticker)}
+        onClose={() => setLocalDataOpen(false)} onFolderChange={refreshLocalFolder} onLoad={loadLocalArchives} />}
     </main>
   )
 }

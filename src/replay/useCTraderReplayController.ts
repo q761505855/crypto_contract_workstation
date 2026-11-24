@@ -163,6 +163,7 @@ export function useCTraderReplayController(
       const saved = await replaySessions.list()
       signal.throwIfAborted()
       setSessions(saved.filter(item => source === 'ctrader' ? !isOkxPriceSource(item.marketSource) : item.marketSource === source))
+      if (source === 'okx-local') return
       const active = saved.find(item => item.active && item.status !== 'completed' && item.marketSource === source)
       if (active !== undefined) {
         const cursor = await hydrate(active, signal)

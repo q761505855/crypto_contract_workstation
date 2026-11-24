@@ -9,11 +9,13 @@ export function readChartHistory(
   to: number,
   notifySelection = true,
   signal?: AbortSignal,
+  preferLatestArchive?: boolean,
 ): Promise<KLineData[]> {
   const read: (
     symbol: SymbolInfo, period: Period, from: number, to: number,
-    notifySelection?: boolean, signal?: AbortSignal,
+    notifySelection?: boolean, signal?: AbortSignal, preferLatestArchive?: boolean,
   ) => Promise<KLineData[]> = feed.getHistoryKLineData.bind(feed)
+  if (preferLatestArchive !== undefined) return read(symbol, period, from, to, notifySelection, signal, preferLatestArchive)
   if (signal) return read(symbol, period, from, to, notifySelection, signal)
   return notifySelection ? read(symbol, period, from, to) : read(symbol, period, from, to, false)
 }

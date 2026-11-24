@@ -20,6 +20,15 @@ function select<K extends string>(label: string, fallback: NoInfer<K>, options: 
 const footprintTypes = { bidAsk: 'Bid / Ask', volume: '总成交量', delta: 'Delta', volumeDelta: 'Delta / 总成交量' }
 export type FootprintType = keyof typeof footprintTypes
 
+const profilePriceFields = {
+  valueArea: number('价值区（%）', 70, 1, 100),
+  showPoc: toggle('显示 POC', true),
+  showValueArea: toggle('显示 VAH / VAL', true),
+  showLabels: toggle('显示价格线标签', true),
+  pocColor: color('POC 线色', '#ffcc70'),
+  levelColor: color('VAH / VAL 线色', '#aabcda'),
+}
+
 export const orderFlowFields = {
   footprint: {
     type: select('数值内容', 'bidAsk', footprintTypes),
@@ -75,17 +84,12 @@ export const orderFlowFields = {
     type: select('显示数据', 'volumeDelta', { volumeDelta: 'Delta / 总成交量', volume: '总成交量', bidAsk: 'Bid / Ask', delta: 'Delta' }),
     rows: number('价位档数', 48, 4, 200),
     width: number('每侧最大宽度（占选区 %）', 42, 5, 100),
-    valueArea: number('价值区（%）', 70, 1, 100),
-    showPoc: toggle('显示 POC', true),
-    showValueArea: toggle('显示 VAH / VAL', true),
-    showLabels: toggle('显示价格线标签', true),
+    ...profilePriceFields,
     showValues: toggle('显示各档成交量', false),
     volumeColor: color('成交量色', '#3b54766b'),
     valueAreaColor: color('价值区成交量色', '#5e93d67a'),
     bidColor: color('Bid 主动卖出色', '#ff827e66'),
     askColor: color('Ask 主动买入色', '#49d4ae66'),
-    pocColor: color('POC 线色', '#ffcc70'),
-    levelColor: color('VAH / VAL 线色', '#aabcda'),
   },
   visibleProfile: {
     placement: select('位置', 'right', { right: '靠右 · 价格轴左侧', left: '靠主图左侧' }),
@@ -94,7 +98,9 @@ export const orderFlowFields = {
     rows: number('价位档数', 48, 4, 200),
     type: select('显示内容', 'volumeDelta', { volumeDelta: '成交量 / Delta', volume: '仅成交量', delta: '仅 Delta' }),
     showHeaders: toggle('显示列标题', true),
+    ...profilePriceFields,
     volumeColor: color('成交量颜色', '#769ce2a6'),
+    valueAreaColor: color('价值区成交量色', '#a8c6ffdb'),
     positiveColor: color('正 Delta 颜色', '#49d4aeae'),
     negativeColor: color('负 Delta 颜色', '#ff827eae'),
   },

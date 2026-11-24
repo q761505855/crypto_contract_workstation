@@ -39,7 +39,8 @@ const sections = {
   ],
   visibleProfile: [
     { title: '位置与显示', open: true, fields: ['placement', 'offset', 'width', 'rows', 'type', 'showHeaders'] },
-    { title: '配色', fields: ['volumeColor', 'positiveColor', 'negativeColor'] },
+    { title: '关键价位', fields: ['showPoc', 'showValueArea', 'valueArea', 'showLabels'] },
+    { title: '配色', fields: ['volumeColor', 'valueAreaColor', 'positiveColor', 'negativeColor', 'pocColor', 'levelColor'] },
   ],
   cvd: [
     { title: '累计与显示', open: true, fields: ['reset', 'plot', 'lineWidth', 'showZero'] },
@@ -78,8 +79,13 @@ const visibility: Record<OrderFlowGroup, Readonly<Record<string, (values: Draft)
   },
   visibleProfile: {
     volumeColor: values => values.type !== 'delta',
+    valueAreaColor: values => !!values.showValueArea && values.type !== 'delta',
     positiveColor: values => values.type !== 'volume',
     negativeColor: values => values.type !== 'volume',
+    valueArea: values => !!values.showValueArea,
+    showLabels: values => !!(values.showPoc || values.showValueArea),
+    pocColor: values => !!values.showPoc,
+    levelColor: values => !!values.showValueArea,
   },
   cvd: {
     lineWidth: values => values.plot === 'line',

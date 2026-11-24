@@ -2,10 +2,11 @@ import type { KLineData } from 'klinecharts'
 import { BYBIT_DAY_MS, type BybitTrade } from '../market-data/bybit/trades'
 import { nextOpenTime } from '../market-data/intervals'
 import { tradeBubblePrice, tradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
-import type { VolumeProfileRow } from './order-flow'
+import { VolumeProfileLevels, type VolumeProfileRow } from './order-flow'
 import { orderFlowFields, type orderFlowSettings } from './order-flow-preferences'
 
 type FootprintSettings = ReturnType<typeof orderFlowSettings<'footprint'>>
+type FootprintLevel = { buy: number; sell: number; volume: number }
 
 export interface FootprintRow {
   low: number
@@ -19,27 +20,56 @@ export interface FootprintRow {
 
 export function calculateFootprint(bar: TradeBar, settings: FootprintSettings, precision: number,
   priceOf: (trade: BybitTrade) => number, targetRows = settings.targetRows): FootprintRow[] {
+  return footprintRowsFromLevels(footprintTradeLevels(tradeBubbles(bar), settings, precision, priceOf), settings, precision, targetRows)
+}
+
+export function footprintTradeLevels(trades: Iterable<TradeBubble>, settings: FootprintSettings, precision: number,
+  priceOf: (trade: BybitTrade) => number): Map<number, FootprintLevel> {
   const tickSize = 10 ** -precision
-  const tickOf = (trade: BybitTrade) => Math.round(priceOf(trade) / tickSize)
-  const included = (trade: BybitTrade) => {
+  const totals = new Map<number, FootprintLevel>()
+  const countTrades = settings.input === 'count'
+  for (const { trade } of trades) {
     const amount = trade.price * trade.size
-    return amount >= settings.minNotional && (settings.maxNotional === 0 || amount <= settings.maxNotional)
+    if (!(amount >= settings.minNotional && (settings.maxNotional === 0 || amount <= settings.maxNotional))) continue
+    const tick = Math.round(priceOf(trade) / tickSize)
+    let level = totals.get(tick)
+    if (!level) totals.set(tick, level = { buy: 0, sell: 0, volume: 0 })
+    level[trade.side] += countTrades ? 1 : trade.size
+    level.volume += trade.size
   }
+  return totals
+}
+
+export function mergeFootprintLevels(chunks: Iterable<Float64Array>): Map<number, FootprintLevel> {
+  const levels = new Map<number, FootprintLevel>()
+  for (const chunk of chunks) {
+    for (let offset = 0; offset < chunk.length; offset += 4) {
+      const tick = chunk[offset]
+      let level = levels.get(tick)
+      if (!level) levels.set(tick, level = { buy: 0, sell: 0, volume: 0 })
+      level.buy += chunk[offset + 1]
+      level.sell += chunk[offset + 2]
+      level.volume += chunk[offset + 3]
+    }
+  }
+  return levels
+}
+
+export function footprintRowsFromLevels(totals: ReadonlyMap<number, FootprintLevel>, settings: FootprintSettings, precision: number,
+  targetRows: number): FootprintRow[] {
   let low = Infinity
   let high = -Infinity
-  for (const { trade } of tradeBubbles(bar)) {
-    if (!included(trade)) continue
-    const tick = tickOf(trade)
+  for (const tick of totals.keys()) {
     low = Math.min(low, tick)
     high = Math.max(high, tick)
   }
   if (low > high) return []
+  const tickSize = 10 ** -precision
   const span = high - low + 1
   const step = settings.grouping === 'manual' ? settings.ticksPerRow : Math.ceil(span / targetRows)
   const buckets = new Map<number, { row: FootprintRow; volume: number }>()
-  for (const { trade } of tradeBubbles(bar)) {
-    if (!included(trade)) continue
-    const start = Math.floor(tickOf(trade) / step) * step
+  for (const [tick, level] of totals) {
+    const start = Math.floor(tick / step) * step
     let bucket = buckets.get(start)
     if (!bucket) {
       const row: FootprintRow = {
@@ -49,8 +79,9 @@ export function calculateFootprint(bar: TradeBar, settings: FootprintSettings, p
       bucket = { row, volume: 0 }
       buckets.set(start, bucket)
     }
-    bucket.row[trade.side] += settings.input === 'count' ? 1 : trade.size
-    bucket.volume += trade.size
+    bucket.row.buy += level.buy
+    bucket.row.sell += level.sell
+    bucket.volume += level.volume
   }
   const ordered = [...buckets].sort(([a], [b]) => a - b)
   const peak = ordered.reduce((best, [, bucket]) => bucket.volume > best.volume ? bucket : best, ordered[0][1])
@@ -161,31 +192,35 @@ export function dailyTradeVwap(candles: readonly FlowCandle[], timeframe: string
   return { values, partial }
 }
 
-type SideVolumes = Pick<VolumeProfileRow, 'buy' | 'sell'>
-const priceLevels = new WeakMap<TradeBar, { projection?: number; precision: number; levels: ReadonlyMap<number, SideVolumes> }>()
+const priceLevels = new WeakMap<TradeBar, { projection?: number; levels: VolumeProfileLevels }>()
+
+export function tradeBarProfileLevels(bar: TradeBar, open: number, projected: boolean,
+  fromUs?: number, untilUs?: number): VolumeProfileLevels {
+  const wholeBar = fromUs === undefined && untilUs === undefined
+  const projection = projected ? open : undefined
+  const cached = wholeBar ? priceLevels.get(bar) : undefined
+  if (cached && cached.projection === projection) return cached.levels
+  const levels = new VolumeProfileLevels()
+  for (const { trade } of tradeBubbles(bar, fromUs, untilUs)) {
+    levels.add(tradeBubblePrice(trade, bar, open, projected), trade.side === 'buy' ? trade.size : -trade.size)
+  }
+  if (wholeBar) priceLevels.set(bar, { projection, levels })
+  return levels
+}
 
 export function visibleVolumeProfile(bars: readonly PricedBar[], projected: boolean, precision: number,
   targetRows = orderFlowFields.visibleProfile.rows.fallback): VolumeProfileRow[] {
   const tickSize = 10 ** -precision
-  const levels: ReadonlyMap<number, SideVolumes>[] = []
+  const levels = new Map<number, Pick<VolumeProfileRow, 'buy' | 'sell'>>()
   let low = Infinity
   let high = -Infinity
   for (const { bar, open } of bars) {
-    const projection = projected ? open : undefined
-    let cached = priceLevels.get(bar)
-    if (!cached || cached.projection !== projection || cached.precision !== precision) {
-      const totals = new Map<number, SideVolumes>()
-      for (const { trade } of tradeBubbles(bar)) {
-        const tick = Math.round(tradeBubblePrice(trade, bar, open, projected) / tickSize)
-        let level = totals.get(tick)
-        if (!level) totals.set(tick, level = { buy: 0, sell: 0 })
-        level[trade.side] += trade.size
-      }
-      cached = { projection, precision, levels: totals }
-      priceLevels.set(bar, cached)
-    }
-    levels.push(cached.levels)
-    for (const tick of cached.levels.keys()) {
+    for (const [price, { buy, sell }] of tradeBarProfileLevels(bar, open, projected).entries()) {
+      const tick = Math.round(price / tickSize)
+      let level = levels.get(tick)
+      if (!level) levels.set(tick, level = { buy: 0, sell: 0 })
+      level.buy += buy
+      level.sell += sell
       low = Math.min(low, tick)
       high = Math.max(high, tick)
     }
@@ -193,17 +228,16 @@ export function visibleVolumeProfile(bars: readonly PricedBar[], projected: bool
   if (low > high) return []
 
   const step = Math.ceil((high - low + 1) / targetRows)
-  const rows = new Map<number, VolumeProfileRow>()
-  for (const totals of levels) {
-    for (const [tick, { buy, sell }] of totals) {
-      const start = low + Math.floor((tick - low) / step) * step
-      let row = rows.get(start)
-      if (!row) rows.set(start, row = {
-        low: (start - 0.5) * tickSize, high: (Math.min(high + 1, start + step) - 0.5) * tickSize, buy: 0, sell: 0,
-      })
-      row.buy += buy
-      row.sell += sell
+  const rows = Array.from({ length: Math.ceil((high - low + 1) / step) }, (_, index) => {
+    const start = low + index * step
+    return {
+      low: (start - 0.5) * tickSize, high: (Math.min(high + 1, start + step) - 0.5) * tickSize, buy: 0, sell: 0,
     }
+  })
+  for (const [tick, { buy, sell }] of levels) {
+    const row = rows[Math.floor((tick - low) / step)]
+    row.buy += buy
+    row.sell += sell
   }
-  return [...rows].sort(([a], [b]) => a - b).map(([, row]) => row)
+  return rows
 }

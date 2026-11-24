@@ -112,7 +112,8 @@ async function csvEntry(file: File) {
 const tradeColumns = ['instrument_name', 'trade_id', 'side', 'price', 'size', 'created_time']
 const positiveDecimal = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
 
-async function scanArchive(file: File, symbol: string, day: string, onTrade: (trade: OkxLocalTrade) => void, signal?: AbortSignal) {
+export async function scanOkxArchive(file: File, symbol: string, day: string, onTrade: (trade: OkxLocalTrade) => void,
+  signal?: AbortSignal, yieldToBrowser = true) {
   const { body, size } = await csvEntry(file)
   const from = dateValue(day) - sourceOffset
   const to = from + BYBIT_DAY_MS
@@ -171,7 +172,7 @@ async function scanArchive(file: File, symbol: string, day: string, onTrade: (tr
       }
       partial = text.slice(start)
       if (partial.length > 16_384) throw new Error('OKX 日档 CSV 行过长')
-      if (performance.now() >= nextYield) {
+      if (yieldToBrowser && performance.now() >= nextYield) {
         await new Promise(resolve => setTimeout(resolve, 0))
         nextYield = performance.now() + 16
       }
@@ -227,6 +228,7 @@ export class OkxLocalFiles {
   private folder?: LocalDirectory
   private allowed = false
   private changes = 0
+  private scanChanges = 0
   private restoring?: Promise<void>
   private readonly listeners = new Set<() => void>()
 
@@ -236,13 +238,15 @@ export class OkxLocalFiles {
   get ready(): boolean { return this.allowed }
   get name(): string | undefined { return this.folder?.name }
   get revision(): number { return this.changes }
+  get scanRevision(): number { return this.scanChanges }
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
 
-  refresh(): void {
+  refresh(resetScans = true): void {
+    if (resetScans) this.scanChanges++
     this.changes++
     for (const listener of this.listeners) listener()
   }
@@ -302,13 +306,19 @@ export class OkxLocalFiles {
     return files.sort((a, b) => b.day.localeCompare(a.day) || a.symbol.localeCompare(b.symbol))
   }
 
+  async archiveFile(symbol: string, day: string): Promise<File | undefined> {
+    const name = filename(symbol, day)
+    if (!this.folder || !this.allowed) return
+    const handle = await findFile(this.folder, name)
+    return handle?.getFile()
+  }
+
   async scan(symbol: string, day: string, onTrade: (trade: OkxLocalTrade) => void, signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted()
-    const name = filename(symbol, day)
-    if (!this.folder || !this.allowed) return false
-    const handle = await findFile(this.folder, name)
-    if (!handle) return false
-    await scanArchive(await handle.getFile(), symbol, day, onTrade, signal)
+    const file = await this.archiveFile(symbol, day)
+    signal?.throwIfAborted()
+    if (!file) return false
+    await scanOkxArchive(file, symbol, day, onTrade, signal)
     return true
   }
 
@@ -317,7 +327,8 @@ export class OkxLocalFiles {
     return await this.scan(symbol, day, trade => trades.push(trade), signal) ? trades : undefined
   }
 
-  async download(symbol: string, from: string, to: string, onProgress: (result: OkxLocalDownloadResult) => void, signal?: AbortSignal): Promise<void> {
+  async download(symbol: string, from: string, to: string, onProgress: (result: OkxLocalDownloadResult) => void | Promise<void>,
+    signal?: AbortSignal, anchor?: string): Promise<void> {
     filename(symbol, from)
     const start = dateValue(from)
     const end = dateValue(to)
@@ -325,40 +336,46 @@ export class OkxLocalFiles {
     const folder = this.folder
     if (!folder || !this.allowed) throw new Error('请先授予 OKX 日档文件夹读写权限')
 
-    // The catalog only accepts short ranges. Progress covers both endpoints.
-    const batchSize = 10
-    let saved = false
-    try {
-      for (let batch = start; batch <= end; batch += batchSize * BYBIT_DAY_MS) {
-        signal?.throwIfAborted()
-        const last = Math.min(end, batch + (batchSize - 1) * BYBIT_DAY_MS)
-        let index: Promise<Map<string, string>> | undefined
-        for (let time = batch; time <= last; time += BYBIT_DAY_MS) {
-          signal?.throwIfAborted()
-          const day = bybitDay(time)
-          const name = filename(symbol, day)
-          let result: OkxLocalDownloadResult
-          try {
-            const process = async (): Promise<OkxLocalDownloadResult> => {
-              const current = await findFile(folder, name)
-              if (current && (await current.getFile()).size > 0) return { day, status: 'existing' }
-              index ??= this.downloadIndex(symbol, batch, last, signal)
-              const url = (await index).get(name)
-              if (!url) return { day, status: 'unavailable' }
-              return { day, status: await this.saveArchive(folder, name, url, signal) }
-            }
-            const locks = globalThis.navigator?.locks
-            result = locks ? await locks.request(`workstation-okx-download:${name}`, { signal }, process) : await process()
-          } catch (error) {
-            signal?.throwIfAborted()
-            result = { day, status: 'failed', message: errorMessage(error) }
+    // Keep the catalog requests within the exchange's ten-day limit even
+    // when the selected dates are visited in a different order.
+    const batchSpan = 10 * BYBIT_DAY_MS
+    const indexes = new Map<number, Promise<Map<string, string>>>()
+    const pivot = anchor === undefined ? start : dateValue(anchor)
+    if (!Number.isFinite(pivot)) throw new Error('请选择有效的锚点日期')
+    let older = Math.min(end, pivot)
+    let newer = Math.max(start, pivot + BYBIT_DAY_MS)
+    while (older >= start || newer <= end) {
+      signal?.throwIfAborted()
+      if (this.folder !== folder) throw new Error('本地文件夹已更换')
+      const useOlder = older >= start && (newer > end || pivot - older <= newer - pivot)
+      const time = useOlder ? older : newer
+      if (useOlder) older -= BYBIT_DAY_MS
+      else newer += BYBIT_DAY_MS
+      const day = bybitDay(time)
+      const name = filename(symbol, day)
+      let result: OkxLocalDownloadResult
+      try {
+        const process = async (): Promise<OkxLocalDownloadResult> => {
+          const current = await findFile(folder, name)
+          if (current && (await current.getFile()).size > 0) return { day, status: 'existing' }
+          const batch = start + Math.floor((time - start) / batchSpan) * batchSpan
+          let index = indexes.get(batch)
+          if (!index) {
+            index = this.downloadIndex(symbol, batch, Math.min(end, batch + batchSpan - BYBIT_DAY_MS), signal)
+            indexes.set(batch, index)
           }
-          saved ||= result.status === 'saved'
-          onProgress(result)
+          const url = (await index).get(name)
+          if (!url) return { day, status: 'unavailable' }
+          return { day, status: await this.saveArchive(folder, name, url, signal) }
         }
+        const locks = globalThis.navigator?.locks
+        result = locks ? await locks.request(`workstation-okx-download:${name}`, { signal }, process) : await process()
+      } catch (error) {
+        signal?.throwIfAborted()
+        result = { day, status: 'failed', message: errorMessage(error) }
       }
-    } finally {
-      if (saved && this.folder === folder) this.refresh()
+      if (this.folder === folder && (result.status === 'saved' || result.status === 'existing')) this.refresh(false)
+      await onProgress(result)
     }
   }
 

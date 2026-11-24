@@ -3,30 +3,35 @@ import { alignOpenTime, CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/
 import type { BybitTrade } from '../market-data/bybit/trades'
 import { BYBIT_DAY_MS } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
-import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator, bigTradeMode, bigTradeThresholdUnits, type BigTradeMode } from './order-flow'
-import { CANDLE_PANE, selectVisibleTradeBubbles, tradeBubbleOffset, tradeBubbleRadius,
-  type BubbleDisplay, type DisplayedTradeBubble, type ProfileDisplay } from './order-flow-renderers'
+import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileLevels, bigTradeMode, bigTradeThresholdUnits,
+  volumeProfileBounds, volumeProfileCenter, volumeProfilePrices, type BigTradeMode, type VolumeProfileBounds } from './order-flow'
+import { CANDLE_PANE, tradeBubbleOffset, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
+import { selectVisibleTradeBubbles, type DisplayedTradeBubble } from './order-flow-bubbles'
 import { OrderFlowBars, tradeBubblePrice, type TradeBar } from './order-flow-bars'
 import { ReplayOrderFlow } from './order-flow-replay'
 import type { DrawingPoint } from './drawings'
+import { drawingIndexAt } from './drawing-coordinates'
 import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, bigTradeThreshold, bubblePreferenceDefaults, orderFlowSettings, withoutBubbleDefaults, type OrderFlowPreferences } from './order-flow-preferences'
-import { calculateFootprint, cumulativeVolumeDelta, dailyTradeVwap, tradeDay, visibleVolumeProfile, type FootprintRow } from './order-flow-metrics'
+import { calculateFootprint, cumulativeVolumeDelta, dailyTradeVwap, tradeBarProfileLevels, tradeDay, visibleVolumeProfile, type FootprintRow } from './order-flow-metrics'
+import { CandleWorkerResults, orderFlowWorkers, parallelBubbles, parallelFootprint, WORKER_TRADE_THRESHOLD } from './order-flow-workers'
+import { runOrderFlowTask, type TradeColumns } from './order-flow-worker-tasks'
 import type { CvdDisplay, FootprintDisplay, VisibleProfileDisplay, VwapDisplay } from './order-flow-indicators'
 
 const dataReady = 'onDataReady' as ActionType
 const visibleRangeChange = 'onVisibleRangeChange' as ActionType
 const volumeIndicators = new Set(['VOL', 'AVP', 'OBV', 'PVT', 'VR', 'EMV'])
+const profileDragPauseMs = 120
 
 interface ProfileRequest {
   range: TradeRange
-  low: number
-  high: number
   cursor: number
-  accumulator: VolumeProfileAccumulator
+  levels: VolumeProfileLevels
   prices?: Map<number, number>
   complete: boolean
   operation?: AbortController
+  pendingUntil?: number
   message?: string
+  previewUntil?: number
 }
 
 const notional = (trade: BybitTrade) => trade.price * trade.size
@@ -80,6 +85,7 @@ export class OrderFlowChart {
   private displayedVolumes?: Map<number, number>
   private volumeSymbol?: string
   private displayedBubbleCount = 0
+  private displayedBubbleVersion = 0
   private settings: OrderFlowPreferences | undefined
   private footprintSettings = orderFlowSettings('footprint')
   private bubbleSettings = orderFlowSettings('bubbles')
@@ -87,6 +93,8 @@ export class OrderFlowChart {
   private visibleProfileSettings = orderFlowSettings('visibleProfile')
   private cvdSettings = orderFlowSettings('cvd')
   private footprintRows = new WeakMap<TradeBar, { open: number; precision: number; projected: boolean; targetRows: number; rows: FootprintRow[] }>()
+  private readonly footprintWorkers = new CandleWorkerResults<FootprintRow[]>(() => this.schedule())
+  private readonly bubbleWorkers = new CandleWorkerResults<DisplayedTradeBubble[]>(() => this.schedule())
   private previousBarSpace?: number
 
   constructor(private readonly chart: Chart, private readonly feed: CombinedBybitSource, private readonly timeframe: () => string,
@@ -161,7 +169,6 @@ export class OrderFlowChart {
   }
 
   setPreferences(preferences: OrderFlowPreferences | undefined): void {
-    const oldProfile = this.profileSettings
     const oldFootprint = this.footprintSettings
     this.settings = preferences
     this.profileSettings = orderFlowSettings('profile', preferences)
@@ -170,13 +177,10 @@ export class OrderFlowChart {
     this.bubbleSettings = orderFlowSettings('bubbles', preferences)
     this.cvdSettings = orderFlowSettings('cvd', preferences)
     this.footprintRows = new WeakMap()
-    if (oldProfile.rows !== this.profileSettings.rows) {
-      this.invalidateProfiles()
-      for (const id of this.profiles.keys()) this.showProfile(id, { message: '读取区间成交…' })
-    } else {
-      for (const [id, request] of this.profiles) {
-        this.showProfile(id, { profile: request.accumulator.profile(this.profileSettings.valueArea), message: request.message })
-      }
+    this.footprintWorkers.clear()
+    this.bubbleWorkers.clear()
+    for (const [id, request] of this.profiles) {
+      this.showProfile(id, { profile: request.levels.profile(this.profileSettings.rows, this.profileSettings.valueArea), message: request.message })
     }
     if (this.previousBarSpace !== undefined && oldFootprint.columnWidth !== this.footprintSettings.columnWidth) {
       this.setFootprintBarSpace(this.footprintSettings.columnWidth)
@@ -225,27 +229,23 @@ export class OrderFlowChart {
     this.schedule()
   }
 
-  setProfile(id: string, points: readonly DrawingPoint[]): void {
+  setProfile(id: string, points: readonly DrawingPoint[], preview = false): void {
     const [first, last] = points
     if (!first || !last) return
-    const low = Math.min(first.value, last.value)
-    const high = Math.max(first.value, last.value)
-    if (low >= high) {
-      this.removeProfile(id)
-      this.showProfile(id, {})
-      return
-    }
     const fromUs = Math.min(first.timestamp, last.timestamp) * 1000
     const untilUs = (Math.max(first.timestamp, last.timestamp) + 1) * 1000
     const existing = this.profiles.get(id)
-    if (existing?.low === low && existing.high === high && existing.range.fromUs === fromUs &&
-        existing.range.untilUs === untilUs) return
-    this.removeProfile(id)
-    this.profiles.set(id, {
-      range: { fromUs, untilUs }, low, high, cursor: fromUs, complete: true,
-      accumulator: new VolumeProfileAccumulator(low, high, this.profileSettings.rows),
-    })
-    this.showProfile(id, { message: '读取区间成交…' })
+    if (existing?.range.fromUs === fromUs && existing.range.untilUs === untilUs) {
+      if (preview || existing.previewUntil === undefined) return
+      existing.previewUntil = undefined
+    } else {
+      this.removeProfile(id)
+      this.profiles.set(id, {
+        range: { fromUs, untilUs }, cursor: fromUs, complete: true, levels: new VolumeProfileLevels(),
+        previewUntil: preview ? performance.now() + profileDragPauseMs : undefined,
+      })
+      this.showProfile(id, { message: '读取区间成交…' })
+    }
     if (this.pendingFrame === undefined) {
       this.pendingFrame = requestAnimationFrame(() => {
         this.pendingFrame = undefined
@@ -277,13 +277,15 @@ export class OrderFlowChart {
 
   private invalidateProfiles(affected?: TradeRange): void {
     for (const request of this.profiles.values()) {
-      if (affected && (request.range.fromUs >= affected.untilUs || request.range.untilUs <= affected.fromUs)) continue
+      const processedUntil = request.pendingUntil ?? request.cursor
+      if (affected && (request.range.fromUs >= affected.untilUs || processedUntil <= affected.fromUs)) continue
       request.operation?.abort()
       request.operation = undefined
+      request.pendingUntil = undefined
       request.cursor = request.range.fromUs
       request.complete = true
       request.prices?.clear()
-      request.accumulator = new VolumeProfileAccumulator(request.low, request.high, this.profileSettings.rows)
+      request.levels = new VolumeProfileLevels()
     }
   }
 
@@ -294,6 +296,8 @@ export class OrderFlowChart {
     this.flowPending = false
     this.flowInvalidations.length = 0
     this.updating = undefined
+    this.footprintWorkers.retain(new Set())
+    this.bubbleWorkers.retain(new Set())
   }
 
   private cancelFlowPaint(): void {
@@ -320,7 +324,72 @@ export class OrderFlowChart {
   private showProfile(id: string, display: ProfileDisplay): void {
     const request = this.profiles.get(id)
     if (request) request.message = display.message
-    this.chart.overrideOverlay({ id, extendData: { ...display, settings: this.profileSettings } })
+    const bounds = display.bounds ?? volumeProfileBounds(display.profile) ?? (request && this.profileCandleBounds(request.range))
+    const center = volumeProfileCenter(display.profile, bounds)
+    const overlay = this.chart.getOverlayById(id)
+    if (center !== undefined && overlay) {
+      // Updating only the price keeps the native time handles and drawing step.
+      for (const point of overlay.points) point.value = center
+    }
+    this.chart.overrideOverlay({ id, extendData: { ...display, bounds, settings: this.profileSettings } })
+  }
+
+  private *profileCandles(fromUs: number, untilUs: number) {
+    const candles = this.chart.getDataList()
+    if (!candles.length || untilUs <= fromUs) return
+    const period = this.timeframe()
+    const first = Math.max(0, Math.floor(drawingIndexAt(candles, fromUs / 1000, period)))
+    for (let index = first; index < candles.length; index++) {
+      const candle = candles[index]
+      const start = candle.timestamp * 1000
+      if (start >= untilUs) break
+      const end = nextOpenTime(candle.timestamp, period) * 1000
+      if (end > fromUs) yield { candle, start, end }
+    }
+  }
+
+  private profileCandleBounds(range: TradeRange): VolumeProfileBounds | undefined {
+    if (!this.hasCurrentCandles()) return
+    let low = Infinity
+    let high = -Infinity
+    for (const { candle } of this.profileCandles(range.fromUs, Math.min(range.untilUs, this.feed.tradeCursorUs))) {
+      low = Math.min(low, candle.low)
+      high = Math.max(high, candle.high)
+    }
+    if (low <= high) return { low, high }
+  }
+
+  private cachedProfileLevels(fromUs: number, untilUs: number): VolumeProfileLevels | undefined {
+    const flow = this.feed.replaying && !this.feed.localArchive ? this.replayFlow : this.flow
+    if (flow?.key !== JSON.stringify([this.feed.archiveCacheKey, 0]) ||
+        this.flowInvalidations.some(range => range.fromUs < untilUs && range.untilUs > fromUs)) return
+    const projected = this.feed.mapping?.relation === 'etf'
+    const cursor = this.feed.tradeCursorUs
+    const slices: { bar: TradeBar; open: number; start: number; end: number }[] = []
+    let coveredUntil = fromUs
+    for (const { candle, start, end } of this.profileCandles(fromUs, untilUs)) {
+      if (start > coveredUntil) return
+      const bar = flow.read(candle.timestamp, Math.min(end, cursor), this.feed)
+      if (!bar.complete) return
+      slices.push({ bar, open: candle.open, start, end: bar.cursor })
+      coveredUntil = bar.cursor
+    }
+    if (coveredUntil < untilUs) return
+    const levels = new VolumeProfileLevels()
+    for (const { bar, open, start, end } of slices) {
+      const full = start >= fromUs && end <= untilUs
+      levels.merge(full ? tradeBarProfileLevels(bar, open, projected)
+        : tradeBarProfileLevels(bar, open, projected, Math.max(start, fromUs), Math.min(end, untilUs)))
+    }
+    return levels
+  }
+
+  private finishProfile(id: string, request: ProfileRequest, untilUs: number, complete: boolean): void {
+    request.cursor = untilUs
+    request.complete &&= complete
+    const profile = request.levels.profile(this.profileSettings.rows, this.profileSettings.valueArea)
+    this.showProfile(id, { profile, message: request.complete ? (profile ? undefined : '选区暂无成交') : '选区的逐笔成交不完整' })
+    if (Math.min(this.feed.tradeCursorUs, request.range.untilUs) > untilUs) this.schedule()
   }
 
   private async updateProfile(id: string, request: ProfileRequest): Promise<void> {
@@ -329,7 +398,8 @@ export class OrderFlowChart {
     if (untilUs < request.cursor) {
       request.operation?.abort()
       request.operation = undefined
-      request.accumulator = new VolumeProfileAccumulator(request.low, request.high, this.profileSettings.rows)
+      request.pendingUntil = undefined
+      request.levels = new VolumeProfileLevels()
       request.cursor = request.range.fromUs
       request.complete = true
       request.prices?.clear()
@@ -340,39 +410,120 @@ export class OrderFlowChart {
       return
     }
     if (request.operation) return
+    const cached = this.cachedProfileLevels(request.cursor, untilUs)
+    if (cached) {
+      request.levels.merge(cached)
+      this.finishProfile(id, request, untilUs, true)
+      return
+    }
+    if (request.previewUntil !== undefined && performance.now() < request.previewUntil) {
+      this.schedule()
+      return
+    }
     const operation = new AbortController()
     request.operation = operation
+    request.pendingUntil = untilUs
     try {
       const timeframe = this.timeframe()
-      const fromUs = request.cursor === request.range.fromUs && this.feed.mapping?.relation === 'etf'
-        ? alignOpenTime(request.cursor / 1000, timeframe, 'floor') * 1000 : request.cursor
-      const project = this.projectPrices(this.chart.getDataList(), timeframe, request.prices ??= new Map())
-      const accumulator = request.accumulator
-      const complete = await this.feed.visitTrades({ fromUs, untilUs }, trade => {
-        const price = project(trade)
-        if (price !== undefined && trade.timeUs >= request.cursor) accumulator.add(trade, price)
-      }, operation.signal)
+      const start = alignOpenTime(request.cursor / 1000, timeframe, 'floor')
+      const fromUs = this.feed.mapping?.relation === 'etf' && !request.prices?.has(start) ? start * 1000 : request.cursor
+      const levels = request.levels
+      const parallel = await this.calculateProfile(request, timeframe, fromUs, untilUs, operation.signal)
+      let complete: boolean
+      if (parallel) {
+        operation.signal.throwIfAborted()
+        levels.merge(parallel.levels)
+        complete = parallel.complete
+      } else {
+        const project = this.projectPrices(this.chart.getDataList(), timeframe, request.prices ??= new Map())
+        let nextPreview = performance.now() + 120
+        complete = await this.feed.visitTrades({ fromUs, untilUs }, trade => {
+          const price = project(trade)
+          if (price !== undefined && trade.timeUs >= request.cursor) levels.add(price, trade.side === 'buy' ? trade.size : -trade.size)
+        }, operation.signal, coverage => {
+          if (operation.signal.aborted || coverage.untilUs >= untilUs || performance.now() < nextPreview) return
+          const profile = levels.profile(this.profileSettings.rows, this.profileSettings.valueArea)
+          if (profile) this.showProfile(id, { profile, bounds: this.profileCandleBounds(request.range), message: '正在计算区间成交…' })
+          nextPreview = performance.now() + 120
+        })
+      }
       operation.signal.throwIfAborted()
-      request.cursor = untilUs
-      request.complete &&= complete
-      const profile = request.accumulator.profile(this.profileSettings.valueArea)
-      this.showProfile(id, { profile, message: request.complete ? (profile ? undefined : '选区暂无成交') : '选区的逐笔成交不完整' })
-      if (Math.min(this.feed.tradeCursorUs, request.range.untilUs) > request.cursor) this.schedule()
+      this.finishProfile(id, request, untilUs, complete)
     } catch (error) {
       // A retry must reprocess any partial range that was already accumulated.
       if (!operation.signal.aborted) {
         request.cursor = request.range.fromUs
-        request.accumulator = new VolumeProfileAccumulator(request.low, request.high, this.profileSettings.rows)
+        request.levels = new VolumeProfileLevels()
         request.complete = true
+        request.prices?.clear()
         this.showProfile(id, { message: errorText(error) })
       }
     } finally {
-      if (request.operation === operation) request.operation = undefined
+      if (request.operation === operation) {
+        request.operation = undefined
+        request.pendingUntil = undefined
+      }
+    }
+  }
+
+  private async calculateProfile(request: ProfileRequest, timeframe: string, fromUs: number, untilUs: number, signal: AbortSignal) {
+    const local = this.feed.localArchive
+    const symbol = this.feed.mapping?.symbol
+    if (!symbol || !orderFlowWorkers.available) return
+    const levels = new VolumeProfileLevels()
+    const pending: Promise<TradeColumns>[] = []
+    const controller = new AbortController()
+    const batchSignal = AbortSignal.any([signal, controller.signal])
+    const merge = async () => {
+      const result = await pending.shift()!
+      batchSignal.throwIfAborted()
+      levels.addPacked(result)
+    }
+    const submit = async (values: TradeColumns) => {
+      const job = orderFlowWorkers.run(() => ({ kind: 'profile', values }), batchSignal, true)
+      void job.catch(() => undefined)
+      pending.push(job)
+      if (pending.length >= orderFlowWorkers.parallelism) await merge()
+    }
+    try {
+      let complete: boolean
+      let anchors: Map<number, number> | undefined
+      if (local) complete = await local.visitPriceSizes(symbol, fromUs, untilUs, submit, batchSignal)
+      else {
+        anchors = new Map(request.prices)
+        const project = this.projectPrices(this.chart.getDataList(), timeframe, anchors)
+        let values = new Float64Array(32_768 * 2)
+        let write = 0
+        complete = await this.feed.visitTrades({ fromUs, untilUs }, trade => {
+          const price = project(trade)
+          if (price === undefined || trade.timeUs < request.cursor) return
+          values[write++] = price
+          values[write++] = trade.side === 'buy' ? trade.size : -trade.size
+          if (write < values.length) return
+          const batch = values
+          values = new Float64Array(batch.length)
+          write = 0
+          return submit(batch)
+        }, batchSignal)
+        if (write >= WORKER_TRADE_THRESHOLD * 2) await submit(values.subarray(0, write))
+        else if (write > 0) levels.addPacked(runOrderFlowTask({ kind: 'profile', values: values.subarray(0, write) }))
+      }
+      while (pending.length) await merge()
+      batchSignal.throwIfAborted()
+      if (anchors) request.prices = anchors
+      return { levels, complete }
+    } catch {
+      signal.throwIfAborted()
+      // The exact main-thread calculation remains available if a worker fails.
+    } finally {
+      controller.abort()
     }
   }
 
   private showBubbles(display: BubbleDisplay): void {
     const indicator = this.bubbleIndicator()
+    const activeBars = indicator?.visible && display.mode ? display.bars : undefined
+    this.bubbleWorkers.retain(new Set(activeBars?.values()))
     if (!indicator) return
     const previous = indicator.extendData as BubbleDisplay | undefined
     let count = 0
@@ -382,17 +533,28 @@ export class OrderFlowChart {
       sameBars &&= previous?.bars?.get(start) === bar
     }
     const minimumNotional = Number(indicator.calcParams[0])
+    const workerVersion = this.bubbleWorkers.version
     const sameSelection = sameBars && count === this.displayedBubbleCount && previous?.settings === display.settings &&
+        workerVersion === this.displayedBubbleVersion &&
         previous?.projectToCandle === display.projectToCandle && previous?.minimumNotional === minimumNotional &&
         previous?.contractValue === display.contractValue && previous?.lotSize === display.lotSize &&
         previous?.timeframe === display.timeframe && previous?.mode === display.mode
-    const points = indicator.visible && display.bars && display.mode
-      ? (sameSelection && previous?.points) || selectVisibleTradeBubbles(display.bars, display.mode,
-        { ...display, ...bigTradeThreshold(this.bubbleSettings, minimumNotional) }, this.bubbleSettings.maxBubbles)
-      : undefined
+    let points: BubbleDisplay['points']
+    if (activeBars && display.mode) {
+      const mode = display.mode
+      const { contractValue, lotSize, projectToCandle } = display
+      const filter = { contractValue, lotSize, projectToCandle, ...bigTradeThreshold(this.bubbleSettings, minimumNotional) }
+      const limit = this.bubbleSettings.maxBubbles
+      const key = JSON.stringify([mode, filter, limit])
+      points = (sameSelection && previous?.points) || selectVisibleTradeBubbles(activeBars, mode, filter, limit, bar => {
+        const result = this.bubbleWorkers.get(bar, key, signal => parallelBubbles(bar, { mode, filter, limit }, signal))
+        return result === null ? [] : result
+      })
+    }
     if (sameSelection && previous?.points === points && previous?.message === display.message && previous?.updating === display.updating) return
     if (previous?.points !== points) this.hideTooltip()
     this.displayedBubbleCount = count
+    this.displayedBubbleVersion = workerVersion
     this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: { ...display, points, minimumNotional } }, CANDLE_PANE)
   }
 
@@ -440,7 +602,11 @@ export class OrderFlowChart {
           const prior = previous?.rows?.[index]
           return prior?.low === row.low && prior.high === row.high && prior.buy === row.buy && prior.sell === row.sell
         }) ?? true)) return
-    const display: VisibleProfileDisplay = { rows, message, axisInset: this.profileAxisInset, settings: this.visibleProfileSettings }
+    const display: VisibleProfileDisplay = {
+      rows, message, axisInset: this.profileAxisInset, settings: this.visibleProfileSettings,
+      prices: rows && volumeProfilePrices(rows, this.visibleProfileSettings.valueArea),
+      precision: this.chart.getPriceVolumePrecision().price,
+    }
     this.overrideIndicator.call(this.chart, { name: VISIBLE_VOLUME_PROFILE, extendData: display }, CANDLE_PANE)
   }
 
@@ -481,10 +647,11 @@ export class OrderFlowChart {
   }
 
   private projectPrices(candles: readonly KLineData[], timeframe: string, anchors: Map<number, number>) {
-    const useEtfScale = this.feed.mapping?.relation === 'etf'
+    if (this.feed.mapping?.relation !== 'etf') return (trade: BybitTrade) => trade.price
     const inputs = new Map(candles.map(bar => [bar.timestamp, bar.open]))
-    return (trade: BybitTrade, start = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')): number | undefined => {
-      if (!useEtfScale || trade.venue === 'OKX') return trade.price
+    return (trade: BybitTrade): number | undefined => {
+      if (trade.venue === 'OKX') return trade.price
+      const start = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')
       const open = inputs.get(start)
       if (open === undefined) return
       if (!anchors.has(start)) anchors.set(start, open / trade.price)
@@ -565,6 +732,7 @@ export class OrderFlowChart {
       return target > timestamp * 1000 ? read(timestamp, target) : undefined
     }
     let partial = false
+    let footprintPending = false
     const visible = this.visibleCandles()
     for (const { timestamp, open, high, low } of visible) {
       const bar = readCurrent(timestamp)
@@ -583,17 +751,22 @@ export class OrderFlowChart {
         }
         let cached = this.footprintRows.get(bar)
         if (!cached || cached.open !== open || cached.precision !== precision || cached.projected !== projected || cached.targetRows !== targetRows) {
-          const rows = calculateFootprint(bar, settings, precision, trade => tradeBubblePrice(trade, bar, open, projected), targetRows)
+          const key = JSON.stringify([open, precision, projected, targetRows])
+          const computed = this.footprintWorkers.get(bar, key, signal => parallelFootprint(bar,
+            { open, firstBybitPrice: bar.firstBybitPrice, projected, precision, settings }, targetRows, signal))
+          if (computed === null) { footprintPending = true; continue }
+          const rows = computed ?? calculateFootprint(bar, settings, precision, trade => tradeBubblePrice(trade, bar, open, projected), targetRows)
           cached = { open, precision, projected, targetRows, rows }
           this.footprintRows.set(bar, cached)
         }
         footprints.set(timestamp, cached.rows)
       }
     }
+    this.footprintWorkers.retain(new Set(footprintEnabled ? bars.values() : undefined))
     const previous = this.displayedVolumes
     const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
     this.showVolume(volumeChanged ? volumes : previous)
-    const missingHistory = this.feed.localArchive ? '请在「本地数据管理」补齐对应日期的逐笔归档' : '历史逐笔可通过「下载成交数据」载入'
+    const missingHistory = this.feed.localArchive ? '请通过「下载成交数据」补齐本地逐笔归档' : '历史逐笔可通过「下载成交数据」载入'
     const status = message ?? (this.updating ? '正在计算逐笔成交…' : partial ? missingHistory : undefined)
     const unit = this.bubbleSettings.thresholdUnit
     const contractValue = this.feed.mapping?.okx?.contractValue
@@ -603,7 +776,7 @@ export class OrderFlowChart {
         : unit === 'lots' && projected && !contractValue ? 'ETF 代理成交无法换算为当前品种手数' : undefined
     this.showBubbles({ bars: unit === 'notional' || allTrades ? bars : undefined, timeframe, mode,
       updating: this.updating, projectToCandle: projected, contractValue, lotSize, message: unitMessage ?? status, settings: this.bubbleSettings })
-    if (footprintEnabled) this.showFootprint(footprints, status)
+    if (footprintEnabled) this.showFootprint(footprints, status ?? (footprintPending ? '正在计算足迹…' : undefined))
     if (profileEnabled) {
       const pricedBars = visible.flatMap(({ timestamp, open }) => {
         const bar = bars.get(timestamp)
@@ -639,6 +812,8 @@ export class OrderFlowChart {
     const profile = this.mainIndicator(VISIBLE_VOLUME_PROFILE)?.visible
     const vwap = this.mainIndicator(VWAP)?.visible
     this.syncFootprintSpacing(this.supported && !!footprint)
+    if (!indicator?.visible) this.bubbleWorkers.retain(new Set())
+    if (!footprint) this.footprintWorkers.retain(new Set())
     if (!this.supported) {
       this.showVolume()
       if (indicator?.visible) this.showBubbles({ message: '此品种暂无成交量' })
@@ -652,6 +827,8 @@ export class OrderFlowChart {
     const showVolume = this.showVolume(this.displayedVolumes)
     const visible = this.visibleCandles()
     if (!visible.length) {
+      this.bubbleWorkers.retain(new Set())
+      this.footprintWorkers.retain(new Set())
       this.showVisibleProfile()
       this.showVwap()
       return
