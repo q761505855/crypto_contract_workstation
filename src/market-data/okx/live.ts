@@ -1,10 +1,15 @@
-import type { BybitTrade } from '../bybit/trades'
+import { BYBIT_HOUR_MS, type BybitTrade } from '../bybit/trades'
 import { compareTrades, okxTrade, type OkxInstrument } from './trades'
 
 const subscribedChannel = 'trades-all'
 const liveLimit = 150_000
 const pageSpacing = 125
+const maxInFlight = 4
+const minParallelRangeUs = BYBIT_HOUR_MS * 1000 / 4
+const historyRequestKey = 'crypto-contract-workstation:okx-history-request-at'
+const inFlight = new Set<Promise<void>>()
 let nextRequest = 0
+let requestQueue = Promise.resolve()
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted()
@@ -13,6 +18,58 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve() }, ms)
     signal.addEventListener('abort', stop, { once: true })
   })
+}
+
+async function withHistoryRequestLock<T>(action: (shared: boolean) => T, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted()
+  const locks = globalThis.navigator?.locks
+  return locks ? locks.request(historyRequestKey, { signal }, () => action(true)) : action(false)
+}
+
+function historyRequestAt(shared: boolean): number {
+  if (shared) {
+    try {
+      const stored = Number(localStorage.getItem(historyRequestKey))
+      if (Number.isFinite(stored)) return Math.max(stored, nextRequest)
+    } catch { /* The in-page schedule also works without browser storage. */ }
+  }
+  return nextRequest
+}
+
+function setHistoryRequestAt(time: number, shared: boolean): void {
+  nextRequest = time
+  if (shared) {
+    try { localStorage.setItem(historyRequestKey, String(time)) }
+    catch { /* Keep the schedule in memory if browser storage is unavailable. */ }
+  }
+}
+
+const historyClock = () => performance.timeOrigin + performance.now()
+
+function scheduleHistoryRequest<T>(send: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  let result: Promise<T>
+  const scheduled = requestQueue.then(async () => {
+    signal.throwIfAborted()
+    if (inFlight.size >= maxInFlight) await Promise.race(inFlight)
+    for (;;) {
+      const wait = await withHistoryRequestLock(shared => {
+        signal.throwIfAborted()
+        const now = historyClock()
+        const delay = historyRequestAt(shared) - now
+        if (delay > 0) return delay
+        // Start the fetch under the lock and release it before awaiting the response.
+        result = send()
+        setHistoryRequestAt(historyClock() + pageSpacing, shared)
+        const settled = result.then(() => {}, () => {}).finally(() => inFlight.delete(settled))
+        inFlight.add(settled)
+        return 0
+      }, signal)
+      if (wait === 0) return
+      await sleep(Math.ceil(wait), signal)
+    }
+  })
+  requestQueue = scheduled.catch(() => {})
+  return scheduled.then(() => result)
 }
 
 interface OkxRow { instId: string; tradeId: string; ts: string; px: string; sz: string; side: string }
@@ -24,18 +81,29 @@ function rowTrade(instrument: OkxInstrument, row: OkxRow): BybitTrade {
 
 async function requestTradePage(instrument: OkxInstrument, params: Record<string, string>, signal: AbortSignal,
   fetcher: typeof fetch): Promise<BybitTrade[]> {
-  const now = Date.now()
-  const requestAt = Math.max(now, nextRequest)
-  nextRequest = requestAt + pageSpacing
-  if (requestAt > now) await sleep(requestAt - now, signal)
-  signal.throwIfAborted()
   const query = new URLSearchParams({ instId: instrument.symbol, limit: '100', ...params })
-  const response = await fetcher.call(globalThis, `https://www.okx.com/api/v5/market/history-trades?${query}`,
-    { credentials: 'omit', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) })
-  if (!response.ok) throw new Error(`读取 OKX 历史逐笔失败（HTTP ${response.status}）`)
-  const result = await response.json()
-  if (result.code !== '0' || !Array.isArray(result.data)) throw new Error('读取 OKX 历史逐笔失败')
-  return result.data.map((row: OkxRow) => rowTrade(instrument, row)).sort(compareTrades)
+  for (const cooldown of [2000, 4000, 8000]) {
+    const rows = await scheduleHistoryRequest(async () => {
+      const response = await fetcher.call(globalThis, `https://www.okx.com/api/v5/market/history-trades?${query}`,
+        { credentials: 'omit', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) })
+      const result = response.ok ? await response.json() : null
+      if (response.status === 429 || result?.code === '50011') {
+        const header = response.headers.get('Retry-After')
+        const seconds = Number(header)
+        const retryDelay = header && !Number.isFinite(seconds) ? Date.parse(header) - Date.now() : seconds * 1000
+        await withHistoryRequestLock(shared => {
+          const until = historyClock() + Math.max(cooldown, Number.isFinite(retryDelay) ? retryDelay : 0)
+          setHistoryRequestAt(Math.max(until, historyRequestAt(shared)), shared)
+        }, signal)
+        return null
+      }
+      if (!response.ok) throw new Error(`读取 OKX 历史逐笔失败（HTTP ${response.status}）`)
+      if (result?.code !== '0' || !Array.isArray(result.data)) throw new Error('读取 OKX 历史逐笔失败')
+      return result.data.map((row: OkxRow) => rowTrade(instrument, row)).sort(compareTrades)
+    }, signal)
+    if (rows !== null) return rows
+  }
+  throw new Error('OKX 历史逐笔接口仍在限流，请稍后重试')
 }
 
 /** Keep the boundary millisecond pending until all of its trade IDs have arrived. */
@@ -107,6 +175,42 @@ export async function* readOkxTradePagesForward(instrument: OkxInstrument, fromU
     width = rows.length >= 50 ? 101n : width < 65_536n ? width * 2n : width
   }
   if (cursor < untilUs) yield { fromUs: cursor, untilUs, rows: edge }
+}
+
+export async function visitOkxTradePages(instrument: OkxInstrument, fromUs: number, untilUs: number, forward: boolean,
+  signal: AbortSignal, offer: (page: OkxTradePage) => void, fetcher: typeof fetch = fetch): Promise<void> {
+  const read = forward ? readOkxTradePagesForward : readOkxTradePages
+  let substantialPages = 0
+  for await (const page of read(instrument, fromUs, untilUs, signal, fetcher)) {
+    signal.throwIfAborted()
+    offer(page)
+    if (forward) fromUs = page.untilUs
+    else untilUs = page.fromUs
+    // Keep small downloads on the original cursor and publish the nearby pages first.
+    if (page.rows.length >= 50) substantialPages++
+    if (substantialPages >= 2 && untilUs - fromUs >= 2 * minParallelRangeUs) break
+  }
+  if (fromUs >= untilUs) return
+
+  const parallel = Math.min(3, Math.floor((untilUs - fromUs) / minParallelRangeUs))
+  const stepUs = Math.floor((untilUs - fromUs) / parallel / 1000) * 1000
+  const abort = new AbortController()
+  const groupSignal = AbortSignal.any([signal, abort.signal])
+  const ranges = Array.from({ length: parallel }, (_, offset) => {
+    const index = forward ? offset : parallel - offset - 1
+    const start = fromUs + index * stepUs
+    const end = index === parallel - 1 ? untilUs : start + stepUs
+    return { start, end }
+  })
+  await Promise.all(ranges.map(async ({ start, end }) => {
+    try {
+      for await (const page of read(instrument, start, end, groupSignal, fetcher)) {
+        groupSignal.throwIfAborted()
+        offer(page)
+      }
+    } catch (error) { abort.abort(error) }
+  }))
+  groupSignal.throwIfAborted()
 }
 
 export class OkxLiveTrades {

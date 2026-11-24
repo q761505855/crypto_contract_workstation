@@ -6,7 +6,7 @@ import { ensureTradeDay } from './archive-requests'
 import { BybitLiveTrades } from './live'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, bybitFirstDay, type BybitSymbol, type BybitTrade } from './trades'
 import { OkxArchive, okxArchiveDay } from '../okx/archive'
-import { OkxLiveTrades, readOkxTradePages, readOkxTradePagesForward, type OkxTradePage } from '../okx/live'
+import { OkxLiveTrades, visitOkxTradePages, type OkxTradePage } from '../okx/live'
 import { compareTrades, mergeOkxTrades, orderFlowMapping, type OrderFlowMapping } from '../okx/trades'
 
 export interface TradeRange { fromUs: number; untilUs: number; replaceArchive?: boolean; historyPage?: boolean }
@@ -383,7 +383,7 @@ export class CombinedBybitSource {
         progress(error instanceof Error ? error.message : `${day} 下载失败`)
       }
     }
-    // Page the REST API one day at a time. Archive requests can wait on Git in parallel.
+    // Prefer the anchor day. Its REST ranges share the request scheduler while archive requests wait on Git.
     const checkRecent = async () => {
       for (let batch = 0; batch < recentDays.length; batch += 8) {
         await Promise.all(recentDays.slice(batch, batch + 8).map(checkCachedDay))
@@ -456,12 +456,8 @@ export class CombinedBybitSource {
     forward: boolean, signal: AbortSignal, offer: (page: OkxTradePage) => void): Promise<void> {
     const gaps = this.missingHistoryRanges(this.history.get(symbol), fromUs, untilUs)
     if (!forward) gaps.reverse()
-    const read = forward ? readOkxTradePagesForward : readOkxTradePages
     for (const gap of gaps) {
-      for await (const page of read(instrument, gap.fromUs, gap.untilUs, signal)) {
-        signal.throwIfAborted()
-        offer(page)
-      }
+      await visitOkxTradePages(instrument, gap.fromUs, gap.untilUs, forward, signal, offer)
     }
   }
 

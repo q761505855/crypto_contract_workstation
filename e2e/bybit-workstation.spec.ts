@@ -492,6 +492,7 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   await page.clock.setFixedTime(now)
   await connectFixture(page, false, { historyAvailable: stamp => stamp >= start })
   await installViewportProbe(page)
+  await page.route('https://www.okx.com/api/v5/market/history-trades?*', route => route.fulfill({ status: 503, headers }))
   await page.route('https://raw.githubusercontent.com/**/bybit-trades/**', async route => {
     const url = route.request().url()
     if (url.endsWith(`/BTCUSDT/${day}/manifest.json`)) return route.fulfill({ headers, json: {

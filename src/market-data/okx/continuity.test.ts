@@ -80,6 +80,82 @@ describe('OKX 成交来源', () => {
     expect(ids).toEqual(Array.from({ length: 202 }, (_, index) => index + 5))
   })
 
+  it.each([false, true])('并发读取完整区间并保持限速（向右：%s）', async forward => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    try {
+      const { readOkxTradePages, readOkxTradePagesForward, visitOkxTradePages } = await import('./live')
+      const trades = Array.from({ length: 3600 }, (_, index) => ({ instId: instrument.symbol, tradeId: String(index + 1),
+        ts: String(start + Math.floor(index / 5) * 20_000), px: '7000', sz: '1', side: 'buy' }))
+      const fromUs = (start + 1) * 1000
+      const untilUs = (start + 4 * hour) * 1000
+      const signal = new AbortController().signal
+      const measure = async (concurrent: boolean) => {
+        const started = Date.now()
+        const starts: number[] = []
+        let pending = 0
+        let peak = 0
+        const fetcher: typeof fetch = async input => {
+          starts.push(Date.now())
+          peak = Math.max(peak, ++pending)
+          const query = new URL(String(input)).searchParams
+          const after = Number(query.get('after'))
+          const before = Number(query.get('before') ?? 0)
+          const rows = trades.filter(row => query.get('type') === '2' ? Number(row.ts) < after :
+            Number(row.tradeId) > before && Number(row.tradeId) < after)
+          await new Promise(resolve => setTimeout(resolve, 400))
+          pending--
+          return Response.json({ code: '0', data: rows.reverse().slice(0, Number(query.get('limit'))) })
+        }
+        const pages: import('./live').OkxTradePage[] = []
+        if (concurrent) await visitOkxTradePages(instrument, fromUs, untilUs, forward, signal, page => pages.push(page), fetcher)
+        else {
+          const read = forward ? readOkxTradePagesForward : readOkxTradePages
+          for await (const page of read(instrument, fromUs, untilUs, signal, fetcher)) pages.push(page)
+        }
+        return { pages, starts, peak, duration: Date.now() - started }
+      }
+      const sequential = measure(false)
+      await vi.runAllTimersAsync()
+      const baseline = await sequential
+      const concurrent = measure(true)
+      await vi.runAllTimersAsync()
+      const result = await concurrent
+      expect(result.peak).toBeGreaterThan(1)
+      expect(result.peak).toBeLessThanOrEqual(4)
+      expect(result.starts.slice(1).every((time, index) => time - result.starts[index] >= 125)).toBe(true)
+      expect(result.duration).toBeLessThan(baseline.duration * 0.75)
+      expect(forward ? result.pages[0].fromUs : result.pages[0].untilUs).toBe(forward ? fromUs : untilUs)
+      const pages = result.pages.sort((left, right) => left.fromUs - right.fromUs)
+      expect(pages[0].fromUs).toBe(fromUs)
+      expect(pages.at(-1)?.untilUs).toBe(untilUs)
+      expect(pages.slice(1).every((page, index) => page.fromUs === pages[index].untilUs)).toBe(true)
+      expect(pages.flatMap(page => page.rows.map(row => row.id))).toEqual(trades.slice(5).map(row => row.tradeId))
+    } finally { vi.useRealTimers() }
+  })
+
+  it('按 Retry-After 和 OKX 限流码退避后重试同一页', async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    try {
+      const { readOkxTradePages } = await import('./live')
+      const starts: number[] = []
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+        starts.push(Date.now())
+        if (starts.length === 1) return new Response(null, { status: 429, headers: { 'Retry-After': '3' } })
+        if (starts.length === 2) return Response.json({ code: '50011' })
+        return Response.json({ code: '0', data: [] })
+      })
+      const stream = readOkxTradePages(instrument, start * 1000, (start + 1000) * 1000, new AbortController().signal, fetcher)
+      const next = stream.next()
+      await vi.runAllTimersAsync()
+      expect(await next).toMatchObject({ done: false, value: { rows: [] } })
+      expect(starts.map(time => time - starts[0])).toEqual([0, 3000, 7000])
+      expect(new Set(fetcher.mock.calls.map(([url]) => url)).size).toBe(1)
+      await stream.return(undefined)
+    } finally { vi.useRealTimers() }
+  })
+
   it('按 UTC 自然月判断 OKX 能完整覆盖的日期，月末截到目标月最后一天', () => {
     expect(firstOkxHistoryDay(Date.parse('2025-05-31T00:00:00Z'))).toBe(Date.parse('2025-02-28'))
     expect(firstOkxHistoryDay(Date.parse('2024-05-31T00:00:01Z'))).toBe(Date.parse('2024-03-01'))
