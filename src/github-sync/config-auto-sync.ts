@@ -7,7 +7,7 @@ import { configurationEnvelope, type GitHubSyncService } from './sync-service'
 export const CONFIG_BASELINE_KEY = 'github.configBaseline.v1'
 type LocalStorage = Pick<Storage, 'getItem' | 'setItem'>
 export interface ConfigSyncStatus {
-  phase: 'checking' | 'pending' | 'syncing' | 'synced' | 'error' | 'conflict'
+  phase: 'checking' | 'pending' | 'syncing' | 'synced' | 'read-only' | 'error' | 'conflict'
   message: string
 }
 
@@ -155,6 +155,11 @@ export class ConfigAutoSync {
       }
       const local = await this.local()
       const pending = storage.getItem(CONFIG_PENDING_KEY) === 'true' || (base !== undefined && !equal(base, local))
+      if (this.stopped) return
+      if (pending && !client.canWrite()) {
+        this.setStatus('read-only', '配置已保存在本机，云端连接只读')
+        return
+      }
       const remote = await sync.readConfig(client, this.controller.signal)
       if (this.stopped) return
       if (!equal(local, await this.local())) { this.again = true; return }

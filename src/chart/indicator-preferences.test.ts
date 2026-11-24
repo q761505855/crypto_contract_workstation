@@ -67,7 +67,7 @@ describe('chart indicator preferences', () => {
 
   it('preserves explicit bubble scaling switches, restores old archives and validates fixed radius', () => {
     const legacy = { ...preferences, orderFlow: { bubbles: { marker: 'square' as const, showText: false, minRadius: 0 } } }
-    const bubbles = { ...legacy.orderFlow.bubbles, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 }
+    const bubbles = { ...legacy.orderFlow.bubbles, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 250 }
     const value = { ...legacy, orderFlow: { bubbles } }
     const storage = new MemoryStorage()
     saveChartIndicatorPreferences(value, storage)
@@ -76,7 +76,8 @@ describe('chart indicator preferences', () => {
     expect(validateChartIndicatorPreferences(legacy)).toEqual(legacy)
     expect(validateChartIndicatorPreferences({ ...legacy, orderFlow: { bubbles: { opacityByVolume: false } } }, value).orderFlow?.bubbles)
       .toEqual({ ...bubbles, opacityByVolume: false })
-    for (const invalid of [{ sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 0 }, { fixedRadius: 1.5 }, { fixedRadius: 41 }]) {
+    for (const invalid of [{ sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 0 }, { fixedRadius: 1.5 }, { fixedRadius: 41 },
+      ...[null, '', 0, -1, 1.5, 1001].map(maxBubbles => ({ maxBubbles }))]) {
       expect(() => validateChartIndicatorPreferences({ ...legacy, orderFlow: { bubbles: { ...bubbles, ...invalid } } })).toThrow(/orderFlow.bubbles/)
     }
   })

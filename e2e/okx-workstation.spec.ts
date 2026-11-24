@@ -2,12 +2,130 @@ import { expect, test, type WebSocketRoute } from '@playwright/test'
 import { createHash } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
 import { readFile } from 'node:fs/promises'
+import { strToU8, zipSync } from 'fflate'
 import { connectFixture } from './ctrader-fixture'
 import { installViewportProbe } from './viewport-probe'
 
 const instrument = 'US500-USDT-SWAP'
 const start = Date.parse('2027-02-20T14:20:00Z')
 const headers = { 'access-control-allow-origin': '*' }
+
+test('OKX-本地读取已有 ZIP、下载新归档并在刷新后继续使用', async ({ page }) => {
+  const ticker = 'BTC-USDT-SWAP'
+  const folderName = 'OKX daily archives'
+  const existingDay = '2026-11-18'
+  const newDay = '2026-11-19'
+  const existingStart = Date.parse(`${existingDay}T02:15:00Z`)
+  const newStart = Date.parse(`${newDay}T02:15:00Z`)
+  const archive = (day: string, timestamp: number, price: number) => {
+    const basename = `${ticker}-trades-${day}`
+    const lines = Array.from({ length: 12 }, (_, index) => {
+      const time = timestamp + index * 5 * 60_000
+      return `${ticker},${time},buy,${price + index},1,${time}`
+    })
+    const csv = ['instrument_name,trade_id,side,price,size,created_time', ...lines].join('\n')
+    return { name: `${basename}.zip`, bytes: Buffer.from(zipSync({ [`${basename}.csv`]: strToU8(csv) })) }
+  }
+  const existing = archive(existingDay, existingStart, 61_000)
+  const download = archive(newDay, newStart, 62_000)
+  const downloadUrl = `https://static.okx.com/cdn/archives/${download.name}`
+
+  await page.clock.setFixedTime(new Date('2026-11-20T15:00:45Z'))
+  await connectFixture(page)
+  const chart = await installViewportProbe(page)
+  await page.addInitScript(({ folderName, name, bytes }) => {
+    Object.defineProperty(window, 'showDirectoryPicker', { configurable: true, value: async () => {
+      const root = await navigator.storage.getDirectory()
+      const folder = await root.getDirectoryHandle(folderName, { create: true })
+      const existing = await folder.getFileHandle(name, { create: true })
+      if (!(await existing.getFile()).size) {
+        const writer = await existing.createWritable()
+        await writer.write(new Uint8Array(bytes))
+        await writer.close()
+      }
+      return folder
+    } })
+  }, { folderName, name: existing.name, bytes: [...existing.bytes] })
+
+  const requests: string[] = []
+  const sockets: string[] = []
+  await page.routeWebSocket(/^wss:\/\/[^/]*okx\.com\//, socket => { sockets.push(socket.url()) })
+  await page.route('https://www.okx.com/api/v5/**', route => {
+    const endpoint = new URL(route.request().url()).pathname.split('/').at(-1)!
+    requests.push(endpoint)
+    const data = endpoint === 'market-data-history' ? [{ details: [{ groupDetails: [{ filename: download.name, url: downloadUrl }] }] }]
+      : endpoint === 'instruments' ? [{ instId: ticker, instFamily: 'BTC-USDT', state: 'live', ctType: 'linear',
+        settleCcy: 'USDT', ctVal: '0.01', ctMult: '1', minSz: '0.1', lotSz: '0.1', maxMktSz: '1000', tickSz: '0.5',
+        lever: '75', listTime: String(Date.parse('2021-09-01T00:00:00Z')) }]
+      : endpoint === 'position-tiers' ? [{ instFamily: 'BTC-USDT', maxSz: '1000', mmr: '0.004', maxLever: '50' }]
+      : []
+    return route.fulfill({ headers, json: { code: '0', data } })
+  })
+  await page.route(downloadUrl, route => route.fulfill({ headers, contentType: 'application/zip', body: download.bytes }))
+
+  await page.goto('/')
+  const source = page.getByLabel('行情来源')
+  await source.selectOption({ label: 'OKX-本地' })
+  await expect(source).toHaveValue('okx-local')
+  const syncStatus = page.getByTestId('config-sync-status')
+  await expect(syncStatus).toHaveText('配置已保存在本机，云端连接只读')
+  await expect(syncStatus.getByRole('button', { name: '立即重试' })).toHaveCount(0)
+  await page.getByRole('button', { name: '本地数据管理', exact: true }).click()
+  const data = page.getByRole('dialog', { name: 'OKX 本地数据' })
+  await data.getByRole('button', { name: '选择文件夹' }).click()
+  await expect(data.getByRole('list', { name: '本地 ZIP 文件' })).toContainText(existing.name)
+  await data.getByRole('button', { name: '关闭OKX 本地数据' }).click()
+  await expect.poll(async () => (await chart()).last).toMatchObject({ open: 61_009, close: 61_011 })
+
+  await page.getByRole('button', { name: '本地数据管理', exact: true }).click()
+  await data.getByLabel('开始日期').fill(newDay)
+  await data.getByLabel('结束日期').fill(newDay)
+  await data.getByRole('button', { name: '下载 ZIP' }).click()
+  await expect(data.getByRole('list', { name: '下载结果' })).toContainText('已保存')
+  await expect(data.getByRole('list', { name: '本地 ZIP 文件' })).toContainText(download.name)
+  const saved = await page.evaluate(async ({ folderName, filename }) => {
+    const root = await navigator.storage.getDirectory()
+    const folder = await root.getDirectoryHandle(folderName)
+    const file = await (await folder.getFileHandle(filename)).getFile()
+    return Array.from(new Uint8Array(await file.arrayBuffer()))
+  }, { folderName, filename: download.name })
+  expect(Buffer.from(saved)).toEqual(download.bytes)
+  await data.getByRole('button', { name: '关闭OKX 本地数据' }).click()
+  await expect.poll(async () => (await chart()).last).toMatchObject({ open: 62_009, close: 62_011 })
+
+  await page.reload()
+  await expect(source).toHaveValue('okx-local')
+  await expect(syncStatus).toHaveText('配置已保存在本机，云端连接只读')
+  await expect.poll(async () => (await chart()).last).toMatchObject({ open: 62_009, close: 62_011 })
+  expect(requests).toEqual(['market-data-history'])
+
+  const controls = page.getByTestId('replay-controls')
+  await expect(controls.getByRole('button', { name: '创建回放', exact: true })).toBeEnabled()
+  await controls.getByRole('button', { name: '时间定位', exact: true }).click()
+  const locate = page.getByRole('dialog', { name: '图表时间定位' })
+  const dateInput = (time: number) => page.evaluate(time => {
+    const offset = new Date(time).getTimezoneOffset()
+    return new Date(time - offset * 60_000).toISOString().slice(0, 16)
+  }, time)
+  await expect(locate.getByLabel('图表跳转时间')).toHaveValue(await dateInput(newStart + 45 * 60_000))
+  const replayStart = await dateInput(newStart + 15 * 60_000)
+  await locate.getByLabel('图表跳转时间').fill(replayStart)
+  await locate.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect(controls.locator('.replay-start-time')).toContainText(replayStart.replace('T', ' '))
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  await expect(controls).toContainText('第 1 步')
+  await expect(controls.getByLabel('步进周期')).toHaveValue('1m')
+  await expect(controls.getByRole('option', { name: '逐笔 Tick' })).toHaveCount(0)
+  await controls.getByRole('button', { name: '下一根', exact: true }).click()
+  await expect(controls).toContainText('第 2 步')
+
+  await page.getByRole('button', { name: '工具', exact: true }).click()
+  await page.getByTestId('open-data-manager').click()
+  await expect(page.getByRole('heading', { name: 'OKX-本地 行情', exact: true })).toBeVisible()
+  await expect(page.getByLabel('备份回放会话').getByRole('option')).toContainText('OKX-本地')
+  expect(new Set(requests)).toEqual(new Set(['market-data-history', 'instruments', 'position-tiers']))
+  expect(sockets).toEqual([])
+})
 
 test('切换到 OKX 后使用原生产品、实时 K 线、回放和合约交易规格', async ({ page }) => {
   const minute = 60_000

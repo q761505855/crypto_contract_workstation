@@ -9,7 +9,7 @@ import { DataManager } from './DataManager'
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks() })
 
 function fixture() {
-  const service = { getSymbols: vi.fn(async () => []) }
+  const service = { source: 'ctrader', getSymbols: vi.fn(async () => []) }
   const compare = vi.fn(async (_client: GitHubContentsClient, _selection: unknown) => ({ localFiles: 1, localBytes: 12, remoteFiles: 0, remoteBytes: 0, changedFiles: 1 }))
   const runtime = { service, replaySessions: { list: async () => [] }, githubSync: { compare } } as unknown as MarketDataRuntime
   return { runtime, service, compare }

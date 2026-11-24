@@ -124,7 +124,7 @@ function session(): ReplaySession {
   }
 }
 
-it('round-trips OKX preferences and a simulated perpetual session, including funding and mark-price liquidation', async () => {
+it.each(['okx', 'okx-local'] as const)('round-trips %s preferences and a simulated perpetual session, including funding and mark-price liquidation', async marketSource => {
   const terms: OkxTradingTerms = {
     accountCurrency: 'USDT', contractValue: '0.01', contractStep: '0.1', minContracts: '0.1',
     tickSize: '0.5', maxOrderContracts: '100', maxLeverage: 50,
@@ -132,7 +132,7 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
       { maxContracts: '1000', maxLeverage: 25.5, maintenanceMarginRate: '0.005' }],
   }
   const saved: ReplaySession = {
-    ...session(), symbol: DEFAULT_OKX_SYMBOL, marketSource: 'okx', cursorTimeframe: '1m',
+    ...session(), symbol: DEFAULT_OKX_SYMBOL, marketSource, cursorTimeframe: '1m',
     visibleUntil: 60_000, endTime: 179_999,
     tradingConfig: { ...session().tradingConfig, okx: terms, feeRate: OKX_SIMULATION_TAKER_FEE, liquidationFeeRate: OKX_SIMULATION_TAKER_FEE },
   }
@@ -159,7 +159,8 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
   expect(readPriceSource(storage)).toBe('ctrader')
   storage.setItem(PRICE_SOURCE_KEY, '"invalid"')
   expect(readPriceSource(storage)).toBe('ctrader')
-  storage.setItem(PRICE_SOURCE_KEY, '"okx"')
+  storage.setItem(PRICE_SOURCE_KEY, JSON.stringify(marketSource))
+  expect(readPriceSource(storage)).toBe(marketSource)
   storage.setItem(OKX_SYMBOL_STORAGE_KEY, JSON.stringify(DEFAULT_OKX_SYMBOL))
   const sourceName = `okx-source-${crypto.randomUUID()}`
   await new IndexedDbReplaySessionStore(sourceName).put({ ...saved, currentTime: 60_000, visibleUntil: 120_000, currentIndex: 1 })
@@ -171,6 +172,7 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
   for (const archive of [await source.exportPreferences(), full]) {
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences).toEqual(full.data.preferences)
+    expect(readPriceSource(targetStorage)).toBe(marketSource)
   }
   expect((await target.exportAll()).data).toEqual(full.data)
   const legacy = await source.exportPreferences()
@@ -187,6 +189,14 @@ it('round-trips OKX preferences and a simulated perpetual session, including fun
   const invalid = structuredClone(full)
   invalid.data.sessions![0].tradingConfig.okx!.contractStep = '0'
   await expect(target.import(invalid)).rejects.toThrow(/OKX 回放交易规格/)
+  expect((await target.exportAll()).data).toEqual(full.data)
+  const fineCursor = structuredClone(full)
+  Object.assign(fineCursor.data.sessions![0], { cursorTimeframe: '1s', visibleUntil: 61_000 })
+  await expect(target.import(fineCursor)).rejects.toThrow(/cursorTimeframe/)
+  expect((await target.exportAll()).data).toEqual(full.data)
+  const feeMismatch = structuredClone(full)
+  feeMismatch.data.sessions![0].tradingConfig.feeRate = '0.0006'
+  await expect(target.import(feeMismatch)).rejects.toThrow(/OKX 交易规格不一致/)
   expect((await target.exportAll()).data).toEqual(full.data)
 })
 
@@ -343,7 +353,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
     orderFlow: {
       footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
       bubbles: { marker: 'square', minRadius: 0, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
-        minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 },
+        minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 280 },
       profile: { rows: 16, valueArea: 85, showLabels: false },
       visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false,
         volumeColor: '#12345600', positiveColor: '#23456780', negativeColor: '#345678' },
@@ -391,6 +401,22 @@ function indicatorPreferences(): ChartIndicatorPreferences {
 }
 
 describe('WorkstationBackupService', () => {
+  it('keeps the display count from the device when old archives omit it and rejects invalid counts before writes', async () => {
+    const storage = new MemoryPreferences()
+    const service = new WorkstationBackupService(`bubble-limit-${crypto.randomUUID()}`, storage)
+    storage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(indicatorPreferences()))
+    const legacy = await service.exportPreferences()
+    delete legacy.data.preferences!.chartIndicators!.orderFlow!.bubbles!.maxBubbles
+    await service.import(legacy)
+    expect((await service.exportPreferences()).data.preferences!.chartIndicators!.orderFlow!.bubbles!.maxBubbles).toBe(280)
+
+    for (const maxBubbles of [null, 0, 1001]) {
+      const prefs = { ...legacy.data.preferences, binanceRestBaseUrl: 'https://changed.test', favoriteSymbols: [],
+        chartIndicators: { ...legacy.data.preferences!.chartIndicators!, orderFlow: { bubbles: { maxBubbles } } } }
+      await expect(service.import({ ...legacy, data: { preferences: prefs } })).rejects.toThrow(/maxBubbles/)
+      expect(storage.getItem('marketData.binanceBaseUrl')).not.toBe('"https://changed.test"')
+    }
+  })
   it.each([{ oversold: 50, overbought: 70 }, { oversold: 30, overbought: 101 }, null])('rejects invalid RSI levels before importing business data (%j)', async levels => {
     const storage = new MemoryPreferences()
     const service = new WorkstationBackupService(`rsi-invalid-${crypto.randomUUID()}`, storage)

@@ -72,7 +72,7 @@ function backup(): BackupEnvelope {
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     ctraderAccount: 'live:19',
-    priceSource: 'okx',
+    priceSource: 'okx-local',
     okxSelectedSymbol: { ticker: 'ETH-USDT-SWAP', exchange: 'OKX', priceCurrency: 'USDT', type: 'PERPETUAL', pricePrecision: 2, volumePrecision: 3 },
     pinnedPeriods: ['1m', '1d'],
     replayStepPeriod: '1M',
@@ -90,7 +90,7 @@ function backup(): BackupEnvelope {
         footprint: { type: 'bidAsk', plotType: 'delta', layout: 'histogram', showText: false, minNotional: 0, columnWidth: 128 },
         bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxNotional: 0, thresholdUnit: 'contracts',
           minQuantity: 0, maxQuantity: 2.5, minContracts: 10, maxContracts: 0, minLots: 0.01, maxLots: 0.5,
-          sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 },
+          sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 320 },
         profile: { type: 'bidAsk', rows: 26, valueArea: 82, showPoc: false, pocColor: '#ffcc7000' },
         visibleProfile: { placement: 'left', offset: 0, width: 30, rows: 56, type: 'volumeDelta', showHeaders: false,
           volumeColor: '#12345600', positiveColor: '#23456780', negativeColor: '#345678' },
@@ -783,12 +783,12 @@ describe('GitHubSyncService', () => {
 
     const okxSymbol = backup().data.preferences!.okxSelectedSymbol!
     sourceStorage.setItem(OKX_SYMBOL_STORAGE_KEY, JSON.stringify(okxSymbol))
-    sourceStorage.setItem(PRICE_SOURCE_KEY, '"okx"')
+    sourceStorage.setItem(PRICE_SOURCE_KEY, '"okx-local"')
     await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
-    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx"')
+    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx-local"')
     expect(JSON.parse(targetStorage.getItem(OKX_SYMBOL_STORAGE_KEY)!)).toEqual(okxSymbol)
     sourceStorage.setItem(PRICE_SOURCE_KEY, '"ctrader"')
     await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
@@ -812,7 +812,7 @@ describe('GitHubSyncService', () => {
     targetStorage.setItem(PINNED_PERIODS_KEY, '["1h"]')
     await target.pull(client(remote))
     expect(targetStorage.getItem(PINNED_PERIODS_KEY)).toBe('["1h"]')
-    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx"')
+    expect(targetStorage.getItem(PRICE_SOURCE_KEY)).toBe('"okx-local"')
     expect(JSON.parse(targetStorage.getItem(OKX_SYMBOL_STORAGE_KEY)!)).toEqual(okxSymbol)
 
     // A correct checksum is insufficient: validate configuration before applying any of it.
@@ -1067,13 +1067,13 @@ describe('GitHubSyncService', () => {
     }
   })
 
-  it('round-trips an OKX session with its contract specification and funding ledger in session-only sync', async () => {
+  it.each(['okx', 'okx-local'] as const)('round-trips a %s session with its contract specification and funding ledger in session-only sync', async marketSource => {
     const envelope = backup()
     const symbol = envelope.data.preferences!.okxSelectedSymbol!
     const first = { ...candle(60_000), source: 'okx' as const, symbol: symbol.ticker }
     const session = {
-      schemaVersion: 2, id: 'okx-cloud-session', symbol, period: SUPPORTED_PERIODS[0],
-      marketSource: 'okx', cursorTimeframe: '1m', startTime: 60_000, currentTime: 120_000,
+      schemaVersion: 2, id: `${marketSource}-cloud-session`, symbol, period: SUPPORTED_PERIODS[0],
+      marketSource, cursorTimeframe: '1m', startTime: 60_000, currentTime: 120_000,
       endTime: 300_000, visibleUntil: 180_000, currentIndex: 1, candleCount: 2,
       speed: 1, status: 'paused', hasTrades: true, active: true, createdAt: 1, updatedAt: 2,
       tradingConfig: { initialBalance: '1000', leverage: 10, feeRate: '0.0005', slippageRate: '0',

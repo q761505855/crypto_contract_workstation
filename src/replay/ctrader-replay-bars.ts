@@ -1,9 +1,13 @@
 import { isCTraderTimeframe, shiftOpenTime, type CTraderTimeframe } from '../market-data/intervals'
 import type { MarketCandle } from '../market-data/models'
 import type { CTraderTick } from '../market-data/ctrader-market'
+import type { PriceSource } from '../market-data/price-source-preferences'
 
 export interface CTraderReplayMarket {
-  readonly source?: 'okx' | 'ctrader'
+  readonly source?: PriceSource
+  readonly historyRevision?: number
+  historyBounds?(symbol: string, signal?: AbortSignal): Promise<{ from: number; to: number } | undefined>
+  historyPageSize?(timeframe: string): number
   loadTicks?(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<CTraderTick[]>
   loadCandles(
     kind: 'trade',
@@ -55,12 +59,17 @@ interface SearchWindow {
 /** Retains native history across direction and step-period changes. */
 export class CTraderReplayBars {
   private readonly windows = new Map<string, SearchWindow>()
+  private revision?: number
 
   constructor(private readonly service: CTraderReplayMarket) {}
 
   async find(
     symbol: string, timeframe: string, from: number, to: number, direction: 1 | -1, signal: AbortSignal,
   ): Promise<MarketCandle | undefined> {
+    if (this.revision !== this.service.historyRevision) {
+      this.windows.clear()
+      this.revision = this.service.historyRevision
+    }
     requireNativeReplayPeriod(timeframe)
     let position = direction === 1 ? from : to
     while (position >= from && position <= to) {
@@ -92,10 +101,11 @@ export class CTraderReplayBars {
     symbol: string, timeframe: string, position: number, min: number, max: number,
     direction: 1 | -1, signal: AbortSignal,
   ): Promise<SearchWindow> {
+    const count = this.service.historyPageSize?.(timeframe) ?? CANDLES_PER_WINDOW
     const from = direction === 1 ? position
-      : Math.max(min, position - MAX_WINDOW_SPAN_MS + 1, shiftOpenTime(position, timeframe, -CANDLES_PER_WINDOW))
+      : Math.max(min, position - MAX_WINDOW_SPAN_MS + 1, shiftOpenTime(position, timeframe, -count))
     const to = direction === 1
-      ? Math.min(max, position + MAX_WINDOW_SPAN_MS - 1, shiftOpenTime(position, timeframe, CANDLES_PER_WINDOW) - 1) : position
+      ? Math.min(max, position + MAX_WINDOW_SPAN_MS - 1, shiftOpenTime(position, timeframe, count) - 1) : position
     const bars = await loadClosedReplayBars(this.service, symbol, timeframe, from, to, signal)
     const window = { symbol, timeframe, from, to, bars }
     this.windows.set(`${symbol}:${timeframe}:${from}:${to}`, window)

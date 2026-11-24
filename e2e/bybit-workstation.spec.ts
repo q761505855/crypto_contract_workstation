@@ -50,6 +50,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   const dynamicSize = settings.getByLabel('按成交量调整大小', { exact: true })
   const dynamicOpacity = settings.getByLabel('按成交量调整透明度', { exact: true })
   const fixedRadius = settings.getByLabel('固定半径', { exact: true })
+  const maxBubbles = settings.getByLabel('最大显示数量', { exact: true })
   const palette = settings.getByRole('button', { name: '配色', exact: true })
   const confirm = settings.getByRole('button', { name: '保存', exact: true })
   const openSettings = async () => {
@@ -75,6 +76,9 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   await openSettings()
   await expect(bubbleMode).toHaveValue('volume')
   await expect(unit).toHaveValue('notional')
+  await expect(maxBubbles).toHaveValue('1000')
+  await expect(maxBubbles).toHaveAttribute('max', '1000')
+  await maxBubbles.fill('250')
   await expect(dynamicSize).toBeChecked()
   await expect(dynamicOpacity).not.toBeChecked()
   await marker.selectOption('square')
@@ -110,6 +114,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   await expect(dynamicSize).not.toBeChecked()
   await expect(dynamicOpacity).toBeChecked()
   await expect(fixedRadius).toHaveValue('11')
+  await expect(maxBubbles).toHaveValue('250')
   await expect(unit).toHaveValue('contracts')
   await expect(settings.getByLabel('最低成交张数', { exact: true })).toHaveValue('12.5')
   await expect(settings.getByLabel('最高成交张数（0 为不限）', { exact: true })).toHaveValue('20')
@@ -134,7 +139,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   const styles = archive.data.preferences.chartIndicators.main.find((setting: { name: string }) => setting.name === 'BIG_TRADES').styles
   const thresholds = archive.data.preferences.chartIndicators.orderFlow.bubbles
   expect(thresholds).toMatchObject({ thresholdUnit: 'contracts', minQuantity: 0.025, minContracts: 12.5, maxContracts: 20 })
-  expect(thresholds).toMatchObject({ marker: 'square', showText: true, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 })
+  expect(thresholds).toMatchObject({ marker: 'square', showText: true, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 250 })
   expect(styles.bubbleMode).toBe('aggregate')
   expect(styles.bubbleColors.map(({ color }: { color: string }) => color))
     .toEqual(['#12345600', '#ff827e6b', '#49d4aee6', '#ff827e'])
@@ -146,6 +151,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   thresholds.marker = 'circle'
   thresholds.sizeByVolume = true
   thresholds.opacityByVolume = false
+  thresholds.maxBubbles = 600
   page.once('dialog', dialog => dialog.accept())
   await page.getByTestId('import-backup-file').setInputFiles({
     name: 'big-trades-style.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)),
@@ -158,6 +164,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   await expect(marker).toHaveValue('circle')
   await expect(dynamicSize).toBeChecked()
   await expect(dynamicOpacity).not.toBeChecked()
+  await expect(maxBubbles).toHaveValue('600')
   await expect(fixedRadius).toHaveCount(0)
   await expect(settings.getByLabel('最低成交手数', { exact: true })).toHaveValue('0.02')
   await expect(settings.getByLabel('最高成交手数（0 为不限）', { exact: true })).toHaveValue('0')
@@ -829,7 +836,7 @@ test('通过 UTC 锚点和前后天数选择日期范围并复用已缓存日档
   await expect(page.getByRole('contentinfo')).toContainText('实时行情')
 })
 
-test('保留全部达标气泡，缩放和刷新后复用归档计算结果', async ({ page }) => {
+test('限制气泡显示数量，缩放和刷新后复用完整归档计算结果', async ({ page }) => {
   const now = Date.parse('2026-11-22T02:00:30Z')
   const archivedSecond = Date.parse(day + 'T23:50:00Z') / 1000
   const archivedRows = 400
@@ -917,6 +924,18 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   })
   await expect.poll(async () => (await bubbleIds()).length).toBe(400)
   expect((await bubbleIds()).every(id => id.startsWith('archive-'))).toBe(true)
+  const shownBubbleCount = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const indicator = coreChart.getIndicatorByPaneId('candle_pane', 'BIG_TRADES') as import('klinecharts').Indicator | null
+    const points = indicator?.extendData?.points as import('../src/chart/order-flow-renderers').BubbleDisplay['points']
+    return Array.from(points?.values() ?? []).reduce((total, candle) => total + candle.length, 0)
+  })
+  await expect.poll(shownBubbleCount).toBe(400)
+  await page.evaluate(() => {
+    const { orderFlow } = (window as unknown as { __viewportTestAdapter: { orderFlow: import('../src/chart/order-flow-chart').OrderFlowChart } }).__viewportTestAdapter
+    orderFlow.setPreferences({ bubbles: { maxBubbles: 100 } })
+  })
+  await expect.poll(shownBubbleCount).toBe(100)
   await expect.poll(() => !!bitcoin).toBe(true)
   bitcoin!.send(JSON.stringify({ topic: 'publicTrade.BTCUSDT', data: [
     { T: now - 10_000, s: 'BTCUSDT', S: 'Sell', v: '25000', p: '1.1', i: 'live-trade' },
@@ -938,8 +957,10 @@ test('保留全部达标气泡，缩放和刷新后复用归档计算结果', as
   }, archivedSecond * 1000)
   await zoom(20)
   await expect.poll(async () => (await bubbleIds()).length).toBe(1)
+  await expect.poll(shownBubbleCount).toBe(1)
   await zoom(3)
   await expect.poll(async () => (await bubbleIds()).length).toBe(401)
+  await expect.poll(shownBubbleCount).toBe(100)
   await page.getByRole('button', { name: '图表周期', exact: true }).click()
   await page.getByRole('button', { name: '选择周期 5m', exact: true }).click()
   await expect(page.getByRole('contentinfo')).toContainText('BTCUSD · 5m')

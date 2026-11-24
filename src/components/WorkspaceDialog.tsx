@@ -1,18 +1,19 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-export function WorkspaceDialog({ open, title, onClose, children, actions, className = '' }: {
+export function WorkspaceDialog({ open, title, onClose, children, actions, className = '', closeDisabled = false }: {
   open: boolean
   title: string
   onClose(): void
   children: ReactNode
   actions?: ReactNode
   className?: string
+  closeDisabled?: boolean
 }) {
   const id = useId()
   const panel = useRef<HTMLElement>(null)
   const closeRef = useRef(onClose)
-  closeRef.current = onClose
+  closeRef.current = () => { if (!closeDisabled) onClose() }
   useEffect(() => {
     if (!open) return
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -33,9 +34,9 @@ export function WorkspaceDialog({ open, title, onClose, children, actions, class
   }, [open])
   if (!open) return null
   return createPortal(
-    <div className="workspace-dialog-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="workspace-dialog-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) closeRef.current() }}>
       <section ref={panel} className={`workspace-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={id}>
-        <header className="panel-heading"><h2 id={id}>{title}</h2><button type="button" onClick={onClose} aria-label={`关闭${title}`}>✕</button></header>
+        <header className="panel-heading"><h2 id={id}>{title}</h2><button type="button" disabled={closeDisabled} onClick={() => closeRef.current()} aria-label={`关闭${title}`}>✕</button></header>
         <div className="workspace-dialog-body">{children}</div>
         {actions && <footer className="workspace-dialog-actions">{actions}</footer>}
       </section>

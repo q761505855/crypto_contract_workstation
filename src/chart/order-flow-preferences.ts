@@ -6,6 +6,7 @@ export const CVD = 'CVD'
 export const VWAP = 'VWAP'
 export const VISIBLE_VOLUME_PROFILE = 'VISIBLE_VOLUME_PROFILE'
 export const PROFILE = 'VOLUME_PROFILE_SETTINGS'
+export const MAX_VISIBLE_BUBBLES = 1000
 
 const number = (label: string, fallback: number, min: number, max: number, step: number | 'any' = 1) =>
   ({ kind: 'number' as const, label, fallback, min, max, step })
@@ -55,6 +56,7 @@ export const orderFlowFields = {
     maxContracts: number('最高成交张数（0 为不限）', 0, 0, Number.MAX_VALUE, 'any'),
     minLots: number('最低成交手数', 1, 0, Number.MAX_VALUE, 'any'),
     maxLots: number('最高成交手数（0 为不限）', 0, 0, Number.MAX_VALUE, 'any'),
+    maxBubbles: number('最大显示数量', MAX_VISIBLE_BUBBLES, 1, MAX_VISIBLE_BUBBLES),
     marker: select('标记形状', 'circle', { circle: '圆形', square: '方形', diamond: '菱形' }),
     sizeByVolume: toggle('按成交量调整大小', true),
     opacityByVolume: toggle('按成交量调整透明度', false),

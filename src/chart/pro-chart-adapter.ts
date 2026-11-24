@@ -33,6 +33,7 @@ import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
 import { CombinedBybitSource, type TradeDownloadReview } from '../market-data/bybit/combined-source'
+import type { OkxLocalMarket } from '../market-data/okx/local-market'
 import { bybitDay } from '../market-data/bybit/trades'
 import type { GitHubContentsClient } from '../github-sync/github-client'
 import { OrderFlowChart } from './order-flow-chart'
@@ -56,6 +57,7 @@ import { BIG_TRADES } from './order-flow'
 
 type OrderFlowChartOptions = ChartProOptions & {
   orderFlowCloud?: GitHubContentsClient
+  localTradeMarket?: OkxLocalMarket
   getOrderFlowLotSize?: (ticker: string) => number | undefined
   onOrderFlowSettings?: (group: OrderFlowGroup) => void
 }
@@ -221,7 +223,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.datafeed = null
   }
 
-  mount({ orderFlowCloud, getOrderFlowLotSize, ...options }: OrderFlowChartOptions): void {
+  mount({ orderFlowCloud, localTradeMarket, getOrderFlowLotSize, ...options }: OrderFlowChartOptions): void {
     if (this.chart !== null) {
       throw new Error('KLineChart Pro is already mounted.')
     }
@@ -254,7 +256,8 @@ export class ProChartAdapter implements ChartAdapterPort {
         getReplayContext?(): ReplayContext | null
         subscribeReplayCursor?(listener: (context: ReplayContext | null) => void): () => void
       }
-      this.source = new CombinedBybitSource(orderFlowCloud, (reset, affected) => this.orderFlow?.refresh(reset, affected))
+      this.source = new CombinedBybitSource(orderFlowCloud, (reset, affected) => this.orderFlow?.refresh(reset, affected),
+        undefined, undefined, undefined, localTradeMarket)
       this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => this.hasCurrentCandles(),
         options.symbol.exchange === 'OKX', () => getOrderFlowLotSize?.(this.getSymbol().ticker))
       this.source.select(options.symbol, feed.getReplayContext?.() ?? null)

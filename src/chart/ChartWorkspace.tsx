@@ -17,6 +17,7 @@ import type { GitHubContentsClient } from '../github-sync/github-client'
 import type { TradeDownloadChoice, TradeDownloadDay } from '../market-data/bybit/combined-source'
 import { BYBIT_DAY_MS, bybitDay, bybitDayStart } from '../market-data/bybit/trades'
 import { orderFlowLabel, orderFlowMapping } from '../market-data/okx/trades'
+import type { OkxLocalMarket } from '../market-data/okx/local-market'
 import {
   ProChartAdapter,
   type ChartAdapterPort,
@@ -64,6 +65,7 @@ export interface ChartWorkspaceProps {
   drawingStore?: DrawingStore
   drawingScope?: string | null
   orderFlowCloud?: GitHubContentsClient
+  localTradeMarket?: OkxLocalMarket
   getOrderFlowLotSize?: (ticker: string) => number | undefined
 }
 
@@ -147,6 +149,7 @@ export function ChartWorkspace({
   drawingStore,
   drawingScope = null,
   orderFlowCloud,
+  localTradeMarket,
   getOrderFlowLotSize,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -209,7 +212,7 @@ export function ChartWorkspace({
         symbol,
         period,
         initialIndicatorPreferences,
-      ), orderFlowCloud, getOrderFlowLotSize, onOrderFlowSettings: setOrderFlowDialog,
+      ), orderFlowCloud, localTradeMarket, getOrderFlowLotSize, onOrderFlowSettings: setOrderFlowDialog,
     })
     if (initialIndicatorPreferences !== null) {
       adapter?.applyIndicatorPreferences?.(
@@ -712,7 +715,7 @@ export function ChartWorkspace({
           {drawingSelection && <DrawingSelectionToolbar selection={drawingSelection}
             onChange={change => adapterRef.current?.changeSelectedDrawing?.(drawingSelection.id, change)}
             onDelete={() => adapterRef.current?.deleteSelectedDrawing?.(drawingSelection.id)} />}
-          {orderFlowCloud && periodToolbar && createPortal(dayDownload, periodToolbar)}
+          {orderFlowCloud && !localTradeMarket && periodToolbar && createPortal(dayDownload, periodToolbar)}
           {periodToolbar === null ? periodSelector : createPortal(periodSelector, periodToolbar)}
         </div>
       </div>

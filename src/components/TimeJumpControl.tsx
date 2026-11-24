@@ -5,6 +5,7 @@ import { formatInputWeekday, localDateTimeInputValue } from '../format-display-t
 interface TimeJumpControlProps {
   compact?: boolean
   disabled?: boolean
+  defaultTimestamp?: number
   onJump: (timestamp: number) => void
   onLocateLatest: () => void
 }
@@ -12,17 +13,21 @@ interface TimeJumpControlProps {
 export function TimeJumpControl({
   compact = false,
   disabled = false,
+  defaultTimestamp,
   onJump,
   onLocateLatest,
 }: TimeJumpControlProps) {
   const [open, setOpen] = useState(false)
-  const [timeText, setTimeText] = useState(() => localDateTimeInputValue(Date.now()))
+  const [timeText, setTimeText] = useState(() => localDateTimeInputValue(defaultTimestamp ?? Date.now()))
   const timestamp = new Date(timeText).getTime()
   const valid = Number.isFinite(timestamp)
   const timeLabel = `图表时间 ${formatInputWeekday(timeText)}`.trim()
 
   if (compact) return <div className="time-jump-entry">
-    <button type="button" disabled={disabled} onClick={() => setOpen(true)}>时间定位</button>
+    <button type="button" disabled={disabled} onClick={() => {
+      if (defaultTimestamp !== undefined) setTimeText(localDateTimeInputValue(defaultTimestamp))
+      setOpen(true)
+    }}>时间定位</button>
     <button type="button" disabled={disabled} onClick={onLocateLatest}>定位最新</button>
     <WorkspaceDialog open={open} title="图表时间定位" onClose={() => setOpen(false)}>
       <label className="panel-field">{timeLabel}<input aria-label="图表跳转时间" value={timeText} onChange={event => setTimeText(event.target.value)} type="datetime-local" /></label>

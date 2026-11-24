@@ -20,6 +20,7 @@ import { readShowTradeOverlays, saveShowTradeOverlays } from '../chart/trade-ove
 import type { SimulationOverlayState } from '../chart/pro-chart-adapter'
 import { SIMULATION_BUY_COLOR, SIMULATION_SELL_COLOR, type SimulationTradeLabel } from '../chart/simulation-price-line'
 import { DataManager } from '../components/DataManager'
+import { OkxLocalDataDialog } from '../components/OkxLocalDataDialog'
 import { CTraderAccountPicker } from '../components/CTraderAccountPicker'
 import { ConfigSyncStatus } from '../components/ConfigSyncStatus'
 import { PREFERENCES_RESTORED } from '../storage/preference-events'
@@ -32,7 +33,7 @@ import { PanelToggle } from '../components/PanelToggle'
 import { loadWorkspacePreferences, saveWorkspacePreferences, DEFAULT_WORKSPACE_PREFERENCES, type WorkspacePreferences } from '../workspace/preferences'
 import type { MarketSelection } from '../market-data/models'
 import { readSelectedOkxSymbol, readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
-import { readPriceSource, savePriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
+import { isOkxPriceSource, priceSourceLabel, readPriceSource, savePriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
 import { toSymbolInfo } from '../market-data/models'
 import {
   INITIAL_LIVE_STATUS,
@@ -72,7 +73,7 @@ function simulationPriceText(price: number, precision: number): string {
 }
 
 function activeSymbol(source: PriceSource): MarketSelection['symbol'] {
-  if (source === 'okx') return readSelectedOkxSymbol() ?? DEFAULT_OKX_SYMBOL
+  if (isOkxPriceSource(source)) return readSelectedOkxSymbol() ?? DEFAULT_OKX_SYMBOL
   const saved = readSelectedSymbol()
   return saved?.exchange === 'CTRADER' ? saved : DEFAULT_CTRADER_SYMBOL
 }
@@ -90,8 +91,8 @@ export default function App({ runtime }: { runtime?: MarketDataRuntime } = {}) {
   const [rootRuntime] = useState(() => runtime ?? createMarketDataRuntime())
   const [source, setSource] = useState(readPriceSource)
   const [sourceError, setSourceError] = useState('')
-  const marketRuntime = useMemo(() => source === 'okx' ? rootRuntime.forPriceSource(source) : rootRuntime, [rootRuntime, source])
-  useEffect(() => { document.title = `${source === 'okx' ? 'OKX' : 'cTrader'} 行情回放工作站` }, [source])
+  const marketRuntime = useMemo(() => source === 'ctrader' ? rootRuntime : rootRuntime.forPriceSource(source), [rootRuntime, source])
+  useEffect(() => { document.title = `${priceSourceLabel(source)} 行情回放工作站` }, [source])
   useEffect(() => {
     const restored = (event: Event) => {
       if ((event as CustomEvent<{ source: string }>).detail?.source === 'cloud') setSource(readPriceSource())
@@ -117,7 +118,8 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   onSourceChange: (next: PriceSource) => void
   sourceError: string
 }) {
-  const sourceLabel = source === 'okx' ? 'OKX' : 'cTrader'
+  const sourceLabel = priceSourceLabel(source)
+  const localMarket = source === 'okx-local' && marketRuntime.service.source === 'okx-local' ? marketRuntime.service : undefined
   const shellRef = useRef<HTMLElement | null>(null)
   const [layout, setLayout] = useState(loadWorkspacePreferences)
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
@@ -172,6 +174,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
     return () => document.removeEventListener('keydown', keydown)
   }, [mobile, mobilePanel])
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
+  const [localDataOpen, setLocalDataOpen] = useState(false)
   const [chartWindows] = useState(() => new ChartWindowHost(marketRuntime))
   const [popupBlocked, setPopupBlocked] = useState(false)
   const [configEpoch, setConfigEpoch] = useState(0)
@@ -211,6 +214,12 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   const simulation = { ...simulationController, busy: simulationController.busy || replay.busy }
   const replaySessionRef = useRef(replay.session)
   replaySessionRef.current = replay.session
+  const refreshLocalData = useCallback(() => {
+    setMarketWarning('')
+    const datafeed = marketRuntime.replayDatafeed
+    datafeed.setReplayContext(datafeed.getReplayContext(), true)
+    setChartReloadKey(current => current + 1)
+  }, [marketRuntime])
   useEffect(() => {
     const restored = (event: Event) => {
       setStepPeriod(activeStepPeriod(source))
@@ -411,7 +420,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
     const previous = previousReplayContextRef.current
     const reloadAfterStep = previous !== null && nextContext !== null &&
       previous.sessionId === nextContext.sessionId && ctraderReplayChartNeedsReload(previous, nextContext, marketSelection.period.text)
-    const liveEnabled = nextContext === null && replay.preparationStatus === ''
+    const liveEnabled = !localMarket && nextContext === null && replay.preparationStatus === ''
     if (!liveEnabled) marketRuntime.datafeed.setLiveEnabled(false)
     marketRuntime.replayDatafeed.setReplayContext(nextContext, reloadAfterStep)
     if (liveEnabled) marketRuntime.datafeed.setLiveEnabled(true)
@@ -424,6 +433,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         replay: nextContext,
         simulationOverlays,
         configRevision: configEpoch,
+        dataRevision: localMarket?.files.revision,
       })
     }
     if (previous !== null && nextContext === null) {
@@ -439,7 +449,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
       setChartReloadKey((current) => current + 1)
     }
     previousReplayContextRef.current = nextContext
-  }, [chartWindows, configEpoch, marketRuntime, marketSelection, replay.busy, replay.preparationStatus, replay.session, simulationOverlays])
+  }, [chartReloadKey, chartWindows, configEpoch, localMarket, marketRuntime, marketSelection, replay.busy, replay.preparationStatus, replay.session, simulationOverlays])
 
   useLayoutEffect(() => {
     const shell = shellRef.current
@@ -479,7 +489,9 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
           onChange={event => onSourceChange(validatePriceSource(event.target.value))}>
           <option value="ctrader">cTrader</option>
           <option value="okx">OKX</option>
+          <option value="okx-local">OKX-本地</option>
         </select>
+        {localMarket && <button type="button" onClick={() => setLocalDataOpen(true)}>本地数据管理</button>}
         <WorkspaceTools>
           {!mobile && <button type="button" onClick={() => setPopupBlocked(openChartWindow() === null)}>打开副图</button>}
           <button type="button" aria-expanded={chartSizeOpen} onClick={() => setChartSizeOpen(true)}>图表尺寸</button>
@@ -500,7 +512,16 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
       >
         <div className="workspace-account" hidden={focusMode}>
           <div id="workspace-account-content" hidden={!visible('account')}>
-            {mode === 'history' ? <AccountStrip state={simulation.state} currency={simulationCurrency} onClose={() => setPanel('account', false)} /> : <section className="account-strip" aria-label="实时行情摘要"><span>{marketSelection.symbol.ticker}</span><span>最新价格 <strong>{liveStatus.lastPrice ?? '—'}</strong></span><span>{connectionLabels[liveStatus.connection]} · 实时只读</span><PanelToggle label="账户摘要" expanded controls="workspace-account-content" onToggle={() => setPanel('account', false)} className="panel-close" /></section>}
+            {mode === 'history'
+              ? <AccountStrip state={simulation.state} currency={simulationCurrency} onClose={() => setPanel('account', false)} />
+              : <section className="account-strip" aria-label={localMarket ? '本地行情摘要' : '实时行情摘要'}>
+                <span>{marketSelection.symbol.ticker}</span>
+                {localMarket ? <span>本地历史逐笔 · 实时行情已停止</span> : <>
+                  <span>最新价格 <strong>{liveStatus.lastPrice ?? '—'}</strong></span>
+                  <span>{connectionLabels[liveStatus.connection]} · 实时只读</span>
+                </>}
+                <PanelToggle label="账户摘要" expanded controls="workspace-account-content" onToggle={() => setPanel('account', false)} className="panel-close" />
+              </section>}
           </div>
           {!visible('account') && <PanelToggle label="账户摘要" expanded={false} showLabel controls="workspace-account-content" onToggle={() => setPanel('account', true)} className="collapsed-panel-handle" />}
         </div>
@@ -509,6 +530,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
             key={configEpoch}
             datafeed={marketRuntime.replayDatafeed}
             orderFlowCloud={marketRuntime.defaultGitHubClient}
+            localTradeMarket={localMarket}
             getOrderFlowLotSize={ticker => marketRuntime.service.source === 'ctrader' ? marketRuntime.service.getCachedLotSize?.(ticker) : undefined}
             jumpRequest={chartJumpRequest}
             onJumpComplete={completeChartTimeJump}
@@ -553,7 +575,9 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
           <PanelToggle label="下单面板" expanded={false} controls="workspace-order-content" direction="right" showLabel onToggle={() => setPanel('order', true)} />
         </div>
         <div id="workspace-order-content" className="order-region" hidden={!visible('order')} data-mobile-open={mobile && mobilePanel === 'order' || undefined}>
-          {mode === 'history' ? <SimulationOrder session={replay.session} simulation={simulation} onClose={() => mobile ? closeMobilePanel() : setPanel('order', false)} /> : <><header className="panel-heading"><h2>行情状态</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={() => mobile ? closeMobilePanel() : setPanel('order', false)} /></header><LiveStatus status={liveStatus} onSwitchAccount={canSwitchAccount ? () => setAccountSwitchOpen(true) : undefined} /></>}
+          {mode === 'history' ? <SimulationOrder session={replay.session} simulation={simulation} onClose={() => mobile ? closeMobilePanel() : setPanel('order', false)} /> : <><header className="panel-heading"><h2>行情状态</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={() => mobile ? closeMobilePanel() : setPanel('order', false)} /></header>
+            {localMarket ? <p>从本地逐笔成交归档加载行情。</p> : <LiveStatus status={liveStatus} onSwitchAccount={canSwitchAccount ? () => setAccountSwitchOpen(true) : undefined} />}
+          </>}
         </div>
         <div id="workspace-dock-content" className="dock-region" hidden={mode !== 'history' || !visible('dock')} data-mobile-open={mobile && mobilePanel === 'dock' || undefined} data-review={dockTab === 'stats' && simulation.state !== null || undefined}>
           <SimulationDock simulation={simulation} currency={simulationCurrency} pricePrecision={replay.session?.symbol.pricePrecision} tab={dockTab} onTabChange={setDockTab} onClose={() => mobile ? closeMobilePanel() : setPanel('dock', false)} />
@@ -581,6 +605,8 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
       </WorkspaceDialog>
       {dataManagerOpen && <DataManager onClose={() => setDataManagerOpen(false)} runtime={marketRuntime} />}
+      {localDataOpen && localMarket && <OkxLocalDataDialog files={localMarket.files} symbol={marketSelection.symbol.ticker}
+        onClose={() => setLocalDataOpen(false)} onChange={refreshLocalData} />}
     </main>
   )
 }

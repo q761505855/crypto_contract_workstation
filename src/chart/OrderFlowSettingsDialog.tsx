@@ -22,7 +22,7 @@ type SettingsSection<G extends OrderFlowGroup> = {
 const thresholdFields = Object.values(bubbleThresholdFields).flat()
 const sections = {
   bubbles: [
-    { title: '成交筛选', open: true, fields: ['mode', 'thresholdUnit', ...thresholdFields] },
+    { title: '成交筛选', open: true, fields: ['mode', 'thresholdUnit', ...thresholdFields, 'maxBubbles'] },
     { title: '气泡样式', open: true, fields: ['marker', 'hollow', 'showText', 'sizeByVolume', 'opacityByVolume', 'minRadius', 'maxRadius', 'fixedRadius'] },
     { title: '配色', fields: ['buyFillColor', 'sellFillColor', 'buyOutlineColor', 'sellOutlineColor', 'textColor'] },
   ],

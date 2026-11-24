@@ -6,12 +6,13 @@ import type { TradeRange } from '../market-data/bybit/combined-source'
 import { drawingIndexAt } from './drawing-coordinates'
 import { displayedTradeBubbles, tradeBubblePrice, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { nextOpenTime } from '../market-data/intervals'
-import { bigTradeThreshold, orderFlowSettings } from './order-flow-preferences'
+import { bigTradeThreshold, MAX_VISIBLE_BUBBLES, orderFlowSettings } from './order-flow-preferences'
 import { formatFlowAmount, registerOrderFlowIndicators } from './order-flow-indicators'
 
 export const CANDLE_PANE = 'candle_pane'
 export const bigTradesTitle = '大单气泡（Big Trades）'
 type BubbleSettings = ReturnType<typeof orderFlowSettings<'bubbles'>>
+export type DisplayedTradeBubble = TradeBubble & { amount: number }
 type ProfileSettings = ReturnType<typeof orderFlowSettings<'profile'>>
 const bubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 4 })
 const shortBubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 1 })
@@ -20,6 +21,8 @@ const bubbleLabelWidth = { circle: 1.7, square: 2, diamond: 1.35 }
 export interface ProfileDisplay { profile?: VolumeProfile; message?: string; settings?: ProfileSettings }
 export interface BubbleDisplay extends BigTradeUnits {
   bars?: ReadonlyMap<number, TradeBar>
+  points?: ReadonlyMap<number, readonly DisplayedTradeBubble[]>
+  minimumNotional?: number
   mode?: BigTradeMode
   updating?: TradeRange
   timeframe?: string
@@ -57,7 +60,7 @@ export function drawTradeBubbleLabel(ctx: CanvasRenderingContext2D, amount: numb
   if (fitting) ctx.fillText(fitting, x, y, width)
 }
 
-export function* filteredTradeBubbles(bar: TradeBar, mode: BigTradeMode, filter: BigTradeThreshold & BigTradeUnits): Iterable<TradeBubble & { amount: number }> {
+export function* filteredTradeBubbles(bar: TradeBar, mode: BigTradeMode, filter: BigTradeThreshold & BigTradeUnits): Iterable<DisplayedTradeBubble> {
   const { unit, minimum, maximum } = filter
   for (const point of displayedTradeBubbles(bar, mode, unit === 'notional' ? minimum : 0)) {
     const amount = tradeThresholdValue(point.trade, unit, filter)
@@ -66,6 +69,38 @@ export function* filteredTradeBubbles(bar: TradeBar, mode: BigTradeMode, filter:
     const tolerance = unit === 'notional' ? 0 : amount * Number.EPSILON * 8
     if (amount + tolerance >= minimum && (maximum === 0 || amount - tolerance <= maximum)) yield { ...point, amount }
   }
+}
+
+export function selectVisibleTradeBubbles(bars: ReadonlyMap<number, TradeBar>, mode: BigTradeMode,
+  filter: BigTradeThreshold & BigTradeUnits, maximumCount: number): ReadonlyMap<number, readonly DisplayedTradeBubble[]> {
+  const limit = Number.isFinite(maximumCount) ? Math.max(1, Math.min(MAX_VISIBLE_BUBBLES, Math.floor(maximumCount))) : MAX_VISIBLE_BUBBLES
+  const candidates: { timestamp: number; point: DisplayedTradeBubble; order: number }[] = []
+  let order = 0
+  let smallest = -Infinity
+  const trim = () => {
+    if (candidates.length <= limit) return
+    candidates.sort((a, b) => b.point.amount - a.point.amount || a.order - b.order)
+    candidates.length = limit
+    smallest = candidates[limit - 1].point.amount
+  }
+  for (const [timestamp, bar] of bars) {
+    if (bar.firstPrice === undefined) continue
+    for (const point of filteredTradeBubbles(bar, mode, filter)) {
+      if (point.amount <= smallest) continue
+      candidates.push({ timestamp, point, order: order++ })
+      // Keep at most two batches in memory, even when millions of trades qualify.
+      if (candidates.length === 2 * limit) trim()
+    }
+  }
+  trim()
+
+  const points = new Map<number, DisplayedTradeBubble[]>()
+  for (const { timestamp, point } of candidates.sort((a, b) => a.order - b.order)) {
+    const candle = points.get(timestamp)
+    if (candle) candle.push(point)
+    else points.set(timestamp, [point])
+  }
+  return points
 }
 
 export function tradeBubbleOffset(point: TradeBubble, start: number, end: number): number {
@@ -149,11 +184,10 @@ export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: Ov
 function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, kLineDataList }: IndicatorDrawParams): boolean {
   const display = indicator.extendData as BubbleDisplay | undefined
   const mode = bigTradeMode(indicator.styles)
-  if (!display?.timeframe || display.mode !== mode || (!display.bars?.size && !display.updating)) return true
+  if (!display?.timeframe || display.mode !== mode || (!display.points?.size && !display.updating)) return true
   const minimum = indicator.calcParams[0] as number
   const settings = display.settings ?? orderFlowSettings('bubbles')
   const threshold = bigTradeThreshold(settings, minimum)
-  const filter = { ...display, ...threshold }
   const colors = bigTradeColors(indicator.styles)
   ctx.save()
   ctx.globalAlpha = 1
@@ -186,10 +220,12 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
   }
   for (let index = Math.max(0, visibleRange.from); index < Math.min(kLineDataList.length, visibleRange.to); index++) {
     const candle = kLineDataList[index]
+    const points = display.points?.get(candle.timestamp)
+    if (!points) continue
     const bar = display.bars?.get(candle.timestamp)
-    if (!bar?.firstPrice) continue
+    if (!bar) continue
     const end = nextOpenTime(candle.timestamp, display.timeframe)
-    for (const point of filteredTradeBubbles(bar, mode, filter)) {
+    for (const point of points) {
       const { trade, amount } = point
       const radius = tradeBubbleRadius(amount, threshold, settings)
       const y = yAxis.convertToPixel(tradeBubblePrice(trade, bar, candle.open, display.projectToCandle))

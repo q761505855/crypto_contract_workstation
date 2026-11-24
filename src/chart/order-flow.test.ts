@@ -4,7 +4,7 @@ import { validateDrawings } from './drawings'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
 import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator, bigTradeColors, bigTradeMode, tradeThresholdValue } from './order-flow'
 import { AccumulatedHour, displayedTradeBubbles, includeHour, type TradeBar } from './order-flow-bars'
-import { drawTradeBubbleLabel, drawVolumeProfile, filteredTradeBubbles, tradeBubbleOpacity, tradeBubbleRadius } from './order-flow-renderers'
+import { drawTradeBubbleLabel, drawVolumeProfile, filteredTradeBubbles, selectVisibleTradeBubbles, tradeBubbleOpacity, tradeBubbleRadius } from './order-flow-renderers'
 import type { BybitTrade } from '../market-data/bybit/trades'
 import { calculateFootprint, cumulativeVolumeDelta, dailyTradeVwap, visibleVolumeProfile } from './order-flow-metrics'
 import { orderFlowSettings } from './order-flow-preferences'
@@ -68,6 +68,26 @@ describe('Bybit 成交指标', () => {
     expect([...filteredTradeBubbles(bar, 'aggregate', filter)].map(({ trade, count }) => [trade.id, count])).toEqual([['first', 2]])
     expect([...filteredTradeBubbles(bar, 'aggregate', { ...filter, minimum: 0, maximum: 2 })]).toEqual([])
     expect([...filteredTradeBubbles(bar, 'aggregate', { ...filter, minimum: 0, maximum: 0 })]).toHaveLength(1)
+  })
+
+  it('在整个可见范围内按筛选单位保留最大气泡，逐笔与聚合共用上限', () => {
+    const bar = (start: number, sizes: number[]): TradeBar => {
+      const points = sizes.map((size, index) => ({
+        trade: { ...trade(10, size, 'buy'), timeUs: start * 1000 + index * 1000, id: String(start + index) },
+      }))
+      return { cursor: Infinity, volume: 0, firstPrice: 10, complete: true, pointRanges: [{ points, from: 0, until: points.length }] }
+    }
+    const left = bar(1000, Array.from({ length: 800 }, (_, index) => index + 1))
+    const right = bar(3000, Array.from({ length: 400 }, (_, index) => 801 + index))
+    const bars = new Map([[1000, left], [3000, right]])
+    const filter = { unit: 'quantity' as const, minimum: 0, maximum: 0 }
+    const selected = selectVisibleTradeBubbles(bars, 'volume', filter, 2000)
+    expect(selected.get(1000)).toHaveLength(600)
+    expect(selected.get(3000)).toHaveLength(400)
+    expect(selected.get(1000)?.[0].amount).toBe(201)
+    expect(left.pointRanges[0].points).toHaveLength(800)
+    const limited = selectVisibleTradeBubbles(bars, 'aggregate', { ...filter, maximum: 801 }, 2)
+    expect([...limited.values()].flat().map(point => point.amount)).toEqual([800, 801])
   })
 
   it('VWAP 按逐笔成交量加权、日切、按进度截断并标记历史缺口', () => {

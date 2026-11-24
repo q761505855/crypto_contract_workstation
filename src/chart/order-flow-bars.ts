@@ -331,7 +331,7 @@ export class OrderFlowBars {
       if (untilUs <= fromUs) continue
       const scan = { hour, fromUs, untilUs, samples: new AccumulatedHour(), complete: true, archived: true, fallbackArchive: false }
       const group = groups.at(-1)
-      if (group && group.length < 6 && group.at(-1)?.untilUs === fromUs &&
+      if (group && group.length < (source.localArchive ? 24 : 6) && group.at(-1)?.untilUs === fromUs &&
           !source.isArchiveRequested(hour) && !source.isArchiveRequested(group[0].hour)) group.push(scan)
       else groups.push([scan])
     }
@@ -400,7 +400,7 @@ export class OrderFlowBars {
       const fallbackArchive = (previous?.fallbackArchive ?? false) || scan.fallbackArchive
       const section = { cursor, samples: sealed ? samples.pack() : samples, complete, archived, fallbackArchive }
       this.hours.set(hour, section)
-      if (sealed) persist.push({ ...section, hour })
+      if (sealed && !source.localArchive) persist.push({ ...section, hour })
     }
     this.invalidateBars({ fromUs: range.fromUs, untilUs: scannedUntil })
     if (persist.length) void this.save(persist)

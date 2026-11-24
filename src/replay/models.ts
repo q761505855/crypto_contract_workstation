@@ -1,5 +1,6 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 import { alignOpenTime, klineCloseBoundary, LEGACY_THREE_DAY_TIMEFRAME } from '../market-data/intervals'
+import type { PriceSource } from '../market-data/price-source-preferences'
 import type { CTraderReplayStepPeriod } from './step-periods'
 import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
 import type { OkxTradingTerms } from '../simulation/okx-trading'
@@ -40,8 +41,8 @@ export interface ReplaySession {
   /** Exclusive visibility boundary of the last processed price. */
   visibleUntil?: number
   /** Missing on legacy Binance sessions. */
-  marketSource?: 'ctrader' | 'binance' | 'okx'
-  /** cTrader step that produced the current cursor. */
+  marketSource?: PriceSource | 'binance'
+  /** Replay step that produced the current cursor. */
   cursorTimeframe?: CTraderReplayStepPeriod
   /** Zero-based quote order within currentTime when the cursor is on a Tick. */
   cursorTickIndex?: number

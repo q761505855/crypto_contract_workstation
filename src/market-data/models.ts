@@ -29,7 +29,7 @@ export interface MarketCandle {
   quoteVolume: string
   tradeCount: number
   isClosed: boolean
-  source: 'binance' | 'ctrader' | 'okx'
+  source: 'binance' | 'ctrader' | 'okx' | 'okx-local'
   /** Quote tick count reported by cTrader. It is not exchange trade volume. */
   tickVolume?: number
 }

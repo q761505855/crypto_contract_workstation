@@ -4,8 +4,9 @@ import type { BybitTrade } from '../market-data/bybit/trades'
 import { BYBIT_DAY_MS } from '../market-data/bybit/trades'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileAccumulator, bigTradeMode, bigTradeThresholdUnits, type BigTradeMode } from './order-flow'
-import { CANDLE_PANE, filteredTradeBubbles, tradeBubbleOffset, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
-import { OrderFlowBars, tradeBubblePrice, type TradeBar, type TradeBubble } from './order-flow-bars'
+import { CANDLE_PANE, selectVisibleTradeBubbles, tradeBubbleOffset, tradeBubbleRadius,
+  type BubbleDisplay, type DisplayedTradeBubble, type ProfileDisplay } from './order-flow-renderers'
+import { OrderFlowBars, tradeBubblePrice, type TradeBar } from './order-flow-bars'
 import { ReplayOrderFlow } from './order-flow-replay'
 import type { DrawingPoint } from './drawings'
 import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, bigTradeThreshold, bubblePreferenceDefaults, orderFlowSettings, withoutBubbleDefaults, type OrderFlowPreferences } from './order-flow-preferences'
@@ -31,7 +32,6 @@ interface ProfileRequest {
 const notional = (trade: BybitTrade) => trade.price * trade.size
 const errorText = (error: unknown) => error instanceof Error ? error.message : '读取逐笔成交失败'
 const unavailable = '此品种暂无逐笔成交'
-const missingHistory = '历史逐笔可通过「下载成交数据」载入'
 
 function sameValues<T>(a: ReadonlyMap<number, T> | undefined, b: ReadonlyMap<number, T> | undefined): boolean {
   return a === b || (a?.size === b?.size && !!a && !!b && [...a].every(([key, value]) => b.get(key) === value))
@@ -381,13 +381,19 @@ export class OrderFlowChart {
       for (const { from, until } of bar.pointRanges) count += until - from
       sameBars &&= previous?.bars?.get(start) === bar
     }
-    if (sameBars && count === this.displayedBubbleCount && previous?.settings === display.settings &&
-        previous?.message === display.message && previous?.projectToCandle === display.projectToCandle &&
+    const minimumNotional = Number(indicator.calcParams[0])
+    const sameSelection = sameBars && count === this.displayedBubbleCount && previous?.settings === display.settings &&
+        previous?.projectToCandle === display.projectToCandle && previous?.minimumNotional === minimumNotional &&
         previous?.contractValue === display.contractValue && previous?.lotSize === display.lotSize &&
-        previous?.timeframe === display.timeframe && previous?.updating === display.updating && previous?.mode === display.mode) return
-    if (previous?.mode !== display.mode) this.hideTooltip()
+        previous?.timeframe === display.timeframe && previous?.mode === display.mode
+    const points = indicator.visible && display.bars && display.mode
+      ? (sameSelection && previous?.points) || selectVisibleTradeBubbles(display.bars, display.mode,
+        { ...display, ...bigTradeThreshold(this.bubbleSettings, minimumNotional) }, this.bubbleSettings.maxBubbles)
+      : undefined
+    if (sameSelection && previous?.points === points && previous?.message === display.message && previous?.updating === display.updating) return
+    if (previous?.points !== points) this.hideTooltip()
     this.displayedBubbleCount = count
-    this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: display }, CANDLE_PANE)
+    this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: { ...display, points, minimumNotional } }, CANDLE_PANE)
   }
 
   private footprint(): Indicator | undefined {
@@ -587,6 +593,7 @@ export class OrderFlowChart {
     const previous = this.displayedVolumes
     const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
     this.showVolume(volumeChanged ? volumes : previous)
+    const missingHistory = this.feed.localArchive ? '请在「本地数据管理」补齐对应日期的逐笔归档' : '历史逐笔可通过「下载成交数据」载入'
     const status = message ?? (this.updating ? '正在计算逐笔成交…' : partial ? missingHistory : undefined)
     const unit = this.bubbleSettings.thresholdUnit
     const contractValue = this.feed.mapping?.okx?.contractValue
@@ -657,7 +664,7 @@ export class OrderFlowChart {
     const sampleMinimum = mode === 'aggregate' || footprint || cvd || profile || vwap || quantityThreshold ? 0 : minimum
     const source = this.feed.archiveCacheKey
     const key = JSON.stringify([source, sampleMinimum])
-    const replaying = this.feed.replaying
+    const replaying = this.feed.replaying && !this.feed.localArchive
     if ((replaying ? this.replayFlow : this.flow)?.key !== key) {
       this.cancelFlow()
       this.flowSource = source
@@ -718,15 +725,14 @@ export class OrderFlowChart {
     const indicator = this.bubbleIndicator()
     const display = indicator?.extendData as BubbleDisplay | undefined
     const mode = bigTradeMode(indicator?.styles)
-    if (!indicator?.visible || !display?.bars?.size || !display.timeframe || display.mode !== mode) { this.hideTooltip(); return }
+    if (!indicator?.visible || !display?.points?.size || !display.timeframe || display.mode !== mode) { this.hideTooltip(); return }
     const minimum = Number(indicator.calcParams[0])
     const settings = display.settings ?? this.bubbleSettings
     const threshold = bigTradeThreshold(settings, minimum)
-    const filter = { ...display, ...threshold }
-    const { left, top, width } = this.pane.getBoundingClientRect()
+    const { left, top, width, height } = this.pane.getBoundingClientRect()
     const cursorX = event.clientX - left
     const cursorY = event.clientY - top
-    let nearest: (TradeBubble & { amount: number }) | undefined
+    let nearest: DisplayedTradeBubble | undefined
     let nearestDistance = Infinity
     const converted = this.chart.convertFromPixel([{ x: cursorX }], { paneId: CANDLE_PANE })
     const indexAtPointer = (Array.isArray(converted) ? converted[0] : converted)?.dataIndex
@@ -736,10 +742,11 @@ export class OrderFlowChart {
     const margin = Math.ceil((largestRadius + 3) / this.chart.getBarSpace()) + 1
     for (let index = Math.max(0, indexAtPointer - margin); index < Math.min(candles.length, indexAtPointer + margin + 1); index++) {
       const candle = candles[index]
-      const bar = display.bars.get(candle.timestamp)
-      if (!bar?.firstPrice) continue
+      const points = display.points.get(candle.timestamp)
+      const bar = display.bars?.get(candle.timestamp)
+      if (!points || !bar) continue
       const end = nextOpenTime(candle.timestamp, display.timeframe)
-      for (const bubble of filteredTradeBubbles(bar, mode, filter)) {
+      for (const bubble of points) {
         const { trade } = bubble
         const offset = tradeBubbleOffset(bubble, candle.timestamp, end)
         const price = tradeBubblePrice(trade, bar, candle.open, display.projectToCandle)
@@ -748,6 +755,7 @@ export class OrderFlowChart {
         const dy = Math.abs((point.y ?? Infinity) - cursorY)
         const distance = settings.marker === 'square' ? Math.max(dx, dy) : settings.marker === 'diamond' ? dx + dy : Math.hypot(dx, dy)
         const radius = tradeBubbleRadius(bubble.amount, threshold, settings)
+        if (point.y === undefined || point.y + radius < 0 || point.y - radius > height) continue
         if (distance < radius + 3 && distance < nearestDistance) { nearestDistance = distance; nearest = bubble }
       }
     }

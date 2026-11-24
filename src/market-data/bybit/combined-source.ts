@@ -6,6 +6,7 @@ import { ensureTradeDay } from './archive-requests'
 import { BybitLiveTrades } from './live'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, bybitFirstDay, type BybitSymbol, type BybitTrade } from './trades'
 import { OkxArchive, okxArchiveDay } from '../okx/archive'
+import type { OkxLocalMarket } from '../okx/local-market'
 import { OkxLiveTrades, readOkxTradePages, readOkxTradePagesForward, type OkxTradePage } from '../okx/live'
 import { compareTrades, mergeOkxTrades, orderFlowMapping, type OrderFlowMapping } from '../okx/trades'
 
@@ -77,10 +78,15 @@ export class CombinedBybitSource {
   private readonly anchors = new Map<string, TradeDownloadAnchor>()
   private readonly nextWake = new Map<string, number>()
   private pendingLiveUpdate?: ReturnType<typeof setTimeout>
+  private localDays = new Set<string>()
+  private stopLocalUpdates?: () => void
+  private localRead = 0
 
   constructor(private readonly cloud: GitHubContentsClient, private readonly changed: (reset?: boolean, affected?: TradeRange) => void,
     private readonly archive = new BybitArchive(cloud), private readonly now = Date.now,
-    private readonly okxArchive = new OkxArchive(cloud, fetch, now)) {}
+    private readonly okxArchive = new OkxArchive(cloud, fetch, now), readonly localArchive?: OkxLocalMarket) {
+    this.stopLocalUpdates = localArchive?.files.subscribe(() => this.updateLocalDays())
+  }
 
   get mapping(): OrderFlowMapping | undefined { return this.active }
   get replaying(): boolean { return this.context !== null }
@@ -95,6 +101,7 @@ export class CombinedBybitSource {
   }
 
   get archiveCacheKey(): string {
+    if (this.localArchive) return JSON.stringify(['okx-local', this.active?.symbol, this.localArchive.historyRevision])
     const { owner, repository, branch, root } = this.cloud.getTarget()
     const primary = this.active?.okx
     if (primary) return JSON.stringify([owner, repository, branch, root, 'okx-first', primary.symbol, primary.contractValue, this.active?.bybit?.symbol])
@@ -110,6 +117,7 @@ export class CombinedBybitSource {
   }
 
   shouldScanTradeHour(hour: number): boolean {
+    if (this.localArchive) return this.localDays.has(okxArchiveDay(hour))
     return this.isArchiveRequested(hour) ||
       ((hour + BYBIT_HOUR_MS) * 1000 > this.liveStartUs &&
         Math.max(this.okxLive?.lastTradeUs ?? -1, this.live?.lastTradeUs ?? -1) >= hour * 1000)
@@ -220,13 +228,29 @@ export class CombinedBybitSource {
         clearTimeout(this.pendingLiveUpdate)
       }
       this.selection = key
+      const symbolChanged = mapping?.symbol !== this.active?.symbol
       this.active = mapping
+      if (symbolChanged && this.localArchive) this.updateLocalDays()
     }
-    if (!context && this.active) this.startRealtime(this.active)
+    if (!this.localArchive && !context && this.active) this.startRealtime(this.active)
     this.changed(reset)
   }
 
+  private updateLocalDays(): void {
+    const request = ++this.localRead
+    const symbol = this.active?.symbol
+    this.localDays.clear()
+    this.changed(true)
+    if (symbol) void this.localArchive?.tradeDays(symbol).then(days => {
+      if (request !== this.localRead) return
+      this.localDays = days
+      this.changed()
+    }).catch(() => undefined)
+  }
+
   release(): void {
+    this.stopLocalUpdates?.()
+    this.localRead++
     this.archiveDownloads.abort()
     this.live?.close()
     this.live = undefined
@@ -240,6 +264,10 @@ export class CombinedBybitSource {
     reportCoverage?: (coverage: TradeCoverage) => void, includeHistory = true): Promise<boolean> {
     if (!this.active) return false
     const end = Math.min(untilUs, this.tradeCursorUs)
+    if (this.localArchive) {
+      return this.localArchive.visitTrades(this.active.symbol, fromUs, end, accept, signal,
+        (start, stop, found) => reportCoverage?.({ fromUs: start, untilUs: stop, complete: found, archived: found }))
+    }
     let complete = true
     for (let hour = Math.floor(fromUs / 1000 / BYBIT_HOUR_MS) * BYBIT_HOUR_MS; hour * 1000 < end; hour += BYBIT_HOUR_MS) {
       signal.throwIfAborted()

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MarketDataRuntime } from '../market-data/runtime'
+import { priceSourceLabel } from '../market-data/price-source-preferences'
 import type { ReplaySession } from '../replay/models'
 import type { BackupEnvelope } from '../storage/backup-service'
 import { formatDisplayTime } from '../format-display-time'
@@ -246,7 +247,7 @@ export function BackupSyncPanel({
             {sessions.map((session) => (
               <option key={session.id} value={session.id}>
                 {session.symbol.ticker} {session.period.text} ·{' '}
-                {formatDisplayTime(session.startTime)} · {session.marketSource === 'ctrader' ? 'cTrader' : '旧会话'}
+                {formatDisplayTime(session.startTime)} · {session.marketSource === undefined || session.marketSource === 'binance' ? '旧会话' : priceSourceLabel(session.marketSource)}
               </option>
             ))}
           </select>
