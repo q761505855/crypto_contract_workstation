@@ -64,6 +64,7 @@ export interface ChartWorkspaceProps {
   drawingStore?: DrawingStore
   drawingScope?: string | null
   orderFlowCloud?: GitHubContentsClient
+  getOrderFlowLotSize?: (ticker: string) => number | undefined
 }
 
 const demoDatafeed = new DemoDatafeed()
@@ -146,6 +147,7 @@ export function ChartWorkspace({
   drawingStore,
   drawingScope = null,
   orderFlowCloud,
+  getOrderFlowLotSize,
 }: ChartWorkspaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const scrollPortRef = useRef<HTMLDivElement | null>(null)
@@ -207,7 +209,7 @@ export function ChartWorkspace({
         symbol,
         period,
         initialIndicatorPreferences,
-      ), orderFlowCloud, onOrderFlowSettings: setOrderFlowDialog,
+      ), orderFlowCloud, getOrderFlowLotSize, onOrderFlowSettings: setOrderFlowDialog,
     })
     if (initialIndicatorPreferences !== null) {
       adapter?.applyIndicatorPreferences?.(

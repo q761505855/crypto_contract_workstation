@@ -1461,16 +1461,6 @@ button:disabled {
 .order-flow-indicator-toggle[aria-pressed=true] .icon { color: #65b7ff; }
 .order-flow-indicator-gear { min-width: 36px; font-size: 17px; }
 .order-flow-indicator-row button:hover { background: #65b7ff20; }
-.workspace-dialog.order-flow-dialog { width: min(580px, 100%); }
-.order-flow-form > p { margin: 0 0 14px; color: #b3c3d8; }
-.order-flow-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px; }
-.order-flow-fields label, .order-flow-color-field { display: grid; gap: 6px; align-content: start; font-size: 13px; }
-.order-flow-fields input[type=number] { width: 100%; min-width: 0; padding: 8px; color: #dae6f7; background: #0c1420; border: 1px solid #34465f; }
-.order-flow-fields .order-flow-toggle { display: flex; align-items: center; justify-content: space-between; }
-.order-flow-toggle input { width: 17px; accent-color: #65b7ff; }
-.order-flow-color-field input[type=color] { height: 34px; padding: 2px; background: #0c1420; border: 1px solid #34465f; border-radius: 3px; cursor: pointer; }
-.order-flow-form footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-.order-flow-form [role=alert] { margin-top: 12px; color: #ffabb1; }
 .workspace-dialog button { min-height: 36px; padding: 7px 12px; cursor: pointer; }
 .dialog-done { display: block; width: 100%; margin-top: 18px; background: #20466c; border-color: #3b719e; color: #dcefff; }
 .workspace-panel-toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0; }

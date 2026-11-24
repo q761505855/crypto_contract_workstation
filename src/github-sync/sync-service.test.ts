@@ -88,13 +88,19 @@ function backup(): BackupEnvelope {
       schemaVersion: 1,
       orderFlow: {
         footprint: { type: 'bidAsk', plotType: 'delta', layout: 'histogram', showText: false, minNotional: 0, columnWidth: 128 },
-        bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxNotional: 0 },
+        bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxNotional: 0, thresholdUnit: 'contracts',
+          minQuantity: 0, maxQuantity: 2.5, minContracts: 10, maxContracts: 0, minLots: 0.01, maxLots: 0.5,
+          sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 },
         profile: { type: 'bidAsk', rows: 26, valueArea: 82, showPoc: false, pocColor: '#ffcc7000' },
+        visibleProfile: { placement: 'left', offset: 0, width: 30, rows: 56, type: 'volumeDelta', showHeaders: false,
+          volumeColor: '#12345600', positiveColor: '#23456780', negativeColor: '#345678' },
         cvd: { reset: 'continuous', showZero: false, plot: 'histogram' },
       },
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
         { name: 'FOOTPRINT', calcParams: [], visible: false, styles: null },
+        { name: 'VWAP', calcParams: [], visible: true, styles: null },
+        { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
         { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
           bubbleMode: 'aggregate',
           bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -841,6 +847,38 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
 
+    const appearanceChanged = structuredClone(indicators)
+    Object.assign(appearanceChanged.orderFlow!.bubbles!, { sizeByVolume: true, opacityByVolume: false, fixedRadius: 24 })
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(appearanceChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(appearanceChanged)
+
+    const thresholdChanged = structuredClone(indicators)
+    Object.assign(thresholdChanged.orderFlow!.bubbles!, { thresholdUnit: 'lots', minLots: 0, maxLots: 0 })
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(thresholdChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(thresholdChanged)
+
+    const changedVisibility = structuredClone(indicators)
+    changedVisibility.main.find(i => i.name === 'VISIBLE_VOLUME_PROFILE')!.visible = true
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(changedVisibility))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(changedVisibility)
+
+    const profileChanged = structuredClone(changedVisibility)
+    Object.assign(profileChanged.orderFlow!.visibleProfile!, { width: 19, type: 'delta', showHeaders: true })
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(profileChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(profileChanged)
+
     const footprintChanged = structuredClone(indicators)
     footprintChanged.orderFlow!.footprint!.plotType = 'matchText'
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(footprintChanged))
@@ -927,6 +965,7 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicators)
     const legacyDefaults = structuredClone(indicators)
+    legacyDefaults.main = legacyDefaults.main.filter(({ name }) => name !== 'VWAP' && name !== 'VISIBLE_VOLUME_PROFILE')
     delete legacyDefaults.orderFlow
     legacyDefaults.main.find(i => i.name === 'BIG_TRADES')!.styles = null
     legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
@@ -937,6 +976,7 @@ describe('GitHubSyncService', () => {
     await rewrite({ ...remotePreferences, chartIndicators: legacyDefaults })
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.orderFlow).toEqual(indicators.orderFlow)
+    expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.map(i => i.name)).toEqual(legacyDefaults.main.map(i => i.name))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).sub[1].indicators[0].styles)
       .toEqual({ bars: [{ positiveColor: '#168c72', negativeColor: '#d93654', borderSize: 0 }] })
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!).main.find((i: { name: string }) => i.name === 'PIVOTS').calcParams.slice(30))
@@ -946,6 +986,24 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
       .toEqual(indicators.main.find(i => i.name === 'BIG_TRADES'))
     const before = (await targetBackups.exportAll()).data
+    for (const visibleProfile of [null, { rows: 201 }, { offset: null }, { type: 'unknown' }, { showHeaders: 0 }]) {
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { visibleProfile } } })
+      await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.visibleProfile/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    for (const bubbles of [{ thresholdUnit: '' }, { minContracts: null }, { minLots: 4, maxLots: 2 },
+      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 41 }]) {
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { bubbles } } })
+      await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.bubbles/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    for (const name of ['VWAP', 'VISIBLE_VOLUME_PROFILE']) {
+      const invalidTradeIndicator = structuredClone(indicators)
+      invalidTradeIndicator.main.find(i => i.name === name)!.calcParams = [null]
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidTradeIndicator })
+      await expect(target.pull(client(remote))).rejects.toThrow(/calcParams/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     const invalidBubbles = structuredClone(indicators)
     await rewrite({ ...remotePreferences, chartIndicators: { ...indicators, orderFlow: { footprint: { plotType: '' } } } })
     await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.footprint.plotType/)

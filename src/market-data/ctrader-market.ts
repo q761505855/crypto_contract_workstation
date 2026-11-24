@@ -308,6 +308,11 @@ export class CTraderMarketService {
     return [...catalog.values()].map(instrument => ({ ...instrument.symbol }))
   }
 
+  getCachedLotSize(symbol: string): number | undefined {
+    const size = cTraderInteger(this.catalog?.get(symbol.toUpperCase())?.details.lotSize)
+    return size !== undefined && size > 0 ? size / 100 : undefined
+  }
+
   async getReplayTradingTerms(symbol: string, timestamp: number, signal?: AbortSignal): Promise<CTraderTradingTerms> {
     const session = await this.client.connect(signal)
     const [{ details, symbol: instrument }, account] = await Promise.all([

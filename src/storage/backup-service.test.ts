@@ -342,8 +342,11 @@ function indicatorPreferences(): ChartIndicatorPreferences {
     schemaVersion: 1,
     orderFlow: {
       footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
-      bubbles: { marker: 'square', minRadius: 0, showText: true },
+      bubbles: { marker: 'square', minRadius: 0, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
+        minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 },
       profile: { rows: 16, valueArea: 85, showLabels: false },
+      visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false,
+        volumeColor: '#12345600', positiveColor: '#23456780', negativeColor: '#345678' },
       cvd: { reset: 'continuous', showZero: false },
     },
     main: [
@@ -354,6 +357,8 @@ function indicatorPreferences(): ChartIndicatorPreferences {
         styles: { lines: [{ color: '#f00' }] },
       },
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
+      { name: 'VWAP', calcParams: [], visible: true, styles: null },
+      { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
       { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
         bubbleMode: 'aggregate',
         bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -644,6 +649,11 @@ describe('WorkstationBackupService', () => {
     delete archive.data.preferences!.chartIndicators
     await target.import(archive)
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicatorPreferences())
+    const legacyIndicators = indicatorPreferences()
+    legacyIndicators.main = legacyIndicators.main.filter(({ name }) => name !== 'VWAP' && name !== 'VISIBLE_VOLUME_PROFILE')
+    archive.data.preferences!.chartIndicators = legacyIndicators
+    await target.import(archive)
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual(legacyIndicators)
     archive.data.preferences!.chartIndicators = indicatorPreferences()
     delete archive.data.preferences!.chartIndicators.orderFlow
     archive.data.preferences!.chartIndicators.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
@@ -669,6 +679,17 @@ describe('WorkstationBackupService', () => {
     ]
     const before = (await target.exportAll()).data
     archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    for (const visibleProfile of [null, { placement: 'center' }, { showHeaders: null }, { width: 0 }]) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { visibleProfile } } as unknown as ChartIndicatorPreferences
+      await expect(target.import(archive)).rejects.toThrow(/orderFlow.visibleProfile/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
+    for (const bubbles of [{ thresholdUnit: null }, { maxQuantity: '10' }, { minLots: 2, maxLots: 1 },
+      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 0 }]) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { bubbles } } as unknown as ChartIndicatorPreferences
+      await expect(target.import(archive)).rejects.toThrow(/orderFlow.bubbles/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
     archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { profile: { showPoc: null } } } as unknown as ChartIndicatorPreferences
     await expect(target.import(archive)).rejects.toThrow(/orderFlow.profile.showPoc/)
     expect((await target.exportAll()).data).toEqual(before)
@@ -693,7 +714,7 @@ describe('WorkstationBackupService', () => {
     }
   })
 
-  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS', 'BIG_TRADES'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
+  it.each(['KC', 'TTM_SQUEEZE', 'TTM_WAVE_A', 'TTM_WAVE_B', 'TTM_WAVE_C', 'PIVOTS', 'MARKET_SESSIONS', 'BIG_TRADES', 'VWAP', 'VISIBLE_VOLUME_PROFILE'])('rejects illegal %s configuration before writing any preferences or market data', async name => {
     const storage = new MemoryPreferences()
     storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
     const databaseName = `bad-indicator-${crypto.randomUUID()}`

@@ -1,11 +1,13 @@
 import { isChartColor } from './colors'
-import { bigTradeColors, bigTradeMode, DEFAULT_BIG_TRADE_NOTIONAL } from './order-flow'
+import { bigTradeColors, bigTradeMode, bigTradeThresholdUnits, DEFAULT_BIG_TRADE_NOTIONAL, type BigTradeThreshold } from './order-flow'
 
 export const FOOTPRINT = 'FOOTPRINT'
 export const CVD = 'CVD'
+export const VWAP = 'VWAP'
+export const VISIBLE_VOLUME_PROFILE = 'VISIBLE_VOLUME_PROFILE'
 export const PROFILE = 'VOLUME_PROFILE_SETTINGS'
 
-const number = (label: string, fallback: number, min: number, max: number, step = 1) =>
+const number = (label: string, fallback: number, min: number, max: number, step: number | 'any' = 1) =>
   ({ kind: 'number' as const, label, fallback, min, max, step })
 const toggle = (label: string, fallback: boolean) => ({ kind: 'boolean' as const, label, fallback })
 const color = (label: string, fallback: string) => ({ kind: 'color' as const, label, fallback })
@@ -43,9 +45,20 @@ export const orderFlowFields = {
   },
   bubbles: {
     mode: select('大单模式', 'volume', { volume: 'Volume（逐笔）', aggregate: 'Aggregate（聚合）' }),
+    thresholdUnit: select('阈值单位', 'notional', { ...bigTradeThresholdUnits, notional: '名义成交额（USDT）',
+      quantity: '成交数量（枚 / 标的单位）', contracts: 'OKX 合约张数（张）', lots: 'cTrader 等效手数（手）' }),
     minNotional: number('最低成交额（USDT）', DEFAULT_BIG_TRADE_NOTIONAL, 0, Number.MAX_VALUE, 0.01),
     maxNotional: number('最高成交额（USDT，0 为不限）', 0, 0, 1e12, 0.01),
+    minQuantity: number('最低成交数量', 1, 0, Number.MAX_VALUE, 'any'),
+    maxQuantity: number('最高成交数量（0 为不限）', 0, 0, Number.MAX_VALUE, 'any'),
+    minContracts: number('最低成交张数', 1, 0, Number.MAX_VALUE, 'any'),
+    maxContracts: number('最高成交张数（0 为不限）', 0, 0, Number.MAX_VALUE, 'any'),
+    minLots: number('最低成交手数', 1, 0, Number.MAX_VALUE, 'any'),
+    maxLots: number('最高成交手数（0 为不限）', 0, 0, Number.MAX_VALUE, 'any'),
     marker: select('标记形状', 'circle', { circle: '圆形', square: '方形', diamond: '菱形' }),
+    sizeByVolume: toggle('按成交量调整大小', true),
+    opacityByVolume: toggle('按成交量调整透明度', false),
+    fixedRadius: number('固定半径', 8, 1, 40),
     minRadius: number('最小半径', 0, 0, 40),
     maxRadius: number('最大半径', 20, 1, 40),
     hollow: toggle('空心标记', false),
@@ -72,6 +85,17 @@ export const orderFlowFields = {
     pocColor: color('POC 线色', '#ffcc70'),
     levelColor: color('VAH / VAL 线色', '#aabcda'),
   },
+  visibleProfile: {
+    placement: select('位置', 'right', { right: '靠右 · 价格轴左侧', left: '靠主图左侧' }),
+    offset: number('距边缘偏移（%）', 0, 0, 40),
+    width: number('总宽度（占主图 %）', 26, 5, 50),
+    rows: number('价位档数', 48, 4, 200),
+    type: select('显示内容', 'volumeDelta', { volumeDelta: '成交量 / Delta', volume: '仅成交量', delta: '仅 Delta' }),
+    showHeaders: toggle('显示列标题', true),
+    volumeColor: color('成交量颜色', '#769ce2a6'),
+    positiveColor: color('正 Delta 颜色', '#49d4aeae'),
+    negativeColor: color('负 Delta 颜色', '#ff827eae'),
+  },
   cvd: {
     reset: select('累计方式', 'daily', { daily: 'UTC 日切', continuous: '连续累计' }),
     plot: select('显示样式', 'line', { line: '折线', histogram: '柱形' }),
@@ -90,6 +114,17 @@ type GroupValues<G extends OrderFlowGroup> = {
   [K in keyof Schema[G]]: Schema[G][K] extends { fallback: infer T } ? T : never
 }
 export type OrderFlowPreferences = { [G in OrderFlowGroup]?: Partial<GroupValues<G>> }
+
+export const bubbleThresholdFields = {
+  notional: ['minNotional', 'maxNotional'], quantity: ['minQuantity', 'maxQuantity'],
+  contracts: ['minContracts', 'maxContracts'], lots: ['minLots', 'maxLots'],
+} as const
+
+export function bigTradeThreshold(settings: GroupValues<'bubbles'>, minimumNotional: number): BigTradeThreshold {
+  const unit = settings.thresholdUnit
+  const [min, max] = bubbleThresholdFields[unit]
+  return { unit, minimum: unit === 'notional' ? minimumNotional : settings[min], maximum: settings[max] }
+}
 
 export function bubblePreferenceDefaults(calcParams: unknown[], styles: unknown) {
   const { buy, sell } = bigTradeColors(styles)
@@ -147,8 +182,14 @@ export function validateOrderFlowPreferences(value: unknown, previous?: OrderFlo
     Object.assign(result, { [key]: next })
   }
   const footprint = orderFlowSettings('footprint', result)
-  if (footprint.maxNotional > 0 && footprint.maxNotional < footprint.minNotional) throw new Error('最高成交额低于最低成交额（orderFlow.footprint）')
+  if (footprint.maxNotional > 0 && footprint.maxNotional < footprint.minNotional) throw new Error('最高成交额低于最低成交额（orderFlow.footprint.maxNotional）')
   const bubbles = orderFlowSettings('bubbles', result)
-  if (bubbles.minRadius > bubbles.maxRadius) throw new Error('最大半径低于最小半径（orderFlow.bubbles）')
+  if (bubbles.minRadius > bubbles.maxRadius) throw new Error('最大半径低于最小半径（orderFlow.bubbles.maxRadius）')
+  for (const unit of ['quantity', 'contracts', 'lots'] as const) {
+    const [min, max] = bubbleThresholdFields[unit]
+    if (bubbles[max] > 0 && bubbles[max] < bubbles[min]) {
+      throw new Error(`${orderFlowFields.bubbles[max].label}低于下限（orderFlow.bubbles.${max}）`)
+    }
+  }
   return result
 }

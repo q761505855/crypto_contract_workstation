@@ -1,9 +1,12 @@
 import { registerIndicator, type IndicatorDrawParams, type IndicatorTooltipData } from 'klinecharts'
-import type { FootprintRow } from './order-flow-metrics'
-import { CVD, FOOTPRINT, orderFlowSettings, type FootprintType } from './order-flow-preferences'
+import type { VolumeProfileRow } from './order-flow'
+import type { FootprintRow, VwapPoint } from './order-flow-metrics'
+import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, orderFlowSettings, type FootprintType } from './order-flow-preferences'
 
 export const footprintTitle = '足迹图（Footprint）'
 export const cvdTitle = '累计成交量差（CVD）'
+export const visibleProfileTitle = '可见范围成交分布（Volume Profile）'
+const defaultVisibleProfile = orderFlowSettings('visibleProfile')
 
 export interface FootprintDisplay {
   rows?: ReadonlyMap<number, readonly FootprintRow[]>
@@ -14,6 +17,19 @@ export interface FootprintDisplay {
 export interface CvdDisplay {
   values?: ReadonlyMap<number, number>
   settings: ReturnType<typeof orderFlowSettings<'cvd'>>
+  message?: string
+}
+
+export interface VwapDisplay {
+  values?: ReadonlyMap<number, VwapPoint>
+  precision: number
+  message?: string
+}
+
+export interface VisibleProfileDisplay {
+  rows?: readonly VolumeProfileRow[]
+  axisInset: () => number
+  settings?: typeof defaultVisibleProfile
   message?: string
 }
 
@@ -161,7 +177,114 @@ function drawCvd({ ctx, barSpace, indicator, visibleRange, xAxis, yAxis, boundin
   return true
 }
 
+function drawVwap({ ctx, indicator, visibleRange, xAxis, yAxis, barSpace }: IndicatorDrawParams<Partial<VwapPoint>>): boolean {
+  const { result } = indicator
+  ctx.save()
+  ctx.strokeStyle = '#f4bc58'
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  for (let index = Math.max(0, visibleRange.from - 1); index < Math.min(visibleRange.to + 1, result.length); index++) {
+    const point = result[index]
+    if (point?.price === undefined) continue
+    const x = xAxis.convertToPixel(index)
+    const y = yAxis.convertToPixel(point.price)
+    if (result[index - 1]?.price !== undefined && result[index - 1].day === point.day && index > Math.max(0, visibleRange.from - 1)) {
+      ctx.lineTo(x, y)
+    } else {
+      ctx.moveTo(x - barSpace.gapBar / 2, y)
+      ctx.lineTo(x, y)
+    }
+  }
+  ctx.stroke()
+  ctx.restore()
+  return true
+}
+
+export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: IndicatorDrawParams): boolean {
+  const display = indicator.extendData as VisibleProfileDisplay | undefined
+  if (!display?.rows?.length) return true
+  const { settings = defaultVisibleProfile, rows } = display
+  const showVolume = settings.type !== 'delta'
+  const showDelta = settings.type !== 'volume'
+  const both = showVolume && showDelta
+  const right = bounding.width - display.axisInset() - 3
+  const available = right - 3
+  const offset = Math.floor(available * settings.offset / 100)
+  const totalWidth = Math.floor(available * settings.width / 100)
+  const left = settings.placement === 'left' ? 3 + offset : right - offset - totalWidth
+  const columnWidth = both ? (totalWidth - 2) / 2 : totalWidth
+  if (columnWidth < 4) return true
+  const deltaLeft = both ? left + columnWidth + 2 : left
+  const maxVolume = showVolume ? Math.max(...rows.map(({ buy, sell }) => buy + sell)) : 0
+  const maxDelta = showDelta ? Math.max(...rows.map(({ buy, sell }) => Math.abs(buy - sell))) : 0
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(left, 0, totalWidth, bounding.height)
+  ctx.clip()
+  for (const { low, high, buy, sell } of rows) {
+    const y1 = yAxis.convertToPixel(low)
+    const y2 = yAxis.convertToPixel(high)
+    const top = Math.min(y1, y2)
+    const height = Math.max(1, Math.abs(y1 - y2) - 0.5)
+    if (top >= bounding.height || top + height <= 0) continue
+    if (maxVolume > 0) {
+      const volumeWidth = (buy + sell) / maxVolume * columnWidth
+      ctx.fillStyle = settings.volumeColor
+      ctx.fillRect(left + columnWidth - volumeWidth, top, volumeWidth, height)
+    }
+    const delta = buy - sell
+    if (maxDelta > 0 && delta !== 0) {
+      ctx.fillStyle = delta > 0 ? settings.positiveColor : settings.negativeColor
+      ctx.fillRect(deltaLeft, top, Math.abs(delta) / maxDelta * columnWidth, height)
+    }
+  }
+  if (settings.showHeaders && columnWidth >= 32) {
+    ctx.font = '11px system-ui'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    if (showVolume) {
+      ctx.fillStyle = '#92b5f6'
+      ctx.fillText('成交量', left + columnWidth / 2, 5, columnWidth)
+    }
+    if (showDelta) {
+      ctx.fillStyle = '#aab7c9'
+      ctx.fillText('Delta', deltaLeft + columnWidth / 2, 5, columnWidth)
+    }
+  }
+  ctx.restore()
+  return true
+}
+
+function flowTooltip(name: string, defaultStyles: IndicatorDrawParams['defaultStyles'], values: IndicatorTooltipData['values'], configurable = false): IndicatorTooltipData {
+  const icons = configurable ? defaultStyles.tooltip.icons : defaultStyles.tooltip.icons.filter(icon => icon.id !== 'setting')
+  return { name, calcParamsText: '', icons, values }
+}
+
 export function registerOrderFlowIndicators(): void {
+  registerIndicator<Partial<VwapPoint>>({
+    name: VWAP, shortName: VWAP, calcParams: [], figures: [{ key: 'price' }],
+    calc: (candles, { extendData }) => {
+      const display = extendData as VwapDisplay | undefined
+      return candles.map(({ timestamp }) => display?.values?.get(timestamp) ?? {})
+    },
+    draw: drawVwap,
+    createTooltipDataSource: ({ indicator, crosshair, defaultStyles }) => {
+      const display = indicator.extendData as VwapDisplay | undefined
+      const price = indicator.result[crosshair.dataIndex ?? indicator.result.length - 1]?.price
+      const values: IndicatorTooltipData['values'] = []
+      if (price !== undefined) values.push({ title: '', value: price.toFixed(display?.precision ?? 2) })
+      if (display?.message) values.push({ title: '', value: display.message })
+      return flowTooltip(VWAP, defaultStyles, values)
+    },
+  })
+  registerIndicator({
+    name: VISIBLE_VOLUME_PROFILE, shortName: visibleProfileTitle, calcParams: [], figures: [], calc: () => [],
+    draw: drawVisibleVolumeProfile,
+    createTooltipDataSource: ({ indicator, defaultStyles }) => {
+      const message = (indicator.extendData as VisibleProfileDisplay | undefined)?.message
+      return flowTooltip(visibleProfileTitle, defaultStyles, message ? [{ title: '', value: message }] : [], true)
+    },
+  })
   registerIndicator({
     name: FOOTPRINT, shortName: footprintTitle, zLevel: -1, calc: () => [], draw: drawFootprint, figures: [],
     drawForeground: drawFootprintText,

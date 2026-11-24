@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
   }))
 })
 
-test('大单气泡模式和样式保存后可刷新恢复，也支持配置导出和导入', async ({ page }) => {
+test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配置导出和导入', async ({ page }) => {
   await connectFixture(page)
   await page.addInitScript(() => {
     const fillText = CanvasRenderingContext2D.prototype.fillText
@@ -41,11 +41,17 @@ test('大单气泡模式和样式保存后可刷新恢复，也支持配置导�
     }
   })
   const chart = page.getByTestId('chart-host')
-  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
-  const buyFill = settings.getByLabel('主动买入填充', { exact: true })
-  const bubbleMode = settings.getByLabel('气泡模式', { exact: true })
-  const buyTransparency = settings.getByLabel('主动买入填充透明度')
-  const confirm = page.getByText('确定', { exact: true })
+  const settings = page.getByRole('dialog', { name: '大单气泡（Big Trades）设置' })
+  const buyFill = settings.getByLabel('主动买入填充色', { exact: true })
+  const bubbleMode = settings.getByLabel('大单模式', { exact: true })
+  const buyTransparency = settings.getByLabel('主动买入填充色透明度')
+  const unit = settings.getByLabel('阈值单位', { exact: true })
+  const marker = settings.getByLabel('标记形状', { exact: true })
+  const dynamicSize = settings.getByLabel('按成交量调整大小', { exact: true })
+  const dynamicOpacity = settings.getByLabel('按成交量调整透明度', { exact: true })
+  const fixedRadius = settings.getByLabel('固定半径', { exact: true })
+  const palette = settings.getByRole('button', { name: '配色', exact: true })
+  const confirm = settings.getByRole('button', { name: '保存', exact: true })
   const openSettings = async () => {
     const showInfo = page.getByRole('button', { name: '显示主图指标信息', exact: true })
     if (await showInfo.isVisible()) await showInfo.click()
@@ -53,31 +59,70 @@ test('大单气泡模式和样式保存后可刷新恢复，也支持配置导�
       const gear = await page.evaluate(() => (window as unknown as { bubbleGear?: { x: number; y: number } }).bubbleGear)
       expect(gear).toBeDefined()
       await page.mouse.click(gear!.x + 3, gear!.y + 3)
-      await expect(buyFill).toBeVisible({ timeout: 400 })
+      await expect(settings).toBeVisible({ timeout: 400 })
     }).toPass({ timeout: 5000 })
+    await expect(palette).toHaveAttribute('aria-expanded', 'false')
+    await expect(buyFill).toHaveCount(0)
+    await palette.click()
   }
   await page.goto('/')
   await expect(page.getByRole('contentinfo')).toContainText('EURUSD')
   await chart.getByText('指标', { exact: true }).click()
-  await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
+  const indicatorList = page.locator('.klinecharts-pro-indicator-modal-list')
+  await indicatorList.getByText('MA(移动平均线)', { exact: true }).first().click()
+  await indicatorList.getByText('大单气泡（Big Trades）', { exact: true }).click()
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
   await openSettings()
   await expect(bubbleMode).toHaveValue('volume')
+  await expect(unit).toHaveValue('notional')
+  await expect(dynamicSize).toBeChecked()
+  await expect(dynamicOpacity).not.toBeChecked()
+  await marker.selectOption('square')
+  await dynamicSize.uncheck()
+  await dynamicOpacity.check()
+  await expect(settings.getByLabel('最大半径', { exact: true })).toHaveCount(0)
+  await fixedRadius.fill('11')
+  await settings.getByLabel('显示成交量', { exact: true }).check()
+  const appearance = settings.getByRole('button', { name: '气泡样式', exact: true })
+  await appearance.click()
+  await expect(fixedRadius).toHaveCount(0)
+  await appearance.click()
+  await expect(fixedRadius).toHaveValue('11')
+  await settings.getByLabel('最低成交额（USDT）', { exact: true }).fill('1200')
+  await unit.selectOption('quantity')
+  await settings.getByLabel('最低成交数量', { exact: true }).fill('0.025')
+  await unit.selectOption('contracts')
+  await settings.getByLabel('最低成交张数', { exact: true }).fill('12.5')
+  await settings.getByLabel('最高成交张数（0 为不限）', { exact: true }).fill('20')
   await expect(buyFill).toHaveValue('#49d4ae')
   await expect(buyTransparency).toHaveValue('58')
   await buyFill.fill('#123456')
   await bubbleMode.selectOption('aggregate')
   await buyTransparency.fill('100')
-  await settings.getByLabel('主动卖出描边透明度').fill('0')
+  await settings.getByLabel('主动卖出描边色透明度').fill('0')
   await confirm.click()
+  await expect(settings).toBeHidden()
 
   await page.reload()
   await openSettings()
   await expect(bubbleMode).toHaveValue('aggregate')
+  await expect(marker).toHaveValue('square')
+  await expect(dynamicSize).not.toBeChecked()
+  await expect(dynamicOpacity).toBeChecked()
+  await expect(fixedRadius).toHaveValue('11')
+  await expect(unit).toHaveValue('contracts')
+  await expect(settings.getByLabel('最低成交张数', { exact: true })).toHaveValue('12.5')
+  await expect(settings.getByLabel('最高成交张数（0 为不限）', { exact: true })).toHaveValue('20')
+  await unit.selectOption('notional')
+  await expect(settings.getByLabel('最低成交额（USDT）', { exact: true })).toHaveValue('1200')
+  await unit.selectOption('quantity')
+  await expect(settings.getByLabel('最低成交数量', { exact: true })).toHaveValue('0.025')
+  await unit.selectOption('contracts')
   await expect(buyFill).toHaveValue('#123456')
   await expect(buyTransparency).toHaveValue('100')
-  await expect(settings.getByLabel('主动卖出描边透明度')).toHaveValue('0')
+  await expect(settings.getByLabel('主动卖出描边色透明度')).toHaveValue('0')
   await confirm.click()
+  await expect(settings).toBeHidden()
 
   await page.getByRole('button', { name: '工具', exact: true }).click()
   await page.getByTestId('open-data-manager').click()
@@ -87,11 +132,20 @@ test('大单气泡模式和样式保存后可刷新恢复，也支持配置导�
   ])
   const archive = JSON.parse(await readFile((await download.path())!, 'utf8'))
   const styles = archive.data.preferences.chartIndicators.main.find((setting: { name: string }) => setting.name === 'BIG_TRADES').styles
+  const thresholds = archive.data.preferences.chartIndicators.orderFlow.bubbles
+  expect(thresholds).toMatchObject({ thresholdUnit: 'contracts', minQuantity: 0.025, minContracts: 12.5, maxContracts: 20 })
+  expect(thresholds).toMatchObject({ marker: 'square', showText: true, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 })
   expect(styles.bubbleMode).toBe('aggregate')
   expect(styles.bubbleColors.map(({ color }: { color: string }) => color))
     .toEqual(['#12345600', '#ff827e6b', '#49d4aee6', '#ff827e'])
   styles.bubbleColors[0].color = '#654321'
   styles.bubbleMode = 'volume'
+  thresholds.thresholdUnit = 'lots'
+  thresholds.minLots = 0.02
+  thresholds.maxLots = 0
+  thresholds.marker = 'circle'
+  thresholds.sizeByVolume = true
+  thresholds.opacityByVolume = false
   page.once('dialog', dialog => dialog.accept())
   await page.getByTestId('import-backup-file').setInputFiles({
     name: 'big-trades-style.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)),
@@ -100,8 +154,18 @@ test('大单气泡模式和样式保存后可刷新恢复，也支持配置导�
   await page.reload()
   await openSettings()
   await expect(bubbleMode).toHaveValue('volume')
+  await expect(unit).toHaveValue('lots')
+  await expect(marker).toHaveValue('circle')
+  await expect(dynamicSize).toBeChecked()
+  await expect(dynamicOpacity).not.toBeChecked()
+  await expect(fixedRadius).toHaveCount(0)
+  await expect(settings.getByLabel('最低成交手数', { exact: true })).toHaveValue('0.02')
+  await expect(settings.getByLabel('最高成交手数（0 为不限）', { exact: true })).toHaveValue('0')
   await expect(buyFill).toHaveValue('#654321')
   await expect(buyTransparency).toHaveValue('0')
+  await page.setViewportSize({ width: 390, height: 740 })
+  await expect(confirm).toBeInViewport()
+  expect(await settings.locator('.workspace-dialog-body').evaluate(body => body.scrollWidth <= body.clientWidth)).toBe(true)
 })
 
 test('订单流分组和设置可独立使用并随配置恢复', async ({ page }) => {
@@ -111,6 +175,8 @@ test('订单流分组和设置可独立使用并随配置恢复', async ({ page 
   const list = page.locator('.klinecharts-pro-indicator-modal-list')
   const footprint = '足迹图（Footprint）'
   const profile = '框选成交分布（Profile）'
+  const vwap = 'VWAP'
+  const visibleProfile = '可见范围成交分布（Volume Profile）'
   const cvd = '累计成交量差（CVD）'
   const bubbles = '大单气泡（Big Trades）'
   const open = () => chart.getByText('指标', { exact: true }).click()
@@ -121,20 +187,26 @@ test('订单流分组和设置可独立使用并随配置恢复', async ({ page 
     await expect(dialog).toBeVisible()
     return dialog
   }
+  const section = (dialog: ReturnType<typeof page.getByRole>, name: string) => dialog.getByRole('button', { name, exact: true })
 
   await open()
   await expect(list.locator('li.title').first()).toHaveText('订单流')
   await list.getByText(profile, { exact: true }).click()
   await expect(page.getByRole('dialog', { name: profile + '设置' })).toHaveCount(0)
   const profileDialog = await settings(profile)
+  await section(profileDialog, '配色').click()
   await expect(profileDialog.getByLabel('POC 线色', { exact: true })).toHaveAttribute('type', 'color')
   await profileDialog.getByLabel('价位档数').fill('64')
+  await section(profileDialog, '关键价位').click()
   await profileDialog.getByLabel('显示 POC').uncheck()
+  await expect(profileDialog.getByLabel('POC 线色', { exact: true })).toHaveCount(0)
   await profileDialog.getByRole('button', { name: '保存', exact: true }).click()
   const bubbleDialog = await settings(bubbles)
+  await section(bubbleDialog, '配色').click()
   await expect(bubbleDialog.getByLabel('主动买入填充色', { exact: true })).toHaveAttribute('type', 'color')
   await bubbleDialog.getByLabel('标记形状').selectOption('diamond')
   await bubbleDialog.getByLabel('空心标记').check()
+  await expect(bubbleDialog.getByLabel('主动买入填充色', { exact: true })).toHaveCount(0)
   await bubbleDialog.getByLabel('最小半径').fill('0')
   await bubbleDialog.getByLabel('大单模式').selectOption('aggregate')
   await bubbleDialog.getByLabel('最低成交额（USDT）').fill('1200')
@@ -149,20 +221,57 @@ test('订单流分组和设置可独立使用并随配置恢复', async ({ page 
   await bubbleToggle.click()
 
   const footprintDialog = await settings(footprint)
+  await section(footprintDialog, '配色').click()
   await expect(footprintDialog.getByLabel('失衡色', { exact: true })).toHaveAttribute('type', 'color')
   await footprintDialog.getByLabel('失衡色', { exact: true }).fill('#345678')
   await footprintDialog.getByLabel('失衡色透明度', { exact: true }).fill('100')
   await expect(footprintDialog.getByLabel('图形内容', { exact: true })).toHaveValue('matchText')
   await footprintDialog.getByLabel('数值内容', { exact: true }).selectOption('bidAsk')
   await footprintDialog.getByLabel('图形内容', { exact: true }).selectOption('delta')
+  await footprintDialog.getByLabel('显示数值', { exact: true }).uncheck()
+  await expect(footprintDialog.getByLabel('字号', { exact: true })).toHaveCount(0)
+  await expect(footprintDialog.getByLabel('数值内容', { exact: true })).toHaveCount(0)
+  await footprintDialog.getByLabel('显示数值', { exact: true }).check()
+  await section(footprintDialog, '价位分组与筛选').click()
+  await expect(footprintDialog.getByLabel('自动目标档数', { exact: true })).toBeVisible()
+  await footprintDialog.getByLabel('价位分组', { exact: true }).selectOption('manual')
+  await expect(footprintDialog.getByLabel('自动目标档数', { exact: true })).toHaveCount(0)
+  await expect(footprintDialog.getByLabel('手动每档 ticks', { exact: true })).toBeVisible()
+  await footprintDialog.getByLabel('价位分组', { exact: true }).selectOption('auto')
   await footprintDialog.getByLabel('显示样式').selectOption('histogram')
   await footprintDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(list.getByRole('button', { name: footprint, exact: true })).toHaveAttribute('aria-pressed', 'false')
   await list.getByRole('button', { name: footprint, exact: true }).click()
   await list.getByRole('button', { name: cvd, exact: true }).click()
+  const viewportProfile = await settings(visibleProfile)
+  await expect(viewportProfile.getByLabel('位置', { exact: true })).toHaveValue('right')
+  await expect(viewportProfile.getByLabel('价位档数', { exact: true })).toHaveValue('48')
+  await viewportProfile.getByLabel('位置', { exact: true }).selectOption('left')
+  await viewportProfile.getByLabel('距边缘偏移（%）', { exact: true }).fill('12')
+  await viewportProfile.getByLabel('总宽度（占主图 %）', { exact: true }).fill('19')
+  await viewportProfile.getByLabel('价位档数', { exact: true }).fill('28')
+  await viewportProfile.getByLabel('显示内容', { exact: true }).selectOption('delta')
+  await viewportProfile.getByLabel('显示列标题', { exact: true }).uncheck()
+  await section(viewportProfile, '配色').click()
+  await expect(viewportProfile.getByLabel('成交量颜色', { exact: true })).toHaveCount(0)
+  await viewportProfile.getByLabel('正 Delta 颜色', { exact: true }).fill('#123456')
+  await viewportProfile.getByRole('button', { name: '保存', exact: true }).click()
+  for (const name of [vwap, visibleProfile]) {
+    const button = list.getByRole('button', { name, exact: true })
+    await expect(button).toHaveAttribute('aria-pressed', 'false')
+    await button.click()
+  }
   await expect(list.getByRole('button', { name: cvd, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  for (const name of [vwap, visibleProfile]) {
+    await expect(list.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  }
   const cvdDialog = await settings(cvd)
+  await section(cvdDialog, '配色').click()
   await expect(cvdDialog.getByLabel('正值色', { exact: true })).toHaveAttribute('type', 'color')
+  await cvdDialog.getByLabel('显示零线', { exact: true }).uncheck()
+  await expect(cvdDialog.getByLabel('零线色', { exact: true })).toHaveCount(0)
+  await cvdDialog.getByLabel('显示样式', { exact: true }).selectOption('histogram')
+  await expect(cvdDialog.getByLabel('线宽', { exact: true })).toHaveCount(0)
   await cvdDialog.getByRole('button', { name: '取消', exact: true }).click()
   await close()
 
@@ -171,12 +280,18 @@ test('订单流分组和设置可独立使用并随配置恢复', async ({ page 
   await expect(list.getByRole('button', { name: footprint, exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(list.getByRole('button', { name: cvd, exact: true })).toHaveAttribute('aria-pressed', 'true')
   const restored = await settings(footprint)
+  await section(restored, '配色').click()
   await expect(restored.getByLabel('失衡色', { exact: true })).toHaveValue('#345678')
   await expect(restored.getByLabel('失衡色透明度', { exact: true })).toHaveValue('100')
   await expect(restored.getByLabel('数值内容', { exact: true })).toHaveValue('bidAsk')
   await expect(restored.getByLabel('图形内容', { exact: true })).toHaveValue('delta')
   await expect(restored.getByLabel('显示样式')).toHaveValue('histogram')
   await restored.getByRole('button', { name: '取消', exact: true }).click()
+  const restoredProfile = await settings(visibleProfile)
+  await expect(restoredProfile.getByLabel('位置', { exact: true })).toHaveValue('left')
+  await expect(restoredProfile.getByLabel('距边缘偏移（%）', { exact: true })).toHaveValue('12')
+  await expect(restoredProfile.getByLabel('显示列标题', { exact: true })).not.toBeChecked()
+  await restoredProfile.getByRole('button', { name: '取消', exact: true }).click()
   await close()
 
   await page.getByRole('button', { name: '工具', exact: true }).click()
@@ -186,11 +301,20 @@ test('订单流分组和设置可独立使用并随配置恢复', async ({ page 
     page.getByRole('button', { name: '导出应用配置' }).click(),
   ])
   const archive = JSON.parse(await readFile((await download.path())!, 'utf8'))
+  const main = archive.data.preferences.chartIndicators.main as import('../src/chart/indicator-preferences').ChartIndicatorSetting[]
+  expect(main.filter(({ name }) => name === 'VWAP' || name === 'VISIBLE_VOLUME_PROFILE')).toEqual([
+    { name: 'VWAP', calcParams: [], visible: true, styles: null },
+    { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: true, styles: null },
+  ])
+  archive.data.preferences.chartIndicators.main = main.filter(({ name }) => name !== 'VWAP')
   const orderFlow = archive.data.preferences.chartIndicators.orderFlow
   expect(orderFlow.profile).toMatchObject({ rows: 64, showPoc: false })
+  expect(orderFlow.visibleProfile).toMatchObject({ placement: 'left', offset: 12, width: 19, rows: 28, type: 'delta', showHeaders: false })
+  expect(orderFlow.visibleProfile.positiveColor).toMatch(/^#123456/)
   expect(orderFlow.bubbles).toMatchObject({ marker: 'diamond', hollow: true, minRadius: 0, mode: 'aggregate', minNotional: 1200 })
   expect(orderFlow.footprint).toMatchObject({ type: 'bidAsk', plotType: 'delta', layout: 'histogram', imbalanceColor: '#34567800' })
   orderFlow.profile.rows = 35
+  Object.assign(orderFlow.visibleProfile, { placement: 'right', offset: 0, type: 'volume', rows: 60 })
   orderFlow.footprint.plotType = 'volume'
   orderFlow.footprint.imbalanceColor = 'rgba(18,52,86,0.25)'
   page.once('dialog', dialog => dialog.accept())
@@ -200,11 +324,21 @@ test('订单流分组和设置可独立使用并随配置恢复', async ({ page 
   await expect(page.getByTestId('backup-status')).toContainText('刷新页面')
   await page.reload()
   await open()
+  await expect(list.getByRole('button', { name: vwap, exact: true })).toHaveAttribute('aria-pressed', 'false')
+  await expect(list.getByRole('button', { name: visibleProfile, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const importedViewportProfile = await settings(visibleProfile)
+  await expect(importedViewportProfile.getByLabel('位置', { exact: true })).toHaveValue('right')
+  await expect(importedViewportProfile.getByLabel('距边缘偏移（%）', { exact: true })).toHaveValue('0')
+  await expect(importedViewportProfile.getByLabel('价位档数', { exact: true })).toHaveValue('60')
+  await expect(importedViewportProfile.getByLabel('显示内容', { exact: true })).toHaveValue('volume')
+  await importedViewportProfile.getByRole('button', { name: '取消', exact: true }).click()
   const imported = await settings(profile)
   await expect(imported.getByLabel('价位档数')).toHaveValue('35')
+  await section(imported, '关键价位').click()
   await expect(imported.getByLabel('显示 POC')).not.toBeChecked()
   await imported.getByRole('button', { name: '取消', exact: true }).click()
   const importedFootprint = await settings(footprint)
+  await section(importedFootprint, '配色').click()
   await expect(importedFootprint.getByLabel('失衡色', { exact: true })).toHaveValue('#123456')
   await expect(importedFootprint.getByLabel('失衡色透明度', { exact: true })).toHaveValue('75')
   await expect(importedFootprint.getByLabel('数值内容', { exact: true })).toHaveValue('bidAsk')
@@ -278,7 +412,15 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
 
   await chart.getByText('指标', { exact: true }).click()
-  await page.locator('.klinecharts-pro-indicator-modal-list').getByText('大单气泡（Big Trades）', { exact: true }).click()
+  const indicators = page.locator('.klinecharts-pro-indicator-modal-list')
+  await indicators.getByRole('button', { name: '大单气泡（Big Trades）', exact: true }).click()
+  await indicators.getByRole('button', { name: 'VWAP', exact: true }).click()
+  await indicators.getByRole('button', { name: '可见范围成交分布（Volume Profile）', exact: true }).click()
+  const visibleProfileSettings = page.getByRole('dialog', { name: '可见范围成交分布（Volume Profile）设置' })
+  await indicators.getByRole('button', { name: '可见范围成交分布（Volume Profile）设置', exact: true }).click()
+  await visibleProfileSettings.getByLabel('位置', { exact: true }).selectOption('left')
+  await visibleProfileSettings.getByLabel('价位档数', { exact: true }).fill('24')
+  await visibleProfileSettings.getByRole('button', { name: '保存', exact: true }).click()
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
   const combined = () => page.evaluate(() => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
@@ -287,11 +429,16 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     const bubbles = panes.get('candle_pane')?.get('BIG_TRADES')
     const bars = bubbles?.extendData?.bars as import('../src/chart/order-flow-renderers').BubbleDisplay['bars']
     const candles = coreChart.getDataList()
+    const profile = panes.get('candle_pane')?.get('VISIBLE_VOLUME_PROFILE')?.extendData as import('../src/chart/order-flow-indicators').VisibleProfileDisplay | undefined
+    const vwap = panes.get('candle_pane')?.get('VWAP')?.result.at(-1)?.price
     return { volumeName: volume?.shortName, volume: volume?.result.at(-1)?.volume, updating: bubbles?.extendData?.updating,
+      vwap, profileSettings: profile?.settings, profileBuy: profile?.rows?.reduce((total, row) => total + row.buy, 0),
+      profileSell: profile?.rows?.reduce((total, row) => total + row.sell, 0),
       points: Array.from(bars ?? []).flatMap(([stamp, row]) => {
         const open = candles.find(candle => candle.timestamp === stamp)?.open ?? 0
         const points = row.pointRanges.flatMap(({ points, from, until }) => points.slice(from, until))
-        return points.map(({ trade }) => [trade.id, trade.price, Math.round(trade.price * (open / row.firstPrice!) * 1e5) / 1e5])
+        return points.filter(({ trade }) => trade.price * trade.size >= Number(bubbles?.calcParams[0]))
+          .map(({ trade }) => [trade.id, trade.price, Math.round(trade.price * (open / row.firstPrice!) * 1e5) / 1e5])
       }) }
   })
   expect(futureReads).toBe(0)
@@ -316,6 +463,9 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   } finally { finishRead() }
   await expect.poll(async () => (await inspect()).last).toMatchObject({ timestamp: start, open: 1.1002, close: 1.1005 })
   await expect.poll(combined).toMatchObject({ volumeName: 'OKX / Bybit 成交量', volume: 40, points: [['first', 710, 1.1002]] })
+  await expect.poll(combined).toMatchObject({ profileSell: 0, profileSettings: { placement: 'left', rows: 24 } })
+  expect((await combined()).profileBuy).toBeGreaterThanOrEqual(40)
+  expect((await combined()).vwap).toBeCloseTo(1.1002, 3)
   await expect.poll(async () => (await combined()).updating).toBeUndefined()
   expect(nearbyReads).toBe(1)
   const readsBeforeStep = futureReads
@@ -333,6 +483,16 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   })
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
   await expect.poll(combined).toMatchObject({ volume: 50, points: [['first', 710, 1.1002], ['next', 711, 1.1002]] })
+  await expect.poll(combined).toMatchObject({ profileSell: 50 })
+  const scrollProfile = (beforeLast: boolean) => page.evaluate(beforeLast => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    if (beforeLast) coreChart.scrollToDataIndex(coreChart.getDataList().length - 3)
+    else coreChart.scrollToRealTime()
+  }, beforeLast)
+  await scrollProfile(true)
+  await expect.poll(async () => (await combined()).profileSell).toBe(0)
+  await scrollProfile(false)
+  await expect.poll(async () => (await combined()).profileSell).toBe(50)
   expect(futureReads).toBe(readsBeforeStep)
   expect(await page.evaluate(() => (window as unknown as { __replayStepScans: number }).__replayStepScans)).toBe(0)
   const tool = chart.locator('.klinecharts-pro-drawing-bar').getByRole('button', { name: '框选成交分布' })
@@ -459,7 +619,7 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   ).__footprintTextLayers), { timeout: 3000 }).toEqual({ '40': 1 })
 })
 
-test('实时成交只更新映射品种的成交量，切到未匹配品种时恢复报价量', async ({ page }) => {
+test('实时成交可按数量与手数显示大单，切到未匹配品种时恢复报价量', async ({ page }) => {
   const inspect = await installViewportProbe(page)
   await page.clock.setFixedTime(start + 30_000)
   await connectFixture(page)
@@ -494,10 +654,43 @@ test('实时成交只更新映射品种的成交量，切到未匹配品种时�
   await page.getByRole('button', { name: '选择周期 1m', exact: true }).click()
   await expect.poll(() => ethereum).toBeDefined()
   expect(bybitRequests).toBe(0)
+  await page.evaluate(() => {
+    const state = window as unknown as { bubbleLabels: string[] }
+    state.bubbleLabels = []
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (this.fillStyle === '#f2f5fa') state.bubbleLabels.push(text)
+      if (maxWidth === undefined) fillText.call(this, text, x, y)
+      else fillText.call(this, text, x, y, maxWidth)
+    }
+  })
+  const bubbleLabels = () => page.evaluate(() => (window as unknown as { bubbleLabels: string[] }).bubbleLabels)
+  const list = page.locator('.klinecharts-pro-indicator-modal-list')
+  const label = '大单气泡（Big Trades）'
+  const closeIndicators = () => page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await chart.getByText('指标', { exact: true }).click()
+  await list.getByRole('button', { name: label, exact: true }).click()
+  await list.getByRole('button', { name: `${label}设置`, exact: true }).click()
+  const bubbleSettings = page.getByRole('dialog', { name: `${label}设置` })
+  await bubbleSettings.getByLabel('阈值单位').selectOption('quantity')
+  await bubbleSettings.getByLabel('最低成交数量', { exact: true }).fill('5')
+  await bubbleSettings.getByLabel('显示成交量', { exact: true }).check()
+  await bubbleSettings.getByRole('button', { name: '保存', exact: true }).click()
+  await closeIndicators()
   ethereum!.send(JSON.stringify({ topic: 'publicTrade.ETHUSDT', data: [
-    { T: start + 20_000, s: 'ETHUSDT', S: 'Sell', v: '8', p: '1.103', i: 'next' },
+    { T: start + 20_000, s: 'ETHUSDT', S: 'Sell', v: '8', p: '1.1002', i: 'next' },
   ] }))
   await expect.poll(volume).toEqual({ name: 'OKX / Bybit 成交量', value: 8 })
+  await expect.poll(bubbleLabels).toContain('8')
+  await chart.getByText('指标', { exact: true }).click()
+  await list.getByRole('button', { name: `${label}设置`, exact: true }).click()
+  await bubbleSettings.getByLabel('阈值单位').selectOption('lots')
+  await bubbleSettings.getByLabel('最低成交手数', { exact: true }).fill('0.00005')
+  await bubbleSettings.getByLabel('按成交量调整大小', { exact: true }).uncheck()
+  await bubbleSettings.getByLabel('固定半径', { exact: true }).fill('26')
+  await bubbleSettings.getByRole('button', { name: '保存', exact: true }).click()
+  await closeIndicators()
+  await expect.poll(bubbleLabels).toContain('0.00008')
   expect((await inspect()).last?.close).toBe(1.1)
   await choose('USDCHF')
   await expect.poll(volume).toMatchObject({ name: '报价量' })

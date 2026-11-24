@@ -509,6 +509,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
             key={configEpoch}
             datafeed={marketRuntime.replayDatafeed}
             orderFlowCloud={marketRuntime.defaultGitHubClient}
+            getOrderFlowLotSize={ticker => marketRuntime.service.source === 'ctrader' ? marketRuntime.service.getCachedLotSize?.(ticker) : undefined}
             jumpRequest={chartJumpRequest}
             onJumpComplete={completeChartTimeJump}
             onReplayStartTimeChange={setChartReplayStartTime}

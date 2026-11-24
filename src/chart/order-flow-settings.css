@@ -1,0 +1,162 @@
+.workspace-dialog.order-flow-dialog {
+  width: min(620px, 100%);
+}
+
+.order-flow-form {
+  display: grid;
+  gap: 10px;
+}
+
+.order-flow-hint {
+  margin: 0;
+  color: #a8b9cf;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.order-flow-section {
+  min-width: 0;
+  border: 1px solid #34465f;
+  border-radius: 9px;
+  background: #101b2a;
+}
+
+.order-flow-section h3 {
+  margin: 0;
+}
+
+.order-flow-section h3 button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  color: #dbe8f8;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: left;
+  border: 0;
+  border-radius: 8px;
+  background: #19283b;
+}
+
+.order-flow-section h3 button:hover { background: #20324a; }
+.order-flow-section h3 button[aria-expanded=true] { border-radius: 8px 8px 0 0; }
+
+.order-flow-chevron {
+  width: 8px;
+  height: 8px;
+  margin-right: 2px;
+  border-right: 2px solid #9eb7d6;
+  border-bottom: 2px solid #9eb7d6;
+  transform: rotate(-45deg);
+}
+
+[aria-expanded=true] > .order-flow-chevron { transform: rotate(45deg); }
+
+.order-flow-section-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid #34465f;
+}
+
+.order-flow-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 12px 14px;
+}
+
+.order-flow-fields > label, .order-flow-color-field {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 6px;
+  color: #c7d6e9;
+  font-size: 13px;
+}
+
+.order-flow-fields input[type=number], .order-flow-fields select {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 9px;
+  color: #e5eefb;
+  border: 1px solid #3a4e69;
+  border-radius: 6px;
+  background: #0c1420;
+}
+
+.order-flow-fields :is(input, select):focus-visible {
+  outline: 2px solid #65b7ff;
+  outline-offset: 1px;
+}
+
+.order-flow-fields [aria-invalid=true] { border-color: #f27c88; }
+
+.order-flow-color-field input[type=color] {
+  height: 38px;
+  padding: 4px;
+  border: 1px solid #3a4e69;
+  border-radius: 6px;
+  background: #0c1420;
+  cursor: pointer;
+}
+
+.order-flow-fields .order-flow-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: #182638;
+  cursor: pointer;
+}
+
+.order-flow-fields .order-flow-toggle input {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  min-height: 0;
+  accent-color: #65b7ff;
+}
+
+.order-flow-dialog .workspace-dialog-actions {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border-top: 1px solid #33465e;
+  background: #162235;
+}
+
+.order-flow-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.order-flow-actions button {
+  min-width: 72px;
+  border: 1px solid #435b78;
+  border-radius: 7px;
+  color: #dbe8f8;
+  background: #23344b;
+}
+
+.order-flow-actions button[type=submit] {
+  border-color: #9bd2ff;
+  color: #081a30;
+  background: #82bfff;
+  font-weight: 650;
+}
+
+.order-flow-actions button:hover { filter: brightness(1.12); }
+.order-flow-error { margin: 0 0 8px; color: #ffabb1; font-size: 13px; }
+
+@media (max-width: 480px) {
+  .order-flow-section-body { padding: 11px; }
+  .order-flow-fields input[type=number], .order-flow-fields select { min-height: 44px; }
+  .order-flow-fields .order-flow-toggle { min-height: 44px; }
+}

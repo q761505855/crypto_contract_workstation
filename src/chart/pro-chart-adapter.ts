@@ -51,11 +51,12 @@ import { DrawingOverlays, type DrawingChange, type DrawingSelection } from './dr
 import type { DrawingStore } from './drawings'
 import { CandleReadout } from './candle-readout'
 import { formatDisplayTime } from '../format-display-time'
-import { CVD, FOOTPRINT, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
+import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
 import { BIG_TRADES } from './order-flow'
 
 type OrderFlowChartOptions = ChartProOptions & {
   orderFlowCloud?: GitHubContentsClient
+  getOrderFlowLotSize?: (ticker: string) => number | undefined
   onOrderFlowSettings?: (group: OrderFlowGroup) => void
 }
 
@@ -220,7 +221,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.datafeed = null
   }
 
-  mount({ orderFlowCloud, ...options }: OrderFlowChartOptions): void {
+  mount({ orderFlowCloud, getOrderFlowLotSize, ...options }: OrderFlowChartOptions): void {
     if (this.chart !== null) {
       throw new Error('KLineChart Pro is already mounted.')
     }
@@ -243,7 +244,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     })
     const combinedOptions = {
       ...options, datafeed, orderFlowEnabled: !!orderFlowCloud,
-      mainIndicators: orderFlowCloud ? options.mainIndicators : options.mainIndicators?.filter(name => name !== FOOTPRINT && name !== BIG_TRADES),
+      mainIndicators: orderFlowCloud ? options.mainIndicators : options.mainIndicators?.filter(name => ![FOOTPRINT, BIG_TRADES, VWAP, VISIBLE_VOLUME_PROFILE].includes(name)),
       subIndicators: orderFlowCloud ? options.subIndicators : options.subIndicators?.filter(name => name !== CVD),
     }
     this.chart = this.factory(combinedOptions)
@@ -255,7 +256,7 @@ export class ProChartAdapter implements ChartAdapterPort {
       }
       this.source = new CombinedBybitSource(orderFlowCloud, (reset, affected) => this.orderFlow?.refresh(reset, affected))
       this.orderFlow = new OrderFlowChart(this.coreChart, this.source, () => this.getPeriod().text, () => this.hasCurrentCandles(),
-        options.symbol.exchange === 'OKX')
+        options.symbol.exchange === 'OKX', () => getOrderFlowLotSize?.(this.getSymbol().ticker))
       this.source.select(options.symbol, feed.getReplayContext?.() ?? null)
       this.stopCursor = feed.subscribeReplayCursor?.(context => this.source?.select(this.getSymbol(), context))
     }

@@ -46,6 +46,70 @@ const preferences = {
 }
 
 describe('chart indicator preferences', () => {
+  it('persists independent visible Profile settings and preserves missing fields from legacy archives', () => {
+    const legacy = { ...preferences, main: [{ name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null }],
+      orderFlow: { profile: { rows: 35 } } }
+    const visibleProfile = { placement: 'left' as const, offset: 0, width: 20, rows: 64, showHeaders: false, volumeColor: '#12345600' }
+    const value = { ...legacy, orderFlow: { ...legacy.orderFlow, visibleProfile } }
+    const storage = new MemoryStorage()
+    saveChartIndicatorPreferences(value, storage)
+    expect(loadChartIndicatorPreferences(storage)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy, value)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy)).toEqual(legacy)
+    const resetOffset = { ...legacy, orderFlow: { visibleProfile: { offset: 0 } } }
+    expect(validateChartIndicatorPreferences(resetOffset, { ...value, orderFlow: {
+      ...value.orderFlow, visibleProfile: { ...visibleProfile, offset: 10 },
+    } })).toEqual(value)
+    for (const invalid of [null, [], { placement: 'center' }, { rows: 0 }, { width: 55 }, { offset: -1 }, { type: '' }, { showHeaders: null }, { volumeColor: 'invalid' }]) {
+      expect(() => validateChartIndicatorPreferences({ ...legacy, orderFlow: { visibleProfile: invalid } })).toThrow(/orderFlow.visibleProfile/)
+    }
+  })
+
+  it('preserves explicit bubble scaling switches, restores old archives and validates fixed radius', () => {
+    const legacy = { ...preferences, orderFlow: { bubbles: { marker: 'square' as const, showText: false, minRadius: 0 } } }
+    const bubbles = { ...legacy.orderFlow.bubbles, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11 }
+    const value = { ...legacy, orderFlow: { bubbles } }
+    const storage = new MemoryStorage()
+    saveChartIndicatorPreferences(value, storage)
+    expect(loadChartIndicatorPreferences(storage)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy, value)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy)).toEqual(legacy)
+    expect(validateChartIndicatorPreferences({ ...legacy, orderFlow: { bubbles: { opacityByVolume: false } } }, value).orderFlow?.bubbles)
+      .toEqual({ ...bubbles, opacityByVolume: false })
+    for (const invalid of [{ sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 0 }, { fixedRadius: 1.5 }, { fixedRadius: 41 }]) {
+      expect(() => validateChartIndicatorPreferences({ ...legacy, orderFlow: { bubbles: { ...bubbles, ...invalid } } })).toThrow(/orderFlow.bubbles/)
+    }
+  })
+
+  it('keeps independent bubble thresholds, restores explicit zero and validates their units and ranges', () => {
+    const legacy = { ...preferences, main: [{ name: 'BIG_TRADES', calcParams: [1200], visible: true, styles: null }] }
+    const bubbles = { thresholdUnit: 'lots' as const, minLots: 0.02, maxLots: 0, minQuantity: 0, minContracts: 18 }
+    const value = { ...legacy, orderFlow: { bubbles } }
+    const storage = new MemoryStorage()
+    saveChartIndicatorPreferences(value, storage)
+    expect(loadChartIndicatorPreferences(storage)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy, value)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy)).toEqual(legacy)
+    for (const patch of [{ thresholdUnit: null }, { thresholdUnit: '' }, { thresholdUnit: 'margin' },
+      { minLots: -1 }, { minLots: null }, { maxLots: 0.01 }, { maxContracts: 2 }, { minQuantity: [] }]) {
+      expect(() => validateChartIndicatorPreferences({ ...legacy, orderFlow: { bubbles: { ...bubbles, ...patch } } })).toThrow(/orderFlow.bubbles/)
+    }
+  })
+
+  it.each(['VWAP', 'VISIBLE_VOLUME_PROFILE'])('saves %s visibility locally and validates its main-pane configuration', name => {
+    const indicator = { name, calcParams: [], visible: false, styles: null }
+    const value = { ...preferences, main: [indicator] }
+    const storage = new MemoryStorage()
+    saveChartIndicatorPreferences(value, storage)
+    expect(loadChartIndicatorPreferences(storage)).toEqual(value)
+    expect(validateChartIndicatorPreferences(preferences, value)).toEqual(preferences)
+    expect(() => validateChartIndicatorPreferences({ ...value, main: [indicator, indicator] })).toThrow(name)
+    expect(() => validateChartIndicatorPreferences({ ...value, main: [], sub: [{ indicators: [indicator] }] })).toThrow(name)
+    for (const invalid of [{ calcParams: null }, { calcParams: [0] }, { visible: null }, { styles: [] }, { styles: { rows: 0 } }]) {
+      expect(() => validateChartIndicatorPreferences({ ...value, main: [{ ...indicator, ...invalid }] })).toThrow()
+    }
+  })
+
   it('defaults to all markets, restores explicit false and retains the settings for legacy archives', () => {
     const storage = new MemoryStorage()
     const legacy = { schemaVersion: 1 as const, main: [{ name: 'MARKET_SESSIONS', calcParams: [], visible: true, styles: null }], sub: [] }

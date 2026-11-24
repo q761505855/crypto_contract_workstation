@@ -1,47 +1,75 @@
 import { registerIndicator, registerOverlay, type IndicatorDrawParams, type IndicatorTooltipData,
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
-import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, bigTradeMode,
-  type BigTradeMode, type VolumeProfile } from './order-flow'
+import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, bigTradeMode, bigTradeThresholdUnits,
+  tradeThresholdValue, type BigTradeMode, type BigTradeThreshold, type BigTradeUnits, type VolumeProfile } from './order-flow'
 import type { TradeRange } from '../market-data/bybit/combined-source'
-import type { BybitTrade } from '../market-data/bybit/trades'
 import { drawingIndexAt } from './drawing-coordinates'
-import { displayedTradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
+import { displayedTradeBubbles, tradeBubblePrice, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { nextOpenTime } from '../market-data/intervals'
-import { orderFlowSettings } from './order-flow-preferences'
+import { bigTradeThreshold, orderFlowSettings } from './order-flow-preferences'
 import { formatFlowAmount, registerOrderFlowIndicators } from './order-flow-indicators'
 
 export const CANDLE_PANE = 'candle_pane'
 export const bigTradesTitle = '大单气泡（Big Trades）'
 type BubbleSettings = ReturnType<typeof orderFlowSettings<'bubbles'>>
 type ProfileSettings = ReturnType<typeof orderFlowSettings<'profile'>>
+const bubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 4 })
+const shortBubbleAmountFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumSignificantDigits: 1 })
+const bubbleLabelWidth = { circle: 1.7, square: 2, diamond: 1.35 }
 
 export interface ProfileDisplay { profile?: VolumeProfile; message?: string; settings?: ProfileSettings }
-export interface BubbleDisplay {
+export interface BubbleDisplay extends BigTradeUnits {
   bars?: ReadonlyMap<number, TradeBar>
   mode?: BigTradeMode
   updating?: TradeRange
   timeframe?: string
-  projectToCandle?: boolean
   message?: string
   settings?: BubbleSettings
 }
 
-export function tradeBubbleRadius(trade: BybitTrade, minimum: number, settings: BubbleSettings): number {
-  return Math.min(settings.maxRadius, Math.max(settings.minRadius, 5 * Math.sqrt(trade.price * trade.size / Math.max(1, minimum))))
+function tradeBubbleScale(amount: number, threshold: BigTradeThreshold): number {
+  const scale = threshold.unit === 'notional' ? Math.max(1, threshold.minimum) : threshold.minimum || 1
+  return amount / scale
 }
 
-export function* filteredTradeBubbles(bar: TradeBar, mode: BigTradeMode, minimum: number, maximum: number): Iterable<TradeBubble> {
-  for (const point of displayedTradeBubbles(bar, mode, minimum)) {
-    if (maximum === 0 || point.trade.price * point.trade.size <= maximum) yield point
+export function tradeBubbleRadius(amount: number, threshold: BigTradeThreshold, settings: BubbleSettings): number {
+  if (!settings.sizeByVolume) return settings.fixedRadius
+  return Math.min(settings.maxRadius, Math.max(settings.minRadius, 5 * Math.sqrt(tradeBubbleScale(amount, threshold))))
+}
+
+export function tradeBubbleOpacity(amount: number, threshold: BigTradeThreshold, settings: BubbleSettings): number {
+  return settings.opacityByVolume ? 1 - 0.7 / (1 + tradeBubbleScale(amount, threshold)) : 1
+}
+
+export function drawTradeBubbleLabel(ctx: CanvasRenderingContext2D, amount: number, x: number, y: number, radius: number,
+  marker: BubbleSettings['marker']): void {
+  const width = Math.floor(radius * bubbleLabelWidth[marker]) - 2
+  if (width < 8) return
+  ctx.font = '10px system-ui'
+  const label = bubbleAmountFormat.format(amount)
+  if (ctx.measureText(label).width <= width) {
+    ctx.fillText(label, x, y, width)
+    return
+  }
+  ctx.font = '8px system-ui'
+  const candidates = [label, shortBubbleAmountFormat.format(amount), amount.toExponential(0).replace('e+', 'e')]
+  const fitting = candidates.find(candidate => ctx.measureText(candidate).width <= width)
+  if (fitting) ctx.fillText(fitting, x, y, width)
+}
+
+export function* filteredTradeBubbles(bar: TradeBar, mode: BigTradeMode, filter: BigTradeThreshold & BigTradeUnits): Iterable<TradeBubble & { amount: number }> {
+  const { unit, minimum, maximum } = filter
+  for (const point of displayedTradeBubbles(bar, mode, unit === 'notional' ? minimum : 0)) {
+    const amount = tradeThresholdValue(point.trade, unit, filter)
+    if (amount === undefined || !Number.isFinite(amount)) continue
+    // Summing normalized quantities and dividing by the lot or contract size can round at a threshold.
+    const tolerance = unit === 'notional' ? 0 : amount * Number.EPSILON * 8
+    if (amount + tolerance >= minimum && (maximum === 0 || amount - tolerance <= maximum)) yield { ...point, amount }
   }
 }
 
 export function tradeBubbleOffset(point: TradeBubble, start: number, end: number): number {
   return (point.trade.timeUs / 1000 - start) / (end - start) - 0.5
-}
-
-export function tradeBubblePrice(trade: BybitTrade, bar: TradeBar, open: number, project?: boolean): number {
-  return project && !trade.venue && bar.firstBybitPrice ? trade.price * open / bar.firstBybitPrice : trade.price
 }
 
 export function drawVolumeProfile({ overlay, coordinates, yAxis, precision }: OverlayCreateFiguresCallbackParams): OverlayFigure[] {
@@ -124,6 +152,8 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
   if (!display?.timeframe || display.mode !== mode || (!display.bars?.size && !display.updating)) return true
   const minimum = indicator.calcParams[0] as number
   const settings = display.settings ?? orderFlowSettings('bubbles')
+  const threshold = bigTradeThreshold(settings, minimum)
+  const filter = { ...display, ...threshold }
   const colors = bigTradeColors(indicator.styles)
   ctx.save()
   ctx.globalAlpha = 1
@@ -159,13 +189,14 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
     const bar = display.bars?.get(candle.timestamp)
     if (!bar?.firstPrice) continue
     const end = nextOpenTime(candle.timestamp, display.timeframe)
-    for (const point of filteredTradeBubbles(bar, mode, minimum, settings.maxNotional)) {
-      const { trade } = point
-      const radius = tradeBubbleRadius(trade, minimum, settings)
+    for (const point of filteredTradeBubbles(bar, mode, filter)) {
+      const { trade, amount } = point
+      const radius = tradeBubbleRadius(amount, threshold, settings)
       const y = yAxis.convertToPixel(tradeBubblePrice(trade, bar, candle.open, display.projectToCandle))
       if (y + radius < 0 || y - radius > bounding.height) continue
       const x = xAxis.convertToPixel(index + tradeBubbleOffset(point, candle.timestamp, end))
       const { fill, outline } = colors[trade.side]
+      ctx.globalAlpha = tradeBubbleOpacity(amount, threshold, settings)
       ctx.beginPath()
       if (settings.marker === 'circle') ctx.arc(x, y, radius, 0, Math.PI * 2)
       else if (settings.marker === 'square') ctx.rect(x - radius, y - radius, 2 * radius, 2 * radius)
@@ -182,12 +213,12 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
       }
       ctx.strokeStyle = outline
       ctx.stroke()
-      if (settings.showText && radius >= 5) {
+      if (settings.showText) {
+        ctx.globalAlpha = 1
         ctx.fillStyle = settings.textColor
-        ctx.font = '10px system-ui'
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
-        ctx.fillText(formatFlowAmount(trade.size), x, y, 2 * radius)
+        drawTradeBubbleLabel(ctx, threshold.unit === 'notional' ? trade.size : amount, x, y, radius, settings.marker)
       }
     }
   }
@@ -204,12 +235,16 @@ export function registerOrderFlow(): void {
   registerIndicator({
     name: BIG_TRADES, shortName: bigTradesTitle, calcParams: [DEFAULT_BIG_TRADE_NOTIONAL], figures: [],
     calc: () => [], draw: drawBigTrades,
-    createTooltipDataSource: ({ indicator, defaultStyles }): IndicatorTooltipData => ({
-      name: bigTradesTitle, calcParamsText: `${bigTradeMode(indicator.styles) === 'aggregate' ? 'Aggregate' : 'Volume'} · ${indicator.calcParams[0]} USDT`,
-      icons: defaultStyles.tooltip.icons.filter(icon => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
-      values: indicator.extendData
-        ? ((indicator.extendData as BubbleDisplay).message ? [{ title: '', value: (indicator.extendData as BubbleDisplay).message! }] : [])
-        : [{ title: '', value: '使用交易所逐笔成交' }],
-    }),
+    createTooltipDataSource: ({ indicator, defaultStyles }): IndicatorTooltipData => {
+      const display = indicator.extendData as BubbleDisplay | undefined
+      const { unit, minimum } = bigTradeThreshold(display?.settings ?? orderFlowSettings('bubbles'), Number(indicator.calcParams[0]))
+      const message = display ? display.message : '使用交易所逐笔成交'
+      return {
+        name: bigTradesTitle,
+        calcParamsText: `${bigTradeMode(indicator.styles) === 'aggregate' ? 'Aggregate' : 'Volume'} · ${minimum} ${bigTradeThresholdUnits[unit]}`,
+        icons: defaultStyles.tooltip.icons.filter(icon => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
+        values: message ? [{ title: '', value: message }] : [],
+      }
+    },
   })
 }

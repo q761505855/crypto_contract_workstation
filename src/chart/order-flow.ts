@@ -5,6 +5,30 @@ export const VOLUME_PROFILE_TOOL = 'tradeVolumeProfile'
 export const BIG_TRADES = 'BIG_TRADES'
 export type BigTradeMode = 'aggregate' | 'volume'
 
+export const bigTradeThresholdUnits = { notional: 'USDT', quantity: '枚 / 标的单位', contracts: '张', lots: '手' } as const
+export type BigTradeThresholdUnit = keyof typeof bigTradeThresholdUnits
+
+export interface BigTradeUnits {
+  contractValue?: number
+  lotSize?: number
+  projectToCandle?: boolean
+}
+
+export interface BigTradeThreshold {
+  unit: BigTradeThresholdUnit
+  minimum: number
+  maximum: number
+}
+
+export function tradeThresholdValue(trade: BybitTrade, unit: BigTradeThresholdUnit, units: BigTradeUnits): number | undefined {
+  switch (unit) {
+    case 'notional': return trade.price * trade.size
+    case 'quantity': return trade.size
+    case 'contracts': return trade.venue === 'OKX' && units.contractValue ? trade.size / units.contractValue : undefined
+    case 'lots': return units.lotSize && (trade.venue === 'OKX' || !units.projectToCandle) ? trade.size / units.lotSize : undefined
+  }
+}
+
 export function bigTradeMode(styles: unknown): BigTradeMode {
   return (styles as { bubbleMode?: unknown } | null | undefined)?.bubbleMode === 'aggregate' ? 'aggregate' : 'volume'
 }

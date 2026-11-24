@@ -1,11 +1,12 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-export function WorkspaceDialog({ open, title, onClose, children, className = '' }: {
+export function WorkspaceDialog({ open, title, onClose, children, actions, className = '' }: {
   open: boolean
   title: string
   onClose(): void
   children: ReactNode
+  actions?: ReactNode
   className?: string
 }) {
   const id = useId()
@@ -36,6 +37,7 @@ export function WorkspaceDialog({ open, title, onClose, children, className = ''
       <section ref={panel} className={`workspace-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={id}>
         <header className="panel-heading"><h2 id={id}>{title}</h2><button type="button" onClick={onClose} aria-label={`关闭${title}`}>✕</button></header>
         <div className="workspace-dialog-body">{children}</div>
+        {actions && <footer className="workspace-dialog-actions">{actions}</footer>}
       </section>
     </div>, document.body,
   )

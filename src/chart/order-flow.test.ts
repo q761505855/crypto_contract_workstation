@@ -2,18 +2,156 @@ import { describe, expect, it, vi } from 'vitest'
 import type { IndicatorDrawParams } from 'klinecharts'
 import { validateDrawings } from './drawings'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
-import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator, bigTradeColors, bigTradeMode } from './order-flow'
+import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator, bigTradeColors, bigTradeMode, tradeThresholdValue } from './order-flow'
 import { AccumulatedHour, displayedTradeBubbles, includeHour, type TradeBar } from './order-flow-bars'
-import { drawVolumeProfile } from './order-flow-renderers'
+import { drawTradeBubbleLabel, drawVolumeProfile, filteredTradeBubbles, tradeBubbleOpacity, tradeBubbleRadius } from './order-flow-renderers'
 import type { BybitTrade } from '../market-data/bybit/trades'
-import { calculateFootprint, cumulativeVolumeDelta } from './order-flow-metrics'
+import { calculateFootprint, cumulativeVolumeDelta, dailyTradeVwap, visibleVolumeProfile } from './order-flow-metrics'
 import { orderFlowSettings } from './order-flow-preferences'
-import { drawFootprint, drawFootprintText } from './order-flow-indicators'
+import { drawFootprint, drawFootprintText, drawVisibleVolumeProfile } from './order-flow-indicators'
 
 const trade = (price: number, size: number, side: BybitTrade['side']): BybitTrade =>
   ({ price, size, side, timeUs: 1000, id: 'fixture' })
 
 describe('Bybit 成交指标', () => {
+  it('大单的固定半径和动态透明度独立生效', () => {
+    const threshold = { unit: 'quantity' as const, minimum: 2, maximum: 0 }
+    const defaults = orderFlowSettings('bubbles')
+    expect(tradeBubbleRadius(2, threshold, defaults)).toBe(5)
+    expect(tradeBubbleRadius(8, threshold, defaults)).toBe(10)
+    expect(tradeBubbleOpacity(2, threshold, defaults)).toBe(1)
+    const settings = orderFlowSettings('bubbles', { bubbles: { sizeByVolume: false, fixedRadius: 9, opacityByVolume: true } })
+    expect(tradeBubbleRadius(2, threshold, settings)).toBe(9)
+    expect(tradeBubbleRadius(8, threshold, settings)).toBe(9)
+    expect(tradeBubbleOpacity(2, threshold, settings)).toBeLessThan(tradeBubbleOpacity(8, threshold, settings))
+    expect(tradeBubbleOpacity(8, threshold, settings)).toBeLessThanOrEqual(1)
+  })
+
+  it('大单数字在可用宽度内缩写、缩小或省略，长数字不会撑过图标', () => {
+    const ctx = {
+      font: '', fillText: vi.fn(),
+      measureText(text: string) { return { width: [...text].length * Number.parseInt(this.font) / 2 } },
+    }
+    const canvas = ctx as unknown as CanvasRenderingContext2D
+    drawTradeBubbleLabel(canvas, 0.00008, 15, 15, 21, 'square')
+    expect(ctx.fillText).toHaveBeenLastCalledWith('0.00008', 15, 15, 40)
+    drawTradeBubbleLabel(canvas, 123456789, 15, 15, 10, 'circle')
+    expect(ctx.fillText).toHaveBeenCalledTimes(2)
+    const [text, , , limit] = ctx.fillText.mock.lastCall!
+    expect(ctx.measureText(text).width).toBeLessThanOrEqual(limit)
+    expect(limit).toBeLessThan(20)
+    drawTradeBubbleLabel(canvas, 123456789, 15, 15, 3, 'diamond')
+    expect(ctx.fillText).toHaveBeenCalledTimes(2)
+  })
+
+  it('大单阈值按所选单位换算，张数只来自 OKX，ETF 代理不换算手数', () => {
+    const bybit = trade(100, 2, 'buy')
+    const okx = { ...bybit, venue: 'OKX' as const }
+    const terms = { contractValue: 0.1, lotSize: 100 }
+    expect(tradeThresholdValue(okx, 'notional', terms)).toBe(200)
+    expect(tradeThresholdValue(okx, 'quantity', terms)).toBe(2)
+    expect(tradeThresholdValue(okx, 'contracts', terms)).toBe(20)
+    expect(tradeThresholdValue(bybit, 'contracts', terms)).toBeUndefined()
+    expect(tradeThresholdValue(bybit, 'lots', terms)).toBe(0.02)
+    expect(tradeThresholdValue(bybit, 'lots', { ...terms, projectToCandle: true })).toBeUndefined()
+    expect(tradeThresholdValue(bybit, 'lots', {})).toBeUndefined()
+  })
+
+  it('大单阈值在聚合后筛选，并在所选单位应用两端和零上限', () => {
+    const first = { ...trade(100, 0.1, 'buy'), id: 'first', venue: 'OKX' as const }
+    const second = { ...first, id: 'second', size: 0.2 }
+    const bybit = { ...trade(100, 10, 'buy'), id: 'bybit' }
+    const points = [first, second, bybit].map(trade => ({ trade }))
+    const bar: TradeBar = { cursor: 2000, volume: 10.3, complete: true, pointRanges: [{ points, from: 0, until: 3 }] }
+    const filter = { unit: 'contracts' as const, minimum: 3, maximum: 3, contractValue: 0.1 }
+    expect([...filteredTradeBubbles(bar, 'volume', filter)]).toEqual([])
+    expect([...filteredTradeBubbles(bar, 'aggregate', filter)].map(({ trade, count }) => [trade.id, count])).toEqual([['first', 2]])
+    expect([...filteredTradeBubbles(bar, 'aggregate', { ...filter, minimum: 0, maximum: 2 })]).toEqual([])
+    expect([...filteredTradeBubbles(bar, 'aggregate', { ...filter, minimum: 0, maximum: 0 })]).toHaveLength(1)
+  })
+
+  it('VWAP 按逐笔成交量加权、日切、按进度截断并标记历史缺口', () => {
+    const midnight = Date.UTC(2026, 10, 20)
+    const minute = 60_000
+    const candles = [-minute, 0, minute, 2 * minute].map(offset => ({ timestamp: midnight + offset, open: 100 }))
+    const samples = new Map([
+      [midnight - minute, [trade(80, 3, 'buy')]],
+      [midnight, [trade(100, 2, 'buy'), trade(110, 6, 'sell')]],
+      [midnight + minute, [trade(90, 2, 'buy'), trade(120, 10, 'buy')]],
+    ])
+    const cursor = (midnight + minute) * 1000 + 2000
+    const trades = [...samples].flatMap(([start, entries]) => entries.map((entry, index) => ({
+      trade: { ...entry, timeUs: start * 1000 + (index + 1) * 1000 },
+    })))
+    const read = (from: number, until: number) => {
+      const points = trades.filter(({ trade }) => trade.timeUs >= from * 1000 && trade.timeUs < until)
+      return { cursor: until, volume: points.reduce((total, { trade }) => total + trade.size, 0),
+        pointRanges: [{ points, from: 0, until: points.length }], complete: from !== midnight + minute }
+    }
+
+    const { values, partial } = dailyTradeVwap(candles, '1m', cursor, read, false)
+    expect([...values]).toEqual([
+      [midnight - minute, { price: 80, day: midnight - 86_400_000 }],
+      [midnight, { price: 107.5, day: midnight }],
+      [midnight + minute, { price: 104, day: midnight }],
+    ])
+    expect(partial).toBe(true)
+  })
+
+  it('可见成交分布汇总同价位的主动买卖，单一成交价也有可绘制的档位', () => {
+    const points = [trade(710, 4, 'buy'), trade(710, 7, 'sell'), trade(710, 12, 'buy')].map(trade => ({ trade }))
+    const bar: TradeBar = { cursor: 3000, volume: 11, firstBybitPrice: 710, complete: true, pointRanges: [{ points, from: 0, until: 2 }] }
+    const rows = visibleVolumeProfile([{ bar, open: 100 }], true, 2)
+    expect(rows).toEqual([{ low: 99.995, high: 100.005, buy: 4, sell: 7 }])
+    expect(visibleVolumeProfile([], false, 2)).toEqual([])
+  })
+
+  it('可见成交分布按配置合并档位，保留各档的主动买卖量', () => {
+    const points = [trade(100, 1, 'buy'), trade(101, 2, 'sell'), trade(102, 3, 'buy'), trade(103, 4, 'sell')].map(trade => ({ trade }))
+    const bar: TradeBar = { cursor: 2000, volume: 10, complete: true, pointRanges: [{ points, from: 0, until: points.length }] }
+    expect(visibleVolumeProfile([{ bar, open: 100 }], false, 0, 2)).toEqual([
+      { low: 99.5, high: 101.5, buy: 1, sell: 2 }, { low: 101.5, high: 103.5, buy: 3, sell: 4 },
+    ])
+  })
+
+  it('可见成交分布默认左侧总量、右侧 Delta，支持左置、横向偏移和只显示 Delta', () => {
+    const rects: { color: string; x: number; width: number }[] = []
+    const ctx = {
+      fillStyle: '', save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), fillText: vi.fn(),
+      fillRect(x: number, _y: number, width: number) { rects.push({ color: this.fillStyle, x, width }) },
+    }
+    const params = {
+      ctx, bounding: { width: 400, height: 180 }, yAxis: { convertToPixel: (price: number) => price * 10 },
+      indicator: { extendData: { axisInset: () => 64, rows: [
+        { low: 4, high: 5, buy: 12, sell: 2 }, { low: 5, high: 6, buy: 2, sell: 5 },
+        { low: 6, high: 7, buy: 2, sell: 2 },
+      ] } },
+    } as unknown as IndicatorDrawParams
+    drawVisibleVolumeProfile(params)
+    const [buyVolume, positive, sellVolume, negative, balanced] = rects
+    expect(rects).toHaveLength(5)
+    expect(buyVolume.x + buyVolume.width).toBeLessThan(positive.x)
+    expect(sellVolume.x + sellVolume.width).toBeLessThan(negative.x)
+    expect(positive.x).toBe(negative.x)
+    expect(positive.x + positive.width).toBeLessThanOrEqual(336)
+    expect(positive.width).toBeGreaterThan(negative.width)
+    expect(positive.color).not.toBe(negative.color)
+    expect(balanced.color).toBe(buyVolume.color)
+
+    rects.length = 0
+    ctx.fillText.mockClear()
+    params.indicator.extendData.settings = orderFlowSettings('visibleProfile', { visibleProfile: {
+      placement: 'left', offset: 10, width: 20, type: 'delta', showHeaders: false,
+      positiveColor: '#123456', negativeColor: '#654321',
+    } })
+    drawVisibleVolumeProfile(params)
+    expect(rects.map(({ color, x }) => ({ color, x }))).toEqual([
+      { color: '#123456', x: 36 }, { color: '#654321', x: 36 },
+    ])
+    expect(rects[0].width).toBe(66)
+    expect(ctx.fillText).not.toHaveBeenCalled()
+  })
+
   it('按回放切片、价位和主动方向计算足迹，订单笔数模式沿用相同筛选', () => {
     const samples = new AccumulatedHour()
     samples.add({ ...trade(100, 2, 'sell'), timeUs: 1000 }, 0, 0)

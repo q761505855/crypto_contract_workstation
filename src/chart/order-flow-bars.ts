@@ -28,6 +28,10 @@ export function* tradeBubbles(bar: TradeBar): Iterable<TradeBubble> {
   }
 }
 
+export function tradeBubblePrice(trade: BybitTrade, bar: TradeBar, open: number, project?: boolean): number {
+  return project && !trade.venue && bar.firstBybitPrice ? trade.price * open / bar.firstBybitPrice : trade.price
+}
+
 const aggregatedBubbles = new WeakMap<TradeBar, { minimum: number; points: TradeBubble[] }>()
 
 export function displayedTradeBubbles(bar: TradeBar, mode: BigTradeMode, minimum: number): Iterable<TradeBubble> {

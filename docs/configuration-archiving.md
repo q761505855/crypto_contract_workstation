@@ -31,7 +31,7 @@ OKX 回放会话沿用 Schema 2，保存 `marketSource: "okx"`、步进游标和
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡、Profile 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、形状、数字与动态样式、框选 Profile、可见范围 Profile 的位置、分档与样式、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
@@ -48,6 +48,10 @@ OKX 回放会话沿用 Schema 2，保存 `marketSource: "okx"`、步进游标和
 
 订单流的足迹图和大单气泡选择保存在 `chartIndicators.main`，CVD 选择保存在 `chartIndicators.sub`。足迹图与 CVD 使用显式空 `calcParams`。新增的足迹图、气泡样式、Profile 和 CVD 参数保存在可选的 `chartIndicators.orderFlow` 中。大单气泡启用时，模式、最低成交额和买卖颜色保存在既有主图指标字段。关闭时移入 `orderFlow.bubbles`，重新开启会应用已保存的值。因为显示半径、成交额上下限成对校验，自动同步以足迹图和大单气泡的各自设置组为单位检测并处理并发冲突。Profile 选区保存在既有绘图存档中，设置属于应用配置。
 
+VWAP 和可见范围成交分布以 `VWAP` 和 `VISIBLE_VOLUME_PROFILE` 加入 `chartIndicators.main`，默认为关闭。二者保存选择和 `visible`，使用显式空 `calcParams` 和空样式。`visible: false` 原样保留。旧档缺少整个 `chartIndicators` 时保留本机指标设置，有指标清单时按清单恢复，其中没有这两项就不启用。空主图列表原样恢复，重复项、副图配置和非法值在任何写入前拒绝。应用配置／完整 JSON 和 GitHub「应用配置」沿用现有差异、校验和及冲突流程。自动恢复会重建图表，手动恢复后按提示刷新。计算结果和图表可见范围属于运行状态。
+
+可见范围 Profile 的参数以 `chartIndicators.orderFlow.visibleProfile` 保存，包括左右位置、距边缘偏移、总宽度、价位档数、显示内容、列标题显隐和三种配色。位置接受 `left` 或 `right`，偏移 0–40% 和宽度 5–50% 为整数，档数为 4–200 的整数。内容接受 `volumeDelta`、`volume` 或 `delta`。默认靠右、偏移 0%、宽度 26%、48 档、双列且显示标题。旧档缺字段时保留本机值，本机无值时使用默认值。显式偏移 0、列标题 `false` 和透明色原样恢复，非法值在任何写入前拒绝。关闭指标后仍保留设置。本地、配置／完整 JSON 和 GitHub「应用配置」沿用现有流程。框选 Profile 继续使用 `chartIndicators.orderFlow.profile`。
+
 Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或个别设置字段时保留本机值，本机没有该字段时运行时使用默认值。显式空指标列表、布尔 `false`、数字 `0` 和透明色原样恢复。提供的非法类型、空值、数值范围或枚举值在写入数据前拒绝。自动同步恢复会重建界面，手动恢复后按提示刷新。当前图表缩放、逐笔数据和计算缓存属于运行状态。
 
 足迹图的数值内容沿用 `chartIndicators.orderFlow.footprint.type`，图形内容使用可选的同组字段 `plotType`。图形可选 `bidAsk`、`volume`、`delta`、`volumeDelta` 或 `matchText`。旧档缺少 `plotType` 时保留本机值，本机无值时图形跟随数值，延续旧版显示组合。显式 `matchText` 恢复跟随模式，空字符串、`null` 和未知值在写入前拒绝。两项沿用足迹图设置组进行本地、应用配置／完整 JSON 和 GitHub 应用配置往返。
@@ -63,6 +67,10 @@ Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或�
 大单气泡的 `styles.bubbleColors` 按主动买入填充、主动卖出填充、主动买入描边和主动卖出描边的顺序保存四个颜色对象。每项使用标准图表颜色格式，透明度 0% 和 100% 原样往返。含气泡指标但缺少该样式组的旧存档会保留本地样式，本地无设置时使用默认绿红配色和透明度。提供该组时，空数组、`null` 和非法颜色在写入前拒绝。应用配置、完整 JSON 和 GitHub 应用配置均覆盖该样式组。
 
 大单气泡的 `styles.bubbleMode` 接受 `volume` 和 `aggregate`。两者随 `chartIndicators` 在本机、应用配置／完整 JSON 和 GitHub“应用配置”中往返，沿用现有差异、校验和与冲突处理。旧档缺少模式时保留本机选择，本机无值时使用 `volume`。显式 `volume` 可以覆盖 `aggregate`，空字符串、`null` 和其他非法值在写入前拒绝。自动恢复随图表重建生效，手动恢复后按界面提示刷新。配置仍使用 Schema 1。
+
+大单气泡的阈值单位 `thresholdUnit` 和新增上下限 `minQuantity`／`maxQuantity`、`minContracts`／`maxContracts`、`minLots`／`maxLots` 保存在 `chartIndicators.orderFlow.bubbles`，关闭指标后仍保留。单位接受 `notional`、`quantity`、`contracts` 和 `lots`。旧档缺少这些字段时保留本机值，本机无值时使用 `notional` 和原 USDT 阈值。其他单位默认下限为 1，上限为 0。显式 0 原样恢复，代表不设对应限制。提供的数值须非负且有限，非零上限须大于或等于对应下限。空值、非法单位或非法上下限在任何写入前拒绝。本地、应用配置／完整 JSON、GitHub「应用配置」沿用同一校验。云端仍以整个大单气泡设置组为单位合并与处理冲突，自动恢复重建图表，手动恢复按提示刷新。合约面值和每手规格由行情规格提供，属于运行时数据。
+
+大单气泡的动态大小 `sizeByVolume`、动态透明度 `opacityByVolume` 和固定半径 `fixedRadius` 随 `chartIndicators.orderFlow.bubbles` 在本地、配置／完整 JSON 和 GitHub「应用配置」中往返。旧档缺字段时保留本机值，本机无值时默认动态大小开启、动态透明度关闭、固定半径 8 像素。开关接受布尔值，显式 `false` 原样恢复，固定半径接受 1–40 的整数。空值和非法值在任何写入前拒绝。形状 `marker` 和数字显隐 `showText` 继续使用已有字段，旧档的菱形仍可恢复。自动恢复后图表重建，手动恢复后按提示刷新。订单流设置分组的展开状态只在本次打开弹窗时生效。
 
 框选成交分布是绘图业务数据，使用两个 IC 时间和价格锚点，随 IC 品种或回放会话保存。继承本地绘图、完整 JSON 和 GitHub 绘图同步。旧版独立工作区的 Bybit 价格锚点按原作用域保存在绘图存档。实际逐笔数据和计算后的分布从行情重建。成交量和 Delta 横条使用半透明配色，透明度由绘制规则决定。
 
