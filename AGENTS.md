@@ -1,5 +1,11 @@
 # 项目修改规则
 
+## 提交并发布
+
+收到「提交并发布」的请求时，将提交推送到 `main` 后，到本项目的 GitHub Actions 检查 [Deploy GitHub Pages](.github/workflows/deploy-pages.yml)。按本次提交的 SHA 找到对应的运行记录，排队或执行中时持续跟进，确认部署步骤成功后再报告发布完成，并附上提交 SHA 和运行链接。
+
+如果运行失败、取消或无法确认结果，报告实际状态、可查到的失败步骤或阻塞原因，并附上可用的运行链接。
+
 ## 通用云端存储仓库
 
 云端存储使用 `q761505855/personal-cloud-storage`，服务多个项目。新增或修改同步逻辑前，阅读 [通用云端存储约定](docs/cloud-storage.md)。当前项目仅使用 `projects/crypto-contract-workstation/` 命名空间，配置与业务数据分别存储；不得覆盖其他项目目录、清单或顶层注册信息。
