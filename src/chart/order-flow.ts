@@ -22,9 +22,10 @@ export interface BigTradeThreshold {
 
 export function tradeThresholdValue(trade: BybitTrade, unit: BigTradeThresholdUnit, units: BigTradeUnits): number | undefined {
   switch (unit) {
-    case 'notional': return trade.price * trade.size
+    case 'notional': return trade.venue === 'CME' ? undefined : trade.price * trade.size
     case 'quantity': return trade.size
-    case 'contracts': return trade.venue === 'OKX' && units.contractValue ? trade.size / units.contractValue : undefined
+    case 'contracts': return trade.venue === 'CME' ? trade.size
+      : trade.venue === 'OKX' && units.contractValue ? trade.size / units.contractValue : undefined
     case 'lots': return units.lotSize && (trade.venue === 'OKX' || !units.projectToCandle) ? trade.size / units.lotSize : undefined
   }
 }

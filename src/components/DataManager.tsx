@@ -12,6 +12,7 @@ interface DataManagerProps {
 export function DataManager({ runtime, onClose }: DataManagerProps) {
   const source = runtime.service.source
   const marketDescription = source === 'okx-local' ? '从此设备的 OKX 官方逐笔成交 ZIP 生成图表和回放 K 线。'
+    : source === 'databento-cme' ? '从此设备的 CME Trades 日档生成图表和回放 K 线。'
     : source === 'okx' ? '使用 OKX 公开行情接口读取 USDT 永续合约目录和成交价 K 线。'
     : '网页直连所选 cTrader 账户，按图表或回放周期读取原生 K 线。行情缓存在当前页面。'
   const refreshRequest = useRef<AbortController | null>(null)

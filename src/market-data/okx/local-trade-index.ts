@@ -1,5 +1,4 @@
 import type { BybitTrade } from '../bybit/trades'
-import type { OkxLocalTrade } from './local-files'
 
 const STRIDE = 4
 const TIME = 0
@@ -16,7 +15,9 @@ export interface LocalTradeIndex {
 const compareIds = (a: string, b: string) => a.length - b.length || (a < b ? -1 : Number(a > b))
 const readId = (index: LocalTradeIndex, row: number) => index.textIds.get(row) ?? String(index.columns[row * STRIDE + ID])
 
-export async function buildLocalTradeIndex(scan: (accept: (trade: OkxLocalTrade) => void) => Promise<boolean>): Promise<LocalTradeIndex | undefined> {
+type IndexTrade = { id: string; time: number; price: string | number; size: string | number; side: 'Buy' | 'Sell' }
+
+export async function buildLocalTradeIndex(scan: (accept: (trade: IndexTrade) => void) => Promise<boolean>): Promise<LocalTradeIndex | undefined> {
   let columns = new Float64Array(4096 * STRIDE)
   const textIds = new Map<number, string>()
   let count = 0
@@ -82,7 +83,7 @@ function lowerBound(index: LocalTradeIndex, target: number): number {
 }
 
 export async function visitIndexedTrades(index: LocalTradeIndex, fromUs: number, untilUs: number, contractValue: number,
-  accept: (trade: BybitTrade) => unknown, signal: AbortSignal): Promise<void> {
+  accept: (trade: BybitTrade) => unknown, signal: AbortSignal, venue: BybitTrade['venue'] = 'OKX'): Promise<void> {
   const { columns } = index
   let nextYield = performance.now() + 12
   const stop = lowerBound(index, untilUs)
@@ -94,7 +95,7 @@ export async function visitIndexedTrades(index: LocalTradeIndex, fromUs: number,
     }
     const offset = tradeOffset(index, row)
     const size = columns[offset + SIGNED_SIZE]
-    const backpressure = accept({ id: readId(index, offset / STRIDE), venue: 'OKX', side: size > 0 ? 'buy' : 'sell',
+    const backpressure = accept({ id: readId(index, offset / STRIDE), venue, side: size > 0 ? 'buy' : 'sell',
       timeUs: columns[offset + TIME], price: columns[offset + PRICE], size: Math.abs(size) * contractValue })
     if (backpressure instanceof Promise) {
       await backpressure

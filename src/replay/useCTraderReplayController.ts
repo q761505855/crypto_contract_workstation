@@ -10,15 +10,18 @@ import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil, type CreateReplaySessionIn
 import { isCTraderReplayStepPeriod, isFineStepPeriod, type CTraderReplayStepPeriod, type ReplayStepPeriod } from './step-periods'
 import type { ReplayCandleEvent, ReplayCandleListener, ReplayController } from './useReplayController'
 import type { MarketCandle } from '../market-data/models'
-import { isOkxPriceSource, priceSourceLabel } from '../market-data/price-source-preferences'
+import { isLocalPriceSource, isOkxPriceSource, isPriceSource, priceSourceLabel } from '../market-data/price-source-preferences'
+import type { SimulationStateStore } from '../storage/simulation-state-store'
 
 interface CTraderReplayRuntime {
   service: CTraderReplayMarket & {
-    getReplayTradingTerms(symbol: string, start: number, signal?: AbortSignal): Promise<ReplayTradingTerms>
+    getReplayTradingTerms(symbol: string, start: number, signal?: AbortSignal): Promise<ReplayTradingTerms | undefined>
+    contractAt?(symbol: string, timestamp: number, signal?: AbortSignal): Promise<string | undefined>
     getReplayRisk?(candle: MarketCandle, from: number, signal: AbortSignal): Promise<OkxReplayRisk>
   }
   replaySessions: Omit<ReplaySessionStore, 'getLatestActive'>
   replayTicks?: CTraderReplayTicks
+  simulationStates?: SimulationStateStore
 }
 
 interface ReplayCursor {
@@ -50,7 +53,7 @@ function message(reason: unknown): string {
 
 function stepPeriod(session: ReplaySession, requested?: ReplayStepPeriod): CTraderReplayStepPeriod {
   if (requested !== undefined && isCTraderReplayStepPeriod(requested) &&
-      (!isOkxPriceSource(session.marketSource) || !isFineStepPeriod(requested))) return requested
+      (session.marketSource === 'ctrader' || !isFineStepPeriod(requested))) return requested
   return session.cursorTimeframe ?? (isCTraderTimeframe(session.period.text) ? session.period.text : '1m')
 }
 
@@ -58,7 +61,7 @@ export function useCTraderReplayController(
   runtime: CTraderReplayRuntime,
   stepTimeframe?: ReplayStepPeriod,
 ): ReplayController<ReplayStepPeriod> {
-  const { service, replaySessions, replayTicks } = runtime
+  const { service, replaySessions, replayTicks, simulationStates } = runtime
   const source = service.source ?? 'ctrader'
   const sourceLabel = priceSourceLabel(source)
   const history = useMemo(() => new CTraderReplayBars(service), [service])
@@ -138,7 +141,7 @@ export function useCTraderReplayController(
 
   const hydrate = useCallback(async (saved: ReplaySession, signal: AbortSignal): Promise<ReplayCursor> => {
     if (saved.marketSource !== source) {
-      const origin = saved.marketSource === 'ctrader' || isOkxPriceSource(saved.marketSource) ? priceSourceLabel(saved.marketSource) : '币安'
+      const origin = isPriceSource(saved.marketSource) ? priceSourceLabel(saved.marketSource) : '币安'
       throw new Error(`这是 ${origin} 会话。可从数据管理查看或导出存档，${sourceLabel} 无法继续此会话。`)
     }
     const symbol = saved.symbol.ticker
@@ -162,8 +165,8 @@ export function useCTraderReplayController(
     void run('恢复回放会话失败', async signal => {
       const saved = await replaySessions.list()
       signal.throwIfAborted()
-      setSessions(saved.filter(item => source === 'ctrader' ? !isOkxPriceSource(item.marketSource) : item.marketSource === source))
-      if (source === 'okx-local') return
+      setSessions(saved.filter(item => source === 'ctrader' ? !isPriceSource(item.marketSource) || item.marketSource === 'ctrader' : item.marketSource === source))
+      if (isLocalPriceSource(source)) return
       const active = saved.find(item => item.active && item.status !== 'completed' && item.marketSource === source)
       if (active !== undefined) {
         const cursor = await hydrate(active, signal)
@@ -210,7 +213,10 @@ export function useCTraderReplayController(
       const candle = await history.find(input.symbol.ticker, input.period.text, input.startTime, endTime, 1, signal)
       if (candle === undefined) throw new Error('所选区间没有已收盘的 K 线，请将图表移到更早的时间。')
       const terms = await service.getReplayTradingTerms(input.symbol.ticker, candle.openTime, signal)
-      const economics = 'tickSize' in terms ? {
+      const economics = !terms ? {
+        leverage: input.leverage ?? DEFAULT_TRADING_CONFIG.leverage,
+        feeRate: '0', maintenanceMarginRate: '0', liquidationFeeRate: '0',
+      } : 'tickSize' in terms ? {
         leverage: input.leverage ?? Math.min(DEFAULT_TRADING_CONFIG.leverage, okxMaximumLeverage(terms)),
         feeRate: OKX_SIMULATION_TAKER_FEE, maintenanceMarginRate: terms.tiers[0].maintenanceMarginRate,
         liquidationFeeRate: OKX_SIMULATION_TAKER_FEE, okx: terms,
@@ -249,7 +255,8 @@ export function useCTraderReplayController(
       }
       await activate({ session: next, candle, initial: candle }, signal, true)
     },
-    `正在准备回放行情和 ${isOkxPriceSource(source) ? 'OKX' : 'IC Markets'} 交易规格…`,
+    source === 'databento-cme' ? '正在准备 CME 历史回放…'
+      : `正在准备回放行情和 ${isOkxPriceSource(source) ? 'OKX' : 'IC Markets'} 交易规格…`,
   ), [activate, history, run, service, source])
 
   const loadSession = useCallback((id: string) => run('加载回放会话失败', async signal => {
@@ -302,6 +309,16 @@ export function useCTraderReplayController(
       else setError('所选周期在结束前没有下一根完整 K 线，可换用更小的步进周期。')
       return false
     }
+    if (source === 'databento-cme' && saved.hasTrades && service.contractAt) {
+      const ticker = saved.symbol.ticker
+      const [before, after] = await Promise.all([
+        service.contractAt(ticker, cursor.candle.closeTime, signal), service.contractAt(ticker, candle.closeTime, signal),
+      ])
+      if (before && after && before !== after && (await simulationStates?.load(saved.id))?.positions.length) {
+        setIsPlaying(false)
+        throw new Error(`主力即将从 ${before} 切到 ${after}，请先平掉模拟持仓再继续回放。`)
+      }
+    }
     const sameTimeTick = tickIndex !== undefined && candle.openTime === saved.currentTime
     const okxRisk = isOkxPriceSource(source) && saved.hasTrades ? await service.getReplayRisk?.(candle, sessionVisibleUntil(saved), signal) : undefined
     signal.throwIfAborted()
@@ -316,7 +333,7 @@ export function useCTraderReplayController(
     }
     if (cursor.session.status === 'completed') setIsPlaying(false)
     return cursor.session.status !== 'completed'
-  }, [findStep, history, notify, publish, service, source])
+  }, [findStep, history, notify, publish, service, simulationStates, source])
 
   const next = useCallback((timeframe = stepTimeframe) => run('推进回放失败', async signal => {
     const cursor = cursorRef.current

@@ -1,4 +1,5 @@
 import { BYBIT_DAY_MS, bybitDay, bybitDayStart } from '../market-data/bybit/trades'
+import './trade-download-range.css'
 
 export interface DayDownloadSelection {
   anchor: string
@@ -26,24 +27,28 @@ export function resolveDayDownloadRange({ anchor, before, after }: DayDownloadSe
   return { start: bybitDay(start), end: bybitDay(end), clipped: requestedEnd > end }
 }
 
-export function TradeDownloadRange({ selection, onChange, today, lastDownloadDay = today, disabled = false }: {
+export function TradeDownloadRange({ selection, onChange, today, lastDownloadDay = today, disabled = false,
+  rangeLabel = '下载范围' }: {
   selection: DayDownloadSelection
   onChange(selection: DayDownloadSelection): void
   today: string
   lastDownloadDay?: string
   disabled?: boolean
+  rangeLabel?: string
 }) {
   const preview = resolveDayDownloadRange(selection, today, lastDownloadDay)
   return <>
-    <label>锚点日期<input type="date" value={selection.anchor} max={today} required disabled={disabled}
-      onChange={event => onChange({ ...selection, anchor: event.target.value, error: undefined })} /></label>
-    <div>
+    <div className="trade-range-fields">
+      <label>锚点日期<input type="date" value={selection.anchor} max={today} required disabled={disabled}
+        onChange={event => onChange({ ...selection, anchor: event.target.value, error: undefined })} /></label>
       <label>往前天数<input type="number" min="0" step="1" value={selection.before} required disabled={disabled}
         onChange={event => onChange({ ...selection, before: event.target.value, error: undefined })} /></label>
       <label>往后天数<input type="number" min="0" step="1" value={selection.after} required disabled={disabled}
         onChange={event => onChange({ ...selection, after: event.target.value, error: undefined })} /></label>
     </div>
-    {preview.start && <p>下载范围 <strong>{preview.start === preview.end ? preview.start : `${preview.start} 至 ${preview.end}`}</strong>
-      {preview.clipped && (lastDownloadDay === today ? ' · 未来日期已跳过' : ' · 未结束的日期已跳过')}</p>}
+    {preview.start && <p className="trade-range-summary">
+      <span>{rangeLabel}</span><strong>{preview.start === preview.end ? preview.start : `${preview.start} 至 ${preview.end}`}</strong>
+      {preview.clipped && <small>{lastDownloadDay === today ? '未来日期已跳过' : '未结束的日期已跳过'}</small>}
+    </p>}
   </>
 }

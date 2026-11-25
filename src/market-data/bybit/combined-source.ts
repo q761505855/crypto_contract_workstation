@@ -6,7 +6,7 @@ import { ensureTradeDay } from './archive-requests'
 import { BybitLiveTrades } from './live'
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, bybitDay, bybitDayStart, bybitFirstDay, type BybitSymbol, type BybitTrade } from './trades'
 import { OkxArchive, okxArchiveDay } from '../okx/archive'
-import type { OkxLocalMarket } from '../okx/local-market'
+import type { LocalArchiveMarket } from '../local-archive-market'
 import { OkxLiveTrades, readOkxTradePages, readOkxTradePagesForward, type OkxTradePage } from '../okx/live'
 import { compareTrades, mergeOkxTrades, orderFlowMapping, type OrderFlowMapping } from '../okx/trades'
 
@@ -84,7 +84,7 @@ export class CombinedBybitSource {
 
   constructor(private readonly cloud: GitHubContentsClient, private readonly changed: (reset?: boolean, affected?: TradeRange) => void,
     private readonly archive = new BybitArchive(cloud), private readonly now = Date.now,
-    private readonly okxArchive = new OkxArchive(cloud, fetch, now), readonly localArchive?: OkxLocalMarket) {
+    private readonly okxArchive = new OkxArchive(cloud, fetch, now), readonly localArchive?: LocalArchiveMarket) {
     this.stopLocalUpdates = localArchive?.subscribeArchives(() => this.updateLocalDays())
   }
 
@@ -101,7 +101,7 @@ export class CombinedBybitSource {
   }
 
   get archiveCacheKey(): string {
-    if (this.localArchive) return JSON.stringify(['okx-local', this.active?.symbol, this.localArchive.historyRevision])
+    if (this.localArchive) return JSON.stringify([this.localArchive.source, this.active?.symbol, this.localArchive.historyRevision])
     const { owner, repository, branch, root } = this.cloud.getTarget()
     const primary = this.active?.okx
     if (primary) return JSON.stringify([owner, repository, branch, root, 'okx-first', primary.symbol, primary.contractValue, this.active?.bybit?.symbol])
@@ -117,7 +117,7 @@ export class CombinedBybitSource {
   }
 
   shouldScanTradeHour(hour: number): boolean {
-    if (this.localArchive) return this.localDays.has(okxArchiveDay(hour))
+    if (this.localArchive) return this.localDays.has(this.localArchive.archiveDay(hour))
     return this.isArchiveRequested(hour) ||
       ((hour + BYBIT_HOUR_MS) * 1000 > this.liveStartUs &&
         Math.max(this.okxLive?.lastTradeUs ?? -1, this.live?.lastTradeUs ?? -1) >= hour * 1000)

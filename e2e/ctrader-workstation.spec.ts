@@ -274,6 +274,67 @@ test('reloads native history after a live connection is restored', async ({ page
   await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start + 4 * minute - 30_000)
 })
 
+test('turns the candle hover details off in chart settings and remembers the choice', async ({ page }) => {
+  const readChart = await installViewportProbe(page)
+  await connectFixture(page)
+  await page.goto('./')
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  const hoverCandle = async () => {
+    const { rightmost } = await readChart()
+    expect(rightmost).not.toBeNull()
+    const x = await page.evaluate(timestamp => {
+      const chart = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+      return (chart.convertToPixel({ timestamp: timestamp! }, { paneId: 'candle_pane' }) as { x: number }).x
+    }, rightmost)
+    const plot = (await page.getByLabel('最新 K 线').locator('..').boundingBox())!
+    await page.mouse.move(plot.x + x, plot.y + plot.height / 2)
+  }
+  const details = page.getByLabel('选中 K 线')
+  await hoverCandle()
+  await expect(details).toBeVisible()
+  const openSettings = () => page.locator('.klinecharts-pro-period-bar').getByText('设置', { exact: true }).locator('..').click()
+  const toggle = page.getByRole('switch', { name: '悬浮 K 线详情' })
+  await openSettings()
+  await expect(toggle).toBeChecked()
+  await toggle.click()
+  await expect(toggle).not.toBeChecked()
+  await page.locator('.klinecharts-pro-modal .close-icon').click()
+  await hoverCandle()
+  await expect(details).toBeHidden()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+
+  const openDataManager = async () => {
+    await page.getByRole('button', { name: '工具', exact: true }).click()
+    await page.getByTestId('open-data-manager').click()
+  }
+  await openDataManager()
+  const backupPanel = page.getByTestId('backup-sync-panel')
+  const configDownload = page.waitForEvent('download')
+  await backupPanel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const backupPath = await (await configDownload).path()
+  expect(backupPath).not.toBeNull()
+  await page.getByTestId('close-data-manager').click()
+
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await hoverCandle()
+  await expect(details).toBeHidden()
+  await openSettings()
+  await expect(toggle).not.toBeChecked()
+  await page.locator('.klinecharts-pro-modal').getByRole('button', { name: '恢复默认', exact: true }).click()
+  await hoverCandle()
+  await expect(details).toBeVisible()
+
+  await openDataManager()
+  page.once('dialog', dialog => dialog.accept())
+  await backupPanel.getByTestId('import-backup-file').setInputFiles(backupPath!)
+  await expect(backupPanel.getByTestId('backup-status')).toContainText('刷新')
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await hoverCandle()
+  await expect(details).toBeHidden()
+})
+
 test('updates the open 15m candle on quotes and replaces it with a late official close', async ({ page }) => {
   const start = Date.UTC(2026, 10, 20, 14)
   await page.clock.setFixedTime(new Date(start + 5 * minute))

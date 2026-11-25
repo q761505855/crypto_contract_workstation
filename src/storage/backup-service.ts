@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js'
 import { validateDrawings, type ChartDrawing, type DrawingStore } from '../chart/drawings'
 import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
+import { SHOW_CANDLE_HOVER_DETAILS_KEY, readShowCandleHoverDetails, validateShowCandleHoverDetails } from '../chart/candle-hover-preferences'
 import { readShowTradeOverlays, SHOW_TRADE_OVERLAYS_KEY, validateShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import { CHART_WINDOW_SIZE_KEY, readChartWindowSize, validateChartWindowSize, type ChartWindowSize } from '../chart/chart-window-preferences'
 import { CONFIG_PENDING_KEY, preferencesRestored } from './preference-events'
@@ -27,10 +28,14 @@ import {
 import {
   SELECTED_SYMBOL_STORAGE_KEY,
   OKX_SYMBOL_STORAGE_KEY,
+  DATABENTO_SYMBOL_STORAGE_KEY,
   readSelectedSymbol,
   readSelectedOkxSymbol,
+  readSelectedDatabentoSymbol,
   validateSelectedSymbol,
   validateSelectedOkxSymbol,
+  validateSelectedDatabentoSymbol,
+  validateDatabentoReplaySymbol,
 } from '../market-data/symbol-preferences'
 import type { SymbolInfo } from '@klinecharts/pro'
 import type {
@@ -58,7 +63,7 @@ import { IndexedDbSimulationStateStore } from './simulation-state-store'
 import { ctraderStorage } from './ctrader-storage'
 import { CTRADER_ACCOUNT_KEY, readCTraderAccount, validateCTraderAccount } from '../market-data/ctrader-account-preferences'
 import { CTRADER_PERIODS } from '../chart/chart-config'
-import { isOkxPriceSource, PRICE_SOURCE_KEY, readPriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
+import { isOkxPriceSource, isPriceSource, PRICE_SOURCE_KEY, readPriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
 
 export const BACKUP_FILE_TYPE = 'crypto-contract-workstation-backup'
 export const BACKUP_SCHEMA_VERSION = 1
@@ -73,10 +78,12 @@ export type BackupKind =
 
 export interface BackupPreferences {
   candleType?: ChartCandleType
+  showCandleHoverDetails?: boolean
   binanceRestBaseUrl: string
   favoriteSymbols: string[]
   selectedSymbol?: SymbolInfo
   okxSelectedSymbol?: SymbolInfo
+  databentoSelectedSymbol?: string
   ctraderAccount?: string
   priceSource?: PriceSource
   chartIndicators?: ChartIndicatorPreferences
@@ -205,6 +212,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     binanceRestBaseUrl,
     favoriteSymbols,
     ...(item.candleType === undefined ? {} : { candleType: validateCandleType(item.candleType) }),
+    ...(item.showCandleHoverDetails === undefined ? {} : { showCandleHoverDetails: validateShowCandleHoverDetails(item.showCandleHoverDetails) }),
     ...(item.pinnedPeriods === undefined ? {} : { pinnedPeriods: validatePinnedPeriods(item.pinnedPeriods) }),
     ...(item.replayStepPeriod === undefined ? {} : { replayStepPeriod: validateReplayStepPeriod(item.replayStepPeriod) }),
     ...(item.showTradeOverlays === undefined ? {} : { showTradeOverlays: validateShowTradeOverlays(item.showTradeOverlays) }),
@@ -214,6 +222,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     ...(item.ctraderAccount === undefined ? {} : { ctraderAccount: validateCTraderAccount(item.ctraderAccount) }),
     ...(item.priceSource === undefined ? {} : { priceSource: validatePriceSource(item.priceSource) }),
     ...(item.okxSelectedSymbol === undefined ? {} : { okxSelectedSymbol: validateSelectedOkxSymbol(item.okxSelectedSymbol) }),
+    ...(item.databentoSelectedSymbol === undefined ? {} : { databentoSelectedSymbol: validateSelectedDatabentoSymbol(item.databentoSelectedSymbol) }),
     ...(item.chartIndicators === undefined
       ? {}
       : {
@@ -350,12 +359,15 @@ function validateSession(value: unknown, index: number): ReplaySession {
   const timeframe = stringValue(period.text, `${field}.period.text`)
   const marketSource = item.marketSource
   const okxSource = isOkxPriceSource(marketSource)
-  if (marketSource !== undefined && marketSource !== 'binance' && marketSource !== 'ctrader' && !okxSource) {
+  if (marketSource !== undefined && marketSource !== 'binance' && !isPriceSource(marketSource)) {
     throw new Error(`${field}.marketSource 无效`)
   }
-  const native = marketSource === 'ctrader' || okxSource
-  const nativeSymbol = okxSource ? validateSelectedOkxSymbol(symbol) : native ? validateSelectedSymbol(symbol) : undefined
-  if (native ? nativeSymbol?.exchange !== (okxSource ? 'OKX' : 'CTRADER') || !CTRADER_TIMEFRAMES.some(period => period === timeframe)
+  const native = isPriceSource(marketSource)
+  const cmeSource = marketSource === 'databento-cme'
+  const nativeSymbol = cmeSource
+    ? validateDatabentoReplaySymbol(symbol)
+    : okxSource ? validateSelectedOkxSymbol(symbol) : native ? validateSelectedSymbol(symbol) : undefined
+  if (native ? nativeSymbol?.exchange !== (cmeSource ? 'CME' : okxSource ? 'OKX' : 'CTRADER') || !CTRADER_TIMEFRAMES.some(period => period === timeframe)
     : !ticker.endsWith('USDT') || !SUPPORTED_TIMEFRAMES.includes(timeframe)) {
     throw new Error(`${field} 的交易对或周期无效`)
   }
@@ -364,7 +376,7 @@ function validateSession(value: unknown, index: number): ReplaySession {
   if ((native && cursorPeriod === undefined) || (!native && item.cursorTimeframe !== undefined)) {
     throw new Error(`${field}.cursorTimeframe 无效`)
   }
-  if (okxSource && isFineStepPeriod(cursorPeriod)) throw new Error(`${field}.cursorTimeframe 无效`)
+  if ((okxSource || cmeSource) && isFineStepPeriod(cursorPeriod)) throw new Error(`${field}.cursorTimeframe 无效`)
   const cursorTickIndex = item.cursorTickIndex === undefined ? undefined : nonNegativeInteger(item.cursorTickIndex, `${field}.cursorTickIndex`)
   if ((cursorPeriod === 'tick') !== (cursorTickIndex !== undefined) ||
     (cursorTickIndex !== undefined && !Number.isSafeInteger(cursorTickIndex))) {
@@ -897,6 +909,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
   const selectedSymbol = readSelectedSymbol(storage)
   const ctraderAccount = readCTraderAccount(storage)
   const okxSelectedSymbol = readSelectedOkxSymbol(storage)
+  const databentoSelectedSymbol = readSelectedDatabentoSymbol(storage)
   return {
     binanceRestBaseUrl:
       storage.getItem(BASE_URL_PREFERENCE) ?? 'https://fapi.binance.com',
@@ -907,10 +920,12 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
     priceSource: readPriceSource(storage),
     chartWindowSize: readChartWindowSize(storage),
     candleType: readCandleType(storage),
+    showCandleHoverDetails: readShowCandleHoverDetails(storage),
     workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
     ...(ctraderAccount === undefined ? {} : { ctraderAccount }),
     ...(okxSelectedSymbol === null ? {} : { okxSelectedSymbol }),
+    ...(databentoSelectedSymbol === null ? {} : { databentoSelectedSymbol }),
     ...(chartIndicators === null ? {} : { chartIndicators }),
   }
 }
@@ -1091,6 +1106,7 @@ export class WorkstationBackupService {
       chartIndicators: CHART_INDICATORS_PREFERENCE,
       selectedSymbol: SELECTED_SYMBOL_STORAGE_KEY,
       okxSelectedSymbol: OKX_SYMBOL_STORAGE_KEY,
+      databentoSelectedSymbol: DATABENTO_SYMBOL_STORAGE_KEY,
       ctraderAccount: CTRADER_ACCOUNT_KEY,
       priceSource: PRICE_SOURCE_KEY,
       pinnedPeriods: PINNED_PERIODS_KEY,
@@ -1099,6 +1115,7 @@ export class WorkstationBackupService {
       chartWindowSize: CHART_WINDOW_SIZE_KEY,
       workspace: WORKSPACE_PREFERENCES_KEY,
       candleType: CANDLE_TYPE_KEY,
+      showCandleHoverDetails: SHOW_CANDLE_HOVER_DETAILS_KEY,
     } as const
     for (const [field, key] of Object.entries(fields)) {
       const value = preferences[field as keyof typeof fields]

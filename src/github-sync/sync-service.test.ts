@@ -69,11 +69,13 @@ function backup(): BackupEnvelope {
   // Required ensures newly introduced configuration fields need archive coverage.
   const preferences: Required<BackupPreferences> = {
     candleType: 'heikin_ashi',
+    showCandleHoverDetails: false,
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     ctraderAccount: 'live:19',
     priceSource: 'okx-local',
     okxSelectedSymbol: { ticker: 'ETH-USDT-SWAP', exchange: 'OKX', priceCurrency: 'USDT', type: 'PERPETUAL', pricePrecision: 2, volumePrecision: 3 },
+    databentoSelectedSymbol: 'NQ.FUT',
     pinnedPeriods: ['1m', '1d'],
     replayStepPeriod: '1M',
     showTradeOverlays: false,
@@ -411,7 +413,7 @@ describe('GitHubSyncService', () => {
     const targetStorage = storage()
     const sourceBackups = new WorkstationBackupService(`workspace-cloud-source-${crypto.randomUUID()}`, sourceStorage)
     const targetBackups = new WorkstationBackupService(`workspace-cloud-target-${crypto.randomUUID()}`, targetStorage)
-    const complete = backup().data.preferences!
+    const complete: BackupPreferences = { ...backup().data.preferences!, priceSource: 'databento-cme' }
     const configArchive: BackupEnvelope = { ...backup(), kind: 'preferences', data: { preferences: complete } }
     await sourceBackups.import(configArchive)
     expect((await sourceBackups.exportPreferences()).data.preferences).toEqual(complete)
@@ -449,6 +451,13 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('true')
     sourceStorage.setItem('chart.showTradeOverlays.v1', 'false')
+
+    sourceStorage.setItem('chart.showCandleHoverDetails.v1', 'true')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual({ ...complete, showCandleHoverDetails: true })
+    sourceStorage.setItem('chart.showCandleHoverDetails.v1', 'false')
 
     for (const replayStepPeriod of ['1m', '1s', '5s', '15s', 'tick'] as const) {
       sourceStorage.setItem('replay.stepPeriod.v1', JSON.stringify(replayStepPeriod))
@@ -491,20 +500,36 @@ describe('GitHubSyncService', () => {
     const legacy = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     delete legacy.workspace
     delete legacy.candleType
+    delete legacy.showCandleHoverDetails
     delete legacy.replayStepPeriod
     delete legacy.showTradeOverlays
     delete legacy.chartWindowSize
     delete legacy.ctraderAccount
+    delete legacy.databentoSelectedSymbol
     await rewrite(legacy)
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
     expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+    expect(targetStorage.getItem('chart.showCandleHoverDetails.v1')).toBe('false')
     expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('false')
     expect(targetStorage.getItem('chart.windowSize.v1')).toBe(JSON.stringify(complete.chartWindowSize))
+    expect(targetStorage.getItem('marketData.databentoSelectedSymbol.v1')).toBe('"NQ.FUT"')
     expect(targetStorage.getItem('marketData.ctraderAccount.v1')).toBe('"live:19"')
 
     const before = (await targetBackups.exportAll()).data
+    for (const showCandleHoverDetails of [null, '', 0, 'false', [], {}]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', showCandleHoverDetails })
+      await expect(target.readConfig(client(remote))).rejects.toThrow('showCandleHoverDetails')
+      await expect(target.pull(client(remote))).rejects.toThrow('showCandleHoverDetails')
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    for (const databentoSelectedSymbol of [null, '', '../NQ.FUT', 0, []]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', databentoSelectedSymbol })
+      await expect(target.readConfig(client(remote))).rejects.toThrow('Databento')
+      await expect(target.pull(client(remote))).rejects.toThrow('Databento')
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const replayStepPeriod of [null, '', 0, false, '10s']) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', replayStepPeriod })
       await expect(target.readConfig(client(remote))).rejects.toThrow('replayStepPeriod')

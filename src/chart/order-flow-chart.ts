@@ -2,6 +2,7 @@ import { DomPosition, type ActionType, type Chart, type Indicator, type KLineDat
 import { alignOpenTime, CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/intervals'
 import type { BybitTrade } from '../market-data/bybit/trades'
 import { BYBIT_DAY_MS } from '../market-data/bybit/trades'
+import { DATABENTO_CHART_PRICE_PRECISION, DATABENTO_PRICE_PRECISION } from '../market-data/models'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileLevels, bigTradeMode, bigTradeThresholdUnits,
   volumeProfileBounds, volumeProfileCenter, volumeProfilePrices, type BigTradeMode, type VolumeProfileBounds } from './order-flow'
@@ -650,7 +651,7 @@ export class OrderFlowChart {
     if (this.feed.mapping?.relation !== 'etf') return (trade: BybitTrade) => trade.price
     const inputs = new Map(candles.map(bar => [bar.timestamp, bar.open]))
     return (trade: BybitTrade): number | undefined => {
-      if (trade.venue === 'OKX') return trade.price
+      if (trade.venue) return trade.price
       const start = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')
       const open = inputs.get(start)
       if (open === undefined) return
@@ -726,7 +727,8 @@ export class OrderFlowChart {
     const footprintEnabled = this.footprint()?.visible
     const profileEnabled = allTrades && this.mainIndicator(VISIBLE_VOLUME_PROFILE)?.visible
     const projected = this.feed.mapping?.relation === 'etf'
-    const precision = this.chart.getPriceVolumePrecision().price
+    const cme = this.feed.localArchive?.source === 'databento-cme'
+    const precision = cme ? DATABENTO_PRICE_PRECISION : this.chart.getPriceVolumePrecision().price
     const readCurrent = (timestamp: number) => {
       const target = Math.min(cursor, nextOpenTime(timestamp, timeframe) * 1000)
       return target > timestamp * 1000 ? read(timestamp, target) : undefined
@@ -766,12 +768,14 @@ export class OrderFlowChart {
     const previous = this.displayedVolumes
     const volumeChanged = previous?.size !== volumes.size || [...volumes].some(([start, volume]) => previous?.get(start) !== volume)
     this.showVolume(volumeChanged ? volumes : previous)
-    const missingHistory = this.feed.localArchive ? '请通过「下载成交数据」补齐本地逐笔归档' : '历史逐笔可通过「下载成交数据」载入'
+    const missingHistory = cme ? '请通过「按锚点加载」补齐本地逐笔日档'
+      : this.feed.localArchive ? '请通过「下载成交数据」补齐本地逐笔归档' : '历史逐笔可通过「下载成交数据」载入'
     const status = message ?? (this.updating ? '正在计算逐笔成交…' : partial ? missingHistory : undefined)
     const unit = this.bubbleSettings.thresholdUnit
     const contractValue = this.feed.mapping?.okx?.contractValue
     const lotSize = unit === 'lots' ? this.getLotSize() : undefined
-    const unitMessage = unit === 'contracts' && !contractValue ? '此品种暂无 OKX 合约张数'
+    const unitMessage = cme && unit === 'notional' ? 'CME 日档仅含成交张数，请选择张数阈值'
+      : unit === 'contracts' && !contractValue && !cme ? '此品种暂无 OKX 合约张数'
       : unit === 'lots' && !lotSize ? '此品种暂无可用于换算手数的 cTrader 规格'
         : unit === 'lots' && projected && !contractValue ? 'ETF 代理成交无法换算为当前品种手数' : undefined
     this.showBubbles({ bars: unit === 'notional' || allTrades ? bars : undefined, timeframe, mode,
@@ -941,7 +945,9 @@ export class OrderFlowChart {
     const aggregation = mode === 'aggregate' ? ` · ${count ?? 1} 笔` : ''
     const quantity = threshold.unit === 'contracts' || threshold.unit === 'lots'
       ? `${amount.toLocaleString('zh-CN', { maximumSignificantDigits: 10 })} ${bigTradeThresholdUnits[threshold.unit]} · ` : ''
-    this.tooltip.textContent = `${trade.venue ?? 'Bybit'} ${trade.side === 'buy' ? '主动买入' : '主动卖出'}${aggregation} · ${quantity}${trade.size} @ ${trade.price} · ${notional(trade).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`
+    const suffix = trade.venue === 'CME' ? '' : ` · ${notional(trade).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`
+    const price = trade.venue === 'CME' ? trade.price.toFixed(DATABENTO_CHART_PRICE_PRECISION) : trade.price
+    this.tooltip.textContent = `${trade.venue ?? 'Bybit'} ${trade.side === 'buy' ? '主动买入' : '主动卖出'}${aggregation} · ${quantity}${trade.size} @ ${price}${suffix}`
     this.tooltip.style.left = `${Math.max(4, Math.min(width - 260, cursorX + 12))}px`
     this.tooltip.style.top = `${Math.max(4, cursorY - 30)}px`
     this.tooltip.hidden = false

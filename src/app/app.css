@@ -1354,7 +1354,52 @@ button:disabled {
 .workspace-shell [hidden], .workspace-dialog [hidden] { display: none !important; }
 .workspace-shell .app-header { position: sticky; top: 0; z-index: 60; flex-shrink: 0; gap: 20px; min-height: 54px; padding: 8px 16px; }
 .workspace-shell .app-header h1 { font-size: 15px; white-space: nowrap; }
-.price-source-select { min-height: 32px; padding: 2px 6px; font-size: 13px; }
+.market-source-actions { display: flex; align-items: center; min-width: 0; gap: 8px; }
+.price-source-control { position: relative; min-width: 0; }
+.price-source-control::after {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  width: 6px;
+  height: 6px;
+  content: "";
+  border: solid #a6bdd7;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+.price-source-select, .workspace-shell .market-local-data-button {
+  min-height: 36px;
+  padding: 5px 10px;
+  color: #e1edf9;
+  background: #182433;
+  border: 1px solid #364b64;
+  border-radius: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.price-source-select {
+  appearance: none;
+  display: block;
+  max-width: 100%;
+  padding-right: 32px;
+  color-scheme: dark;
+  font-weight: 600;
+  cursor: pointer;
+}
+.price-source-select option { color: #e1edf9; background: #182433; }
+.price-source-select:hover { border-color: #58738f; background-color: #223247; }
+.price-source-select:focus-visible { outline: 2px solid #65b7ff; outline-offset: 2px; }
+@media (forced-colors: active) {
+  .price-source-select { appearance: auto; padding-right: 10px; }
+  .price-source-control::after { display: none; }
+}
+@media (max-width: 480px) {
+  .market-source-actions { gap: 6px; }
+  .price-source-select, .workspace-shell .market-local-data-button { padding-inline: 8px; font-size: 12px; }
+  .price-source-select { padding-right: 26px; }
+  .price-source-control::after { right: 10px; }
+}
 .workspace-tools { position: relative; margin-left: auto; }
 .workspace-tools-trigger { display: inline-flex; align-items: center; gap: 9px; padding: 5px 11px; font-size: 13px; }
 .workspace-tools-trigger span { width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); }

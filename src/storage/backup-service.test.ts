@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_OKX_SYMBOL, DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { DEFAULT_CTRADER_PERIOD, DEFAULT_OKX_SYMBOL, DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { SHOW_CANDLE_HOVER_DETAILS_KEY, saveShowCandleHoverDetails } from '../chart/candle-hover-preferences'
 import { DrawingStore } from '../chart/drawings'
 import { CHART_WINDOW_SIZE_KEY, DEFAULT_CHART_WINDOW_SIZE, saveChartWindowSize } from '../chart/chart-window-preferences'
 import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
@@ -10,7 +11,7 @@ import {
   type JsonValue,
 } from '../chart/indicator-preferences'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
-import { OKX_SYMBOL_STORAGE_KEY, SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
+import { DATABENTO_SYMBOL_STORAGE_KEY, OKX_SYMBOL_STORAGE_KEY, SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
 import { PRICE_SOURCE_KEY, readPriceSource } from '../market-data/price-source-preferences'
 import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
@@ -36,6 +37,31 @@ class MemoryPreferences implements Pick<Storage, 'getItem' | 'setItem'> {
     this.values.set(key, value)
   }
 }
+
+it('round-trips candle hover visibility and rejects malformed saved settings before any write', async () => {
+  const key = SHOW_CANDLE_HOVER_DETAILS_KEY
+  const local = new MemoryPreferences()
+  const target = new MemoryPreferences()
+  const backups = new WorkstationBackupService('candle-hover-source', local)
+  const restores = new WorkstationBackupService('candle-hover-target', target)
+  expect((await backups.exportPreferences()).data.preferences).toMatchObject({ showCandleHoverDetails: true })
+
+  saveShowCandleHoverDetails(false, local)
+  for (const envelope of [await backups.exportPreferences(), await backups.exportAll()]) {
+    expect(envelope.data.preferences).toMatchObject({ showCandleHoverDetails: false })
+    await restores.import(envelope)
+    expect(target.getItem(key)).toBe('false')
+    const { showCandleHoverDetails: _removed, ...legacy } = envelope.data.preferences!
+    await restores.import({ ...envelope, data: { ...envelope.data, preferences: legacy } })
+    expect(target.getItem(key)).toBe('false')
+    for (const invalid of [null, '', 'false', 0, []]) {
+      await expect(restores.import({ ...envelope, data: { ...envelope.data,
+        preferences: { ...legacy, priceSource: 'okx', showCandleHoverDetails: invalid } } })).rejects.toThrow('showCandleHoverDetails')
+      expect(target.getItem(key)).toBe('false')
+      expect(readPriceSource(target)).toBe('ctrader')
+    }
+  }
+})
 
 it('restores drawings from a complete backup and preserves them when an old backup omits the field', async () => {
   const drawing = { id: 'drawing-line', scope: 'live:BTCUSDT', name: 'horizontalStraightLine',
@@ -63,6 +89,36 @@ it('restores drawings from a complete backup and preserves them when an old back
   expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
   await target.import({ ...backup, data: { ...backup.data, drawings: [] } })
   expect(targetDrawings.forScope(drawing.scope)).toEqual([])
+})
+
+it('restores the Databento source and product, keeps legacy omissions, and rejects invalid settings before writes', async () => {
+  const source = new MemoryPreferences()
+  const target = new MemoryPreferences()
+  source.setItem(PRICE_SOURCE_KEY, '"databento-cme"')
+  source.setItem(DATABENTO_SYMBOL_STORAGE_KEY, '"NQ.FUT"')
+  const backups = new WorkstationBackupService('cme-config-source', source)
+  const restores = new WorkstationBackupService('cme-config-target', target)
+  const replay: ReplaySession = { ...session(), marketSource: 'databento-cme',
+    symbol: { ticker: 'NQ.FUT', exchange: 'CME', type: 'FUTURES' }, period: DEFAULT_CTRADER_PERIOD,
+    endTime: 1_799_999, visibleUntil: 900_000, cursorTimeframe: '15m', hasTrades: false }
+  await new IndexedDbReplaySessionStore('cme-config-source').put(replay)
+
+  for (const kind of ['preferences', 'all'] as const) {
+    const envelope = await (kind === 'preferences' ? backups.exportPreferences() : backups.exportAll())
+    expect(envelope.data.preferences).toMatchObject({ priceSource: 'databento-cme', databentoSelectedSymbol: 'NQ.FUT' })
+    await restores.import(envelope)
+    expect(readPriceSource(target)).toBe('databento-cme')
+    expect(target.getItem(DATABENTO_SYMBOL_STORAGE_KEY)).toBe('"NQ.FUT"')
+    const { databentoSelectedSymbol: _removed, ...legacy } = envelope.data.preferences!
+    await restores.import({ ...envelope, data: { ...envelope.data, preferences: legacy } })
+    expect(target.getItem(DATABENTO_SYMBOL_STORAGE_KEY)).toBe('"NQ.FUT"')
+    for (const invalid of ['', null, '../NQ.FUT']) {
+      await expect(restores.import({ ...envelope, data: { ...envelope.data,
+        preferences: { ...legacy, priceSource: 'ctrader', databentoSelectedSymbol: invalid } } })).rejects.toThrow()
+      expect(readPriceSource(target)).toBe('databento-cme')
+    }
+  }
+  expect((await restores.exportSession(replay.id)).data.sessions).toEqual([replay])
 })
 
 function symbol(): MarketSymbol {

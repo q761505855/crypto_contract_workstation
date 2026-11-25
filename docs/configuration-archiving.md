@@ -22,13 +22,15 @@ cTrader 回放会话沿用 Schema 2，在本地、会话或完整 JSON 以及 Gi
 
 cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID，例如 `demo:17` 或 `live:19`。应用配置、全部数据 JSON 和 GitHub“应用配置”均支持该字段，沿用差异比较、校验和、冲突处理和恢复流程。旧存档缺少字段时保留本机选择。提供字段时，账户 ID 必须是正的安全整数，空值或非法格式在任何写入前拒绝。本地字段缺失、损坏或无法匹配当前授权列表时，唯一授权账户可自动连接，多个授权账户需要重新选择。启动时读取已恢复的选择并重新核对授权。如果连接期间恢复了另一个已授权账户，“工具”菜单会提示刷新后生效。
 
-顶部行情来源保存为 `priceSource`，接受 `ctrader`／`okx`／`okx-local`。OKX 和 OKX-本地共用 `okxSelectedSymbol`，须为 `exchange: "OKX"`、`priceCurrency: "USDT"`、`type: "PERPETUAL"` 的 USDT 永续代码。cTrader 的品种使用 `selectedSymbol`。行情来源和品种随本机、应用配置／完整 JSON 和 GitHub“应用配置”往返，品种与其显示元信息作为一个字段合并。旧档缺字段时保留本机同字段。本机缺省使用 cTrader，切到 OKX 来源时默认 BTC-USDT-SWAP 或目录中的可用合约。显式空值和非法值在写入前拒绝。自动恢复切换工作区，手动恢复后按提示刷新。OKX-本地的归档目录授权及文件属于设备数据。另一台设备恢复该来源后，须为当地浏览器选择可用的归档目录。
+顶部行情来源保存为 `priceSource`，接受 `ctrader`／`okx`／`okx-local`／`databento-cme`。OKX 和 OKX-本地共用 `okxSelectedSymbol`，须为 `exchange: "OKX"`、`priceCurrency: "USDT"`、`type: "PERPETUAL"` 的 USDT 永续代码。cTrader 的品种使用 `selectedSymbol`。Databento-CME 的品种使用 `databentoSelectedSymbol`，保存产品子文件夹名称，例如 `NQ.FUT`。行情来源和品种随本机、应用配置／完整 JSON 和 GitHub“应用配置”往返。旧档缺字段时保留本机同字段。本机缺省使用 cTrader。OKX 缺省使用 BTC-USDT-SWAP 或目录中的可用合约。Databento-CME 优先尝试恢复已保存的品种，目录里找不到时显示首个可用子文件夹。显式空值和非法值在写入前拒绝。自动恢复切换工作区，手动恢复后按提示刷新。两种本地来源的目录授权及文件属于设备数据。另一台设备恢复该来源后，须重新选择所在设备的目录。
 
-OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx"` 和 `marketSource: "okx-local"`，以及步进游标、排他边界和会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。两套 OKX 来源的步进周期从 `1m` 起。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。会话在三套来源间隔离，进入某来源时只恢复它的活动会话。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格、资金费率原始响应和本地归档文件属于行情运行数据。
+OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx"` 和 `marketSource: "okx-local"`，以及步进游标、排他边界和会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。两套 OKX 来源的步进周期从 `1m` 起。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。会话按来源隔离。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格、资金费率原始响应和本地归档文件属于行情运行数据。
+
+Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进游标、排他边界和通用模拟状态，支持会话 JSON、完整 JSON 和 GitHub“会话与交易”。刷新或更换设备后，先加载会话用到的日档，再从回放设置恢复会话。日档选择和行情缓存属于当前页面的运行状态。
 
 ## 当前配置清单
 
-独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。
+独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型、悬浮 K 线详情和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。
 
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
@@ -37,9 +39,11 @@ OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
+| 悬浮 K 线详情 | `chart.showCandleHoverDetails.v1`；`chart/candle-hover-preferences.ts` | `showCandleHoverDetails` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
-| 行情来源（cTrader、OKX、OKX-本地） | `marketData.priceSource.v1`；`market-data/price-source-preferences.ts` | `priceSource` | `config/preferences.json` |
+| 行情来源（cTrader、OKX、OKX-本地、Databento-CME） | `marketData.priceSource.v1`；`market-data/price-source-preferences.ts` | `priceSource` | `config/preferences.json` |
 | OKX 和 OKX-本地共用的当前产品及图表精度 | `marketData.okxSelectedSymbol.v1`；`market-data/symbol-preferences.ts` | `okxSelectedSymbol` | `config/preferences.json` |
+| Databento-CME 当前产品 | `marketData.databentoSelectedSymbol.v1`；`market-data/symbol-preferences.ts` | `databentoSelectedSymbol` | `config/preferences.json` |
 | cTrader 账户环境和 ID | `marketData.ctraderAccount.v1`；`market-data/ctrader-account-preferences.ts` | `ctraderAccount` | `config/preferences.json` |
 | 回放步进（含 Tick、1s、5s、15s） | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
 | 回放主图交易标记显隐 | `chart.showTradeOverlays.v1`；`chart/trade-overlay-preferences.ts` | `showTradeOverlays` | `config/preferences.json` |
@@ -47,6 +51,8 @@ OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx
 | 工作区账户／下单／持仓展开／收起、旧回放／状态显隐兼容字段、桌面／手机图表高度、旧持仓面板高度兼容字段 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |
 
 上述入口均位于 `src/`。新增配置必须更新本表，不得在组件中另建脱离存档的持久化键。配置读写和校验应放在可独立调用的模块中，备份服务不能依赖 React 组件。
+
+图表设置的“悬浮 K 线详情”默认开启，关闭后立即隐藏悬浮详情。主图的选择随本地、应用配置／完整 JSON 和 GitHub“应用配置”往返。恢复默认时重新开启。旧档缺字段时保留本机值，本机无设置时默认开启。字段接受布尔值，显式 `false` 原样恢复，空值与非法值在任何写入前拒绝。自动配置恢复随图表重建生效，手动恢复后按提示刷新。
 
 订单流的足迹图和大单气泡选择保存在 `chartIndicators.main`，CVD 选择保存在 `chartIndicators.sub`。足迹图与 CVD 使用显式空 `calcParams`。新增的足迹图、气泡样式、Profile 和 CVD 参数保存在可选的 `chartIndicators.orderFlow` 中。大单气泡启用时，模式、最低成交额和买卖颜色保存在既有主图指标字段。关闭时移入 `orderFlow.bubbles`，重新开启会应用已保存的值。因为显示半径、成交额上下限成对校验，自动同步以足迹图和大单气泡的各自设置组为单位检测并处理并发冲突。Profile 选区保存在既有绘图存档中，设置属于应用配置。
 

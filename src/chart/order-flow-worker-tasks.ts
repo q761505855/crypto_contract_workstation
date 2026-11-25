@@ -40,7 +40,7 @@ function* unpackTrades(values: TradeColumns): Iterable<TradeBubble> {
   for (let i = 0; i < values.length; i += CANDLE_TRADE_STRIDE) {
     const size = values[i + 1]
     yield { trade: { id: String(i / CANDLE_TRADE_STRIDE), price: values[i], size: Math.abs(size),
-      side: size > 0 ? 'buy' : 'sell', timeUs: values[i + 2], venue: values[i + 3] ? 'OKX' : undefined } }
+      side: size > 0 ? 'buy' : 'sell', timeUs: values[i + 2], venue: values[i + 3] === 2 ? 'CME' : values[i + 3] ? 'OKX' : undefined } }
   }
 }
 

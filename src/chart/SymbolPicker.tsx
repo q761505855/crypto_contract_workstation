@@ -23,7 +23,7 @@ export function SymbolPicker({
   onSelect,
   orderFlowAvailable,
 }: SymbolPickerProps) {
-  const [tab, setTab] = useState<SymbolPickerTab>('favorites')
+  const [tab, setTab] = useState<SymbolPickerTab>(currentSymbol.exchange === 'CME' ? 'all' : 'favorites')
   const [search, setSearch] = useState('')
   const [symbols, setSymbols] = useState<SymbolInfo[]>([])
   const [favorites, setFavorites] = useState(readFavoriteSymbols)

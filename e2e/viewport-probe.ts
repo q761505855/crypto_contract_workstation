@@ -18,7 +18,7 @@ export async function installViewportProbe(page: Page) {
     } }).__viewportTestAdapter
     const rows = adapter.coreChart.getDataList()
     return { rightmost: adapter.getRightmostVisibleCandleTime(), period: adapter.getPeriod().text,
-      last: rows.at(-1), previous: rows.at(-2), timestamps: rows.map(row => row.timestamp), events: (window as unknown as { __viewportEvents: unknown[] }).__viewportEvents.slice(-60),
+      first: rows[0], last: rows.at(-1), previous: rows.at(-2), timestamps: rows.map(row => row.timestamp), events: (window as unknown as { __viewportEvents: unknown[] }).__viewportEvents.slice(-60),
       debug: { context: adapter.datafeed.getReplayContext?.(), cancellation: typeof adapter.chart.cancelHistoryRequests, restore: adapter.viewportRestore, sequence: adapter.reloadSequence } }
   })
 }

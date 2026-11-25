@@ -33,9 +33,9 @@ import { registerTtmWaveIndicators } from './ttm-wave'
 import { registerPivotsIndicator } from './pivots-indicator'
 import { registerMarketSessionsIndicator } from './market-sessions-indicator'
 import { CombinedBybitSource, type TradeDownloadReview } from '../market-data/bybit/combined-source'
-import type { OkxLocalMarket } from '../market-data/okx/local-market'
-import { bybitDay } from '../market-data/bybit/trades'
-import { okxArchiveDayEnd, okxArchiveDayStart } from '../market-data/okx/archive'
+import type { LocalArchiveMarket } from '../market-data/local-archive-market'
+import { DATABENTO_CHART_PRICE_PRECISION } from '../market-data/models'
+import { BYBIT_DAY_MS, bybitDay } from '../market-data/bybit/trades'
 import { toChartCandle } from '../market-data/chart-candle'
 import type { GitHubContentsClient } from '../github-sync/github-client'
 import { OrderFlowChart } from './order-flow-chart'
@@ -59,7 +59,7 @@ import { BIG_TRADES } from './order-flow'
 
 type OrderFlowChartOptions = ChartProOptions & {
   orderFlowCloud?: GitHubContentsClient
-  localTradeMarket?: OkxLocalMarket
+  localTradeMarket?: LocalArchiveMarket
   getOrderFlowLotSize?: (ticker: string) => number | undefined
   onOrderFlowSettings?: (group: OrderFlowGroup) => void
 }
@@ -123,6 +123,7 @@ export interface ChartAdapterPort {
   getPriceRangeAuto?(): boolean
   getPriceAxisContainer?(): HTMLElement | null
   setIndicatorInfoVisible?(visible: boolean): void
+  setCandleHoverDetailsVisible?(visible: boolean): void
   setTheme(theme: string): void
   setTimezone(timezone: string): void
   getCandleType?(): ChartCandleType
@@ -130,12 +131,18 @@ export interface ChartAdapterPort {
   applyIndicatorPreferences?(preferences: ChartIndicatorPreferences): void
   getRightmostVisibleCandleTime?(): number | null
   jumpToTime?(timestamp: number, followLatest?: boolean): Promise<number | null>
-  loadLocalArchives?(market: OkxLocalMarket, ticker: string, days: readonly string[], append: boolean): Promise<void>
+  loadLocalArchives?(market: LocalArchiveMarket, ticker: string, days: readonly string[], append: boolean): Promise<LoadedArchiveRange | null | undefined>
   stepViewport?(direction: -1 | 1): number | null
   setSimulationOverlays(state: SimulationOverlayState): void
   setDrawingScope?(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void): void
   changeSelectedDrawing?(id: string, change: DrawingChange): void
   deleteSelectedDrawing?(id: string): void
+}
+
+export interface LoadedArchiveRange {
+  first: number
+  last: number
+  timeZone: string
 }
 
 export type ChartProFactory = (options: ChartProOptions) => ChartPro
@@ -262,6 +269,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     }
     this.chart = this.factory(combinedOptions)
     this.coreChart = this.chart.getChart()
+    this.applySymbolDisplayPrecision(options.symbol)
     if (orderFlowCloud) {
       const feed = options.datafeed as Datafeed & {
         getReplayContext?(): ReplayContext | null
@@ -509,6 +517,10 @@ export class ProChartAdapter implements ChartAdapterPort {
     })
   }
 
+  setCandleHoverDetailsVisible(visible: boolean): void {
+    this.candleReadout?.setHoverDetailsVisible(visible)
+  }
+
   setTimezone(timezone: string): void {
     this.requireChart().setTimezone(timezone)
     this.candleReadout?.refresh()
@@ -525,8 +537,15 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.clearPosition()
     this.viewportAnchor = null
     this.requireChart().setSymbol(symbol)
+    this.applySymbolDisplayPrecision(symbol)
     const feed = this.datafeed as (Datafeed & { getReplayContext?(): ReplayContext | null }) | null
     this.source?.select(symbol, feed?.getReplayContext?.() ?? null)
+  }
+
+  private applySymbolDisplayPrecision(symbol: SymbolInfo): void {
+    if (symbol.exchange === 'CME') {
+      this.requireCoreChart().setPriceVolumePrecision(DATABENTO_CHART_PRICE_PRECISION, symbol.volumePrecision ?? 0)
+    }
   }
 
   setPeriod(period: Period): void {
@@ -697,7 +716,8 @@ export class ProChartAdapter implements ChartAdapterPort {
     coreChart.applyNewData(candles, candles.length > 0)
   }
 
-  async loadLocalArchives(market: OkxLocalMarket, ticker: string, days: readonly string[], append: boolean): Promise<void> {
+  async loadLocalArchives(market: LocalArchiveMarket, ticker: string, days: readonly string[],
+    append: boolean): Promise<LoadedArchiveRange | null | undefined> {
     const chart = this.requireChart()
     const core = this.requireCoreChart()
     const symbol = chart.getSymbol()
@@ -707,14 +727,17 @@ export class ProChartAdapter implements ChartAdapterPort {
     let candles: KLineData[] = []
     if (ordered.length) {
       const signal = this.historyAbort.signal
-      const from = alignOpenTime(okxArchiveDayStart(ordered[0]), period.text, 'floor')
-      const to = okxArchiveDayEnd(ordered.at(-1)!)
+      const from = alignOpenTime(market.archiveDayStart(ordered[0]), period.text, 'floor')
+      const to = market.archiveDayStart(ordered.at(-1)!) + BYBIT_DAY_MS - 1
       candles = (await market.loadCandles('trade', ticker, period.text, from, to, { signal })).map(toChartCandle)
       signal.throwIfAborted()
       if (chart.getSymbol().ticker !== ticker || chart.getPeriod().text !== period.text) return
     }
+    const first = candles[0]?.timestamp
+    const lastLoaded = candles.at(-1)?.timestamp
+    const loaded = first === undefined || lastLoaded === undefined ? null : { first, last: lastLoaded, timeZone: core.getTimezone() }
     const anchor = append ? this.getRightmostVisibleCandleTime() : null
-    if (append && !candles.length) return
+    if (!loaded && (append || market.source === 'databento-cme' && ordered.length)) return null
     if (append) {
       const merged = new Map(core.getDataList().map(bar => [bar.timestamp, bar]))
       for (const bar of candles) merged.set(bar.timestamp, bar)
@@ -731,6 +754,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     if (last) this.positionWhenReady(candles, anchor ?? last.timestamp, period, sequence, anchor === null)
     this.ownLastCandle(candles, symbol, period)
     core.applyNewData(candles, candles.length > 0)
+    return loaded
   }
 
   getSymbol(): SymbolInfo {
