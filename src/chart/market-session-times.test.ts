@@ -25,6 +25,20 @@ describe('market session windows', () => {
     }
   })
 
+  it.each([
+    ['2026-03-06', 12, 17],
+    ['2026-03-09', 12, 16],
+    ['2026-03-30', 11, 16],
+  ])('converts each market’s midday markers from local time on %s', (date, londonHour, newYorkHour) => {
+    const windows = windowsOn(date)
+    const byMarket = new Map(windows.map(window => [window.market, window.midday]))
+    const midnight = Date.parse(`${date}T00:00Z`)
+    const hour = 3_600_000
+    expect(byMarket.get('tokyo')).toEqual([midnight + 2.5 * hour, midnight + 3.5 * hour])
+    expect(byMarket.get('london')).toEqual([midnight + londonHour * hour, midnight + (londonHour + 2) * hour])
+    expect(byMarket.get('newYork')).toEqual([midnight + newYorkHour * hour, midnight + (newYorkHour + 2) * hour])
+  })
+
   it('keeps Friday New York close across Shanghai midnight and marks exchange weekends', () => {
     const windows = windowsOn('2026-11-20')
     const close = windows.find(window => window.market === 'newYork')!.close
@@ -33,6 +47,7 @@ describe('market session windows', () => {
       const weekend = windowsOn(date)
       expect(weekend).toHaveLength(3)
       expect(weekend.every(window => window.closed === '周末休市')).toBe(true)
+      expect(weekend.every(window => window.midday === null)).toBe(true)
     }
   })
 
@@ -40,11 +55,12 @@ describe('market session windows', () => {
     expect(windowsOn('2026-09-22').find(window => window.market === 'tokyo')?.closed).toBe('节假日休市')
     expect(windowsOn('2026-12-28').find(window => window.market === 'london')?.closed).toBe('节假日休市')
     expect(windowsOn('2026-11-26').find(window => window.market === 'newYork')?.closed).toBe('节假日休市')
+    expect(windowsOn('2026-11-26').find(window => window.market === 'newYork')?.midday).toBeNull()
     expect(windowsOn('2026-11-27')).toContainEqual(expect.objectContaining({
-      market: 'newYork', close: Date.parse('2026-11-27T18:00Z'), closed: null,
+      market: 'newYork', close: Date.parse('2026-11-27T18:00Z'), closed: null, midday: null,
     }))
     expect(windowsOn('2026-12-24')).toContainEqual(expect.objectContaining({
-      market: 'london', close: Date.parse('2026-12-24T12:30Z'), closed: null,
+      market: 'london', close: Date.parse('2026-12-24T12:30Z'), closed: null, midday: null,
     }))
   })
 
@@ -77,7 +93,7 @@ describe('market session windows', () => {
     }
   })
 
-  it('draws the session to its official close beyond the last candle, with only open and close lines', () => {
+  it.each([false, true])('draws the full session beyond the last candle with showMidday=%s', showMidday => {
     const base = Date.parse('2026-11-18T22:30Z')
     const fillRect = vi.fn()
     const moveTo = vi.fn()
@@ -89,7 +105,7 @@ describe('market session windows', () => {
         fillRect, moveTo, lineTo: vi.fn(), stroke: vi.fn(), setLineDash,
         measureText: () => ({ width: 32 }), fillText, strokeText: vi.fn(),
       },
-      indicator: { calcParams: [] },
+      indicator: { calcParams: [], styles: { showMidday } },
       kLineDataList: Array.from({ length: 9 }, (_, index) => ({ timestamp: base + index * 15 * 60_000 })),
       visibleRange: { from: 0, to: 9, realFrom: 0, realTo: 34 },
       bounding: { width: 520, height: 180 },
@@ -98,13 +114,13 @@ describe('market session windows', () => {
     const reference = Date.parse('2026-11-19T00:30Z')
     drawMarketSessions(drawParams, { timeframe: '15m', confirmedUntil: reference })
     expect(fillRect).toHaveBeenCalledExactlyOnceWith(90, 0, 390, 180)
-    expect(moveTo.mock.calls).toEqual([[90.5, 0], [480.5, 0]])
+    expect(moveTo.mock.calls).toEqual(showMidday ? [[90.5, 0], [240.5, 0], [300.5, 0], [480.5, 0]] : [[90.5, 0], [480.5, 0]])
     expect(fillText.mock.calls.map(([label]) => label)).toEqual(['东京开盘', '东京收盘'])
-    expect(setLineDash.mock.calls.every(([dash]) => dash.length === 0)).toBe(true)
+    expect(setLineDash.mock.calls.filter(([dash]) => dash.length !== 0)).toEqual(showMidday ? [[[5, 4]], [[5, 4]]] : [])
   })
 
   it.each([
-    { visibility: [true, false, true], fills: 3, lines: 4,
+    { visibility: [true, false, true], fills: 3, lines: 8,
       labels: ['东京开盘', '东京收盘', '纽约开盘', '纽约收盘', '东京周末休市'] },
     { visibility: [false, false, false], fills: 0, lines: 0, labels: [] },
   ])('draws only enabled markets in historical and future periods ($visibility)', ({ visibility, fills, lines, labels }) => {
@@ -117,7 +133,7 @@ describe('market session windows', () => {
     }
     const params = {
       ctx,
-      indicator: { styles: { sessionVisibility: visibility } },
+      indicator: { styles: { sessionVisibility: visibility, showMidday: true } },
       kLineDataList: Array.from({ length: 13 }, (_, index) => ({ timestamp: base + index * hour })),
       visibleRange: { realFrom: 0, realTo: 38 },
       bounding: { width: 380, height: 180 },

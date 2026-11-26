@@ -8,12 +8,14 @@ type SessionLineStyle = {
 
 type SessionStyles = {
   sessionVisibility?: MarketSessionVisibility
+  showMidday?: boolean
   sessionFills?: [{ color: string }, { color: string }, { color: string }]
   sessionLines?: [SessionLineStyle]
 }
 
 export const MARKET_SESSION_STYLES: Required<SessionStyles> = {
   sessionVisibility: DEFAULT_MARKET_SESSION_VISIBILITY,
+  showMidday: false,
   sessionFills: [{ color: '#f5bb5538' }, { color: '#57b5fc38' }, { color: '#ce83ef38' }],
   sessionLines: [{ style: 'solid', size: 1 }],
 }
@@ -21,6 +23,9 @@ export const MARKET_SESSION_STYLES: Required<SessionStyles> = {
 export function validateMarketSessionStyles(styles: unknown): void {
   if (styles === null) return
   if (typeof styles !== 'object' || Array.isArray(styles)) throw new Error('MARKET_SESSIONS.styles 无效')
+  if ('showMidday' in styles && typeof styles.showMidday !== 'boolean') {
+    throw new Error('MARKET_SESSIONS.styles.showMidday 必须是布尔值')
+  }
   if ('sessionVisibility' in styles) {
     const visibility = styles.sessionVisibility
     if (!Array.isArray(visibility) || visibility.length !== 3 || [...visibility].some(value => typeof value !== 'boolean')) {
@@ -47,6 +52,7 @@ export function marketSessionStyles(styles: unknown): Required<SessionStyles> {
   const configured = styles as SessionStyles | null | undefined
   return {
     sessionVisibility: configured?.sessionVisibility ?? MARKET_SESSION_STYLES.sessionVisibility,
+    showMidday: configured?.showMidday ?? MARKET_SESSION_STYLES.showMidday,
     sessionFills: configured?.sessionFills ?? MARKET_SESSION_STYLES.sessionFills,
     sessionLines: configured?.sessionLines ?? MARKET_SESSION_STYLES.sessionLines,
   }

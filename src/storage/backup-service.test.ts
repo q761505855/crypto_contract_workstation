@@ -458,6 +458,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
       { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
         sessionVisibility: [true, false, true],
+        showMidday: true,
         sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
         sessionLines: [{ style: 'solid', size: 0 }],
       } },
@@ -789,6 +790,7 @@ describe('WorkstationBackupService', () => {
     const invalid = indicatorPreferences()
     const invalidStyles: JsonValue[] = [
       { sessionLines: [] }, { sessionVisibility: null }, { sessionVisibility: [] }, { sessionVisibility: [false, 0, true] },
+      { showMidday: null }, { showMidday: '' }, { showMidday: 0 }, { showMidday: 'false' },
     ]
     const before = (await target.exportAll()).data
     archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'

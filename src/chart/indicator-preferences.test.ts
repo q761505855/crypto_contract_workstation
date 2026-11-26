@@ -143,13 +143,17 @@ describe('chart indicator preferences', () => {
     const storage = new MemoryStorage()
     const legacy = { schemaVersion: 1 as const, main: [{ name: 'MARKET_SESSIONS', calcParams: [], visible: true, styles: null }], sub: [] }
     const value = {
-      ...legacy, main: [{ ...legacy.main[0], styles: { sessionVisibility: [false, false, false] } }],
+      ...legacy, main: [{ ...legacy.main[0], styles: { sessionVisibility: [false, false, false], showMidday: true } }],
     }
-    expect(marketSessionStyles(validateChartIndicatorPreferences(legacy).main[0].styles).sessionVisibility)
-      .toEqual([true, true, true])
+    expect(marketSessionStyles(validateChartIndicatorPreferences(legacy).main[0].styles))
+      .toMatchObject({ sessionVisibility: [true, true, true], showMidday: false })
     saveChartIndicatorPreferences(value, storage)
     expect(loadChartIndicatorPreferences(storage)).toEqual(value)
     expect(validateChartIndicatorPreferences(legacy, value)).toEqual(value)
+    const disabled = { ...value, main: [{ ...value.main[0], styles: { ...value.main[0].styles, showMidday: false } }] }
+    saveChartIndicatorPreferences(disabled, storage)
+    expect(loadChartIndicatorPreferences(storage)).toEqual(disabled)
+    expect(validateChartIndicatorPreferences(disabled, value)).toEqual(disabled)
   })
 
   it.each([

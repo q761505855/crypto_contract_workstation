@@ -117,6 +117,7 @@ function backup(): BackupEnvelope {
         { name: 'PIVOTS', calcParams: [...PIVOTS_DEFAULT_PARAMS.slice(0, 30), '#112233', '#aa1111', '#11aa11', true, '#445566', '#aa7777', '#77aa77'], visible: false, styles: null },
         { name: 'MARKET_SESSIONS', calcParams: [], visible: false, styles: {
           sessionVisibility: [true, false, true],
+          showMidday: true,
           sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
           sessionLines: [{ style: 'solid', size: 0 }],
         } },
@@ -892,6 +893,16 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
 
+    const middayDisabled = structuredClone(indicators)
+    const session = middayDisabled.main.find(i => i.name === 'MARKET_SESSIONS')!
+    session.styles = { ...(session.styles as Record<string, JsonValue>), showMidday: false }
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(middayDisabled))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(middayDisabled)
+
     const appearanceChanged = structuredClone(indicators)
     Object.assign(appearanceChanged.orderFlow!.bubbles!, { sizeByVolume: true, opacityByVolume: false, fixedRadius: 24 })
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(appearanceChanged))
@@ -999,6 +1010,7 @@ describe('GitHubSyncService', () => {
     changed.orderFlow!.profile!.rows = 60
     changed.main.find(i => i.name === 'MARKET_SESSIONS')!.styles = {
       sessionVisibility: [true, false, true],
+      showMidday: true,
       sessionFills: [{ color: '#12345600' }, { color: '#57b5fc38' }, { color: '#ce83ef80' }],
       sessionLines: [{ style: 'dotted', size: 2 }],
     }
@@ -1113,6 +1125,7 @@ describe('GitHubSyncService', () => {
     const invalidSessionStyles: JsonValue[] = [
       { sessionFills: [] }, { sessionFills: null },
       { sessionVisibility: [] }, { sessionVisibility: null }, { sessionVisibility: [true, false, 0] },
+      { showMidday: null }, { showMidday: '' }, { showMidday: 0 }, { showMidday: 'false' },
       { sessionLines: [{ style: 'solid', size: -1 }, { style: 'dashed', size: 1 }] },
     ]
     for (const styles of invalidSessionStyles) {

@@ -37,7 +37,7 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选／可见范围／逐根 K 线成交分布的分档、关键价位、配色与 Delta 开关、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐与午间时间开关、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选／可见范围／逐根 K 线成交分布的分档、关键价位、配色与 Delta 开关、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi 和收盘价折线） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
@@ -81,6 +81,8 @@ Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或�
 主图市场开收盘指标 `MARKET_SESSIONS` 的 `calcParams` 为显式空数组。旧存档中合法的两个提前分钟数按原范围校验后迁移为空数组；非法值在任何写入前拒绝。`visible: false` 原样恢复。选择、显隐和样式通过现有 `chartIndicators` 覆盖本地、应用配置／完整 JSON 及 GitHub“应用配置”，沿用现有差异、校验和、冲突与恢复流程。旧存档有指标列表时按列表恢复，缺少整个 `chartIndicators` 时保留本地配置。自动恢复随图表重建生效，手动恢复后按提示刷新。配置格式仍为 Schema 1，未来时段按交易日历动态计算。
 
 该指标的 `styles.sessionVisibility` 按东京、伦敦、纽约顺序保存三个布尔值，默认全部显示。显式 `false` 隐藏该市场的底色、开收盘线及休市标签，三个开关都关闭时取消该指标的未来时段扩展。三个 `false` 会原样恢复。提供该字段时必须恰好包含三个布尔值，空数组、`null` 和非法值在任何写入前拒绝。
+
+`styles.showMidday` 保存“显示午间时间”，默认关闭。旧存档缺少该字段时保留本机选择，本机缺省时关闭。显式 `false` 原样恢复，`null`、数字、字符串及其他非布尔值在任何写入前拒绝。它随 `chartIndicators.main` 在本机、应用配置／完整 JSON 和 GitHub“应用配置”中往返，参与现有差异比较、校验和及冲突处理。自动恢复时界面重建后生效，手动恢复后按提示刷新。
 
 `styles.sessionFills` 按东京、伦敦、纽约顺序保存三个颜色对象，默认底色约 22% 不透明。`styles.sessionLines` 保存一组正式开收盘线型及线宽，默认 1 像素实线。旧的两组配置通过原校验后保留第二组正式线。线型为 `solid`、`dashed` 或 `dotted`，线宽为 0–4 的整数。完全透明的颜色及 0 线宽原样往返。旧存档的 `styles: null`、`{}` 或缺少某个样式组时，缺失组保留本机设置，本机无值时使用默认值。提供样式组时，空数组、`null` 组和非法值在任何写入前拒绝。
 

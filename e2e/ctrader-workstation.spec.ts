@@ -609,10 +609,22 @@ test('plays and pauses the live chart with the button or a hold on the next cand
   await expect(controls.getByLabel('步进周期')).toHaveCount(0)
 })
 
-test('saves individual market session toggles and restores them from an application archive', async ({ page }) => {
-  await connectFixture(page)
+test('draws midday lines and restores market session toggles from an application archive', async ({ page }) => {
+  const now = Date.UTC(2026, 10, 20, 19, 15)
+  await page.clock.setFixedTime(now)
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= now - 8 * 60 * minute })
   await page.addInitScript(() => {
-    const fillText = CanvasRenderingContext2D.prototype.fillText
+    const key = 'crypto-contract-workstation:ctrader:chart.indicators.v1'
+    if (localStorage.getItem(key) === null) {
+      localStorage.setItem(key, JSON.stringify({ schemaVersion: 1, main: [], sub: [] }))
+    }
+    const { fillText, stroke } = CanvasRenderingContext2D.prototype
+    CanvasRenderingContext2D.prototype.stroke = function (...args: unknown[]) {
+      if (this.globalAlpha === 0.65 && this.strokeStyle === '#ce83ef' && this.getLineDash().join(',') === '5,4') {
+        Object.assign(window, { drewNewYorkMidday: true })
+      }
+      return Reflect.apply(stroke, this, args)
+    }
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
       if (text === '\ue902' && this.canvas.closest('[data-pane-id="candle_pane"]')) {
         const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
@@ -637,12 +649,14 @@ test('saves individual market session toggles and restores them from an applicat
   const tokyo = settings.getByRole('checkbox', { name: '显示东京' })
   const london = settings.getByRole('checkbox', { name: '显示伦敦' })
   const newYork = settings.getByRole('checkbox', { name: '显示纽约' })
+  const midday = settings.getByRole('checkbox', { name: '显示午间时间' })
   const confirm = page.getByText('确定', { exact: true })
-  const readVisibility = () => page.evaluate(() => {
+  const readStyles = () => page.evaluate(() => {
     const key = 'crypto-contract-workstation:ctrader:chart.indicators.v1'
     return JSON.parse(localStorage.getItem(key) ?? 'null')?.main.find((indicator: { name: string }) =>
-      indicator.name === 'MARKET_SESSIONS')?.styles?.sessionVisibility
+      indicator.name === 'MARKET_SESSIONS')?.styles
   })
+  const drewMidday = () => page.evaluate(() => 'drewNewYorkMidday' in window)
 
   await page.goto('./')
   await expect(page.getByRole('contentinfo')).toContainText('EURUSD')
@@ -652,15 +666,20 @@ test('saves individual market session toggles and restores them from an applicat
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
   await openSettings()
   for (const checkbox of [tokyo, london, newYork]) await expect(checkbox).toBeChecked()
+  await expect(midday).not.toBeChecked()
+  expect(await drewMidday()).toBe(false)
   await london.uncheck()
+  await midday.check()
   await confirm.click()
-  await expect.poll(readVisibility).toEqual([true, false, true])
+  await expect.poll(readStyles).toMatchObject({ sessionVisibility: [true, false, true], showMidday: true })
+  await expect.poll(drewMidday).toBe(true)
 
   await page.reload()
   await openSettings()
   await expect(tokyo).toBeChecked()
   await expect(london).not.toBeChecked()
   await expect(newYork).toBeChecked()
+  await expect(midday).toBeChecked()
   await confirm.click()
   await page.getByRole('button', { name: '工具', exact: true }).click()
   await page.getByTestId('open-data-manager').click()
@@ -670,8 +689,9 @@ test('saves individual market session toggles and restores them from an applicat
   ])
   const archive = JSON.parse(await readFile((await download.path())!, 'utf8'))
   const indicator = archive.data.preferences.chartIndicators.main.find((setting: { name: string }) => setting.name === 'MARKET_SESSIONS')
-  expect(indicator.styles.sessionVisibility).toEqual([true, false, true])
+  expect(indicator.styles).toMatchObject({ sessionVisibility: [true, false, true], showMidday: true })
   indicator.styles.sessionVisibility = [false, false, false]
+  indicator.styles.showMidday = false
   page.once('dialog', dialog => dialog.accept())
   await page.getByTestId('import-backup-file').setInputFiles({
     name: 'market-session-preferences.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)),
@@ -680,7 +700,8 @@ test('saves individual market session toggles and restores them from an applicat
   await page.reload()
   await openSettings()
   for (const checkbox of [tokyo, london, newYork]) await expect(checkbox).not.toBeChecked()
-  expect(await readVisibility()).toEqual([false, false, false])
+  await expect(midday).not.toBeChecked()
+  expect(await readStyles()).toMatchObject({ sessionVisibility: [false, false, false], showMidday: false })
 })
 
 test('restores explicit empty and legacy settings in the experiment without overwriting production preferences', async ({ page }) => {

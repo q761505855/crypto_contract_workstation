@@ -11,7 +11,7 @@ export function drawMarketSessions(
   { timeframe, confirmedUntil }: SessionContext,
 ): boolean {
   if (kLineDataList.length === 0 || !isMarketSessionTimeframe(timeframe)) return true
-  const { sessionVisibility, sessionFills, sessionLines } = marketSessionStyles(indicator.styles)
+  const { sessionVisibility, showMidday, sessionFills, sessionLines } = marketSessionStyles(indicator.styles)
   if (!sessionVisibility.some(Boolean)) return true
 
   const left = drawingTimeAt(kLineDataList, Math.max(0, visibleRange.realFrom), timeframe)
@@ -40,9 +40,13 @@ export function drawMarketSessions(
     ctx.fillRect(start, 0, end - start, height)
   }
 
-  const markers = sessions.flatMap(({ market, open, close, closed }) => closed
+  const markers = sessions.flatMap(({ market, open, close, midday, closed }) => closed
     ? [{ time: open, title: closed, market, closed: true }]
-    : [{ time: open, title: '开盘', market, closed: false }, { time: close, title: '收盘', market, closed: false }],
+    : [
+      { time: open, title: '开盘', market, closed: false },
+      { time: close, title: '收盘', market, closed: false },
+      ...(showMidday && midday ? midday.map(time => ({ time, title: null, market, closed: false })) : []),
+    ],
   ).sort((first, second) => first.time - second.time)
 
   ctx.globalCompositeOperation = 'source-over'
@@ -57,11 +61,12 @@ export function drawMarketSessions(
     if ((!marker.closed && lineX < 0) || lineX >= width) continue
     const { name, index } = SESSION_MARKETS[marker.market]
     const color = sessionAccentColor(sessionFills[index].color, MARKET_SESSION_STYLES.sessionFills[index].color)
+    const isMidday = marker.title === null
     if (!marker.closed) {
       ctx.strokeStyle = color
-      ctx.globalAlpha = 0.9
+      ctx.globalAlpha = isMidday ? 0.65 : 0.9
       ctx.lineWidth = line.size
-      ctx.setLineDash(lineDashes[line.style])
+      ctx.setLineDash(isMidday ? lineDashes.dashed : lineDashes[line.style])
       ctx.beginPath()
       const aligned = Math.floor(lineX) + line.size % 2 / 2
       ctx.moveTo(aligned, 0)
@@ -69,6 +74,7 @@ export function drawMarketSessions(
       ctx.stroke()
     }
 
+    if (isMidday) continue
     const label = `${name}${marker.title}`
     const labelWidth = ctx.measureText(label).width
     const x = Math.max(3, Math.min(lineX + 3, width - labelWidth - 3))

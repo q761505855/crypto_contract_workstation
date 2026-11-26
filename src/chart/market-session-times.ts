@@ -35,6 +35,7 @@ type MarketCalendar = {
   timezone: string
   open: number
   close: number
+  midday: readonly [number, number]
   closed: ReadonlySet<string>
   earlyClose?: { minute: number; dates: ReadonlySet<string> }
 }
@@ -46,6 +47,7 @@ function dates(year: number, monthDays: string): string[] {
 const markets: MarketCalendar[] = [
   {
     id: 'tokyo', timezone: 'Asia/Tokyo', open: 9 * 60, close: 15 * 60 + 30,
+    midday: [11 * 60 + 30, 12 * 60 + 30],
     // https://www.jpx.co.jp/english/corporate/about-jpx/calendar/
     closed: new Set([
       ...dates(2026, '01-01 01-02 01-12 02-11 02-23 03-20 04-29 05-04 05-05 05-06 07-20 08-11 09-21 09-22 09-23 10-12 11-03 11-23 12-31'),
@@ -54,6 +56,7 @@ const markets: MarketCalendar[] = [
   },
   {
     id: 'london', timezone: 'Europe/London', open: 8 * 60, close: 16 * 60 + 30,
+    midday: [12 * 60, 14 * 60],
     // https://www.londonstockexchange.com/en/resources/markets-products/business-days
     closed: new Set([
       ...dates(2026, '01-01 04-03 04-06 05-04 05-25 08-31 12-25 12-28'),
@@ -64,6 +67,7 @@ const markets: MarketCalendar[] = [
   },
   {
     id: 'newYork', timezone: 'America/New_York', open: 9 * 60 + 30, close: 16 * 60,
+    midday: [12 * 60, 14 * 60],
     // https://www.nyse.com/trade/hours-calendars
     closed: new Set([
       ...dates(2026, '01-01 01-19 02-16 04-03 05-25 06-19 07-03 09-07 11-26 12-25'),
@@ -90,6 +94,7 @@ export interface MarketSessionWindow {
   market: MarketId
   open: number
   close: number
+  midday: readonly [number, number] | null
   closed: '周末休市' | '节假日休市' | null
 }
 const dayCache = new Map<number, MarketSessionWindow[]>()
@@ -105,10 +110,20 @@ function sessionsOn(day: number): MarketSessionWindow[] {
   const result = markets.map((market): MarketSessionWindow => {
     const holiday = market.closed.has(dateKey) || (market.id === 'tokyo' && /-(01-0[1-3]|12-31)$/.test(dateKey))
     const closed = weekday === 0 || weekday === 6 ? '周末休市' : holiday ? '节假日休市' : null
-    const offset = offsetMinutes(market.timezone, day)
+    const localMidnight = day - offsetMinutes(market.timezone, day) * MINUTE
+    const atLocalMinute = (minutes: number) => localMidnight + minutes * MINUTE
     let close = market.id === 'tokyo' && day < extendedTokyoClose ? 15 * 60 : market.close
     if (!closed && market.earlyClose?.dates.has(dateKey)) close = market.earlyClose.minute
-    return { market: market.id, open: day + (market.open - offset) * MINUTE, close: day + (close - offset) * MINUTE, closed }
+    const [middayStart, middayEnd] = market.midday
+    return {
+      market: market.id,
+      open: atLocalMinute(market.open),
+      close: atLocalMinute(close),
+      midday: !closed && middayStart > market.open && middayEnd < close
+        ? [atLocalMinute(middayStart), atLocalMinute(middayEnd)]
+        : null,
+      closed,
+    }
   })
   if (dayCache.size >= 2048) dayCache.delete(dayCache.keys().next().value!)
   dayCache.set(day, result)
