@@ -24,9 +24,11 @@ cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID
 
 顶部行情来源保存为 `priceSource`，接受 `ctrader`／`okx`／`okx-local`／`databento-cme`。OKX 和 OKX-本地共用 `okxSelectedSymbol`，须为 `exchange: "OKX"`、`priceCurrency: "USDT"`、`type: "PERPETUAL"` 的 USDT 永续代码。cTrader 的品种使用 `selectedSymbol`。Databento-CME 的品种使用 `databentoSelectedSymbol`，保存产品子文件夹名称，例如 `NQ.FUT`。行情来源和品种随本机、应用配置／完整 JSON 和 GitHub“应用配置”往返。旧档缺字段时保留本机同字段。本机缺省使用 cTrader。OKX 缺省使用 BTC-USDT-SWAP 或目录中的可用合约。Databento-CME 优先尝试恢复已保存的品种，目录里找不到时显示首个可用子文件夹。显式空值和非法值在写入前拒绝。自动恢复切换工作区，手动恢复后按提示刷新。两种本地来源的目录授权及文件属于设备数据。另一台设备恢复该来源后，须重新选择所在设备的目录。
 
-OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx"` 和 `marketSource: "okx-local"`，以及步进游标、排他边界和会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。两套 OKX 来源的步进周期从 `1m` 起。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。会话按来源隔离。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格、资金费率原始响应和本地归档文件属于行情运行数据。
+OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx"` 和 `marketSource: "okx-local"`，以及步进游标、排他边界和会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。会话按来源隔离。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格、资金费率原始响应和本地归档文件属于行情运行数据。
 
 Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进游标、排他边界和通用模拟状态，支持会话 JSON、完整 JSON 和 GitHub“会话与交易”。刷新或更换设备后，先加载会话用到的日档，再从回放设置恢复会话。日档选择和行情缓存属于当前页面的运行状态。
+
+四种行情来源的会话可保存 `playbackMode`（`kline` 或 `tick`）和 `tickSpeed`（`0.1–1000` 的数字）。两者随会话进入 IndexedDB、会话／完整 JSON 和 GitHub“会话与交易”，恢复时暂停并保留原游标。旧会话缺少模式时，逐笔游标或 cTrader 旧应用设置中的 `tick` 对应逐笔模式，其余使用 K 线模式。缺少逐笔倍率时使用 `1×`，显式非法值在写入前拒绝。创建前的模式选择只在当前页面有效。K 线步进周期沿用应用配置字段 `replayStepPeriod`，旧 `tick` 值仍可导入导出，在 K 线模式中以 `1m` 运行。
 
 ## 当前配置清单
 
@@ -45,7 +47,7 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 | OKX 和 OKX-本地共用的当前产品及图表精度 | `marketData.okxSelectedSymbol.v1`；`market-data/symbol-preferences.ts` | `okxSelectedSymbol` | `config/preferences.json` |
 | Databento-CME 当前产品 | `marketData.databentoSelectedSymbol.v1`；`market-data/symbol-preferences.ts` | `databentoSelectedSymbol` | `config/preferences.json` |
 | cTrader 账户环境和 ID | `marketData.ctraderAccount.v1`；`market-data/ctrader-account-preferences.ts` | `ctraderAccount` | `config/preferences.json` |
-| 回放步进（含 Tick、1s、5s、15s） | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
+| K 线步进（含 1s、5s、15s，兼容旧 Tick 值） | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
 | 回放主图交易标记显隐 | `chart.showTradeOverlays.v1`；`chart/trade-overlay-preferences.ts` | `showTradeOverlays` | `config/preferences.json` |
 | 独立副图窗口的默认大小 | `chart.windowSize.v1`；`chart/chart-window-preferences.ts` | `chartWindowSize` | `config/preferences.json` |
 | 工作区账户／下单／持仓展开／收起、旧回放／状态显隐兼容字段、桌面／手机图表高度、旧持仓面板高度兼容字段 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |

@@ -42,7 +42,7 @@ import type {
   MarketCandle,
   MarketSymbol,
 } from '../market-data/models'
-import { replaySourceTimeframe, type ReplaySession } from '../replay/models'
+import { isTickSpeed, replaySourceTimeframe, type ReplaySession } from '../replay/models'
 import { REPLAY_STEP_PERIOD_KEY, readReplayStepPeriod, validateReplayStepPeriod } from '../replay/step-preferences'
 import { isCTraderReplayStepPeriod, isFineStepPeriod, SECOND_STEP_MS, type ReplayStepPeriod } from '../replay/step-periods'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
@@ -376,7 +376,14 @@ function validateSession(value: unknown, index: number): ReplaySession {
   if ((native && cursorPeriod === undefined) || (!native && item.cursorTimeframe !== undefined)) {
     throw new Error(`${field}.cursorTimeframe 无效`)
   }
-  if ((okxSource || cmeSource) && isFineStepPeriod(cursorPeriod)) throw new Error(`${field}.cursorTimeframe 无效`)
+  const playbackMode = item.playbackMode
+  if (playbackMode !== undefined && (!native || (playbackMode !== 'kline' && playbackMode !== 'tick'))) {
+    throw new Error(`${field}.playbackMode 无效`)
+  }
+  const tickSpeed = item.tickSpeed
+  if (tickSpeed !== undefined && (!native || !isTickSpeed(tickSpeed))) {
+    throw new Error(`${field}.tickSpeed 无效`)
+  }
   const cursorTickIndex = item.cursorTickIndex === undefined ? undefined : nonNegativeInteger(item.cursorTickIndex, `${field}.cursorTickIndex`)
   if ((cursorPeriod === 'tick') !== (cursorTickIndex !== undefined) ||
     (cursorTickIndex !== undefined && !Number.isSafeInteger(cursorTickIndex))) {
@@ -479,6 +486,8 @@ function validateSession(value: unknown, index: number): ReplaySession {
     ...(marketSource === undefined ? {} : { marketSource }),
     ...(cursorPeriod === undefined ? {} : { cursorTimeframe: cursorPeriod }),
     ...(cursorTickIndex === undefined ? {} : { cursorTickIndex }),
+    ...(playbackMode === undefined ? {} : { playbackMode }),
+    ...(tickSpeed === undefined ? {} : { tickSpeed }),
     ...(visibleUntil === undefined ? {} : { visibleUntil }),
     symbol: nativeSymbol ?? {
       ...(symbol as unknown as ReplaySession['symbol']),

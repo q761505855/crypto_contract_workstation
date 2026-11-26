@@ -43,7 +43,7 @@ export async function readArchive(task: ArchiveTask, request: ArchiveRead, signa
   if (request.kind === 'trades') {
     const index = (await buildLocalTradeIndex(async accept => {
       scan((contract, trade) => {
-        if (trade.side && isSelected(contract, trade.time)) accept({ ...trade, side: trade.side })
+        if (isSelected(contract, trade.time)) accept(trade)
       })
       return true
     }))!

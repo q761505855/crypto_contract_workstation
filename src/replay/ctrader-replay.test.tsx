@@ -59,6 +59,84 @@ function stores(saved?: ReplaySession) {
 }
 
 describe('cTrader replay', () => {
+  it('uses real trade gaps, pauses the replay clock and processes every same-time trade', async () => {
+    const at = monday + minute
+    const trades = [
+      { timestamp: at + 50, price: '100', size: 2 },
+      { timestamp: at + 50, price: '101', size: 3 },
+      { timestamp: at + 250, price: '99', size: 4 },
+    ]
+    const market = {
+      ...service([{ ...mondayFirst, source: 'databento-cme' }]),
+      source: 'databento-cme' as const,
+      loadTicks: vi.fn(async () => trades),
+    }
+    const replaySessions = stores()
+    const { result, unmount } = renderHook(() => useCTraderReplayController({ service: market, replaySessions }, '1m'))
+    await waitFor(() => expect(result.current.busy).toBe(false))
+    await act(() => result.current.createSession({ symbol, period: m1, startTime: monday, endTime: at + 1000 }))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    try {
+      const prices: string[] = []
+      result.current.subscribeCandle(event => { if (event.type === 'advance') prices.push(event.candle.close) })
+      act(() => result.current.setMode('tick'))
+      expect(await replaySessions.get()).toMatchObject({ currentIndex: 0 })
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      act(() => result.current.play())
+      await act(async () => { await vi.advanceTimersByTimeAsync(49) })
+      expect(prices).toEqual([])
+      await act(async () => { await vi.advanceTimersByTimeAsync(20) })
+      expect(prices).toEqual(['100', '101'])
+      act(() => result.current.pause())
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(prices).toEqual(['100', '101'])
+      act(() => result.current.setTickSpeed(10))
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      act(() => result.current.play())
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      expect(prices).toEqual(['100', '101', '99'])
+      expect(await replaySessions.get()).toMatchObject({ playbackMode: 'tick', tickSpeed: 10, currentIndex: 3 })
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('settles the last tick before ending a session with an in-flight history window', async () => {
+    const at = monday + minute
+    const market = {
+      ...service([{ ...mondayFirst, source: 'databento-cme' }]),
+      source: 'databento-cme' as const,
+      tickWindowMs: minute,
+      loadTicks: vi.fn(async (_symbol: string, from: number) => from === at
+        ? [{ timestamp: at + 1, price: '100', size: 2 }]
+        : new Promise<never>(() => {})),
+    }
+    const replaySessions = stores()
+    const { result, unmount } = renderHook(() => useCTraderReplayController({ service: market, replaySessions }, '1m'))
+    await waitFor(() => expect(result.current.busy).toBe(false))
+    await act(() => result.current.createSession({ symbol, period: m1, startTime: monday, endTime: at + 2 * minute, playbackMode: 'tick' }))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    try {
+      let processed = 0
+      let stored = 0
+      result.current.subscribeCandle(event => {
+        if (event.type === 'advance') processed++
+        if (event.type === 'flush') stored = processed
+      })
+      act(() => result.current.play())
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      expect(market.loadTicks).toHaveBeenCalledTimes(2)
+      expect(processed).toBe(1)
+      await act(() => result.current.endSession())
+      expect(stored).toBe(1)
+      expect(await replaySessions.get()).toMatchObject({ active: false, currentIndex: 1, currentTime: at + 1 })
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('steps each same-millisecond quote, restores its ordinal and builds a 5s step from bid quotes', async () => {
     const at = monday + hour
     const quotes = [

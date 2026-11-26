@@ -1100,8 +1100,9 @@ describe('GitHubSyncService', () => {
     const first = { ...candle(60_000), source: 'okx' as const, symbol: symbol.ticker }
     const session = {
       schemaVersion: 2, id: `${marketSource}-cloud-session`, symbol, period: SUPPORTED_PERIODS[0],
-      marketSource, cursorTimeframe: '1m', startTime: 60_000, currentTime: 120_000,
-      endTime: 300_000, visibleUntil: 180_000, currentIndex: 1, candleCount: 2,
+      marketSource, cursorTimeframe: 'tick', cursorTickIndex: 1, startTime: 60_000, currentTime: 120_000,
+      playbackMode: 'tick', tickSpeed: 1000,
+      endTime: 300_000, visibleUntil: 120_001, currentIndex: 1, candleCount: 2,
       speed: 1, status: 'paused', hasTrades: true, active: true, createdAt: 1, updatedAt: 2,
       tradingConfig: { initialBalance: '1000', leverage: 10, feeRate: '0.0005', slippageRate: '0',
         maintenanceMarginRate: '0.004', liquidationFeeRate: '0.0005', okx: {

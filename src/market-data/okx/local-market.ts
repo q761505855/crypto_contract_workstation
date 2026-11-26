@@ -1,4 +1,5 @@
 import type { BybitTrade } from '../bybit/trades'
+import type { CTraderTick } from '../ctrader-market'
 import type { LocalArchiveMarket } from '../local-archive-market'
 import { aggregateLocalBars as aggregate, type LocalBar as Bar } from '../local-bars'
 import { alignOpenTime, isCTraderTimeframe, nextOpenTime, shiftOpenTime } from '../intervals'
@@ -10,7 +11,7 @@ import type { OkxLocalFile, OkxLocalFiles, OkxLocalTrade } from './local-files'
 import type { OkxMarketService } from './market'
 import { orderFlowMapping } from './trades'
 import { OkxLocalTradeCache } from './local-trade-cache'
-import { visitIndexedPriceSizes, visitIndexedTrades, type LocalTradeIndex } from './local-trade-index'
+import { appendIndexedReplayTicks, visitIndexedPriceSizes, visitIndexedTrades, type LocalTradeIndex } from './local-trade-index'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
@@ -323,6 +324,16 @@ export class OkxLocalMarket implements LocalArchiveMarket {
 
   async tradeDays(symbol: string): Promise<Set<string>> {
     return new Set((await this.activeArchives(symbol)).map(file => file.day))
+  }
+
+  readonly tickWindowMs = 60_000
+
+  async loadTicks(symbol: string, from: number, to: number, signal = new AbortController().signal): Promise<CTraderTick[]> {
+    const ticks: CTraderTick[] = []
+    await this.visitIndexedDays(symbol, from * 1000, (to + 1) * 1000, async (index, begin, end, value) => {
+      appendIndexedReplayTicks(index, begin, end, value, ticks)
+    }, signal)
+    return ticks
   }
 
   visitTrades(symbol: string, from: number, to: number, accept: (trade: BybitTrade) => unknown,

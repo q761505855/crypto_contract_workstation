@@ -1,9 +1,10 @@
 import type { LocalArchiveMarket } from '../local-archive-market'
+import type { CTraderTick } from '../ctrader-market'
 import { DATABENTO_PRICE_PRECISION, type MarketCandle, type MarketSymbol } from '../models'
 import { BYBIT_DAY_MS as DAY, bybitDay, bybitDayStart, type BybitTrade } from '../bybit/trades'
 import { alignOpenTime, isCTraderTimeframe, nextOpenTime, shiftOpenTime } from '../intervals'
 import { aggregateLocalBars, type LocalBar } from '../local-bars'
-import { localTradeIndexBytes, visitIndexedPriceSizes, visitIndexedTrades, type LocalTradeIndex } from '../okx/local-trade-index'
+import { appendIndexedReplayTicks, localTradeIndexBytes, visitIndexedPriceSizes, visitIndexedTrades, type LocalTradeIndex } from '../okx/local-trade-index'
 import { reserveWorker, workerCapacity } from '../worker-capacity'
 import { cmeTradingBounds, cmeTradingDay, nearestContract, previousCmeTradingDay } from './trading-day'
 import { readArchive, type ArchiveRead, type ArchiveResult, type ArchiveTask } from './archive-data'
@@ -59,6 +60,7 @@ function cached<T>(entries: Map<string, Promise<T>>, key: string, read: () => Pr
 
 export class DatabentoMarket implements LocalArchiveMarket {
   readonly source = 'databento-cme'
+  readonly tickWindowMs = 60_000
   readonly archiveDay = bybitDay
   readonly archiveDayStart = bybitDayStart
   private readonly selected = new Map<string, Set<string>>()
@@ -295,6 +297,14 @@ export class DatabentoMarket implements LocalArchiveMarket {
     return new Set((await this.archives(symbol)).active.map(file => file.day))
   }
 
+  async loadTicks(symbol: string, from: number, to: number, signal = new AbortController().signal): Promise<CTraderTick[]> {
+    const ticks: CTraderTick[] = []
+    await this.visitDays(symbol, from * 1000, (to + 1) * 1000, async (index, begin, end) => {
+      appendIndexedReplayTicks(index, begin, end, 1, ticks)
+    }, signal)
+    return ticks
+  }
+
   visitTrades(symbol: string, from: number, to: number, accept: (trade: BybitTrade) => unknown,
     signal: AbortSignal, onCoverage?: (from: number, to: number, found: boolean) => void) {
     return this.visitDays(symbol, from, to,
@@ -343,15 +353,14 @@ export class DatabentoMarket implements LocalArchiveMarket {
       signal.throwIfAborted()
       this.pendingIndexes.delete(key)
       const bytes = localTradeIndexBytes(result.index)
-      if (bytes <= INDEX_BUDGET) {
-        while (this.indexBytes + bytes > INDEX_BUDGET) {
-          const [first, item] = this.indexes.entries().next().value!
-          this.indexes.delete(first)
-          this.indexBytes -= item.bytes
-        }
-        this.indexes.set(key, { data: result.index, bytes })
-        this.indexBytes += bytes
+      // Keep one oversized index rather than decode the same day for every window.
+      while (this.indexes.size > 0 && this.indexBytes + bytes > INDEX_BUDGET) {
+        const [first, item] = this.indexes.entries().next().value!
+        this.indexes.delete(first)
+        this.indexBytes -= item.bytes
       }
+      this.indexes.set(key, { data: result.index, bytes })
+      this.indexBytes += bytes
       return result.index
     })
   }

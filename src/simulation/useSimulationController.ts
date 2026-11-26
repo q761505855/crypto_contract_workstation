@@ -133,6 +133,10 @@ export function useSimulationController(
       }
       const engine = engineRef.current
       if (engine === null) return
+      if (event.type === 'flush') {
+        await publish(engine)
+        return
+      }
       try {
       engine.processCandle(event.candle, event.sameTimeTick, event.okxRisk)
       } catch (reason) {

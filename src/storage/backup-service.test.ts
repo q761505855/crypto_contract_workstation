@@ -246,9 +246,9 @@ it.each(['okx', 'okx-local'] as const)('round-trips %s preferences and a simulat
   invalid.data.sessions![0].tradingConfig.okx!.contractStep = '0'
   await expect(target.import(invalid)).rejects.toThrow(/OKX 回放交易规格/)
   expect((await target.exportAll()).data).toEqual(full.data)
-  const fineCursor = structuredClone(full)
-  Object.assign(fineCursor.data.sessions![0], { cursorTimeframe: '1s', visibleUntil: 61_000 })
-  await expect(target.import(fineCursor)).rejects.toThrow(/cursorTimeframe/)
+  const invalidCursor = structuredClone(full)
+  Object.assign(invalidCursor.data.sessions![0], { cursorTimeframe: '2s', visibleUntil: 62_000 })
+  await expect(target.import(invalidCursor)).rejects.toThrow(/cursorTimeframe/)
   expect((await target.exportAll()).data).toEqual(full.data)
   const feeMismatch = structuredClone(full)
   feeMismatch.data.sessions![0].tradingConfig.feeRate = '0.0006'
@@ -361,6 +361,28 @@ it('round-trips fine replay settings and Tick cursors while validating them befo
   await target.import({ ...archive, data: { ...restored, sessions: [seconds] } })
   const { cursorTickIndex: _, ...archivedSeconds } = seconds
   expect((await target.exportAll()).data.sessions).toEqual([archivedSeconds])
+})
+
+it('round-trips Databento playback mode and speed in session and full archives', async () => {
+  const db = `databento-ticks-${crypto.randomUUID()}`
+  const source = new WorkstationBackupService(db, new MemoryPreferences())
+  const tick = {
+    ...session(), symbol: { exchange: 'CME', ticker: 'NQ.FUT', type: 'FUTURES', pricePrecision: 9, volumePrecision: 0 },
+    marketSource: 'databento-cme', playbackMode: 'tick', tickSpeed: 0.125,
+    cursorTimeframe: 'tick', cursorTickIndex: 1, currentTime: 60_123, currentIndex: 1, visibleUntil: 60_124, endTime: 120_000,
+  } satisfies ReplaySession
+  await new IndexedDbReplaySessionStore(db).put(tick)
+  for (const archive of [await source.exportSession(tick.id), await source.exportAll()]) {
+    const target = new WorkstationBackupService(`databento-restored-${crypto.randomUUID()}`, new MemoryPreferences())
+    for (const invalid of [{ playbackMode: null }, { playbackMode: 'ticks' }, { tickSpeed: null },
+      { tickSpeed: '1' }, { tickSpeed: 0 }, { tickSpeed: false }, { tickSpeed: 0.09 }, { tickSpeed: 1001 }]) {
+      await expect(target.import({ ...archive, data: { ...archive.data, sessions: [{ ...tick, ...invalid }] } }))
+        .rejects.toThrow(/playbackMode|tickSpeed/)
+      expect((await target.exportAll()).data.sessions).toEqual([])
+    }
+    await target.import(archive)
+    expect((await target.exportSession(tick.id)).data.sessions).toEqual([tick])
+  }
 })
 
 it('round-trips the cTrader account preference and rejects invalid values before writes', async () => {

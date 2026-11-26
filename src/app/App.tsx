@@ -49,7 +49,7 @@ import { compareReplayPositions, replaySourceTimeframe, replayVisibleUntil, sess
 import { useCTraderReplayController } from '../replay/useCTraderReplayController'
 import { readReplayStepPeriod, saveReplayStepPeriod } from '../replay/step-preferences'
 import { ctraderReplayChartNeedsReload } from '../replay/ctrader-replay-datafeed'
-import { isCTraderReplayStepPeriod, isFineStepPeriod } from '../replay/step-periods'
+import { isCTraderReplayStepPeriod } from '../replay/step-periods'
 import { classifyRiskPrice, estimateRiskPnl } from '../simulation/risk-price'
 import { useSimulationController } from '../simulation/useSimulationController'
 import type { SimulationTrade } from '../simulation/models'
@@ -94,7 +94,7 @@ function activeSymbol(source: PriceSource): MarketSelection['symbol'] {
 
 function activeStepPeriod(source: PriceSource): ReturnType<typeof readReplayStepPeriod> {
   const saved = readReplayStepPeriod()
-  return isCTraderReplayStepPeriod(saved) && (source === 'ctrader' || !isFineStepPeriod(saved)) ? saved : '1m'
+  return isCTraderReplayStepPeriod(saved) && (saved !== 'tick' || source === 'ctrader') ? saved : '1m'
 }
 
 const connectionLabels: Record<LiveMarketStatus['connection'], string> = {
@@ -507,6 +507,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
             currentTime: activeReplay.currentTime,
             visibleUntil: activeReplay.visibleUntil,
             cursorTickIndex: activeReplay.cursorTickIndex,
+            tradeUntilUs: replay.tradeUntilUs,
             endTime: activeReplay.endTime,
           }
         : null
@@ -542,7 +543,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
       setChartReloadKey((current) => current + 1)
     }
     previousReplayContextRef.current = nextContext
-  }, [chartReloadKey, chartWindows, configEpoch, localDataRevision, localMarket, marketRuntime, marketSelection, replay.busy, replay.preparationStatus, replay.session, simulationOverlays])
+  }, [chartReloadKey, chartWindows, configEpoch, localDataRevision, localMarket, marketRuntime, marketSelection, replay.busy, replay.preparationStatus, replay.session, replay.tradeUntilUs, simulationOverlays])
 
   useLayoutEffect(() => {
     const shell = shellRef.current

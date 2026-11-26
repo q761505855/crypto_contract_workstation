@@ -729,6 +729,28 @@ button:disabled {
   background: #10161f;
 }
 
+.replay-tick-speed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.replay-controls .replay-tick-speed input[type="range"] {
+  width: clamp(84px, 10vw, 150px);
+  margin: 0;
+  padding: 0;
+  accent-color: #8dc5ff;
+}
+
+.replay-controls .replay-tick-speed input[type="number"] {
+  width: 68px;
+  padding-inline: 5px;
+}
+
+.replay-controls .replay-tick-speed input[aria-invalid="true"] {
+  border-color: #e78282;
+}
+
 .replay-setup label {
   display: flex;
   align-items: center;

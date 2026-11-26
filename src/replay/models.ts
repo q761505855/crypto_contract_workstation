@@ -7,6 +7,20 @@ import type { OkxTradingTerms } from '../simulation/okx-trading'
 
 export type ReplaySpeed = 1 | 2 | 5 | 10
 export type ReplayStatus = 'paused' | 'completed'
+export type ReplayMode = 'kline' | 'tick'
+
+export const MIN_TICK_SPEED = 0.1
+export const MAX_TICK_SPEED = 1000
+
+export function isTickSpeed(value: unknown): value is number {
+  return typeof value === 'number' && value >= MIN_TICK_SPEED && value <= MAX_TICK_SPEED
+}
+
+export function sessionPlaybackMode(
+  session: Pick<ReplaySession, 'playbackMode' | 'cursorTimeframe'>, legacyTick = false,
+): ReplayMode {
+  return session.playbackMode ?? (legacyTick || session.cursorTimeframe === 'tick' ? 'tick' : 'kline')
+}
 
 export interface ReplayTradingConfig {
   initialBalance: string
@@ -48,6 +62,8 @@ export interface ReplaySession {
   cursorTickIndex?: number
   currentIndex: number
   candleCount: number
+  playbackMode?: ReplayMode
+  tickSpeed?: number
   speed: ReplaySpeed
   status: ReplayStatus
   hasTrades: boolean
@@ -62,6 +78,7 @@ export interface CreateReplaySessionInput {
   period: Period
   startTime: number
   endTime?: number
+  playbackMode?: ReplayMode
   speed?: ReplaySpeed
   tradingConfig?: ReplayTradingConfig
   initialBalance?: string
@@ -76,6 +93,8 @@ export interface ReplayContext {
   currentTime: number
   visibleUntil?: number
   cursorTickIndex?: number
+  /** Exclusive exchange trade boundary at the most recently published tick. */
+  tradeUntilUs?: number
   endTime?: number
 }
 

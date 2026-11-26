@@ -1,4 +1,5 @@
 import type { BybitTrade } from '../bybit/trades'
+import type { CTraderTick } from '../ctrader-market'
 
 const STRIDE = 4
 const TIME = 0
@@ -10,16 +11,18 @@ export interface LocalTradeIndex {
   columns: Float64Array<ArrayBuffer>
   order?: Uint32Array<ArrayBuffer>
   textIds: Map<number, string>
+  neutralRows?: Set<number>
 }
 
 const compareIds = (a: string, b: string) => a.length - b.length || (a < b ? -1 : Number(a > b))
 const readId = (index: LocalTradeIndex, row: number) => index.textIds.get(row) ?? String(index.columns[row * STRIDE + ID])
 
-type IndexTrade = { id: string; time: number; price: string | number; size: string | number; side: 'Buy' | 'Sell' }
+type IndexTrade = { id: string; time: number; price: string | number; size: string | number; side?: 'Buy' | 'Sell' }
 
 export async function buildLocalTradeIndex(scan: (accept: (trade: IndexTrade) => void) => Promise<boolean>): Promise<LocalTradeIndex | undefined> {
   let columns = new Float64Array(4096 * STRIDE)
   const textIds = new Map<number, string>()
+  const neutralRows = new Set<number>()
   let count = 0
   let ordered = true
   let previousId = ''
@@ -30,7 +33,7 @@ export async function buildLocalTradeIndex(scan: (accept: (trade: IndexTrade) =>
       grown.set(columns)
       columns = grown
     }
-    const time = trade.time * 1000
+    const time = Math.round(trade.time * 1000)
     if (ordered && count) {
       const previousTime = columns[offset - STRIDE + TIME]
       ordered = time > previousTime || (time === previousTime && compareIds(previousId, trade.id) <= 0)
@@ -38,7 +41,8 @@ export async function buildLocalTradeIndex(scan: (accept: (trade: IndexTrade) =>
     previousId = trade.id
     columns[offset + TIME] = time
     columns[offset + PRICE] = Number(trade.price)
-    columns[offset + SIGNED_SIZE] = Number(trade.size) * (trade.side === 'Buy' ? 1 : -1)
+    columns[offset + SIGNED_SIZE] = Number(trade.size) * (trade.side === 'Sell' ? -1 : 1)
+    if (trade.side === undefined) neutralRows.add(count)
     const id = Number(trade.id)
     if (Number.isSafeInteger(id) && String(id) === trade.id) columns[offset + ID] = id
     else textIds.set(count, trade.id)
@@ -47,7 +51,8 @@ export async function buildLocalTradeIndex(scan: (accept: (trade: IndexTrade) =>
   if (!found) return
   const used = count * STRIDE
   if (columns.length - used > used / 4) columns = columns.slice(0, used)
-  const index: LocalTradeIndex = { columns: columns.subarray(0, used), textIds }
+  const index: LocalTradeIndex = { columns: columns.subarray(0, used), textIds,
+    ...(neutralRows.size > 0 && { neutralRows }) }
   if (!ordered) {
     const order = Uint32Array.from({ length: count }, (_, row) => row)
     order.sort((a, b) => {
@@ -64,6 +69,7 @@ export async function buildLocalTradeIndex(scan: (accept: (trade: IndexTrade) =>
 export function localTradeIndexBytes(index: LocalTradeIndex): number {
   let bytes = index.columns.buffer.byteLength + (index.order?.byteLength ?? 0)
   for (const id of index.textIds.values()) bytes += 48 + 2 * id.length
+  bytes += (index.neutralRows?.size ?? 0) * 24
   return bytes
 }
 
@@ -82,6 +88,18 @@ function lowerBound(index: LocalTradeIndex, target: number): number {
   return low
 }
 
+export function appendIndexedReplayTicks(index: LocalTradeIndex, fromUs: number, untilUs: number,
+  contractValue: number, ticks: CTraderTick[]): void {
+  const { columns } = index
+  const stop = lowerBound(index, untilUs)
+  for (let row = lowerBound(index, fromUs); row < stop; row++) {
+    const offset = tradeOffset(index, row)
+    const timeUs = columns[offset + TIME]
+    ticks.push({ timestamp: Math.floor(timeUs / 1000), timeUs, price: String(columns[offset + PRICE]),
+      size: Math.abs(columns[offset + SIGNED_SIZE]) * contractValue })
+  }
+}
+
 export async function visitIndexedTrades(index: LocalTradeIndex, fromUs: number, untilUs: number, contractValue: number,
   accept: (trade: BybitTrade) => unknown, signal: AbortSignal, venue: BybitTrade['venue'] = 'OKX'): Promise<void> {
   const { columns } = index
@@ -94,6 +112,7 @@ export async function visitIndexedTrades(index: LocalTradeIndex, fromUs: number,
       nextYield = performance.now() + 12
     }
     const offset = tradeOffset(index, row)
+    if (index.neutralRows?.has(offset / STRIDE)) continue
     const size = columns[offset + SIGNED_SIZE]
     const backpressure = accept({ id: readId(index, offset / STRIDE), venue, side: size > 0 ? 'buy' : 'sell',
       timeUs: columns[offset + TIME], price: columns[offset + PRICE], size: Math.abs(size) * contractValue })
@@ -114,9 +133,10 @@ export async function visitIndexedPriceSizes(index: LocalTradeIndex, fromUs: num
     let write = 0
     while (row < end) {
       const offset = tradeOffset(index, row++)
+      if (index.neutralRows?.has(offset / STRIDE)) continue
       batch[write++] = index.columns[offset + PRICE]
       batch[write++] = index.columns[offset + SIGNED_SIZE] * contractValue
     }
-    await accept(batch)
+    if (write > 0) await accept(batch.subarray(0, write))
   }
 }

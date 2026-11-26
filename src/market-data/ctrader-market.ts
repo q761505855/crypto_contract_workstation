@@ -100,6 +100,9 @@ interface RecentHistoryPage {
 export interface CTraderTick {
   timestamp: number
   price: string
+  /** Exchange trades may have finer timestamps and a traded quantity. */
+  timeUs?: number
+  size?: number
 }
 
 function appendHistoryPage(rows: Map<number, MarketCandle>, page: HistoryPage, start: number, end: number): number {

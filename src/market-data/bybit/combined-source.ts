@@ -108,8 +108,12 @@ export class CombinedBybitSource {
     return JSON.stringify([owner, repository, branch, root, this.active?.bybit?.symbol])
   }
   get tradeCursorUs(): number {
-    if (this.context) return replayConfirmedUntil(this.context) * 1000
+    if (this.context) return this.replayTradeCursor(this.context)
     return (this.now() - liveSettlementMs) * 1000
+  }
+
+  private replayTradeCursor(context: ReplayContext): number {
+    return context.tradeUntilUs ?? replayConfirmedUntil(context) * 1000
   }
 
   isArchiveRequested(hour: number): boolean {
@@ -216,7 +220,7 @@ export class CombinedBybitSource {
 
   select(symbol: SymbolInfo, context: ReplayContext | null): void {
     const key = `${symbol.exchange}:${symbol.ticker}:${context?.sessionId ?? ''}`
-    const reset = this.selection !== key || (!!context && !!this.context && replayConfirmedUntil(context) < replayConfirmedUntil(this.context))
+    const reset = this.selection !== key || (!!context && !!this.context && this.replayTradeCursor(context) < this.replayTradeCursor(this.context))
     this.context = context
     if (reset) {
       const mapping = orderFlowMapping(symbol)

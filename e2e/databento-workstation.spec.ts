@@ -202,4 +202,108 @@ test('loads the supplied CME sample in Chromium', async ({ page }) => {
   await expect(page.locator('#workspace-status-content')).toContainText('已追加 1 个日档')
   await expect(page.locator('#workspace-status-content')).toContainText('北京时间 2026-11-23 07:00 至 07:45')
   await expect(page.getByRole('button', { name: '定位新增', exact: true })).toHaveCount(0)
+
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByRole('button', { name: '时间定位', exact: true }).click()
+  const jump = page.getByRole('dialog', { name: '图表时间定位' })
+  const start = await page.evaluate(() => {
+    const time = new Date('2026-11-23T15:00:00Z')
+    return new Date(time.getTime() - time.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+  })
+  await jump.getByLabel('图表跳转时间').fill(start)
+  await jump.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect(controls.locator('.replay-start-time')).toContainText(start.replace('T', ' '))
+  await controls.getByLabel('回放模式').selectOption('tick')
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  await expect(controls).toContainText('第 1 步')
+  await controls.getByLabel('逐笔速度滑块').press('End')
+  await controls.getByRole('button', { name: '播放', exact: true }).click()
+  await expect.poll(async () => Number((await controls.locator('.replay-position > span').textContent())?.match(/\d+/)?.[0]))
+    .toBeGreaterThan(500)
+  await controls.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect.poll(async () => (await chart()).last!.timestamp).toBeGreaterThan(Date.parse('2026-11-23T15:00:00Z'))
+})
+
+test('Databento plays each trade with snapped and typed speeds and restores the paused session', async ({ page }) => {
+  const day = '2026-11-23'
+  const start = Date.parse(`${day}T15:00:00Z`)
+  const at = start + 15 * 60_000
+  const { dialog, chart } = await connectDirectory(page, {
+    [filename(day)]: zstdCompressSync(tradeDbn([
+      ['NQZ6', start, 26000, 1, 'B'],
+      ['NQZ6', at + 200, 26001, 2, 'A'],
+      ['NQZ6', at + 200, 26002, 3, 'N'],
+      ['NQZ6', at + 90_000, 26003, 4, 'B'],
+    ])),
+  })
+  const localData = page.getByRole('button', { name: '本地数据管理', exact: true })
+  async function loadDay() {
+    await localData.click()
+    await dialog.getByRole('checkbox', { name: day }).check()
+    await dialog.getByRole('button', { name: '加载所选日期' }).click()
+    await expect(dialog).toBeHidden()
+  }
+  await dialog.getByRole('button', { name: '关闭Databento-CME 本地数据' }).click()
+  await page.getByTestId('chart-host').getByText('ES.FUT', { exact: true }).first().click()
+  await page.getByRole('dialog', { name: '选择交易对' }).getByText('NQ.FUT', { exact: true }).first().click()
+  await loadDay()
+  await expect.poll(async () => (await chart()).last?.close).toBe(26003)
+
+  const controls = page.getByTestId('replay-controls')
+  await controls.getByRole('button', { name: '时间定位', exact: true }).click()
+  const jump = page.getByRole('dialog', { name: '图表时间定位' })
+  const time = await page.evaluate(value => new Date(value - new Date(value).getTimezoneOffset() * 60_000).toISOString().slice(0, 16), start)
+  await jump.getByLabel('图表跳转时间').fill(time)
+  await jump.getByRole('button', { name: '跳转', exact: true }).click()
+  await expect(controls.locator('.replay-start-time')).toContainText(time.replace('T', ' '))
+  const mode = controls.getByLabel('回放模式')
+  await mode.selectOption('tick')
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  const speed = controls.getByRole('spinbutton', { name: '逐笔回放速度' })
+  const slider = controls.getByRole('slider', { name: '逐笔速度滑块' })
+  await expect(speed).toHaveValue('1')
+  await expect(controls.getByRole('button', { name: '下一根', exact: true })).toHaveCount(0)
+  await expect(controls.getByRole('button', { name: '上一根', exact: true })).toHaveCount(0)
+  await controls.getByRole('button', { name: '播放', exact: true }).click()
+  await expect(controls).toContainText('第 3 步')
+  await controls.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26002, close: 26002, volume: 5 })
+  await expect.poll(() => page.evaluate(() => {
+    const { source } = (window as unknown as { __viewportTestAdapter: {
+      source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
+    } }).__viewportTestAdapter
+    return source.tradeCursorUs
+  })).toBe((at + 200) * 1000 + 1)
+  await slider.press('Home')
+  await expect(speed).toHaveValue('0.1')
+  await speed.fill('0.05')
+  await expect(speed).toHaveAttribute('aria-invalid', 'true')
+  await speed.press('Enter')
+  await expect(speed).toHaveValue('0.1')
+  await slider.press('End')
+  await expect(speed).toHaveValue('1000')
+  await controls.getByRole('button', { name: '播放', exact: true }).click()
+  await expect(controls).toContainText('第 4 步')
+  await controls.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26003, close: 26003, volume: 9 })
+  await speed.fill('1.25')
+  await speed.press('Enter')
+  await expect(slider).toHaveAttribute('aria-valuetext', '1.25×')
+  await mode.selectOption('kline')
+  const steps = controls.getByLabel('步进周期')
+  await expect(steps.getByRole('option', { name: '1s', exact: true })).toHaveCount(1)
+  await expect(steps.getByRole('option', { name: '1d', exact: true })).toHaveCount(1)
+  await expect(controls.getByLabel('回放速度')).toHaveValue('1')
+  await mode.selectOption('tick')
+  await expect(speed).toHaveValue('1.25')
+
+  await page.reload()
+  await loadDay()
+  await controls.getByRole('button', { name: '回放设置', exact: true }).click()
+  await page.getByRole('button', { name: '加载会话', exact: true }).click()
+  await expect(mode).toHaveValue('tick')
+  await expect(speed).toHaveValue('1.25')
+  await expect(controls).toContainText('第 4 步')
+  await expect(controls.getByRole('button', { name: '播放', exact: true })).toBeVisible()
+  await expect.poll(async () => (await chart()).last?.close).toBe(26003)
 })

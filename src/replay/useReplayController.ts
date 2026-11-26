@@ -23,7 +23,7 @@ import type { OkxReplayRisk } from '../simulation/okx-trading'
 export interface ReplayCandleEvent {
   /** This quote follows another quote at the same millisecond. */
   sameTimeTick?: true
-  type: 'advance' | 'reset'
+  type: 'advance' | 'reset' | 'flush'
   candle: MarketCandle
   okxRisk?: OkxReplayRisk
   /** A later candle in the same step will publish the accumulated state. */
