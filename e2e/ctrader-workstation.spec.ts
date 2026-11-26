@@ -335,6 +335,87 @@ test('turns the candle hover details off in chart settings and remembers the cho
   await expect(details).toBeHidden()
 })
 
+test('switches to a close-price line and restores it from an application archive', async ({ page }) => {
+  const readChart = await installViewportProbe(page)
+  await connectFixture(page)
+  await page.goto('./')
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  const before = await readChart()
+  const readType = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    return coreChart.getStyles().candle.type
+  })
+  await page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    // Keep the fixture's flat moving averages and last-price line off the sampled pixels.
+    coreChart.removeIndicator('candle_pane')
+    coreChart.setStyles({ candle: {
+      area: { value: 'open', lineColor: '#af35fe', lineSize: 4, backgroundColor: '#3058ad' },
+      bar: { upColor: '#15d4a7' },
+      priceMark: { last: { show: false } },
+    } })
+  })
+  const readPlotColors = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const canvas = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.querySelector('canvas')!
+    const context = canvas.getContext('2d')!
+    const [first, second] = coreChart.getDataList().slice(-3, -1)
+    const pixel = (timestamp: number, value: number) => coreChart.convertToPixel({ timestamp, value }, { paneId: 'candle_pane' }) as { x: number; y: number }
+    const firstClose = pixel(first.timestamp, first.close)
+    const secondClose = pixel(second.timestamp, second.close)
+    const body = pixel(first.timestamp, (first.open + first.close) / 2)
+    const underLine = pixel(first.timestamp, (first.low + first.open) / 2)
+    const midpoint = (firstClose.x + secondClose.x) / 2
+    const colorAt = (x: number, y: number) => Array.from(context.getImageData(
+      Math.round(x * canvas.width / canvas.clientWidth), Math.round(y * canvas.height / canvas.clientHeight), 1, 1,
+    ).data)
+    return {
+      closeLine: colorAt(midpoint, (firstClose.y + secondClose.y) / 2),
+      body: colorAt(body.x, body.y),
+      underLine: colorAt(midpoint, underLine.y),
+    }
+  })
+  await expect.poll(async () => (await readPlotColors()).body).toEqual([21, 212, 167, 255])
+  const selectType = async (name: string) => {
+    await page.getByTestId('chart-host').getByText('设置', { exact: true }).locator('..').click()
+    const settings = page.locator('.klinecharts-pro-setting-modal-content')
+    await settings.locator('.klinecharts-pro-select').first().click()
+    await settings.getByText(name, { exact: true }).last().click()
+    await page.locator('.klinecharts-pro-modal .close-icon').click()
+  }
+  await selectType('收盘价折线')
+  await expect.poll(readType).toBe('line')
+  await expect.poll(async () => (await readPlotColors()).closeLine).toEqual([175, 53, 254, 255])
+  const linePlot = await readPlotColors()
+  expect(linePlot.body).not.toEqual([21, 212, 167, 255])
+  expect(linePlot.underLine).not.toEqual([48, 88, 173, 255])
+  expect(await readChart()).toMatchObject({ last: before.last, timestamps: before.timestamps })
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await expect.poll(readType).toBe('line')
+
+  const openDataManager = async () => {
+    await page.getByRole('button', { name: '工具', exact: true }).click()
+    await page.getByTestId('open-data-manager').click()
+  }
+  await openDataManager()
+  const panel = page.getByTestId('backup-sync-panel')
+  const download = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const archive = await (await download).path()
+  expect(JSON.parse(await readFile(archive!, 'utf8')).data.preferences.candleType).toBe('line')
+  await page.getByTestId('close-data-manager').click()
+  await selectType('全实心')
+  await expect.poll(readType).toBe('candle_solid')
+  await openDataManager()
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles(archive!)
+  await expect(panel.getByTestId('backup-status')).toContainText('刷新')
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await expect.poll(readType).toBe('line')
+})
+
 test('updates the open 15m candle on quotes and replaces it with a late official close', async ({ page }) => {
   const start = Date.UTC(2026, 10, 20, 14)
   await page.clock.setFixedTime(new Date(start + 5 * minute))

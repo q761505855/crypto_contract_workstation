@@ -98,6 +98,7 @@ export const orderFlowFields = {
   },
   profile: {
     ...selectionProfileFields,
+    rowSizePercent: number('档宽比例（%）', 0.01, 0.000001, 100, 'any'),
     width: number('每侧最大宽度（占选区 %）', 42, 5, 100),
   },
   candleProfile: {
@@ -134,6 +135,9 @@ export const orderFlowFields = {
 
 type Schema = typeof orderFlowFields
 export type OrderFlowGroup = keyof Schema
+export function isVolumeProfileGroup(group: OrderFlowGroup): group is 'profile' | 'candleProfile' | 'visibleProfile' {
+  return group === 'profile' || group === 'candleProfile' || group === 'visibleProfile'
+}
 type Field = { [G in OrderFlowGroup]: Schema[G][keyof Schema[G]] }[OrderFlowGroup]
 type GroupValues<G extends OrderFlowGroup> = {
   [K in keyof Schema[G]]: Schema[G][K] extends { fallback: infer T } ? T : never
@@ -180,7 +184,12 @@ export function orderFlowSettings<G extends OrderFlowGroup>(group: G, preference
   if (group === 'bubbles' && preferences?.bubbles?.maxRadius === undefined) {
     defaults.maxRadius = Math.max(orderFlowFields.bubbles.maxRadius.fallback, preferences?.bubbles?.minRadius ?? 0)
   }
-  return { ...defaults, ...preferences?.[group] } as GroupValues<G>
+  const settings: Record<string, unknown> = { ...defaults, ...preferences?.[group] }
+  if (isVolumeProfileGroup(group)) {
+    const { profile, candleProfile, visibleProfile } = preferences ?? {}
+    settings.valueArea = profile?.valueArea ?? candleProfile?.valueArea ?? visibleProfile?.valueArea ?? profilePriceFields.valueArea.fallback
+  }
+  return settings as GroupValues<G>
 }
 
 export function orderFlowFieldEntries(group: OrderFlowGroup): [string, Field][] {

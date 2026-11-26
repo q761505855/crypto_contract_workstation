@@ -361,7 +361,7 @@ export class DrawingOverlays {
     const valid = points as ChartDrawing['points']
     if (overlay.name !== VOLUME_PROFILE_TOOL) return valid
     const first = candles[0].timestamp
-    const last = nextOpenTime(candles.at(-1)!.timestamp, period) - 1
+    const last = nextOpenTime(candles.at(-1)!.timestamp, period)
     const low = Math.min(...valid.map(point => point.timestamp))
     const high = Math.max(...valid.map(point => point.timestamp))
     const shift = !wholeProfile ? 0 : low < first ? first - low : high > last ? last - high : 0

@@ -162,6 +162,97 @@ test('Databento uses the preceding Chicago session, only loads selected dates, a
   expect(Math.abs((source!.y + source!.height / 2) - (tools!.y + tools!.height / 2))).toBeLessThan(3)
 })
 
+test('matches Databento profiles across chart views and regroups when the latest price changes', async ({ page }) => {
+  const day = '2026-11-23'
+  const nextDay = '2026-11-24'
+  const from = Date.parse(`${day}T15:00:00Z`)
+  const next = from + 15 * 60_000
+  const { dialog, chart } = await connectDirectory(page, {
+    [filename(day)]: zstdCompressSync(tradeDbn([
+      ['NQH7', from, 49_998.25, 6, 'B'],
+      ['NQH7', from + 1000, 49_998.5, 4, 'A'],
+      ['NQH7', from + 2000, 49_998.75, 3, 'B'],
+      ['NQH7', from + 3000, 49_999.75, 2, 'B'],
+      ['NQH7', next, 50_000, 100, 'B'],
+    ])),
+    [filename(nextDay)]: zstdCompressSync(tradeDbn([['NQH7', Date.parse(`${nextDay}T15:00:00Z`), 100_000, 2, 'A']])),
+  })
+  await dialog.getByRole('button', { name: '关闭Databento-CME 本地数据' }).click()
+  const host = page.getByTestId('chart-host')
+  await host.getByText('ES.FUT', { exact: true }).first().click()
+  await page.getByRole('dialog', { name: '选择交易对' }).getByText('NQ.FUT', { exact: true }).first().click()
+  const openAnchor = host.getByRole('button', { name: '按锚点加载', exact: true })
+  await openAnchor.click()
+  const anchor = page.getByRole('dialog', { name: '按锚点加载本地成交' })
+  await anchor.getByLabel('锚点日期').fill(day)
+  await anchor.getByRole('button', { name: '加载本地日档', exact: true }).click()
+  await expect.poll(async () => (await chart()).timestamps).toEqual([from, next])
+  await host.getByText('指标', { exact: true }).click()
+  const list = page.locator('.klinecharts-pro-indicator-modal-list')
+  await list.getByRole('button', { name: 'K线成交量分布图', exact: true }).click()
+  await list.getByRole('button', { name: '可见范围成交分布（Volume Profile）', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+
+  const ids = await page.evaluate(({ from, next }) => {
+    const { coreChart, orderFlow } = (window as unknown as { __viewportTestAdapter: {
+      coreChart: import('klinecharts').Chart; orderFlow: import('../src/chart/order-flow-chart').OrderFlowChart
+    } }).__viewportTestAdapter
+    return [next, next + (next - from)].map(end => {
+      const points = [from, end].map(timestamp => ({ timestamp, value: 49_998.5 }))
+      const id = coreChart.createOverlay({ name: 'tradeVolumeProfile', groupId: 'profile-verification', points }, 'candle_pane') as string
+      orderFlow.setProfile(id, points)
+      return id
+    })
+  }, { from, next })
+  const single = { poc: 49_998.5, val: 49_998.25, vah: 49_998.75, rows: [
+    { low: 49_998.25, high: 49_998.5, buy: 6, sell: 0 },
+    { low: 49_998.5, high: 49_999, buy: 3, sell: 4 },
+    { low: 49_999.5, high: 49_999.75, buy: 2, sell: 0 },
+  ] }
+  const both = { poc: 50_000, val: 50_000, vah: 50_000, rows: [
+    ...single.rows.slice(0, 2), { ...single.rows[2], high: 50_000 }, { low: 50_000, high: 50_000, buy: 100, sell: 0 },
+  ] }
+  const readProfiles = () => page.evaluate(({ ids, from }) => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const indicator = (name: string) => (coreChart.getIndicatorByPaneId('candle_pane', name) as import('klinecharts').Indicator)?.extendData
+    const visible = indicator('VISIBLE_VOLUME_PROFILE')
+    return {
+      perCandle: indicator('CANDLE_VOLUME_PROFILE')?.profiles?.get(from),
+      visible: { ...visible?.prices, rows: visible?.rows },
+      drawn: ids.map(id => coreChart.getOverlayById(id)?.extendData?.profile),
+    }
+  }, { ids, from })
+  const defaultSingle = { poc: 49_998.25, val: 49_998.25, vah: 49_999.75, rows: [
+    { low: 49_998.25, high: 49_999.75, buy: 11, sell: 4 },
+  ] }
+  const defaultBoth = { poc: 50_000, val: 50_000, vah: 50_000, rows: [
+    { ...defaultSingle.rows[0], high: 50_000 }, { low: 50_000, high: 50_000, buy: 100, sell: 0 },
+  ] }
+  await expect.poll(readProfiles).toEqual({ perCandle: defaultSingle, visible: defaultBoth, drawn: [defaultSingle, defaultBoth] })
+
+  await host.getByText('指标', { exact: true }).click()
+  await list.getByRole('button', { name: '可见范围成交分布（Volume Profile）设置', exact: true }).click()
+  const settings = page.getByRole('dialog', { name: '可见范围成交分布（Volume Profile）设置' })
+  await expect(settings.getByLabel('档宽比例（%）')).toHaveValue('0.01')
+  await settings.getByLabel('档宽比例（%）').fill('0.001')
+  await settings.getByRole('button', { name: '保存', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await expect.poll(readProfiles).toEqual({ perCandle: single, visible: both, drawn: [single, both] })
+
+  await openAnchor.click()
+  await anchor.getByLabel('锚点日期').fill(nextDay)
+  await anchor.getByRole('button', { name: '加载本地日档', exact: true }).click()
+  await expect.poll(async () => (await chart()).last?.close).toBe(100_000)
+  const rebinned = { poc: 49_998.25, val: 49_998.25, vah: 49_998.75, rows: [
+    { low: 49_998.25, high: 49_999, buy: 9, sell: 4 },
+    { low: 49_999, high: 49_999.75, buy: 2, sell: 0 },
+  ] }
+  await expect.poll(async () => {
+    const profiles = await readProfiles()
+    return { candle: profiles.perCandle, drawn: profiles.drawn[0] }
+  }).toEqual({ candle: rebinned, drawn: rebinned })
+})
+
 test('loads the supplied CME sample in Chromium', async ({ page }) => {
   const supplied = process.env.DATABENTO_E2E_DIRECTORY
   test.skip(!supplied, 'Set DATABENTO_E2E_DIRECTORY to an NQ.FUT folder to verify the real archive')

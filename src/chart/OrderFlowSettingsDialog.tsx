@@ -1,7 +1,7 @@
 import { createChartColorPicker } from '@klinecharts/pro'
 import { useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
-import { bubbleThresholdFields, orderFlowFieldEntries, orderFlowSettings, validateOrderFlowPreferences, volumeProfileColorFields, type OrderFlowGroup, type OrderFlowPreferences, type orderFlowFields } from './order-flow-preferences'
+import { bubbleThresholdFields, isVolumeProfileGroup, orderFlowFieldEntries, orderFlowFields, orderFlowSettings, validateOrderFlowPreferences, volumeProfileColorFields, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
 import { volumeProfileDisplayType, type BigTradeThresholdUnit } from './order-flow'
 import { candleProfileTitle, cvdTitle, footprintTitle, visibleProfileTitle } from './order-flow-indicators'
 import { bigTradesTitle } from './order-flow-renderers'
@@ -37,15 +37,15 @@ const sections = {
     { title: '配色', fields: ['bidColor', 'askColor', 'textColor', 'pocColor', 'imbalanceColor'] },
   ],
   profile: [
-    { title: '分布与分档', open: true, fields: ['type', 'showDelta', 'rows', 'width', 'showValues'] },
+    { title: '分布显示', open: true, fields: ['type', 'showDelta', 'width', 'showValues'] },
     ...profileSections,
   ],
   candleProfile: [
-    { title: '分布与分档', open: true, fields: ['type', 'showDelta', 'rows', 'width', 'columnWidth', 'showValues'] },
+    { title: '分布显示', open: true, fields: ['type', 'showDelta', 'width', 'columnWidth', 'showValues'] },
     ...profileSections,
   ],
   visibleProfile: [
-    { title: '位置与显示', open: true, fields: ['placement', 'offset', 'width', 'rows', 'type', 'showDelta', 'showHeaders'] },
+    { title: '位置与显示', open: true, fields: ['placement', 'offset', 'width', 'type', 'showDelta', 'showHeaders'] },
     { title: '关键价位', fields: ['showPoc', 'showValueArea', 'valueArea', 'showLabels'] },
     { title: '配色', fields: ['volumeColor', 'valueAreaColor', 'positiveColor', 'negativeColor', 'pocColor', 'levelColor'] },
   ],
@@ -141,11 +141,17 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
   onSave(preferences: OrderFlowPreferences): void
 }) {
   const formId = useId()
-  const groupSections: readonly { title: string; open?: boolean; fields: readonly string[] }[] = sections[group]
+  const isProfile = isVolumeProfileGroup(group)
+  const sharedProfile = isProfile ? orderFlowSettings('profile', preferences) : undefined
+  const groupSections: readonly { title: string; open?: boolean; fields: readonly string[] }[] = sections[group].map((section, index) =>
+    isProfile && index === 0 ? { ...section, fields: ['rowSizePercent', ...section.fields] } : section)
   const [expanded, setExpanded] = useState(() => Object.fromEntries(groupSections.map(section => [section.title, !!section.open])))
-  const [values, setValues] = useState<Draft>(() => orderFlowSettings(group, preferences))
+  const [values, setValues] = useState<Draft>(() => ({ ...orderFlowSettings(group, preferences),
+    ...(sharedProfile && { rowSizePercent: sharedProfile.rowSizePercent }),
+  }))
   const [error, setError] = useState<{ message: string; field?: string }>()
   const fields = Object.fromEntries(orderFlowFieldEntries(group))
+  if (isProfile) fields.rowSizePercent = orderFlowFields.profile.rowSizePercent
   const unit = values.thresholdUnit as BigTradeThresholdUnit
   const activeThresholdFields: readonly string[] | undefined = group === 'bubbles' ? bubbleThresholdFields[unit] : undefined
 
@@ -159,7 +165,19 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
           if (preferences?.candleProfile?.[color] === undefined && patch[color] === palette[color]) delete patch[color]
         }
       }
-      const next = validateOrderFlowPreferences({ [group]: patch }, preferences)
+      const updates = { [group]: patch }
+      if (sharedProfile) {
+        delete patch.rows
+        if (group !== 'profile') {
+          const changed: Draft = {}
+          for (const field of ['valueArea', 'rowSizePercent'] as const) {
+            if (patch[field] !== sharedProfile[field]) changed[field] = patch[field]
+            delete patch[field]
+          }
+          if (Object.keys(changed).length) updates.profile = changed
+        }
+      }
+      const next = validateOrderFlowPreferences(updates, preferences)
       onSave(next)
     } catch (failure) {
       const message = failure instanceof Error ? failure.message : String(failure)
@@ -202,6 +220,7 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
     </>}>
     <form id={formId} className="order-flow-form" noValidate onSubmit={submit}>
       {group === 'profile' && <p className="order-flow-hint">适用于左侧绘图工具创建的成交分布选区。</p>}
+      {isProfile && <p className="order-flow-hint">档宽按最新价乘以比例计算，三种成交分布共用档宽比例和价值区比例。</p>}
       {group === 'footprint' && <p className="order-flow-hint">放大图表可查看价位数值。缺少历史逐笔时，可从图表工具栏下载。</p>}
       {groupSections.map((section, index) => {
         const open = expanded[section.title]

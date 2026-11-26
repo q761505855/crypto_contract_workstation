@@ -75,24 +75,31 @@ export interface VolumeProfile {
 
 export type VolumeProfileBounds = Pick<VolumeProfileRow, 'low' | 'high'>
 export type VolumeProfilePrices = Pick<VolumeProfile, 'poc' | 'vah' | 'val'>
+export type VolumeProfileCalculation = { rowSizePercent: number; valueArea: number }
 
 export function volumeProfileDisplayType<T extends string>(type: T, showDelta: boolean): T | 'volume' {
   return !showDelta && (type === 'delta' || type === 'volumeDelta') ? 'volume' : type
 }
 
-export function volumeProfilePrices(rows: readonly VolumeProfileRow[], valueArea: number): VolumeProfilePrices | undefined {
+// The same trades may be summed in different chunks by the archive workers and the chart.
+function compareProfileVolume(a: number, b: number): number {
+  const difference = a - b
+  return Math.abs(difference) <= Math.max(a, b) * 1e-12 ? 0 : difference
+}
+
+function volumeProfileRange(rows: readonly VolumeProfileRow[], valueArea: number) {
   const volume = rows.map(row => row.buy + row.sell)
-  const total = volume.reduce((sum, value) => sum + value, 0)
-  if (!total) return
-  const peak = volume.indexOf(Math.max(...volume))
+  const peak = volume.reduce((best, value, index) => compareProfileVolume(value, volume[best]) > 0 ? index : best, 0)
+  if (valueArea === 100) return { peak, lower: 0, higher: rows.length - 1 }
   let lower = peak
   let higher = peak
   let area = volume[peak]
-  while (area < total * valueArea / 100 && (lower > 0 || higher < rows.length - 1)) {
-    if ((volume[higher + 1] ?? -1) > (volume[lower - 1] ?? -1)) area += volume[++higher]
+  const target = volume.reduce((sum, value) => sum + value, 0) * valueArea / 100
+  while (compareProfileVolume(area, target) < 0 && (lower > 0 || higher < rows.length - 1)) {
+    if (lower === 0 || (higher < rows.length - 1 && compareProfileVolume(volume[higher + 1], volume[lower - 1]) > 0)) area += volume[++higher]
     else area += volume[--lower]
   }
-  return { poc: (rows[peak].low + rows[peak].high) / 2, vah: rows[higher].high, val: rows[lower].low }
+  return { peak, lower, higher }
 }
 
 export function volumeProfilePriceLines(prices: VolumeProfilePrices, settings: {
@@ -110,8 +117,7 @@ export function volumeProfilePriceLines(prices: VolumeProfilePrices, settings: {
 
 export function volumeProfileBarColor(row: VolumeProfileBounds, prices: VolumeProfilePrices | undefined,
   settings: { showValueArea: boolean; valueAreaColor: string; volumeColor: string }): string {
-  const inside = prices && (row.low === row.high
-    ? row.low >= prices.val && row.high <= prices.vah : row.low < prices.vah && row.high > prices.val)
+  const inside = prices && row.low <= prices.vah && (row.low === row.high ? row.high >= prices.val : row.high > prices.val)
   return settings.showValueArea && inside ? settings.valueAreaColor : settings.volumeColor
 }
 
@@ -158,65 +164,24 @@ export function paintVolumeProfileRows(
   }
 }
 
-function profileBin(price: number, low: number, high: number, rows: number): number {
-  if (price < low || price > high) return -1
-  return Math.min(rows - 1, Math.floor((price - low) / (high - low) * rows))
-}
-
-export class VolumeProfileAccumulator {
-  private readonly rows: VolumeProfileRow[]
-
-  constructor(private readonly low: number, private readonly high: number, count = 48) {
-    const width = (high - low) / count
-    this.rows = Array.from({ length: count }, (_, index) => ({
-      low: low + index * width, high: index === count - 1 ? high : low + (index + 1) * width, buy: 0, sell: 0,
-    }))
-  }
-
-  add(trade: BybitTrade, price = trade.price): void {
-    this.addLevel(price, trade.side === 'buy' ? trade.size : 0, trade.side === 'sell' ? trade.size : 0)
-  }
-
-  addLevel(price: number, buy: number, sell: number): void {
-    const index = profileBin(price, this.low, this.high, this.rows.length)
-    if (index < 0) return
-    this.rows[index].buy += buy
-    this.rows[index].sell += sell
-  }
-
-  profile(valueArea = 70): VolumeProfile | undefined {
-    const prices = volumeProfilePrices(this.rows, valueArea)
-    if (prices) return { rows: this.rows.map(row => ({ ...row })), ...prices }
-  }
-}
-
-/** Keep price-level totals so new extremes and display settings can re-bin existing trades. */
+/** Keep exact prices so the same trades can be regrouped whenever the reference price moves. */
 export class VolumeProfileLevels {
   private readonly prices = new Map<number, { buy: number; sell: number }>()
-  private low = Infinity
-  private high = -Infinity
 
   add(price: number, signedSize: number): void {
     this.addLevel(price, Math.max(0, signedSize), Math.max(0, -signedSize))
   }
 
   private addLevel(price: number, buy: number, sell: number): void {
+    if (!(buy + sell > 0)) return
     let level = this.prices.get(price)
-    if (!level) {
-      this.prices.set(price, level = { buy: 0, sell: 0 })
-      this.low = Math.min(this.low, price)
-      this.high = Math.max(this.high, price)
-    }
+    if (!level) this.prices.set(price, level = { buy: 0, sell: 0 })
     level.buy += buy
     level.sell += sell
   }
 
   merge(other: VolumeProfileLevels): void {
     for (const [price, { buy, sell }] of other.prices) this.addLevel(price, buy, sell)
-  }
-
-  entries(): IterableIterator<[number, Readonly<Pick<VolumeProfileRow, 'buy' | 'sell'>>]> {
-    return this.prices.entries()
   }
 
   addPacked(values: Float64Array): void {
@@ -234,15 +199,44 @@ export class VolumeProfileLevels {
     return values
   }
 
-  profile(rows: number, valueArea: number): VolumeProfile | undefined {
-    if (!this.prices.size) return
-    if (this.low === this.high) {
-      const price = this.low
-      return { rows: [{ low: price, high: price, ...this.prices.get(price)! }], poc: price, vah: price, val: price }
+  profile(referencePrice: number | undefined, { rowSizePercent, valueArea }: VolumeProfileCalculation): VolumeProfile | undefined {
+    const width = Math.abs(referencePrice ?? 0) * rowSizePercent / 100
+    if (!this.prices.size || !Number.isFinite(width) || width <= 0) return
+    const groups = new Map<number, VolumeProfileRow & { peak: number; peakVolume: number }>()
+    for (const [price, { buy, sell }] of this.prices) {
+      const units = price / width
+      // Prices on a boundary belong to the upper bucket despite division roundoff.
+      const index = Math.floor(units + Math.abs(units) * Number.EPSILON * 2)
+      const group = groups.get(index)
+      if (!group) {
+        groups.set(index, { low: price, high: price, buy, sell, peak: price, peakVolume: buy + sell })
+        continue
+      }
+      group.buy += buy
+      group.sell += sell
+      group.low = Math.min(group.low, price)
+      group.high = Math.max(group.high, price)
+      const volume = compareProfileVolume(buy + sell, group.peakVolume)
+      if (volume > 0 || (volume === 0 && price < group.peak)) {
+        group.peak = price
+        group.peakVolume = buy + sell
+      }
     }
-    const binned = new VolumeProfileAccumulator(this.low, this.high, rows)
-    for (const [price, { buy, sell }] of this.prices) binned.addLevel(price, buy, sell)
-    return binned.profile(valueArea)
+    const sorted = [...groups].sort(([a], [b]) => a - b)
+    const first = sorted[0][1].low
+    const last = sorted[sorted.length - 1][1].high
+    const rows = sorted.map(([index, { low, high, buy, sell }]) => ({
+      low: Math.min(low, Math.max(index * width, first)),
+      high: Math.max(high, Math.min((index + 1) * width, last)),
+      buy, sell,
+    }))
+    const range = volumeProfileRange(rows, valueArea)
+    return {
+      rows,
+      poc: sorted[range.peak][1].peak,
+      vah: sorted[range.higher][1].high,
+      val: sorted[range.lower][1].low,
+    }
   }
 }
 

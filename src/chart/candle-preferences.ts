@@ -2,7 +2,7 @@ import { writePreference } from '../storage/preference-events'
 import { ctraderStorage } from '../storage/ctrader-storage'
 
 export const CANDLE_TYPE_KEY = 'chart.candleType.v1'
-export const CANDLE_TYPES = ['candle_solid', 'candle_stroke', 'candle_up_stroke', 'candle_down_stroke', 'ohlc', 'area', 'heikin_ashi'] as const
+export const CANDLE_TYPES = ['candle_solid', 'candle_stroke', 'candle_up_stroke', 'candle_down_stroke', 'ohlc', 'area', 'heikin_ashi', 'line'] as const
 export type ChartCandleType = typeof CANDLE_TYPES[number]
 
 export function validateCandleType(value: unknown): ChartCandleType {

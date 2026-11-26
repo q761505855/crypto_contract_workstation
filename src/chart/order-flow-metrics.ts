@@ -2,8 +2,8 @@ import type { KLineData } from 'klinecharts'
 import { BYBIT_DAY_MS, type BybitTrade } from '../market-data/bybit/trades'
 import { nextOpenTime } from '../market-data/intervals'
 import { tradeBubblePrice, tradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
-import { VolumeProfileLevels, type VolumeProfileRow } from './order-flow'
-import { orderFlowFields, type orderFlowSettings } from './order-flow-preferences'
+import { VolumeProfileLevels, type VolumeProfileCalculation } from './order-flow'
+import type { orderFlowSettings } from './order-flow-preferences'
 
 type FootprintSettings = ReturnType<typeof orderFlowSettings<'footprint'>>
 type FootprintLevel = { buy: number; sell: number; volume: number }
@@ -208,36 +208,8 @@ export function tradeBarProfileLevels(bar: TradeBar, open: number, projected: bo
   return levels
 }
 
-export function visibleVolumeProfile(bars: readonly PricedBar[], projected: boolean, precision: number,
-  targetRows = orderFlowFields.visibleProfile.rows.fallback): VolumeProfileRow[] {
-  const tickSize = 10 ** -precision
-  const levels = new Map<number, Pick<VolumeProfileRow, 'buy' | 'sell'>>()
-  let low = Infinity
-  let high = -Infinity
-  for (const { bar, open } of bars) {
-    for (const [price, { buy, sell }] of tradeBarProfileLevels(bar, open, projected).entries()) {
-      const tick = Math.round(price / tickSize)
-      let level = levels.get(tick)
-      if (!level) levels.set(tick, level = { buy: 0, sell: 0 })
-      level.buy += buy
-      level.sell += sell
-      low = Math.min(low, tick)
-      high = Math.max(high, tick)
-    }
-  }
-  if (low > high) return []
-
-  const step = Math.ceil((high - low + 1) / targetRows)
-  const rows = Array.from({ length: Math.ceil((high - low + 1) / step) }, (_, index) => {
-    const start = low + index * step
-    return {
-      low: (start - 0.5) * tickSize, high: (Math.min(high + 1, start + step) - 0.5) * tickSize, buy: 0, sell: 0,
-    }
-  })
-  for (const [tick, { buy, sell }] of levels) {
-    const row = rows[Math.floor((tick - low) / step)]
-    row.buy += buy
-    row.sell += sell
-  }
-  return rows
+export function visibleVolumeProfile(bars: readonly PricedBar[], projected: boolean, referencePrice: number | undefined, settings: VolumeProfileCalculation) {
+  const levels = new VolumeProfileLevels()
+  for (const { bar, open } of bars) levels.merge(tradeBarProfileLevels(bar, open, projected))
+  return levels.profile(referencePrice, settings)
 }

@@ -29,9 +29,11 @@ export function mergeConfig(base: BackupPreferences | undefined, local: BackupPr
     if (there === undefined) return here
     if (equal(here, there)) return here
     if (!atomicFields.has(path) && object(here) && object(there) && (beforeHere === undefined || object(beforeHere)) && (beforeThere === undefined || object(beforeThere))) {
-      return Object.fromEntries([...new Set([...Object.keys(here), ...Object.keys(there)])].map(key => [
+      const entries = [...new Set([...Object.keys(here), ...Object.keys(there)])].map(key => [
         key, merge(object(beforeHere) ? beforeHere[key] : undefined, object(beforeThere) ? beforeThere[key] : undefined, here[key], there[key], path ? `${path}.${key}` : key),
-      ]))
+      ] as const)
+      // Removed optional settings remain absent when validating the merged snapshot.
+      return Object.fromEntries(entries.filter(([, value]) => value !== undefined))
     }
     if (equal(beforeHere, here)) return there
     if (equal(beforeThere, there)) return here

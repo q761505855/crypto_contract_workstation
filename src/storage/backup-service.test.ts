@@ -432,7 +432,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
       bubbles: { marker: 'square', minRadius: 0, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
         minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 280 },
-      profile: { rows: 16, valueArea: 85, showLabels: false, showDelta: false },
+      profile: { rows: 16, valueArea: 85, rowSizePercent: 0.025, showLabels: false, showDelta: false },
       candleProfile: { type: 'volumeDelta', rows: 22, width: 85, columnWidth: 100, valueArea: 80,
         showDelta: false, showPoc: false, showLabels: false, showValueArea: true, showValues: true, volumeColor: '#aabbcc00' },
       visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false, showDelta: false,
@@ -573,20 +573,20 @@ describe('WorkstationBackupService', () => {
     expect(await new IndexedDbMarketDataStore(name).getSymbols()).toEqual([])
   })
 
-  it('round-trips candle types in config and full archives, preserving legacy absence', async () => {
+  it.each(['heikin_ashi', 'line'])('round-trips chart type %s in config and full archives, preserving legacy absence', async candleType => {
     const sourceStorage = new MemoryPreferences()
-    sourceStorage.setItem('chart.candleType.v1', JSON.stringify('heikin_ashi'))
-    const source = new WorkstationBackupService(`ha-source-${crypto.randomUUID()}`, sourceStorage)
+    sourceStorage.setItem('chart.candleType.v1', JSON.stringify(candleType))
+    const source = new WorkstationBackupService(`chart-type-source-${crypto.randomUUID()}`, sourceStorage)
     for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
-      expect(archive.data.preferences).toHaveProperty('candleType', 'heikin_ashi')
+      expect(archive.data.preferences).toHaveProperty('candleType', candleType)
       const targetStorage = new MemoryPreferences()
-      const target = new WorkstationBackupService(`ha-target-${crypto.randomUUID()}`, targetStorage)
+      const target = new WorkstationBackupService(`chart-type-target-${crypto.randomUUID()}`, targetStorage)
       await target.import(archive)
       expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
       const legacy = structuredClone(archive)
       delete (legacy.data.preferences as unknown as Record<string, unknown>).candleType
       await target.import(legacy)
-      expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+      expect(targetStorage.getItem('chart.candleType.v1')).toBe(JSON.stringify(candleType))
       Object.assign(archive.data.preferences!, { candleType: 'candle_solid' })
       await target.import(archive)
       expect(targetStorage.getItem('chart.candleType.v1')).toBe('"candle_solid"')
@@ -760,6 +760,7 @@ describe('WorkstationBackupService', () => {
     const legacyIndicators = indicatorPreferences()
     legacyIndicators.main = legacyIndicators.main.filter(({ name }) => !['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE'].includes(name))
     delete legacyIndicators.orderFlow!.candleProfile
+    delete legacyIndicators.orderFlow!.profile!.rowSizePercent
     delete legacyIndicators.orderFlow!.profile!.showDelta
     delete legacyIndicators.orderFlow!.visibleProfile!.showDelta
     archive.data.preferences!.chartIndicators = legacyIndicators
@@ -791,6 +792,11 @@ describe('WorkstationBackupService', () => {
     ]
     const before = (await target.exportAll()).data
     archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    for (const rowSizePercent of [null, '', '0.01', 0, -0.01, 0.0000001, 101]) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { profile: { rowSizePercent } } } as ChartIndicatorPreferences
+      await expect(target.import(archive)).rejects.toThrow(/orderFlow.profile.rowSizePercent/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
     for (const visibleProfile of [null, { placement: 'center' }, { showHeaders: null }, { width: 0 },
       { showLabels: 0 }, { showValueArea: null }, { valueArea: 0 }, { pocColor: null }, { valueAreaColor: 'invalid' }]) {
       archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { visibleProfile } } as unknown as ChartIndicatorPreferences

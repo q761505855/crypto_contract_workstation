@@ -5,7 +5,7 @@ import { BYBIT_DAY_MS } from '../market-data/bybit/trades'
 import { DATABENTO_CHART_PRICE_PRECISION, DATABENTO_PRICE_PRECISION } from '../market-data/models'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileLevels, bigTradeMode, bigTradeThresholdUnits,
-  volumeProfileBounds, volumeProfileCenter, volumeProfilePrices, type BigTradeMode, type VolumeProfile, type VolumeProfileBounds } from './order-flow'
+  volumeProfileBounds, volumeProfileCenter, type BigTradeMode, type VolumeProfile, type VolumeProfileBounds } from './order-flow'
 import { CANDLE_PANE, tradeBubbleOffset, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
 import { selectVisibleTradeBubbles, type DisplayedTradeBubble } from './order-flow-bubbles'
 import { OrderFlowBars, tradeBubblePrice, type TradeBar } from './order-flow-bars'
@@ -94,6 +94,7 @@ export class OrderFlowChart {
   private candleProfileSettings = orderFlowSettings('candleProfile')
   private visibleProfileSettings = orderFlowSettings('visibleProfile')
   private cvdSettings = orderFlowSettings('cvd')
+  private profileReferencePrice?: number
   private footprintRows = new WeakMap<TradeBar, { open: number; precision: number; projected: boolean; targetRows: number; rows: FootprintRow[] }>()
   private candleProfiles = new WeakMap<VolumeProfileLevels, VolumeProfile | undefined>()
   private readonly footprintWorkers = new CandleWorkerResults<FootprintRow[]>(() => this.schedule())
@@ -174,13 +175,13 @@ export class OrderFlowChart {
   }
 
   setPreferences(preferences: OrderFlowPreferences | undefined): void {
-    const candleProfile = orderFlowSettings('candleProfile', preferences)
-    if (candleProfile.rows !== this.candleProfileSettings.rows || candleProfile.valueArea !== this.candleProfileSettings.valueArea) {
+    const profile = orderFlowSettings('profile', preferences)
+    if (profile.valueArea !== this.profileSettings.valueArea || profile.rowSizePercent !== this.profileSettings.rowSizePercent) {
       this.candleProfiles = new WeakMap()
     }
     this.settings = preferences
-    this.profileSettings = orderFlowSettings('profile', preferences)
-    this.candleProfileSettings = candleProfile
+    this.profileSettings = profile
+    this.candleProfileSettings = orderFlowSettings('candleProfile', preferences)
     this.visibleProfileSettings = orderFlowSettings('visibleProfile', preferences)
     this.footprintSettings = orderFlowSettings('footprint', preferences)
     this.bubbleSettings = orderFlowSettings('bubbles', preferences)
@@ -188,9 +189,7 @@ export class OrderFlowChart {
     this.footprintRows = new WeakMap()
     this.footprintWorkers.clear()
     this.bubbleWorkers.clear()
-    for (const [id, request] of this.profiles) {
-      this.showProfile(id, { profile: request.levels.profile(this.profileSettings.rows, this.profileSettings.valueArea), message: request.message })
-    }
+    this.redrawProfiles()
     this.hideTooltip()
     this.schedule()
   }
@@ -240,7 +239,7 @@ export class OrderFlowChart {
     const [first, last] = points
     if (!first || !last) return
     const fromUs = Math.min(first.timestamp, last.timestamp) * 1000
-    const untilUs = (Math.max(first.timestamp, last.timestamp) + 1) * 1000
+    const untilUs = Math.max(first.timestamp, last.timestamp) * 1000
     const existing = this.profiles.get(id)
     if (existing?.range.fromUs === fromUs && existing.range.untilUs === untilUs) {
       if (preview || existing.previewUntil === undefined) return
@@ -341,6 +340,20 @@ export class OrderFlowChart {
     this.chart.overrideOverlay({ id, extendData: { ...display, bounds, settings: this.profileSettings } })
   }
 
+  private redrawProfiles(): void {
+    for (const [id, request] of this.profiles) {
+      this.showProfile(id, { profile: request.levels.profile(this.profileReferencePrice, this.profileSettings), message: request.message })
+    }
+  }
+
+  private updateProfileReferencePrice(): void {
+    const price = this.chart.getDataList().at(-1)?.close
+    if (price === this.profileReferencePrice) return
+    this.profileReferencePrice = price
+    this.candleProfiles = new WeakMap()
+    this.redrawProfiles()
+  }
+
   private *profileCandles(fromUs: number, untilUs: number) {
     const candles = this.chart.getDataList()
     if (!candles.length || untilUs <= fromUs) return
@@ -394,13 +407,14 @@ export class OrderFlowChart {
   private finishProfile(id: string, request: ProfileRequest, untilUs: number, complete: boolean): void {
     request.cursor = untilUs
     request.complete &&= complete
-    const profile = request.levels.profile(this.profileSettings.rows, this.profileSettings.valueArea)
+    const profile = request.levels.profile(this.profileReferencePrice, this.profileSettings)
     this.showProfile(id, { profile, message: request.complete ? (profile ? undefined : '选区暂无成交') : '选区的逐笔成交不完整' })
     if (Math.min(this.feed.tradeCursorUs, request.range.untilUs) > untilUs) this.schedule()
   }
 
   private async updateProfile(id: string, request: ProfileRequest): Promise<void> {
     if (!this.supported || !this.hasCurrentCandles()) return
+    this.updateProfileReferencePrice()
     const untilUs = Math.min(this.feed.tradeCursorUs, request.range.untilUs)
     if (untilUs < request.cursor) {
       request.operation?.abort()
@@ -449,7 +463,7 @@ export class OrderFlowChart {
           if (price !== undefined && trade.timeUs >= request.cursor) levels.add(price, trade.side === 'buy' ? trade.size : -trade.size)
         }, operation.signal, coverage => {
           if (operation.signal.aborted || coverage.untilUs >= untilUs || performance.now() < nextPreview) return
-          const profile = levels.profile(this.profileSettings.rows, this.profileSettings.valueArea)
+          const profile = levels.profile(this.profileReferencePrice, this.profileSettings)
           if (profile) this.showProfile(id, { profile, bounds: this.profileCandleBounds(request.range), message: '正在计算区间成交…' })
           nextPreview = performance.now() + 120
         })
@@ -613,18 +627,20 @@ export class OrderFlowChart {
     this.overrideIndicator.call(this.chart, { name: CANDLE_VOLUME_PROFILE, extendData: display }, CANDLE_PANE)
   }
 
-  private showVisibleProfile(rows?: VisibleProfileDisplay['rows'], message?: string): void {
+  private showVisibleProfile(profile?: VolumeProfile, message?: string): void {
     const indicator = this.mainIndicator(VISIBLE_VOLUME_PROFILE)
     if (!indicator) return
+    const rows = profile?.rows
     const previous = indicator.extendData as VisibleProfileDisplay | undefined
     if (previous?.settings === this.visibleProfileSettings && previous.message === message && previous.rows?.length === rows?.length &&
+        previous.prices?.poc === profile?.poc && previous.prices?.vah === profile?.vah && previous.prices?.val === profile?.val &&
         (rows?.every((row, index) => {
           const prior = previous?.rows?.[index]
           return prior?.low === row.low && prior.high === row.high && prior.buy === row.buy && prior.sell === row.sell
         }) ?? true)) return
     const display: VisibleProfileDisplay = {
       rows, message, axisInset: this.profileAxisInset, settings: this.visibleProfileSettings,
-      prices: rows && volumeProfilePrices(rows, this.visibleProfileSettings.valueArea),
+      prices: profile && { poc: profile.poc, vah: profile.vah, val: profile.val },
       precision: this.chart.getPriceVolumePrecision().price,
     }
     this.overrideIndicator.call(this.chart, { name: VISIBLE_VOLUME_PROFILE, extendData: display }, CANDLE_PANE)
@@ -744,6 +760,7 @@ export class OrderFlowChart {
 
   private displayFlow(timeframe: string, mode: BigTradeMode, read: (start: number, until: number) => TradeBar | undefined,
     allTrades: boolean, message?: string): void {
+    this.updateProfileReferencePrice()
     const cursor = this.feed.tradeCursorUs
     const bars = new Map<number, TradeBar>()
     const volumes = new Map<number, number>()
@@ -771,8 +788,7 @@ export class OrderFlowChart {
       if (candleProfileEnabled && bar.firstPrice !== undefined) {
         const levels = tradeBarProfileLevels(bar, open, projected)
         if (!this.candleProfiles.has(levels)) {
-          const { rows, valueArea } = this.candleProfileSettings
-          this.candleProfiles.set(levels, levels.profile(rows, valueArea))
+          this.candleProfiles.set(levels, levels.profile(this.profileReferencePrice, this.profileSettings))
         }
         const profile = this.candleProfiles.get(levels)
         if (profile) candleProfiles.set(timestamp, profile)
@@ -824,8 +840,8 @@ export class OrderFlowChart {
         const bar = bars.get(timestamp)
         return bar ? [{ bar, open }] : []
       })
-      const rows = visibleVolumeProfile(pricedBars, projected, precision, this.visibleProfileSettings.rows)
-      this.showVisibleProfile(rows, status ?? (rows.length ? undefined : '可见范围暂无成交'))
+      const profile = visibleVolumeProfile(pricedBars, projected, this.profileReferencePrice, this.profileSettings)
+      this.showVisibleProfile(profile, status ?? (profile ? undefined : '可见范围暂无成交'))
     }
     if (allTrades && this.mainIndicator(VWAP)?.visible) {
       const { values, partial: incompleteVwap } = dailyTradeVwap(this.flowCandles(this.vwapDay(timeframe, cursor)), timeframe, cursor, read, projected)

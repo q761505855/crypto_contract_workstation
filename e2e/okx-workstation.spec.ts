@@ -213,7 +213,7 @@ test('OKX-本地按所选日期加载，后台逐日补数并在刷新后留空'
       volume: Math.round((overlay?.profile?.rows.reduce((sum: number, row: { buy: number }) => sum + row.buy, 0) ?? 0) * 100),
       bounds: [overlay?.profile?.rows[0]?.low, overlay?.profile?.rows.at(-1)?.high] }
   }, profileId), { timeout: 15_000 }).toEqual({ profile: true, parallel: true, footprint: true, bubbles: true,
-    shown: 1000, volume: denseTrades + 2, bounds: [62_000, 62_001] })
+    shown: 1000, volume: denseTrades + 1, bounds: [62_000, 62_000] })
   await page.evaluate(({ id, time }) => {
     const state = window as unknown as { __profileRescans: number; __viewportTestAdapter: {
       source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
@@ -245,13 +245,13 @@ test('OKX-本地按所选日期加载，后台逐日补数并在刷新后留空'
     preview(time + 10 * 60_000)
     return { short, wide }
   }, { id: profileId, time: newStart })
-  expect(provisionalBounds).toEqual({ short: { low: 62_000, high: 62_002 }, wide: { low: 62_000, high: 62_005 } })
+  expect(provisionalBounds).toEqual({ short: { low: 62_000, high: 62_002 }, wide: { low: 62_000, high: 62_002 } })
   await expect.poll(() => page.evaluate(id => {
     const state = window as unknown as { __profileRescans: number; __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }
     const overlay = state.__viewportTestAdapter.coreChart.getOverlayById(id)?.extendData
     return { bounds: overlay?.bounds, rescans: state.__profileRescans,
       volume: Math.round((overlay?.profile?.rows.reduce((sum: number, row: { buy: number }) => sum + row.buy, 0) ?? 0) * 100) }
-  }, profileId)).toEqual({ bounds: { low: 62_001, high: 62_002 }, rescans: 0, volume: 2 })
+  }, profileId)).toEqual({ bounds: { low: 62_001, high: 62_001 }, rescans: 0, volume: 1 })
   await page.evaluate(() => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     coreChart.overrideIndicator({ name: 'BIG_TRADES', styles: { bubbleMode: 'aggregate' }, calcParams: [0] }, 'candle_pane')
