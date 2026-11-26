@@ -2,14 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import type { IndicatorDrawParams } from 'klinecharts'
 import { validateDrawings } from './drawings'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
-import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileAccumulator, bigTradeColors, bigTradeMode, tradeThresholdValue, volumeProfilePrices } from './order-flow'
+import { BIG_TRADES, VOLUME_PROFILE_TOOL, VolumeProfileLevels, bigTradeColors, bigTradeMode, tradeThresholdValue, volumeProfileBarColor } from './order-flow'
 import { AccumulatedHour, displayedTradeBubbles, includeHour, type TradeBar } from './order-flow-bars'
 import { drawTradeBubbleLabel, drawVolumeProfile, tradeBubbleOpacity, tradeBubbleRadius } from './order-flow-renderers'
 import { filteredTradeBubbles, selectVisibleTradeBubbles } from './order-flow-bubbles'
 import type { BybitTrade } from '../market-data/bybit/trades'
 import { calculateFootprint, cumulativeVolumeDelta, dailyTradeVwap, tradeBarProfileLevels, visibleVolumeProfile } from './order-flow-metrics'
-import { orderFlowSettings } from './order-flow-preferences'
-import { drawFootprint, drawFootprintText, drawVisibleVolumeProfile } from './order-flow-indicators'
+import { orderFlowSettings, validateOrderFlowPreferences } from './order-flow-preferences'
+import { drawCandleVolumeProfile, drawCandleVolumeProfileLevels, drawFootprint, drawFootprintText, drawVisibleVolumeProfile } from './order-flow-indicators'
 
 const trade = (price: number, size: number, side: BybitTrade['side']): BybitTrade =>
   ({ price, size, side, timeUs: 1000, id: 'fixture' })
@@ -122,16 +122,17 @@ describe('Bybit 成交指标', () => {
   it('可见成交分布汇总同价位的主动买卖，单一成交价也有可绘制的档位', () => {
     const points = [trade(710, 4, 'buy'), trade(710, 7, 'sell'), trade(710, 12, 'buy')].map(trade => ({ trade }))
     const bar: TradeBar = { cursor: 3000, volume: 11, firstBybitPrice: 710, complete: true, pointRanges: [{ points, from: 0, until: 2 }] }
-    const rows = visibleVolumeProfile([{ bar, open: 100 }], true, 2)
-    expect(rows).toEqual([{ low: 99.995, high: 100.005, buy: 4, sell: 7 }])
-    expect(visibleVolumeProfile([], false, 2)).toEqual([])
+    const settings = orderFlowSettings('profile')
+    const profile = visibleVolumeProfile([{ bar, open: 100 }], true, 100, settings)
+    expect(profile).toEqual({ poc: 100, vah: 100, val: 100, rows: [{ low: 100, high: 100, buy: 4, sell: 7 }] })
+    expect(visibleVolumeProfile([], false, 100, settings)).toBeUndefined()
   })
 
-  it('可见成交分布按配置合并档位，保留各档的主动买卖量', () => {
-    const points = [trade(100, 1, 'buy'), trade(101, 2, 'sell'), trade(102, 3, 'buy'), trade(103, 4, 'sell')].map(trade => ({ trade }))
+  it('可见成交分布使用最新价决定档宽，保留各档的主动买卖量', () => {
+    const points = [trade(100, 1, 'buy'), trade(100.99, 2, 'sell'), trade(101, 3, 'buy'), trade(101.75, 4, 'sell')].map(trade => ({ trade }))
     const bar: TradeBar = { cursor: 2000, volume: 10, complete: true, pointRanges: [{ points, from: 0, until: points.length }] }
-    expect(visibleVolumeProfile([{ bar, open: 100 }], false, 0, 2)).toEqual([
-      { low: 99.5, high: 101.5, buy: 1, sell: 2 }, { low: 101.5, high: 103.5, buy: 3, sell: 4 },
+    expect(visibleVolumeProfile([{ bar, open: 100 }], false, 10_000, orderFlowSettings('profile'))?.rows).toEqual([
+      { low: 100, high: 101, buy: 1, sell: 2 }, { low: 101, high: 101.75, buy: 3, sell: 4 },
     ])
   })
 
@@ -140,11 +141,77 @@ describe('Bybit 成交指标', () => {
       .map((trade, index) => ({ trade: { ...trade, timeUs: 1000 + index * 100 } }))
     const bar: TradeBar = { cursor: 1300, volume: 20, firstBybitPrice: 100, complete: true, pointRanges: [{ points, from: 0, until: 3 }] }
     const whole = tradeBarProfileLevels(bar, 200, true)
-    const visible = visibleVolumeProfile([{ bar, open: 200 }], true, 0, 40)
+    const visible = visibleVolumeProfile([{ bar, open: 200 }], true, 200, orderFlowSettings('profile'))
     expect(tradeBarProfileLevels(bar, 200, true)).toBe(whole)
-    expect(visible).toHaveLength(21)
-    expect(volumeProfilePrices(visible, 70)).toEqual({ poc: 200, val: 199.5, vah: 210.5 })
-    expect([...tradeBarProfileLevels(bar, 200, true, 1050, 1200).entries()]).toEqual([[210, { buy: 7, sell: 0 }]])
+    expect(visible?.rows).toHaveLength(3)
+    expect(visible).toMatchObject({ poc: 200, val: 200, vah: 210 })
+    expect(tradeBarProfileLevels(bar, 200, true, 1050, 1200).pack()).toEqual(new Float64Array([210, 7, 0]))
+  })
+
+  it('同一段逐笔成交的框选、逐根和可见范围使用相同分档和价位', () => {
+    const points = [trade(100.25, 1, 'buy'), trade(100.75, 8, 'sell'), trade(101.25, 7, 'buy'), trade(105.5, 2, 'buy')]
+      .map((trade, index) => ({ trade: { ...trade, timeUs: 1000 + index * 100 } }))
+    const bar: TradeBar = { cursor: 1400, volume: 18, complete: true, pointRanges: [{ points, from: 0, until: points.length }] }
+    const preferences = { profile: { rows: 4, valueArea: 70 }, candleProfile: { rows: 18, valueArea: 80 }, visibleProfile: { rows: 48, valueArea: 90 } }
+    const frame = orderFlowSettings('candleProfile', preferences)
+    const selection = orderFlowSettings('profile', preferences)
+    const visible = orderFlowSettings('visibleProfile', preferences)
+    const grouped = tradeBarProfileLevels(bar, 100, false).profile(10_000, { ...selection, valueArea: frame.valueArea })
+    const selected = tradeBarProfileLevels(bar, 100, false, 1000, 1400).profile(10_000, selection)
+    const inView = visibleVolumeProfile([{ bar, open: 100 }], false, 10_000, { ...selection, valueArea: visible.valueArea })
+
+    expect(grouped).toEqual({ poc: 100.75, vah: 101.25, val: 100.25, rows: [
+      { low: 100.25, high: 101, buy: 1, sell: 8 },
+      { low: 101, high: 102, buy: 7, sell: 0 },
+      { low: 105, high: 105.5, buy: 2, sell: 0 },
+    ] })
+    expect(selected).toEqual(grouped)
+    expect(inView).toEqual(grouped)
+  })
+
+  it('基准价变化按 0.001% 重新分档，分档边界上的成交归入下一档', () => {
+    const levels = new VolumeProfileLevels()
+    levels.add(49_998.25, 6)
+    levels.add(49_998.5, 4)
+    levels.add(49_998.75, 3)
+    const settings = { rowSizePercent: 0.001, valueArea: 70 }
+    expect(levels.profile(50_000, settings)).toEqual({ poc: 49_998.5, val: 49_998.25, vah: 49_998.75, rows: [
+      { low: 49_998.25, high: 49_998.5, buy: 6, sell: 0 },
+      { low: 49_998.5, high: 49_998.75, buy: 7, sell: 0 },
+    ] })
+    expect(levels.profile(100_000, settings)).toEqual({ poc: 49_998.25, val: 49_998.25, vah: 49_998.75, rows: [
+      { low: 49_998.25, high: 49_998.75, buy: 13, sell: 0 },
+    ] })
+    expect(levels.profile(undefined, settings)).toBeUndefined()
+  })
+
+  it('旧档缺少框选价值区比例时沿用逐根、可见范围及默认值', () => {
+    for (const group of ['profile', 'candleProfile', 'visibleProfile'] as const) {
+      expect(orderFlowSettings(group, { candleProfile: { valueArea: 65 }, visibleProfile: { valueArea: 75 } }).valueArea).toBe(65)
+      expect(orderFlowSettings(group, { visibleProfile: { valueArea: 75 } }).valueArea).toBe(75)
+      expect(orderFlowSettings(group).valueArea).toBe(70)
+    }
+  })
+
+  it('默认档宽为最新价的 0.01%，自定义比例以百分数保存和计算', () => {
+    const levels = new VolumeProfileLevels()
+    levels.add(49_998.25, 6)
+    levels.add(49_998.5, 4)
+    levels.add(49_998.75, 3)
+    const defaultSettings = orderFlowSettings('profile')
+    expect(defaultSettings.rowSizePercent).toBe(0.01)
+    expect(levels.profile(50_000, defaultSettings)).toMatchObject({ poc: 49_998.25, rows: [
+      { low: 49_998.25, high: 49_998.75, buy: 13, sell: 0 },
+    ] })
+    const saved = validateOrderFlowPreferences({ profile: { rowSizePercent: 0.001 } })
+    expect(levels.profile(50_000, orderFlowSettings('profile', saved))?.rows).toHaveLength(2)
+  })
+
+  it('价值区包含整数边界时高亮下一个档位', () => {
+    const prices = { poc: 102, vah: 102, val: 102 }
+    const colors = { showValueArea: true, valueAreaColor: '#ffcc70', volumeColor: '#123456' }
+    expect(volumeProfileBarColor({ low: 101, high: 102 }, prices, colors)).toBe('#123456')
+    expect(volumeProfileBarColor({ low: 102, high: 103 }, prices, colors)).toBe('#ffcc70')
   })
 
   it('可见成交分布默认左侧总量、右侧 Delta，支持左置、横向偏移和只显示 Delta', () => {
@@ -183,9 +250,79 @@ describe('Bybit 成交指标', () => {
     ])
     expect(rects[0].width).toBe(66)
     expect(ctx.fillText).not.toHaveBeenCalled()
+
+    rects.length = 0
+    Object.assign(params.indicator.extendData.settings, { showDelta: false, showHeaders: true })
+    drawVisibleVolumeProfile(params)
+    expect(rects.map(({ color }) => color)).toEqual(Array(3).fill(params.indicator.extendData.settings.volumeColor))
+    expect(ctx.fillText.mock.calls.map(([label]) => label)).toEqual(['成交量'])
   })
 
-  it('可见成交分布显示 POC、VAH 和 VAL，并区分价值区内外的成交量', () => {
+  it('逐根分布沿用框选的柱条方向和配色，关闭文字仍显示价值区、VAH、POC 和 VAL', () => {
+    const rects: { x: number; y: number; width: number; height: number; color: string }[] = []
+    const lineLayers: string[] = []
+    const ctx = {
+      fillStyle: '', save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), fillText: vi.fn(),
+      globalAlpha: 1, globalCompositeOperation: 'destination-over',
+      setLineDash: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(),
+      stroke() { lineLayers.push(this.globalCompositeOperation) },
+      fillRect(x: number, y: number, width: number, height: number) { rects.push({ x, y, width, height, color: this.fillStyle }) },
+    }
+    const settings = orderFlowSettings('candleProfile', {
+      profile: { volumeColor: '#403322', valueAreaColor: '#ffbe52', askColor: '#609da9' },
+      candleProfile: { bidColor: '#ef8c89', showLabels: false, width: 100 },
+    })
+    const profiles = new Map([
+      [100, { rows: [{ low: 1, high: 2, buy: 9, sell: 1 }, { low: 2, high: 3, buy: 0, sell: 2 }],
+        poc: 1.5, vah: 1.95, val: 1 }],
+      [200, { rows: [{ low: 3, high: 4, buy: 0, sell: 2 }], poc: 3.5, vah: 4, val: 3 }],
+    ])
+    const params = { ctx, bounding: { width: 300, height: 200 }, barSpace: { bar: 100 }, visibleRange: { from: 0, to: 2 },
+      kLineDataList: [{ timestamp: 100 }, { timestamp: 200 }], xAxis: { convertToPixel: (index: number) => 90 + index * 100 },
+      yAxis: { convertToPixel: (price: number) => 150 - price * 20 },
+      indicator: { drawForeground: drawCandleVolumeProfileLevels, extendData: { profiles, settings, precision: 2 } },
+    } as unknown as IndicatorDrawParams
+    for (const type of ['volumeDelta', 'bidAsk', 'delta', 'volume'] as const) {
+      rects.length = 0
+      ctx.setLineDash.mockClear()
+      ctx.moveTo.mockClear()
+      ctx.lineTo.mockClear()
+      settings.type = type
+      const origin = type === 'volume' ? 40 : 62
+      const reference = drawVolumeProfile({
+        overlay: { extendData: { profile: profiles.get(100), settings } },
+        coordinates: [{ x: origin, y: 100 }, { x: 84, y: 130 }],
+        bounding: params.bounding, yAxis: params.yAxis, precision: { price: 2, volume: 0 },
+      } as Parameters<typeof drawVolumeProfile>[0])
+      const bars = reference.filter(figure => figure.type === 'rect').slice(1)
+        .map(figure => ({ ...figure.attrs, color: figure.styles?.color }))
+      drawCandleVolumeProfile(params)
+      expect(lineLayers).toEqual([])
+      drawCandleVolumeProfileLevels(params)
+      expect(lineLayers.splice(0)).toEqual(Array(6).fill('source-over'))
+      expect(rects.slice(0, bars.length)).toEqual(bars)
+      expect(rects[bars.length]).toEqual({ x: origin, y: 111, width: 84 - origin, height: 19, color: '#ffbe52' })
+      expect(rects.at(-1)!.x - origin).toBe(100)
+      expect(ctx.setLineDash.mock.calls.slice(0, 3)).toEqual([[[4, 3]], [[]], [[4, 3]]])
+      expect(ctx.moveTo.mock.calls.slice(0, 3)).toEqual([[origin, 111], [origin, 120], [origin, 130]])
+      expect(ctx.lineTo.mock.calls).toEqual([[140, 111], [140, 120], [140, 130], [240, 70], [240, 80], [240, 90]])
+      expect(ctx.fillText).not.toHaveBeenCalled()
+    }
+
+    rects.length = 0
+    Object.assign(settings, { showDelta: false, type: 'delta', showValues: true })
+    drawCandleVolumeProfile(params)
+    expect(rects.map(({ color }) => color)).toEqual(['#ffbe52', '#403322', '#ffbe52', '#ffbe52', '#ffbe52'])
+    expect(ctx.fillText.mock.calls.map(([label]) => label)).toEqual(['10', '2', '2'])
+
+    rects.length = 0
+    Object.assign(settings, { showDelta: true, type: 'volumeDelta', width: 5, showValueArea: false })
+    drawCandleVolumeProfile(params)
+    expect(rects).toHaveLength(6)
+    expect(rects[0].color).toBe('#403322')
+  })
+
+  it('可见成交分布只在分布条左侧绘制 POC、VAH 和 VAL，并区分价值区内外的成交量', () => {
     const rects: string[] = []
     const ctx = {
       fillStyle: '', save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), fillText: vi.fn(),
@@ -198,13 +335,13 @@ describe('Bybit 成交指标', () => {
       { low: 6, high: 7, buy: 2, sell: 2 },
     ]
     const settings = orderFlowSettings('visibleProfile', { visibleProfile: { type: 'volume', showHeaders: false } })
-    const display = { axisInset: () => 64, settings, rows, prices: volumeProfilePrices(rows, 70), precision: 2 }
+    const display = { axisInset: () => 64, settings, rows, prices: { poc: 4.5, vah: 5, val: 4 }, precision: 2 }
     const params = { ctx, bounding: { width: 400, height: 180 }, yAxis: { convertToPixel: (price: number) => 100 - price * 10 },
       indicator: { extendData: display } } as unknown as IndicatorDrawParams
     drawVisibleVolumeProfile(params)
     expect(rects.slice(0, 2)).toEqual([settings.valueAreaColor, settings.volumeColor])
     expect(ctx.setLineDash.mock.calls).toEqual([[[4, 3]], [[]], [[4, 3]]])
-    expect(ctx.moveTo.mock.calls).toEqual([[333, 50], [333, 55], [333, 60]])
+    expect(ctx.moveTo.mock.calls).toEqual([[248, 50], [248, 55], [248, 60]])
     expect(ctx.lineTo.mock.calls).toEqual([[0, 50], [0, 55], [0, 60]])
     expect(ctx.restore.mock.invocationCallOrder[0]).toBeLessThan(ctx.moveTo.mock.invocationCallOrder[0])
     expect(ctx.fillText.mock.calls.map(([label]) => label)).toEqual(['VAH 5.00', 'POC 4.50', 'VAL 4.00'])
@@ -217,8 +354,8 @@ describe('Bybit 成交指标', () => {
     drawVisibleVolumeProfile(params)
     expect(rects).toEqual([settings.volumeColor, settings.volumeColor])
     expect(ctx.stroke).toHaveBeenCalledTimes(1)
-    expect(ctx.moveTo).toHaveBeenCalledWith(333, 55)
-    expect(ctx.lineTo).toHaveBeenCalledWith(36, 55)
+    expect(ctx.moveTo).toHaveBeenCalledWith(36, 55)
+    expect(ctx.lineTo).toHaveBeenCalledWith(0, 55)
     expect(ctx.fillText).not.toHaveBeenCalled()
   })
 
@@ -354,14 +491,15 @@ describe('Bybit 成交指标', () => {
   })
 
   it('按价位计算双侧成交量、POC 和 70% 价值区', () => {
-    const accumulator = new VolumeProfileAccumulator(100, 104, 4)
-    expect(accumulator.profile()).toBeUndefined()
-    for (const item of [trade(100, 2, 'buy'), trade(101.5, 4, 'buy'), trade(101.5, 2, 'sell'),
-      trade(102.5, 3, 'sell'), trade(104, 1, 'buy'), trade(105, 10, 'buy')]) accumulator.add(item)
-    const result = accumulator.profile()!
-    expect(result).toMatchObject({ poc: 101.5, vah: 103, val: 101 })
+    const levels = new VolumeProfileLevels()
+    const settings = orderFlowSettings('profile')
+    expect(levels.profile(10_000, settings)).toBeUndefined()
+    for (const [price, size] of [[100, 2], [101.5, 4], [101.5, -2], [102.5, -3], [104, 1]]) levels.add(price, size)
+    const result = levels.profile(10_000, settings)!
+    expect(result).toMatchObject({ poc: 101.5, vah: 102.5, val: 101.5 })
     expect(result.rows[1]).toEqual({ low: 101, high: 102, buy: 4, sell: 2 })
-    expect(result.rows[3]).toEqual({ low: 103, high: 104, buy: 1, sell: 0 })
+    expect(result.rows[3]).toEqual({ low: 104, high: 104, buy: 1, sell: 0 })
+    expect(levels.profile(10_000, { ...settings, valueArea: 100 })).toMatchObject({ poc: 101.5, vah: 104, val: 100 })
   })
 
   it('接受档案里的两个时间价格锚点', () => {
@@ -444,19 +582,30 @@ describe('Bybit 成交指标', () => {
   })
 
   it('成交量和 Delta 横条使用半透明颜色，保留价位线', () => {
-    const accumulator = new VolumeProfileAccumulator(100, 104, 4)
-    accumulator.add(trade(101.5, 4, 'buy'))
-    accumulator.add(trade(103.5, 1, 'sell'))
-    const figures = drawVolumeProfile({
-      overlay: { extendData: { profile: accumulator.profile() } },
+    const levels = new VolumeProfileLevels()
+    const settings = orderFlowSettings('profile')
+    levels.add(100, 4)
+    levels.add(103, -0.5)
+    levels.add(103.5, -0.5)
+    const params = {
+      overlay: { extendData: { profile: levels.profile(10_000, settings), settings } },
       coordinates: [{ x: 50, y: 88 }, { x: 250, y: 92 }],
-      yAxis: { convertToPixel: (price: number) => (104 - price) * 50 + 20 },
+      yAxis: { convertToPixel: (price: number) => (103.5 - price) * 50 + 20 },
       precision: { price: 2, volume: 0 },
-    } as Parameters<typeof drawVolumeProfile>[0])
-    expect(figures[0].attrs).toEqual({ x: 50, width: 200, y: 20, height: 200 })
+    } as Parameters<typeof drawVolumeProfile>[0]
+    const figures = drawVolumeProfile(params)
+    expect(figures[0].attrs).toEqual({ x: 50, width: 200, y: 20, height: 175 })
     expect(figures.filter(figure => figure.type === 'rect').slice(1).map(figure => figure.styles?.color))
       .toEqual(['#5e93d67a', '#49d4ae66', '#3b54766b', '#ff827e66'])
     expect(figures.filter(figure => figure.type === 'line')).toHaveLength(3)
+
+    Object.assign(params.overlay.extendData.settings, { showDelta: false, showValues: true })
+    const volumeOnly = drawVolumeProfile(params)
+    expect(volumeOnly.filter(figure => figure.type === 'rect').slice(1).map(figure => figure.styles?.color))
+      .toEqual(['#5e93d67a', '#3b54766b'])
+    expect(volumeOnly.filter(figure => figure.type === 'text').slice(0, 3).map(figure => (figure.attrs as { text: string }).text))
+      .toEqual(['成交量', '4', '1'])
+    expect(volumeOnly.filter(figure => figure.type === 'line')).toHaveLength(3)
   })
 
   it('逐笔统计尚未完成时，选区仍按价格高低点绘制', () => {

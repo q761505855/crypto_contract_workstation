@@ -7,7 +7,9 @@ import { validateRsiLevels } from './rsi'
 import { writePreference } from '../storage/preference-events'
 import { ctraderStorage } from '../storage/ctrader-storage'
 import { BIG_TRADES, bigTradeMinimum, validateBigTradeStyles } from './order-flow'
-import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, validateOrderFlowPreferences, withoutBubbleDefaults, type OrderFlowPreferences } from './order-flow-preferences'
+import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, validateOrderFlowPreferences, withoutBubbleDefaults, type OrderFlowPreferences } from './order-flow-preferences'
+
+const fixedMainTradeIndicators = [VWAP, VISIBLE_VOLUME_PROFILE, CANDLE_VOLUME_PROFILE]
 
 export const CHART_INDICATORS_PREFERENCE = 'chart.indicators.v1'
 
@@ -85,7 +87,7 @@ function indicator(
     throw new Error(`${field}.calcParams 必须是数组`)
   }
   let calcParams = item.calcParams
-  const fixedTradeIndicator = item.name === VWAP || item.name === VISIBLE_VOLUME_PROFILE
+  const fixedTradeIndicator = fixedMainTradeIndicators.includes(item.name)
   if ((item.name === FOOTPRINT || item.name === CVD || fixedTradeIndicator) && calcParams.length !== 0) {
     throw new Error(`${field}.calcParams 必须为空数组`)
   }
@@ -223,7 +225,7 @@ export function validateChartIndicatorPreferences(
   if (main.some(setting => setting.name === CVD) || sub.some(pane => pane.indicators.some(setting => setting.name === FOOTPRINT))) {
     throw new Error('足迹图须在主图，CVD 须在副图')
   }
-  for (const name of [VWAP, VISIBLE_VOLUME_PROFILE]) {
+  for (const name of fixedMainTradeIndicators) {
     if (sub.some(pane => pane.indicators.some(setting => setting.name === name)) || main.filter(setting => setting.name === name).length > 1) {
       throw new Error(`${name} 只能在主图添加一次`)
     }

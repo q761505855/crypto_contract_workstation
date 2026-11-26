@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkstationBackupService, type BackupPreferences } from '../storage/backup-service'
 import { browserStorageKey, ctraderStorage } from '../storage/ctrader-storage'
+import { saveChartIndicatorPreferences } from '../chart/indicator-preferences'
+import { orderFlowSettings } from '../chart/order-flow-preferences'
 import { savePinnedPeriods } from '../chart/period-preferences'
 import { readPriceSource, savePriceSource } from '../market-data/price-source-preferences'
 import { CONFIG_BASELINE_KEY } from './config-auto-sync'
@@ -79,6 +81,26 @@ describe('automatic configuration sync', () => {
     expect(unresolved.conflicts).toEqual(['chartIndicators.orderFlow.bubbles'])
     expect(unresolved.preferences.chartIndicators!.orderFlow).toEqual({ bubbles: { minRadius: 18, maxRadius: 20 }, profile: { rows: 64 } })
     expect(mergeConfig(before, local, remote, 'remote').preferences).toEqual(remote)
+  })
+  it('syncs a removed per-candle color override and retains independent changes', async () => {
+    const profile = { valueAreaColor: '#e2a11200' }
+    const candleProfile = { rows: 24, showValues: true, valueAreaColor: '#e2a112b3' }
+    const chartIndicators = { schemaVersion: 1 as const, main: [], sub: [], orderFlow: { profile, candleProfile } }
+    const s = await setup({ ...base, chartIndicators })
+    await s.auto.start()
+    saveChartIndicatorPreferences({ ...chartIndicators, orderFlow: { profile, candleProfile: { rows: 24, showValues: false } } }, s.storage)
+    s.auto.changed()
+    s.remote({ ...base, chartIndicators: { ...chartIndicators, orderFlow: { profile, candleProfile: { ...candleProfile, rows: 32 } } } })
+
+    await s.auto.flush()
+
+    expect(s.auto.getStatus()).toMatchObject({ phase: 'synced', message: '应用配置已与云端同步' })
+    expect(s.storage.getItem(CONFIG_PENDING_KEY)).toBe('false')
+    expect(s.writes).toHaveLength(1)
+    const restored = (await s.backups.exportPreferences()).data.preferences!
+    expect(restored).toStrictEqual(s.writes[0])
+    expect(restored.chartIndicators?.orderFlow?.candleProfile).toStrictEqual({ rows: 32, showValues: false })
+    expect(orderFlowSettings('candleProfile', restored.chartIndicators?.orderFlow).valueAreaColor).toBe('#e2a11200')
   })
   it('keeps cTrader product identity and display precision together across concurrent edits', () => {
     const before = { ...base, selectedSymbol: { ticker: 'EURUSD', exchange: 'CTRADER', pricePrecision: 5 } }

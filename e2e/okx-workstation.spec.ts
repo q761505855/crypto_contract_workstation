@@ -213,7 +213,7 @@ test('OKX-本地按所选日期加载，后台逐日补数并在刷新后留空'
       volume: Math.round((overlay?.profile?.rows.reduce((sum: number, row: { buy: number }) => sum + row.buy, 0) ?? 0) * 100),
       bounds: [overlay?.profile?.rows[0]?.low, overlay?.profile?.rows.at(-1)?.high] }
   }, profileId), { timeout: 15_000 }).toEqual({ profile: true, parallel: true, footprint: true, bubbles: true,
-    shown: 1000, volume: denseTrades + 2, bounds: [62_000, 62_001] })
+    shown: 1000, volume: denseTrades + 1, bounds: [62_000, 62_000] })
   await page.evaluate(({ id, time }) => {
     const state = window as unknown as { __profileRescans: number; __viewportTestAdapter: {
       source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
@@ -245,13 +245,13 @@ test('OKX-本地按所选日期加载，后台逐日补数并在刷新后留空'
     preview(time + 10 * 60_000)
     return { short, wide }
   }, { id: profileId, time: newStart })
-  expect(provisionalBounds).toEqual({ short: { low: 62_000, high: 62_002 }, wide: { low: 62_000, high: 62_005 } })
+  expect(provisionalBounds).toEqual({ short: { low: 62_000, high: 62_002 }, wide: { low: 62_000, high: 62_002 } })
   await expect.poll(() => page.evaluate(id => {
     const state = window as unknown as { __profileRescans: number; __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }
     const overlay = state.__viewportTestAdapter.coreChart.getOverlayById(id)?.extendData
     return { bounds: overlay?.bounds, rescans: state.__profileRescans,
       volume: Math.round((overlay?.profile?.rows.reduce((sum: number, row: { buy: number }) => sum + row.buy, 0) ?? 0) * 100) }
-  }, profileId)).toEqual({ bounds: { low: 62_001, high: 62_002 }, rescans: 0, volume: 2 })
+  }, profileId)).toEqual({ bounds: { low: 62_001, high: 62_001 }, rescans: 0, volume: 1 })
   await page.evaluate(() => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     coreChart.overrideIndicator({ name: 'BIG_TRADES', styles: { bubbleMode: 'aggregate' }, calcParams: [0] }, 'candle_pane')
@@ -336,6 +336,13 @@ test('OKX-本地按所选日期加载，后台逐日补数并在刷新后留空'
   await expect.poll(async () => (await chart()).rightmost).toBe(replayTime)
   await expect(controls).toContainText('第 2 步')
 
+  await controls.getByLabel('回放模式').selectOption('tick')
+  await controls.getByLabel('逐笔速度滑块').press('End')
+  await controls.getByRole('button', { name: '播放', exact: true }).click()
+  await expect(controls).toContainText('第 3 步')
+  await controls.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect.poll(async () => (await chart()).last?.close).toBe(62_007)
+
   await page.getByRole('button', { name: '工具', exact: true }).click()
   await page.getByTestId('open-data-manager').click()
   await expect(page.getByRole('heading', { name: 'OKX-本地 行情', exact: true })).toBeVisible()
@@ -349,9 +356,10 @@ test('切换到 OKX 后使用原生产品、实时 K 线、回放和合约交易
   const now = Date.UTC(2026, 10, 20, 15, 0, 45)
   const btc = 'BTC-USDT-SWAP'
   const eth = 'ETH-USDT-SWAP'
+  const firstTrade = Date.UTC(2026, 10, 20, 14, 31, 0, 120)
   await page.clock.setFixedTime(now)
   await connectFixture(page)
-  await installViewportProbe(page)
+  const readChart = await installViewportProbe(page)
   const topics = new Map<string, WebSocketRoute>()
   const requests: { endpoint: string; instrument: string | null; bar: string | null }[] = []
   await page.routeWebSocket('wss://ws.okx.com/ws/v5/business', socket => socket.onMessage(message => {
@@ -382,6 +390,11 @@ test('切换到 OKX 后使用原生产品、实时 K 线、回放和合约交易
       const instFamily = url.searchParams.get('instFamily')
       data = [{ instFamily, maxSz: '1000', mmr: '0.004', maxLever: '50' },
         { instFamily, maxSz: '5000', mmr: '0.005', maxLever: '25.5' }]
+    } else if (endpoint === 'history-trades' && inst === eth) {
+      const after = Number(url.searchParams.get('after'))
+      data = [[firstTrade + 25_000, '3', '2013', '1'], [firstTrade, '2', '2012', '2'], [firstTrade, '1', '2011', '1']]
+        .filter(([time]) => Number(time) < after)
+        .map(([ts, tradeId, px, sz]) => ({ instId: inst, ts: String(ts), tradeId, px, sz, side: 'buy' }))
     } else if (endpoint.endsWith('candles')) {
       const width = Number.parseInt(bar ?? '1') * (bar?.endsWith('H') ? 60 : 1) * minute
       const after = Number(url.searchParams.get('after') ?? now + 1)
@@ -454,6 +467,12 @@ test('切换到 OKX 后使用原生产品、实时 K 线、回放和合约交易
   await page.reload()
   await expect(source).toHaveValue('okx')
   await expect(page.getByTestId('position-long')).toContainText(eth)
+  await controls.getByLabel('回放模式').selectOption('tick')
+  await controls.getByRole('button', { name: '播放', exact: true }).click()
+  await expect(controls).toContainText('第 4 步')
+  await controls.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect.poll(async () => (await readChart()).last?.close).toBe(2012)
+  expect(requests.some(request => request.endpoint === 'history-trades' && request.instrument === eth)).toBe(true)
   await page.getByRole('button', { name: '工具', exact: true }).click()
   await page.getByTestId('open-data-manager').click()
   const [download] = await Promise.all([page.waitForEvent('download'),
@@ -461,7 +480,8 @@ test('切换到 OKX 后使用原生产品、实时 K 线、回放和合约交易
   const envelope = JSON.parse(await readFile((await download.path())!, 'utf8'))
   const backup = envelope.data
   expect(backup.preferences).toMatchObject({ priceSource: 'okx', okxSelectedSymbol: { ticker: eth } })
-  expect(backup.sessions[0]).toMatchObject({ marketSource: 'okx', tradingConfig: { okx: { contractValue: '0.1' }, leverage: 12 } })
+  expect(backup.sessions[0]).toMatchObject({ marketSource: 'okx', playbackMode: 'tick', cursorTickIndex: 1,
+    tradingConfig: { okx: { contractValue: '0.1' }, leverage: 12 } })
   expect(backup.simulations[0].config.okx).toEqual(backup.sessions[0].tradingConfig.okx)
   backup.preferences.priceSource = 'ctrader'
   page.once('dialog', dialog => dialog.accept())

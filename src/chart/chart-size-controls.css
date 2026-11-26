@@ -54,30 +54,19 @@
   .chart-size-backdrop { align-items: end; padding: 0; }
   .chart-size-dialog { width: 100%; max-height: min(85dvh, calc(var(--workspace-viewport-height, 100dvh) - 12px)); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
 }
-.chart-volume-profile-slot {
-  display: flex;
-  justify-content: center;
-  margin-top: 8px;
-}
 .chart-volume-profile-tool {
   display: grid;
   place-items: center;
-  width: 34px;
+  width: 32px;
   height: 32px;
-  flex: 0 0 34px;
   padding: 0;
   border: 0;
-  border-radius: 4px;
   background: transparent;
-  color: #b5cced;
+  fill: inherit;
   cursor: pointer;
 }
-.chart-volume-profile-tool:hover:not(:disabled) { background: #29384e; color: #75ddd4; }
 .chart-volume-profile-tool:disabled { opacity: 0.36; cursor: default; }
-.chart-volume-profile-tool span { display: grid; gap: 2px; width: 18px; border-left: 1px solid currentColor; padding: 1px 2px; }
-.chart-volume-profile-tool i { height: 2px; width: 10px; background: currentColor; }
-.chart-volume-profile-tool i:nth-child(2) { width: 14px; }
-.chart-volume-profile-tool i:nth-child(3) { width: 7px; }
+.chart-volume-profile-tool:disabled > .icon-overlay { pointer-events: none; }
 .chart-host .klinecharts-pro-period-bar > .chart-day-download {
   flex: 0 0 auto;
   height: 28px;
@@ -123,9 +112,8 @@
 .bybit-download-form { display: grid; gap: 14px; }
 .bybit-download-form p { margin: 0; color: #aebdd0; font-size: 13px; }
 .bybit-download-form p[role="alert"] { color: #ffb4b4; }
-.bybit-download-form > div { display: flex; flex-wrap: wrap; gap: 12px; }
-.bybit-download-form label { display: grid; flex: 1 0 145px; gap: 5px; }
-.bybit-download-form input, .bybit-download-form button {
+.bybit-download-form > div:not(.trade-range-fields) { display: flex; flex-wrap: wrap; gap: 12px; }
+.bybit-download-form button {
   min-height: 36px;
   padding: 5px 10px;
   border: 1px solid #405672;
@@ -165,3 +153,22 @@
   white-space: nowrap;
   pointer-events: none;
 }
+
+.chart-host .klinecharts-pro-setting-modal-content:has(+ .chart-hover-details-setting) { margin-bottom: 14px; }
+
+.chart-host .chart-hover-details-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  margin: 0 0 16px;
+  padding: 7px 10px;
+  background: transparent;
+  border: 1px solid var(--klinecharts-pro-border-color);
+  border-radius: 6px;
+  text-align: left;
+}
+
+.chart-hover-details-setting .klinecharts-pro-switch { flex-shrink: 0; }

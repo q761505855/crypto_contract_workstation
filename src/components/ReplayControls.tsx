@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import Decimal from 'decimal.js'
-import { isOkxPriceSource, priceSourceLabel, type PriceSource } from '../market-data/price-source-preferences'
+import { isLocalPriceSource, isOkxPriceSource, isPriceSource, priceSourceLabel, type PriceSource } from '../market-data/price-source-preferences'
 import type { MarketSelection } from '../market-data/models'
-import { CTRADER_TIMEFRAMES } from '../market-data/intervals'
+import { CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/intervals'
 import type {
   ReplaySession,
+  ReplayMode,
   ReplaySpeed,
 } from '../replay/models'
-import { DEFAULT_TRADING_CONFIG, sessionVisibleUntil } from '../replay/models'
-import type { ReplayController } from '../replay/useReplayController'
+import { DEFAULT_TRADING_CONFIG, isTickSpeed, MAX_TICK_SPEED, MIN_TICK_SPEED, sessionVisibleUntil } from '../replay/models'
+import type { useCTraderReplayController } from '../replay/useCTraderReplayController'
 import { validateReplayStepPeriod } from '../replay/step-preferences'
 import { FINE_STEP_PERIODS, isCTraderReplayStepPeriod, isFineStepPeriod, type ReplayStepPeriod } from '../replay/step-periods'
 import { cTraderLeverage, type CTraderTradingTerms } from '../simulation/ctrader-trading'
@@ -21,9 +22,9 @@ import { formatDisplayTime } from '../format-display-time'
 
 interface ReplayControlsProps {
   priceSource?: PriceSource
-  market: { getReplayTradingTerms(symbol: string, start: number, signal?: AbortSignal): Promise<TradingTerms> }
+  market: { getReplayTradingTerms(symbol: string, start: number, signal?: AbortSignal): Promise<TradingTerms | undefined> }
   selection: MarketSelection
-  replay: ReplayController<ReplayStepPeriod>
+  replay: ReturnType<typeof useCTraderReplayController>
   simulation: SimulationController
   stepPeriod: ReplayStepPeriod
   onStepPeriodChange: (period: ReplayStepPeriod) => void
@@ -39,14 +40,45 @@ interface ReplayControlsProps {
 function sessionName(session: ReplaySession): string {
   const { marketSource } = session
   const time = formatDisplayTime(session.startTime)
-  const label = isOkxPriceSource(marketSource) ? priceSourceLabel(marketSource)
+  const label = (isOkxPriceSource(marketSource) || marketSource === 'databento-cme') ? priceSourceLabel(marketSource)
     : marketSource !== 'ctrader' ? '币安存档' : session.tradingConfig.ctrader ? undefined : '旧模拟规则'
   return `${session.symbol.ticker} ${session.period.text} · ${time}${label === undefined ? '' : ` · ${label}`}`
 }
 
 const HOLD_TO_PLAY_MS = 450
+const TICK_SPEED_STOPS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
+
+function TickSpeedControl({ speed, onChange, disabled }: { speed: number; onChange(speed: number): void; disabled: boolean }) {
+  const marks = useId()
+  const [draft, setDraft] = useState<string | null>(null)
+  const stop = TICK_SPEED_STOPS.reduce((closest, rate, index) =>
+    Math.abs(Math.log(rate / speed)) < Math.abs(Math.log(TICK_SPEED_STOPS[closest] / speed)) ? index : closest, 0)
+
+  function apply(): void {
+    const value = Number(draft)
+    if (isTickSpeed(value)) onChange(value)
+    setDraft(null)
+  }
+
+  return <div className="replay-tick-speed" role="group" aria-label="逐笔速度">
+    <input aria-label="逐笔速度滑块" aria-valuetext={`${speed}×`} type="range" list={marks}
+      min={0} max={TICK_SPEED_STOPS.length - 1} step={1} value={stop} disabled={disabled}
+      onChange={event => { setDraft(null); onChange(TICK_SPEED_STOPS[Number(event.target.value)]) }} />
+    <datalist id={marks}>{TICK_SPEED_STOPS.map((rate, index) => <option key={rate} value={index} />)}</datalist>
+    <input aria-label="逐笔回放速度" type="number" inputMode="decimal" min={MIN_TICK_SPEED} max={MAX_TICK_SPEED} step="any"
+      title="输入 0.1 至 1000，按 Enter 或移开焦点应用" value={draft ?? speed} disabled={disabled}
+      aria-invalid={draft !== null && !isTickSpeed(Number(draft))}
+      onChange={event => setDraft(event.target.value)} onBlur={apply}
+      onKeyDown={event => {
+        if (event.key === 'Enter') { event.preventDefault(); apply() }
+        if (event.key === 'Escape') { event.stopPropagation(); setDraft(null) }
+      }} />
+    <span aria-hidden="true">×</span>
+  </div>
+}
 
 function ReplayTradingTerms({ terms, waiting, source }: { terms?: TradingTerms; waiting?: string; source: PriceSource }) {
+  if (source === 'databento-cme') return <p className="muted-text">使用通用价格模拟。盈亏以价格变动乘数量计算。</p>
   if (isOkxPriceSource(source)) {
     const okx = terms && 'tickSize' in terms ? terms : undefined
     return <details className="replay-advanced">
@@ -175,9 +207,12 @@ export function ReplayControls({
   const [termsError, setTermsError] = useState('')
   const [viewportSpeed, setViewportSpeed] = useState<ReplaySpeed>(1)
   const [viewportPlaying, setViewportPlaying] = useState(false)
+  const [initialMode, setInitialMode] = useState<ReplayMode>(() => stepPeriod === 'tick' ? 'tick' : 'kline')
   const ticker = selection.symbol.ticker
   const session = replay.session
-  const viewportLocked = interactionLocked || chartStartTime === null || session !== null
+  const playbackMode = session === null ? (replay.supportsTicks ? initialMode : 'kline') : replay.mode
+  const tickMode = playbackMode === 'tick'
+  const viewportLocked = interactionLocked || chartStartTime === null || session !== null || tickMode
   const playViewport = useCallback(() => setViewportPlaying(true), [])
   const pauseViewport = useCallback(() => setViewportPlaying(false), [])
   const nextViewportCandle = useCallback(() => onChartStep(1), [onChartStep])
@@ -195,8 +230,9 @@ export function ReplayControls({
   const okx = displayedTerms && 'tickSize' in displayedTerms ? displayedTerms : undefined
   const minimumLeverage = session !== null && !config?.ctrader && state ? minimumContractLeverage(state) : 1
   const sourceMaximum = displayedTerms ? ('tickSize' in displayedTerms ? okxMaximumLeverage(displayedTerms) : cTraderLeverage(displayedTerms)) : undefined
-  const defaultLeverage = okx ? Math.min(DEFAULT_TRADING_CONFIG.leverage, okxMaximumLeverage(okx)) : sourceMaximum
-  const maximumLeverage = session === null ? sourceMaximum : sourceMaximum ?? MAX_ADJUSTABLE_LEVERAGE
+  const defaultLeverage = okx ? Math.min(DEFAULT_TRADING_CONFIG.leverage, okxMaximumLeverage(okx))
+    : priceSource === 'databento-cme' ? DEFAULT_TRADING_CONFIG.leverage : sourceMaximum
+  const maximumLeverage = session === null && priceSource !== 'databento-cme' ? sourceMaximum : sourceMaximum ?? MAX_ADJUSTABLE_LEVERAGE
   const leverageText = session === null ? leverageDraft ?? (defaultLeverage?.toString() ?? '')
     : activeLeverage ?? (config?.leverage.toString() ?? '')
   const slippageText = session === null ? slippageRate : activeSlippage ?? config?.slippageRate ?? '0'
@@ -216,7 +252,7 @@ export function ReplayControls({
     setTerms(null)
     setTermsError('')
     void market.getReplayTradingTerms(ticker, chartStartTime, request.signal).then(result => {
-      if (!request.signal.aborted) setTerms(result)
+      if (!request.signal.aborted) setTerms(result ?? null)
     }, (error: unknown) => {
       if (!request.signal.aborted) setTermsError(error instanceof Error ? error.message : '无法读取交易规格')
     })
@@ -241,7 +277,7 @@ export function ReplayControls({
     pauseViewport()
     void replay.createSession({
       symbol: selection.symbol, period: selection.period, startTime: chartStartTime,
-      initialBalance, slippageRate,
+      initialBalance, slippageRate, playbackMode,
       ...(leverageDraft === null ? {} : { leverage }),
     })
     setSettingsOpen(false)
@@ -284,10 +320,20 @@ export function ReplayControls({
   </>
 
   const stepSelect = <select aria-label="步进周期" disabled={interactionLocked}
-    value={isCTraderReplayStepPeriod(stepPeriod) ? stepPeriod : '1m'}
+    value={stepPeriod !== 'tick' && isCTraderReplayStepPeriod(stepPeriod) ? stepPeriod : '1m'}
     onChange={event => onStepPeriodChange(validateReplayStepPeriod(event.target.value))}>
-    {priceSource === 'ctrader' && FINE_STEP_PERIODS.map(period => <option key={period} value={period}>{period === 'tick' ? '逐笔 Tick' : period}</option>)}
+    {replay.supportsTicks && FINE_STEP_PERIODS.filter(period => period !== 'tick').map(period => <option key={period} value={period}>{period}</option>)}
     {CTRADER_TIMEFRAMES.map(period => <option key={period} value={period}>{period}</option>)}
+  </select>
+  const modeSelect = <select aria-label="回放模式" value={playbackMode}
+    disabled={interactionLocked || replay.busy}
+    onChange={event => {
+      const mode = event.target.value as ReplayMode
+      if (session === null) setInitialMode(mode)
+      else replay.setMode(mode)
+    }}>
+    <option value="kline">K 线模式</option>
+    <option value="tick" disabled={!replay.supportsTicks}>逐笔模式</option>
   </select>
   const speedSelect = <select aria-label={session === null ? '播放速度' : '回放速度'} disabled={interactionLocked}
     value={session?.speed ?? viewportSpeed}
@@ -302,20 +348,25 @@ export function ReplayControls({
   }
 
   if (session === null) {
-    const startLabel = chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(chartStartTime)
+    const startLabel = chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(
+      tickMode ? nextOpenTime(chartStartTime, selection.period.text) : chartStartTime,
+    )
     return <section className="replay-controls replay-setup" data-testid="replay-controls">
       <TimeJumpControl compact disabled={interactionLocked}
-        defaultTimestamp={priceSource === 'okx-local' ? chartStartTime ?? undefined : undefined}
+        defaultTimestamp={isLocalPriceSource(priceSource) ? chartStartTime ?? undefined : undefined}
         onJump={timestamp => { pauseViewport(); onJumpToTime(timestamp) }}
         onLocateLatest={() => { pauseViewport(); onLocateLatest() }} />
-      <button type="button" disabled={viewportLocked} onClick={() => { pauseViewport(); onChartStep(-1) }}>上一根</button>
-      <NextCandleButton key={`${ticker}:${selection.period.text}`} disabled={viewportLocked} label="下一根"
-        next={nextViewportCandle} play={playViewport} pause={pauseViewport} />
-      <button type="button" disabled={viewportLocked} onClick={viewportPlaying ? pauseViewport : playViewport}>
-        {viewportPlaying ? '暂停' : '播放'}
-      </button>
-      {speedSelect}
-      <span className="replay-start-time">起点：{startLabel}</span>
+      {!tickMode && <>
+        <button type="button" disabled={viewportLocked} onClick={() => { pauseViewport(); onChartStep(-1) }}>上一根</button>
+        <NextCandleButton key={`${ticker}:${selection.period.text}`} disabled={viewportLocked} label="下一根"
+          next={nextViewportCandle} play={playViewport} pause={pauseViewport} />
+        <button type="button" disabled={viewportLocked} onClick={viewportPlaying ? pauseViewport : playViewport}>
+          {viewportPlaying ? '暂停' : '播放'}
+        </button>
+        {speedSelect}
+      </>}
+      <span className="replay-start-time">{tickMode ? '逐笔起点' : '起点'}：{startLabel}</span>
+      {modeSelect}
       <button type="button" onClick={openSettings}>回放设置</button>
       <button type="button" disabled={interactionLocked || !validCreation} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
       {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
@@ -376,14 +427,14 @@ export function ReplayControls({
     </section>
   }
 
-  const native = session.marketSource === 'ctrader' || isOkxPriceSource(session.marketSource)
+  const native = isPriceSource(session.marketSource)
   const onTick = session.cursorTimeframe === 'tick'
   const currentTime = onTick ? session.currentTime : sessionVisibleUntil(session) - (native ? 0 : 60_000)
   const precision = onTick ? 'millisecond' : isFineStepPeriod(session.cursorTimeframe) ? 'second' : 'minute'
   return (
     <section className="replay-controls" data-testid="replay-controls">
       <TimeJumpControl compact
-        defaultTimestamp={priceSource === 'okx-local' ? session.currentTime : undefined}
+        defaultTimestamp={isLocalPriceSource(priceSource) ? session.currentTime : undefined}
         disabled={interactionLocked}
         onJump={onJumpToTime}
         onLocateLatest={onLocateLatest}
@@ -394,26 +445,29 @@ export function ReplayControls({
           ? <span>第 {session.currentIndex + 1} 步</span>
           : <span title={`会话进度按创建时的 ${session.period.text} K 线计数`}>{session.currentIndex + 1}/{session.candleCount}</span>}
       </span>
-      <label className="replay-step-period">步进{stepSelect}</label>
-      <button
-        disabled={
-          interactionLocked ||
-          (session.currentIndex === 0 && (native || session.visibleUntil === undefined)) ||
-          session.hasTrades
-        }
-        onClick={() => void replay.previous()}
-        type="button"
-      >
-        {stepPeriod === 'tick' ? '上一笔' : '上一根'}
-      </button>
-      <NextCandleButton
-        key={session.id}
-        next={replay.next}
-        play={replay.play}
-        pause={replay.pause}
-        label={stepPeriod === 'tick' ? '下一笔' : '下一根'}
-        disabled={interactionLocked || session.status === 'completed'}
-      />
+      {modeSelect}
+      {!tickMode && <>
+        <label className="replay-step-period">步进{stepSelect}</label>
+        <button
+          disabled={
+            interactionLocked ||
+            (session.currentIndex === 0 && (native || session.visibleUntil === undefined)) ||
+            session.hasTrades
+          }
+          onClick={() => void replay.previous()}
+          type="button"
+        >
+          上一根
+        </button>
+        <NextCandleButton
+          key={session.id}
+          next={replay.next}
+          play={replay.play}
+          pause={replay.pause}
+          label="下一根"
+          disabled={interactionLocked || session.status === 'completed'}
+        />
+      </>}
       <button
         disabled={(!replay.isPlaying && interactionLocked) || session.status === 'completed'}
         onClick={replay.isPlaying ? replay.pause : replay.play}
@@ -421,7 +475,8 @@ export function ReplayControls({
       >
         {replay.isPlaying ? '暂停' : '播放'}
       </button>
-      {speedSelect}
+      {tickMode ? <TickSpeedControl key={session.id} speed={session.tickSpeed ?? 1}
+        disabled={session.status === 'completed'} onChange={replay.setTickSpeed} /> : speedSelect}
       <button type="button" className="trade-overlays-toggle" aria-pressed={showTradeOverlays}
         onClick={() => onTradeOverlaysChange(!showTradeOverlays)} title={showTradeOverlays ? '隐藏图表交易标记' : '显示图表交易标记'}>交易标记</button>
       <button type="button" className="replay-settings-actions" onClick={openSettings}>回放设置</button>
@@ -454,13 +509,13 @@ export function ReplayControls({
           </dl></div>
         </details>}
         <div className="workspace-session-actions">
-      <button
+      {!tickMode && <button
         disabled={interactionLocked || session.status === 'completed'}
         onClick={() => { setSettingsOpen(false); void replay.jumpToEnd() }}
         type="button"
       >
         跳转结束
-      </button>
+      </button>}
       <button
         disabled={interactionLocked}
         onClick={() => {

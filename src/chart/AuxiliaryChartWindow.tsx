@@ -56,7 +56,8 @@ function ConnectedChart({ connection, period, onSelection }: {
 
   if (snapshot === null) return <p className="auxiliary-chart-status" role="status">正在等待主窗口连接…</p>
   const replayTime = snapshot.visibleUntil === null ? null : formatDisplayTime(snapshot.visibleUntil, 'Asia/Shanghai')
-  const source = connection.localArchives ? 'OKX-本地' : snapshot.symbol.exchange === 'OKX' ? 'OKX' : 'cTrader'
+  const source = snapshot.symbol.exchange === 'CME' ? 'Databento-CME' : connection.localArchives ? 'OKX-本地'
+    : snapshot.symbol.exchange === 'OKX' ? 'OKX' : 'cTrader'
   return (
     <>
       <header className="auxiliary-chart-status">

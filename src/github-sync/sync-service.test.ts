@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PINNED_PERIODS_KEY } from '../chart/period-preferences'
 import { CHART_INDICATORS_PREFERENCE, type JsonValue } from '../chart/indicator-preferences'
+import { orderFlowSettings } from '../chart/order-flow-preferences'
 import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { ReplayEngine } from '../replay/replay-engine'
@@ -68,12 +69,14 @@ function candle(openTime: number, close = '100'): MarketCandle {
 function backup(): BackupEnvelope {
   // Required ensures newly introduced configuration fields need archive coverage.
   const preferences: Required<BackupPreferences> = {
-    candleType: 'heikin_ashi',
+    candleType: 'line',
+    showCandleHoverDetails: false,
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
     ctraderAccount: 'live:19',
     priceSource: 'okx-local',
     okxSelectedSymbol: { ticker: 'ETH-USDT-SWAP', exchange: 'OKX', priceCurrency: 'USDT', type: 'PERPETUAL', pricePrecision: 2, volumePrecision: 3 },
+    databentoSelectedSymbol: 'NQ.FUT',
     pinnedPeriods: ['1m', '1d'],
     replayStepPeriod: '1M',
     showTradeOverlays: false,
@@ -91,8 +94,11 @@ function backup(): BackupEnvelope {
         bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxNotional: 0, thresholdUnit: 'contracts',
           minQuantity: 0, maxQuantity: 2.5, minContracts: 10, maxContracts: 0, minLots: 0.01, maxLots: 0.5,
           sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 320 },
-        profile: { type: 'bidAsk', rows: 26, valueArea: 82, showPoc: false, pocColor: '#ffcc7000' },
-        visibleProfile: { placement: 'left', offset: 0, width: 30, rows: 56, type: 'volumeDelta', showHeaders: false,
+        profile: { type: 'bidAsk', rows: 26, valueArea: 82, rowSizePercent: 0.02, showPoc: false, pocColor: '#ffcc7000', showDelta: false },
+        candleProfile: { type: 'volumeDelta', showDelta: false, rows: 18, columnWidth: 140, width: 85,
+          showValues: true, showPoc: true, showValueArea: true, showLabels: false, valueArea: 76,
+          volumeColor: '#12345600', valueAreaColor: '#abcded80', bidColor: '#ed1234', askColor: '#12ed34', pocColor: '#ffee88', levelColor: '#cabbde' },
+        visibleProfile: { placement: 'left', offset: 0, width: 30, rows: 56, type: 'volumeDelta', showHeaders: false, showDelta: false,
           showPoc: false, showValueArea: true, valueArea: 83, showLabels: false, pocColor: '#ffe192', levelColor: '#aabbcc00',
           volumeColor: '#12345600', valueAreaColor: '#13568080', positiveColor: '#23456780', negativeColor: '#345678' },
         cvd: { reset: 'continuous', showZero: false, plot: 'histogram' },
@@ -102,6 +108,7 @@ function backup(): BackupEnvelope {
         { name: 'FOOTPRINT', calcParams: [], visible: false, styles: null },
         { name: 'VWAP', calcParams: [], visible: true, styles: null },
         { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
+        { name: 'CANDLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
         { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
           bubbleMode: 'aggregate',
           bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -411,7 +418,7 @@ describe('GitHubSyncService', () => {
     const targetStorage = storage()
     const sourceBackups = new WorkstationBackupService(`workspace-cloud-source-${crypto.randomUUID()}`, sourceStorage)
     const targetBackups = new WorkstationBackupService(`workspace-cloud-target-${crypto.randomUUID()}`, targetStorage)
-    const complete = backup().data.preferences!
+    const complete: BackupPreferences = { ...backup().data.preferences!, priceSource: 'databento-cme' }
     const configArchive: BackupEnvelope = { ...backup(), kind: 'preferences', data: { preferences: complete } }
     await sourceBackups.import(configArchive)
     expect((await sourceBackups.exportPreferences()).data.preferences).toEqual(complete)
@@ -421,8 +428,22 @@ describe('GitHubSyncService', () => {
     const selection = { config: true, sessions: false, marketData: false }
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
-    expect((await targetBackups.exportPreferences()).data.preferences).toEqual(complete)
+    const restoredConfig = (await targetBackups.exportPreferences()).data.preferences
+    expect(restoredConfig).toEqual(complete)
+    expect(orderFlowSettings('profile', restoredConfig?.chartIndicators?.orderFlow).rowSizePercent).toBe(0.02)
+    for (const group of ['profile', 'candleProfile', 'visibleProfile'] as const) {
+      expect(orderFlowSettings(group, restoredConfig?.chartIndicators?.orderFlow).valueArea).toBe(82)
+    }
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(complete.workspace)
+
+    const narrowerProfile = structuredClone(complete.chartIndicators!)
+    narrowerProfile.orderFlow!.profile!.rowSizePercent = 0.001
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(narrowerProfile))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual({ ...complete, chartIndicators: narrowerProfile })
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(complete.chartIndicators))
 
     const chartWindowSize = { width: 930, height: 570 }
     sourceStorage.setItem('chart.windowSize.v1', JSON.stringify(chartWindowSize))
@@ -450,6 +471,13 @@ describe('GitHubSyncService', () => {
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('true')
     sourceStorage.setItem('chart.showTradeOverlays.v1', 'false')
 
+    sourceStorage.setItem('chart.showCandleHoverDetails.v1', 'true')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual({ ...complete, showCandleHoverDetails: true })
+    sourceStorage.setItem('chart.showCandleHoverDetails.v1', 'false')
+
     for (const replayStepPeriod of ['1m', '1s', '5s', '15s', 'tick'] as const) {
       sourceStorage.setItem('replay.stepPeriod.v1', JSON.stringify(replayStepPeriod))
       await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
@@ -465,7 +493,7 @@ describe('GitHubSyncService', () => {
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect(targetStorage.getItem('chart.candleType.v1')).toBe('"candle_solid"')
-    sourceStorage.setItem('chart.candleType.v1', '"heikin_ashi"')
+    sourceStorage.setItem('chart.candleType.v1', '"line"')
 
     const changed = {
       schemaVersion: 1,
@@ -491,20 +519,36 @@ describe('GitHubSyncService', () => {
     const legacy = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     delete legacy.workspace
     delete legacy.candleType
+    delete legacy.showCandleHoverDetails
     delete legacy.replayStepPeriod
     delete legacy.showTradeOverlays
     delete legacy.chartWindowSize
     delete legacy.ctraderAccount
+    delete legacy.databentoSelectedSymbol
     await rewrite(legacy)
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
-    expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+    expect(targetStorage.getItem('chart.candleType.v1')).toBe('"line"')
+    expect(targetStorage.getItem('chart.showCandleHoverDetails.v1')).toBe('false')
     expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('false')
     expect(targetStorage.getItem('chart.windowSize.v1')).toBe(JSON.stringify(complete.chartWindowSize))
+    expect(targetStorage.getItem('marketData.databentoSelectedSymbol.v1')).toBe('"NQ.FUT"')
     expect(targetStorage.getItem('marketData.ctraderAccount.v1')).toBe('"live:19"')
 
     const before = (await targetBackups.exportAll()).data
+    for (const showCandleHoverDetails of [null, '', 0, 'false', [], {}]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', showCandleHoverDetails })
+      await expect(target.readConfig(client(remote))).rejects.toThrow('showCandleHoverDetails')
+      await expect(target.pull(client(remote))).rejects.toThrow('showCandleHoverDetails')
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    for (const databentoSelectedSymbol of [null, '', '../NQ.FUT', 0, []]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', databentoSelectedSymbol })
+      await expect(target.readConfig(client(remote))).rejects.toThrow('Databento')
+      await expect(target.pull(client(remote))).rejects.toThrow('Databento')
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const replayStepPeriod of [null, '', 0, false, '10s']) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', replayStepPeriod })
       await expect(target.readConfig(client(remote))).rejects.toThrow('replayStepPeriod')
@@ -880,6 +924,29 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(profileChanged)
 
+    const deltaChanged = structuredClone(profileChanged)
+    deltaChanged.orderFlow!.candleProfile!.showDelta = true
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(deltaChanged))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect((await targetBackups.exportPreferences()).data.preferences).toEqual((await sourceBackups.exportPreferences()).data.preferences)
+
+    const inheritedPalette = structuredClone(deltaChanged)
+    inheritedPalette.orderFlow!.profile!.pocColor = '#be8b3c'
+    delete inheritedPalette.orderFlow!.candleProfile!.pocColor
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(inheritedPalette))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    const freshBackups = new WorkstationBackupService(`candle-palette-cloud-${crypto.randomUUID()}`, storage())
+    await new GitHubSyncService(freshBackups).pull(client(remote))
+    const restored = (await freshBackups.exportPreferences()).data.preferences!.chartIndicators!.orderFlow!
+    expect(restored.candleProfile).not.toHaveProperty('pocColor')
+    expect(orderFlowSettings('candleProfile', restored)).toMatchObject({ pocColor: '#be8b3c', volumeColor: '#12345600' })
+    await target.pull(client(remote))
+    const existing = (await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.orderFlow!
+    expect(existing.candleProfile!.pocColor).toBe(deltaChanged.orderFlow!.candleProfile!.pocColor)
+
     const footprintChanged = structuredClone(indicators)
     footprintChanged.orderFlow!.footprint!.plotType = 'matchText'
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(footprintChanged))
@@ -966,8 +1033,11 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicators)
     const legacyDefaults = structuredClone(indicators)
-    legacyDefaults.main = legacyDefaults.main.filter(({ name }) => name !== 'VWAP' && name !== 'VISIBLE_VOLUME_PROFILE')
-    delete legacyDefaults.orderFlow
+    legacyDefaults.main = legacyDefaults.main.filter(({ name }) => !['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE'].includes(name))
+    delete legacyDefaults.orderFlow!.candleProfile
+    delete legacyDefaults.orderFlow!.profile!.rowSizePercent
+    delete legacyDefaults.orderFlow!.profile!.showDelta
+    delete legacyDefaults.orderFlow!.visibleProfile!.showDelta
     legacyDefaults.main.find(i => i.name === 'BIG_TRADES')!.styles = null
     legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
     const legacySessions = legacyDefaults.main.find(i => i.name === 'MARKET_SESSIONS')!
@@ -987,6 +1057,11 @@ describe('GitHubSyncService', () => {
     expect((await targetBackups.exportPreferences()).data.preferences!.chartIndicators!.main.find(i => i.name === 'BIG_TRADES'))
       .toEqual(indicators.main.find(i => i.name === 'BIG_TRADES'))
     const before = (await targetBackups.exportAll()).data
+    for (const rowSizePercent of [null, '', '0.01', 0, -0.01, 101]) {
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { profile: { rowSizePercent } } } })
+      await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.profile.rowSizePercent/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const visibleProfile of [null, { rows: 201 }, { offset: null }, { type: 'unknown' }, { showHeaders: 0 },
       { showPoc: null }, { showValueArea: 0 }, { valueArea: 101 }, { valueAreaColor: '' }]) {
       await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { visibleProfile } } })
@@ -999,7 +1074,12 @@ describe('GitHubSyncService', () => {
       await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.bubbles/)
       expect((await targetBackups.exportAll()).data).toEqual(before)
     }
-    for (const name of ['VWAP', 'VISIBLE_VOLUME_PROFILE']) {
+    for (const [group, value] of Object.entries({ profile: { showDelta: 0 }, visibleProfile: { showDelta: null }, candleProfile: { width: 101 } })) {
+      await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { [group]: value } } })
+      await expect(target.pull(client(remote))).rejects.toThrow(`orderFlow.${group}`)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
+    for (const name of ['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE']) {
       const invalidTradeIndicator = structuredClone(indicators)
       invalidTradeIndicator.main.find(i => i.name === name)!.calcParams = [null]
       await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidTradeIndicator })
@@ -1075,8 +1155,9 @@ describe('GitHubSyncService', () => {
     const first = { ...candle(60_000), source: 'okx' as const, symbol: symbol.ticker }
     const session = {
       schemaVersion: 2, id: `${marketSource}-cloud-session`, symbol, period: SUPPORTED_PERIODS[0],
-      marketSource, cursorTimeframe: '1m', startTime: 60_000, currentTime: 120_000,
-      endTime: 300_000, visibleUntil: 180_000, currentIndex: 1, candleCount: 2,
+      marketSource, cursorTimeframe: 'tick', cursorTickIndex: 1, startTime: 60_000, currentTime: 120_000,
+      playbackMode: 'tick', tickSpeed: 1000,
+      endTime: 300_000, visibleUntil: 120_001, currentIndex: 1, candleCount: 2,
       speed: 1, status: 'paused', hasTrades: true, active: true, createdAt: 1, updatedAt: 2,
       tradingConfig: { initialBalance: '1000', leverage: 10, feeRate: '0.0005', slippageRate: '0',
         maintenanceMarginRate: '0.004', liquidationFeeRate: '0.0005', okx: {

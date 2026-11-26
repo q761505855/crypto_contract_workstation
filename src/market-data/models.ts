@@ -1,14 +1,17 @@
 import type { Period, SymbolInfo } from '@klinecharts/pro'
 
+export const DATABENTO_PRICE_PRECISION = 9
+export const DATABENTO_CHART_PRICE_PRECISION = 2
+
 /** `mark` identifies legacy IndexedDB records only; active market services accept `trade`. */
 export type CandleKind = 'trade' | 'mark'
 
 export interface MarketSymbol {
-  exchange?: 'OKX'
+  exchange?: 'OKX' | 'CME'
   symbol: string
   baseAsset: string
   quoteAsset: string
-  contractType: 'PERPETUAL' | 'CFD'
+  contractType: 'PERPETUAL' | 'CFD' | 'FUTURES'
   status: 'TRADING'
   onboardDate: number
   pricePrecision: number
@@ -29,7 +32,7 @@ export interface MarketCandle {
   quoteVolume: string
   tradeCount: number
   isClosed: boolean
-  source: 'binance' | 'ctrader' | 'okx' | 'okx-local'
+  source: 'binance' | 'ctrader' | 'okx' | 'okx-local' | 'databento-cme'
   /** Quote tick count reported by cTrader. It is not exchange trade volume. */
   tickVolume?: number
 }
@@ -72,6 +75,10 @@ export function normalizeMarketTicker(value: unknown): string | undefined {
 }
 
 export function toSymbolInfo(symbol: MarketSymbol): SymbolInfo {
+  if (symbol.exchange === 'CME') return {
+    ticker: symbol.symbol, shortName: symbol.symbol, name: symbol.symbol, exchange: 'CME', market: 'Databento-CME',
+    type: 'FUTURES', pricePrecision: symbol.pricePrecision, volumePrecision: 0,
+  }
   const isCTrader = symbol.contractType === 'CFD'
   return {
     exchange: symbol.exchange ?? (isCTrader ? 'CTRADER' : 'BINANCE'),

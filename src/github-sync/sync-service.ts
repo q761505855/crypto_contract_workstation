@@ -322,7 +322,7 @@ export class GitHubSyncService {
       const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
       if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
       if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
-      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'okxSelectedSymbol', 'ctraderAccount', 'priceSource', 'pinnedPeriods', 'workspace', 'candleType', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'okxSelectedSymbol', 'databentoSelectedSymbol', 'ctraderAccount', 'priceSource', 'pinnedPeriods', 'workspace', 'candleType', 'showCandleHoverDetails', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
         if (value[key] !== undefined) preferences[key] = value[key]
       }
     }
@@ -664,11 +664,13 @@ export class GitHubSyncService {
           chartIndicators?: unknown
           selectedSymbol?: unknown
           okxSelectedSymbol?: unknown
+          databentoSelectedSymbol?: unknown
           ctraderAccount?: unknown
           priceSource?: unknown
           pinnedPeriods?: unknown
           workspace?: unknown
           candleType?: unknown
+          showCandleHoverDetails?: unknown
           replayStepPeriod?: unknown
           showTradeOverlays?: unknown
           chartWindowSize?: unknown
@@ -682,6 +684,9 @@ export class GitHubSyncService {
         preferences.binanceRestBaseUrl = value.binanceRestBaseUrl
         if (value.candleType !== undefined) {
           preferences.candleType = value.candleType as BackupPreferences['candleType']
+        }
+        if (value.showCandleHoverDetails !== undefined) {
+          preferences.showCandleHoverDetails = value.showCandleHoverDetails as BackupPreferences['showCandleHoverDetails']
         }
         if (value.replayStepPeriod !== undefined) {
           preferences.replayStepPeriod = value.replayStepPeriod as BackupPreferences['replayStepPeriod']
@@ -709,6 +714,9 @@ export class GitHubSyncService {
         }
         if (value.okxSelectedSymbol !== undefined) {
           preferences.okxSelectedSymbol = value.okxSelectedSymbol as BackupPreferences['okxSelectedSymbol']
+        }
+        if (value.databentoSelectedSymbol !== undefined) {
+          preferences.databentoSelectedSymbol = value.databentoSelectedSymbol as BackupPreferences['databentoSelectedSymbol']
         }
         if (value.chartIndicators !== undefined) {
           preferences.chartIndicators =

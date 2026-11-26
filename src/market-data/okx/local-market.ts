@@ -1,5 +1,7 @@
 import type { BybitTrade } from '../bybit/trades'
-import type { ChartPriceMarket } from '../ctrader-datafeed'
+import type { CTraderTick } from '../ctrader-market'
+import type { LocalArchiveMarket } from '../local-archive-market'
+import { aggregateLocalBars as aggregate, type LocalBar as Bar } from '../local-bars'
 import { alignOpenTime, isCTraderTimeframe, nextOpenTime, shiftOpenTime } from '../intervals'
 import type { MarketCandle, MarketSymbol } from '../models'
 import type { OkxReplayRisk } from '../../simulation/okx-trading'
@@ -9,7 +11,7 @@ import type { OkxLocalFile, OkxLocalFiles, OkxLocalTrade } from './local-files'
 import type { OkxMarketService } from './market'
 import { orderFlowMapping } from './trades'
 import { OkxLocalTradeCache } from './local-trade-cache'
-import { visitIndexedPriceSizes, visitIndexedTrades, type LocalTradeIndex } from './local-trade-index'
+import { appendIndexedReplayTicks, visitIndexedPriceSizes, visitIndexedTrades, type LocalTradeIndex } from './local-trade-index'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
@@ -17,14 +19,6 @@ const MINUTE_CACHE_DAYS = 24
 const RECENT_BARS = 499
 
 type BasePeriod = '1m' | '1h' | '1d'
-type Bar = Pick<MarketCandle, 'openTime' | 'tradeCount'> & {
-  open: number
-  high: number
-  low: number
-  close: number
-  volume: number
-  quoteVolume: number
-}
 type Minute = Bar & { first: OkxLocalTrade; last: OkxLocalTrade }
 type FileBars = Record<'1h' | '1d', Bar[]> & { '1m'?: Bar[] }
 type ArchiveFile = OkxLocalFile & { start: number }
@@ -36,25 +30,6 @@ function basePeriod(timeframe: string): BasePeriod {
   if (timeframe.endsWith('m')) return '1m'
   if (timeframe.endsWith('h')) return '1h'
   return '1d'
-}
-
-function aggregate(rows: Iterable<Bar>, timeframe: string): Bar[] {
-  const groups = new Map<number, Bar>()
-  for (const row of rows) {
-    const openTime = alignOpenTime(row.openTime, timeframe, 'floor')
-    const bar = groups.get(openTime)
-    if (!bar) {
-      groups.set(openTime, { ...row, openTime })
-      continue
-    }
-    bar.high = Math.max(bar.high, row.high)
-    bar.low = Math.min(bar.low, row.low)
-    bar.close = row.close
-    bar.volume += row.volume
-    bar.quoteVolume += row.quoteVolume
-    bar.tradeCount += row.tradeCount
-  }
-  return [...groups.values()]
 }
 
 function compareLocalTrades(a: OkxLocalTrade, b: OkxLocalTrade): number {
@@ -94,8 +69,10 @@ function offlineSymbol(symbol: string, onboardDate: number): MarketSymbol {
     quantityPrecision: 8, description: `${baseAsset} / USDT 永续合约` }
 }
 
-export class OkxLocalMarket implements ChartPriceMarket {
+export class OkxLocalMarket implements LocalArchiveMarket {
   readonly source = 'okx-local'
+  readonly archiveDay = okxArchiveDay
+  readonly archiveDayStart = fileStart
   private readonly summaries = new Map<string, FileBars>()
   private readonly minutes = new Map<string, FileBars>()
   private readonly scans = new Map<string, Promise<FileBars | undefined>>()
@@ -347,6 +324,16 @@ export class OkxLocalMarket implements ChartPriceMarket {
 
   async tradeDays(symbol: string): Promise<Set<string>> {
     return new Set((await this.activeArchives(symbol)).map(file => file.day))
+  }
+
+  readonly tickWindowMs = 60_000
+
+  async loadTicks(symbol: string, from: number, to: number, signal = new AbortController().signal): Promise<CTraderTick[]> {
+    const ticks: CTraderTick[] = []
+    await this.visitIndexedDays(symbol, from * 1000, (to + 1) * 1000, async (index, begin, end, value) => {
+      appendIndexedReplayTicks(index, begin, end, value, ticks)
+    }, signal)
+    return ticks
   }
 
   visitTrades(symbol: string, from: number, to: number, accept: (trade: BybitTrade) => unknown,

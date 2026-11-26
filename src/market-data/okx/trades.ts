@@ -13,6 +13,7 @@ export interface OrderFlowMapping {
   relation: BybitMapping['relation']
   okx?: OkxInstrument
   bybit?: BybitMapping
+  cme?: true
 }
 
 const okxInstruments = new Map<string, OkxInstrument>()
@@ -22,6 +23,7 @@ export function rememberOkxInstrument(instrument: OkxInstrument): void {
 }
 
 export function orderFlowMapping(symbol: Pick<SymbolInfo, 'ticker' | 'exchange'>): OrderFlowMapping | undefined {
+  if (symbol.exchange === 'CME' && symbol.ticker) return { symbol: symbol.ticker, relation: 'direct', cme: true }
   if (symbol.exchange === 'OKX') {
     const instrument = okxInstruments.get(symbol.ticker)
     if (instrument) return { symbol: instrument.symbol, relation: 'direct', okx: instrument }
@@ -43,6 +45,7 @@ export function orderFlowMapping(symbol: Pick<SymbolInfo, 'ticker' | 'exchange'>
 }
 
 export function orderFlowLabel(mapping: OrderFlowMapping): string {
+  if (mapping.cme) return `CME ${mapping.symbol}`
   return [mapping.okx && `OKX ${mapping.okx.symbol}`, mapping.bybit && `Bybit ${mapping.bybit.symbol}`].filter(Boolean).join(' / ')
 }
 

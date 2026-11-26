@@ -163,7 +163,7 @@ async function packCandleTrades(ranges: ReturnType<typeof candleRanges>, first: 
       values[index++] = trade.price
       values[index++] = trade.side === 'buy' ? trade.size : -trade.size
       values[index++] = trade.timeUs
-      values[index++] = Number(trade.venue === 'OKX')
+      values[index++] = trade.venue === 'CME' ? 2 : Number(trade.venue === 'OKX')
     }
   }
   return values

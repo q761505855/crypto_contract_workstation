@@ -22,37 +22,57 @@ cTrader 回放会话沿用 Schema 2，在本地、会话或完整 JSON 以及 Gi
 
 cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID，例如 `demo:17` 或 `live:19`。应用配置、全部数据 JSON 和 GitHub“应用配置”均支持该字段，沿用差异比较、校验和、冲突处理和恢复流程。旧存档缺少字段时保留本机选择。提供字段时，账户 ID 必须是正的安全整数，空值或非法格式在任何写入前拒绝。本地字段缺失、损坏或无法匹配当前授权列表时，唯一授权账户可自动连接，多个授权账户需要重新选择。启动时读取已恢复的选择并重新核对授权。如果连接期间恢复了另一个已授权账户，“工具”菜单会提示刷新后生效。
 
-顶部行情来源保存为 `priceSource`，接受 `ctrader`／`okx`／`okx-local`。OKX 和 OKX-本地共用 `okxSelectedSymbol`，须为 `exchange: "OKX"`、`priceCurrency: "USDT"`、`type: "PERPETUAL"` 的 USDT 永续代码。cTrader 的品种使用 `selectedSymbol`。行情来源和品种随本机、应用配置／完整 JSON 和 GitHub“应用配置”往返，品种与其显示元信息作为一个字段合并。旧档缺字段时保留本机同字段。本机缺省使用 cTrader，切到 OKX 来源时默认 BTC-USDT-SWAP 或目录中的可用合约。显式空值和非法值在写入前拒绝。自动恢复切换工作区，手动恢复后按提示刷新。OKX-本地的归档目录授权及文件属于设备数据。另一台设备恢复该来源后，须为当地浏览器选择可用的归档目录。
+顶部行情来源保存为 `priceSource`，接受 `ctrader`／`okx`／`okx-local`／`databento-cme`。OKX 和 OKX-本地共用 `okxSelectedSymbol`，须为 `exchange: "OKX"`、`priceCurrency: "USDT"`、`type: "PERPETUAL"` 的 USDT 永续代码。cTrader 的品种使用 `selectedSymbol`。Databento-CME 的品种使用 `databentoSelectedSymbol`，保存产品子文件夹名称，例如 `NQ.FUT`。行情来源和品种随本机、应用配置／完整 JSON 和 GitHub“应用配置”往返。旧档缺字段时保留本机同字段。本机缺省使用 cTrader。OKX 缺省使用 BTC-USDT-SWAP 或目录中的可用合约。Databento-CME 优先尝试恢复已保存的品种，目录里找不到时显示首个可用子文件夹。显式空值和非法值在写入前拒绝。自动恢复切换工作区，手动恢复后按提示刷新。两种本地来源的目录授权及文件属于设备数据。另一台设备恢复该来源后，须重新选择所在设备的目录。
 
-OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx"` 和 `marketSource: "okx-local"`，以及步进游标、排他边界和会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。两套 OKX 来源的步进周期从 `1m` 起。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。会话在三套来源间隔离，进入某来源时只恢复它的活动会话。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格、资金费率原始响应和本地归档文件属于行情运行数据。
+OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx"` 和 `marketSource: "okx-local"`，以及步进游标、排他边界和会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。会话按来源隔离。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格、资金费率原始响应和本地归档文件属于行情运行数据。
+
+Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进游标、排他边界和通用模拟状态，支持会话 JSON、完整 JSON 和 GitHub“会话与交易”。刷新或更换设备后，先加载会话用到的日档，再从回放设置恢复会话。日档选择和行情缓存属于当前页面的运行状态。
+
+四种行情来源的会话可保存 `playbackMode`（`kline` 或 `tick`）和 `tickSpeed`（`0.1–1000` 的数字）。两者随会话进入 IndexedDB、会话／完整 JSON 和 GitHub“会话与交易”，恢复时暂停并保留原游标。旧会话缺少模式时，逐笔游标或 cTrader 旧应用设置中的 `tick` 对应逐笔模式，其余使用 K 线模式。缺少逐笔倍率时使用 `1×`，显式非法值在写入前拒绝。创建前的模式选择只在当前页面有效。K 线步进周期沿用应用配置字段 `replayStepPeriod`，旧 `tick` 值仍可导入导出，在 K 线模式中以 `1m` 运行。
 
 ## 当前配置清单
 
-独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。
+独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型、悬浮 K 线详情和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。
 
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选与可见范围 Profile 的分档、关键价位与配色、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选／可见范围／逐根 K 线成交分布的分档、关键价位、配色与 Delta 开关、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
-| 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
+| 蜡烛图类型（含 Heikin Ashi 和收盘价折线） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
+| 悬浮 K 线详情 | `chart.showCandleHoverDetails.v1`；`chart/candle-hover-preferences.ts` | `showCandleHoverDetails` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
-| 行情来源（cTrader、OKX、OKX-本地） | `marketData.priceSource.v1`；`market-data/price-source-preferences.ts` | `priceSource` | `config/preferences.json` |
+| 行情来源（cTrader、OKX、OKX-本地、Databento-CME） | `marketData.priceSource.v1`；`market-data/price-source-preferences.ts` | `priceSource` | `config/preferences.json` |
 | OKX 和 OKX-本地共用的当前产品及图表精度 | `marketData.okxSelectedSymbol.v1`；`market-data/symbol-preferences.ts` | `okxSelectedSymbol` | `config/preferences.json` |
+| Databento-CME 当前产品 | `marketData.databentoSelectedSymbol.v1`；`market-data/symbol-preferences.ts` | `databentoSelectedSymbol` | `config/preferences.json` |
 | cTrader 账户环境和 ID | `marketData.ctraderAccount.v1`；`market-data/ctrader-account-preferences.ts` | `ctraderAccount` | `config/preferences.json` |
-| 回放步进（含 Tick、1s、5s、15s） | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
+| K 线步进（含 1s、5s、15s，兼容旧 Tick 值） | `replay.stepPeriod.v1`；`replay/step-preferences.ts` | `replayStepPeriod` | `config/preferences.json` |
 | 回放主图交易标记显隐 | `chart.showTradeOverlays.v1`；`chart/trade-overlay-preferences.ts` | `showTradeOverlays` | `config/preferences.json` |
 | 独立副图窗口的默认大小 | `chart.windowSize.v1`；`chart/chart-window-preferences.ts` | `chartWindowSize` | `config/preferences.json` |
 | 工作区账户／下单／持仓展开／收起、旧回放／状态显隐兼容字段、桌面／手机图表高度、旧持仓面板高度兼容字段 | `workspace.layout.v1`；`workspace/preferences.ts` | `workspace` | `config/preferences.json` |
 
 上述入口均位于 `src/`。新增配置必须更新本表，不得在组件中另建脱离存档的持久化键。配置读写和校验应放在可独立调用的模块中，备份服务不能依赖 React 组件。
 
+图表设置的“悬浮 K 线详情”默认开启，关闭后立即隐藏悬浮详情。主图的选择随本地、应用配置／完整 JSON 和 GitHub“应用配置”往返。恢复默认时重新开启。旧档缺字段时保留本机值，本机无设置时默认开启。字段接受布尔值，显式 `false` 原样恢复，空值与非法值在任何写入前拒绝。自动配置恢复随图表重建生效，手动恢复后按提示刷新。
+
 订单流的足迹图和大单气泡选择保存在 `chartIndicators.main`，CVD 选择保存在 `chartIndicators.sub`。足迹图与 CVD 使用显式空 `calcParams`。新增的足迹图、气泡样式、Profile 和 CVD 参数保存在可选的 `chartIndicators.orderFlow` 中。大单气泡启用时，模式、最低成交额和买卖颜色保存在既有主图指标字段。关闭时移入 `orderFlow.bubbles`，重新开启会应用已保存的值。因为显示半径、成交额上下限成对校验，自动同步以足迹图和大单气泡的各自设置组为单位检测并处理并发冲突。Profile 选区保存在既有绘图存档中，设置属于应用配置。
 
 VWAP 和可见范围成交分布以 `VWAP` 和 `VISIBLE_VOLUME_PROFILE` 加入 `chartIndicators.main`，默认为关闭。二者保存选择和 `visible`，使用显式空 `calcParams` 和空样式。`visible: false` 原样保留。旧档缺少整个 `chartIndicators` 时保留本机指标设置，有指标清单时按清单恢复，其中没有这两项就不启用。空主图列表原样恢复，重复项、副图配置和非法值在任何写入前拒绝。应用配置／完整 JSON 和 GitHub「应用配置」沿用现有差异、校验和及冲突流程。自动恢复会重建图表，手动恢复后按提示刷新。计算结果和图表可见范围属于运行状态。
 
-可见范围 Profile 的参数以 `chartIndicators.orderFlow.visibleProfile` 保存。位置接受 `left` 或 `right`，偏移 0–40% 和宽度 5–50% 为整数，档数为 4–200 的整数。内容接受 `volumeDelta`、`volume` 或 `delta`。默认靠右、偏移 0%、宽度 26%、48 档、双列且显示标题。`showPoc`、`showValueArea` 和 `showLabels` 默认开启，`valueArea` 接受 1–100 的整数百分比，默认 70。`valueAreaColor`、`pocColor` 和 `levelColor` 分别保存价值区成交量、POC 线和 VAH／VAL 线的颜色。旧档缺字段时保留本机值，本机无值时使用默认值。显式偏移 0、`false` 和透明色原样恢复，空值和非法值在任何写入前拒绝。关闭指标后仍保留设置。本地、配置／完整 JSON 和 GitHub「应用配置」沿用现有流程。框选 Profile 的独立设置位于 `chartIndicators.orderFlow.profile`。
+可见范围 Profile 的独立显示参数以 `chartIndicators.orderFlow.visibleProfile` 保存。位置接受 `left` 或 `right`，偏移 0–40% 和宽度 5–50% 为整数。内容接受 `volumeDelta`、`volume` 或 `delta`。默认靠右、偏移 0%、宽度 26%、双列且显示标题。`showPoc`、`showValueArea` 和 `showLabels` 默认开启。`valueAreaColor`、`pocColor` 和 `levelColor` 分别保存价值区成交量、POC 线和 VAH／VAL 线的颜色。旧档缺字段时保留本机值，本机无值时使用默认值。显式偏移 0、`false` 和透明色原样恢复，空值和非法值在任何写入前拒绝。关闭指标后仍保留设置。本地、配置／完整 JSON 和 GitHub「应用配置」沿用现有流程。框选 Profile 的独立显示设置位于 `chartIndicators.orderFlow.profile`。
+
+K线成交量分布图以 `CANDLE_VOLUME_PROFILE` 保存在 `chartIndicators.main`，默认为关闭，仅允许在主图添加一次，使用空 `calcParams` 和 `styles: null`。独立显示设置保存在 `chartIndicators.orderFlow.candleProfile`，与框选分布共用内容、关键价位、各档数字和配色的校验。`width` 接受 5–100 的整数百分比，默认 95，按每根 K 线左侧的可用宽度计算。`columnWidth` 接受 48–240 的整数像素，默认 120。旧档有主图清单但没有该指标时按清单恢复。整个 `chartIndicators` 缺失时保留本地指标选择，缺少的设置字段保留本地值，本地无值时使用默认值。显式 `visible: false`、空指标列表和透明色原样恢复。每根 K 线的逐笔成交及分布计算结果属于运行状态。
+
+三种 Profile 共用 `chartIndicators.orderFlow.profile.valueArea`，接受 1–100 的整数百分比，默认 70。任一设置窗口修改价值区比例都会保存到该字段，并随本机、应用配置／完整 JSON 和 GitHub「应用配置」比较、上传和恢复。未保存共享比例时依次采用旧版逐根、可见范围的 `valueArea`，最后使用默认值。旧字段仍按原范围严格校验并原样往返。`rows` 仅用于兼容 Schema 1 中的历史档数，接受 4–200 的整数并原样往返。
+
+三种 Profile 的「档宽比例（%）」共用 `chartIndicators.orderFlow.profile.rowSizePercent`，默认 `0.01`（0.01%），接受 0.000001–100 范围内的有限数字。任一分布设置中保存后，框选、逐根和可见范围一同重算。该比例随本机、应用配置／完整 JSON 和 GitHub「应用配置」比较、上传、冲突处理与恢复。旧档缺字段时保留本机值，本机缺省采用 0.01%。空值、字符串、零和越界值在写入前拒绝。计算使用的最新价与实际档宽属于运行数据。自动恢复随图表重建生效，手动导入或拉取后按提示刷新。
+
+逐根分布的配色缺省时沿用框选分布的同名颜色，两处均无值时采用默认色。已有的逐根分布自定义颜色和透明色会原样恢复，保存其他参数时未修改的继承色继续沿用框选配置。旧档缺少逐根分布的价格标签开关时先保留本机值，本机无值时默认隐藏标签。各档数字和价格标签可独立控制。价值区底色与 VAH、VAL 线由「显示 VAH / VAL」控制，两者随现有设置组参与本机、应用配置／完整 JSON 和 GitHub「应用配置」往返。
+
+本机已省略逐根分布的自定义颜色而云端该项与上次同步一致时，自动合并会省略该颜色，继续应用框选分布的继承色。显式透明色原样保存，存档中提供的空值或非法颜色仍在写入前拒绝。
+
+框选、可见范围和 K 线成交量分布分别以 `orderFlow.profile.showDelta`、`orderFlow.visibleProfile.showDelta` 和 `orderFlow.candleProfile.showDelta` 保存「显示 Delta」。默认开启，显式 `false` 原样恢复并使包含 Delta 的模式改为只画总成交量，已保存的显示模式可在重新开启后继续使用。缺少开关时保留本机值，`null`、数字、字符串及其他非法配置在任何写入前拒绝。指标选择和各项设置随本机、应用配置／完整 JSON 和 GitHub「应用配置」往返，参与现有差异比较、校验和与冲突处理。自动配置恢复会重建图表，手动导入或拉取后按提示刷新。
 
 Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或个别设置字段时保留本机值，本机没有该字段时运行时使用默认值。显式空指标列表、布尔 `false`、数字 `0` 和透明色原样恢复。提供的非法类型、空值、数值范围或枚举值在写入数据前拒绝。自动同步恢复会重建界面，手动恢复后按提示刷新。当前图表缩放、逐笔数据和计算缓存属于运行状态。
 
@@ -152,7 +172,7 @@ Pivots 配置保持 `PIVOTS` 名称，沿用 calcParams 前 30 项以兼容旧�
 
 ## 验收与回归
 
-蜡烛图类型使用可选字段 `candleType`，支持 `candle_solid`、`candle_stroke`、`candle_up_stroke`、`candle_down_stroke`、`ohlc`、`area`、`heikin_ashi`，默认全实心。选择经统一入口保存；配置／全部 JSON 导出及 GitHub“应用配置”的比较、上传与拉取均包含该字段。保持顶层 Schema 1；旧本地／云端存档缺少字段时保留目标已有类型，无本地设置时使用默认值。显式普通类型会恢复普通图，`null`、空字符串、布尔值、数字、数组、对象及未知枚举均在任何数据写入前拒绝，本地损坏值则回退默认。导入／云端恢复后按提示刷新，未操作的旧图表不会反写刚恢复的类型。
+蜡烛图类型使用可选字段 `candleType`，支持 `candle_solid`、`candle_stroke`、`candle_up_stroke`、`candle_down_stroke`、`ohlc`、`area`、`heikin_ashi` 和收盘价折线 `line`，默认全实心。选择经统一入口保存。配置／全部 JSON 导出及 GitHub“应用配置”的比较、上传与拉取均包含该字段。继续使用顶层 Schema 1。旧本地／云端存档缺少字段时保留目标已有类型，无本地设置时使用默认值。显式普通类型会恢复普通图，`null`、空字符串、布尔值、数字、数组、对象及未知枚举均在任何数据写入前拒绝，本地损坏值则回退默认。自动配置恢复随图表重建生效，手动导入或拉取后按提示刷新，未操作的旧图表不会反写刚恢复的类型。
 
 Heikin Ashi 仅影响蜡烛、可见高低标记和价格轴范围，不改原始行情、提示框、指标、最新价及模拟成交价格。首根 HA 开盘为首根原始开收均值，其余使用上一根 HA 开收均值；仅从当前已加载且回放可见的历史向前递推。实时末根更新重新计算该根，新根延续前值；向左补历史及切换产品、周期或回放重置后重建缓存。新增历史会改变起算点，靠近历史左边界的 HA 值可能随之变化；不读取未来行情，不将合成行情写入业务存档。
 

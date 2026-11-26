@@ -116,7 +116,7 @@ export class ChartWindowHost {
       initialPeriod,
       datafeed,
       liveDatafeed,
-      localArchives: this.runtime.service.source === 'okx-local',
+      localArchives: this.runtime.service.source === 'okx-local' || this.runtime.service.source === 'databento-cme',
       setPeriod(next: Period) { period = next },
       saveDefaultSize(size: ChartWindowSize) { saveChartWindowSize(size) },
       getSnapshot: () => snapshot,

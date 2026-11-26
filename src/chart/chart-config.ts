@@ -64,6 +64,7 @@ export const CTRADER_PERIODS: readonly Period[] = Object.freeze(CTRADER_TIMEFRAM
   timespan: periodUnits[text.slice(-1) as keyof typeof periodUnits],
 })))
 export const DEFAULT_CTRADER_PERIOD = CTRADER_PERIODS.find(period => period.text === '15m')!
+export const DEFAULT_CHART_TIMEZONE = 'Asia/Shanghai'
 
 export const DEFAULT_MAIN_INDICATORS = Object.freeze(['MA'])
 export const DEFAULT_SUB_INDICATORS = Object.freeze(['VOL', 'MACD'])
@@ -98,6 +99,6 @@ export function createChartOptions(
       ) ?? [...DEFAULT_SUB_INDICATORS],
     symbol: { ...symbol },
     theme: 'dark',
-    timezone: 'Asia/Shanghai',
+    timezone: DEFAULT_CHART_TIMEZONE,
   }
 }

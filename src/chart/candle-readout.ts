@@ -16,6 +16,7 @@ export class CandleReadout {
   private readonly selectedTime = document.createElement('strong')
   private readonly volumeLabel: HTMLElement
   private readonly values: HTMLElement[] = []
+  private hoverDetailsVisible = true
   private selected?: KLineData
   private previous?: KLineData
 
@@ -55,6 +56,11 @@ export class CandleReadout {
     this.previous = undefined
   }
 
+  setHoverDetailsVisible(visible: boolean): void {
+    this.hoverDetailsVisible = visible
+    if (!visible) this.clearSelection()
+  }
+
   refresh(): void {
     this.updateLatest()
     if (this.selected) this.renderSelection(this.selected, this.previous)
@@ -72,6 +78,7 @@ export class CandleReadout {
   }
 
   private readonly updateSelection = (crosshair?: Crosshair): void => {
+    if (!this.hoverDetailsVisible) return
     const index = crosshair?.dataIndex
     const candle = crosshair?.kLineData
     if (!crosshair?.paneId || index === undefined || index !== crosshair.realDataIndex || !candle) {

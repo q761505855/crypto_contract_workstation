@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PIVOTS_DEFAULT_PARAMS } from './pivots'
 import { marketSessionStyles } from './market-session-styles'
+import { orderFlowSettings } from './order-flow-preferences'
 import {
   CHART_INDICATORS_PREFERENCE,
   loadChartIndicatorPreferences,
@@ -46,6 +47,27 @@ const preferences = {
 }
 
 describe('chart indicator preferences', () => {
+  it('round-trips each Profile Delta switch and retains local values when old archives omit them', () => {
+    const legacy = { ...preferences, orderFlow: { profile: { rows: 24 }, visibleProfile: { offset: 0 } } }
+    const value = { ...legacy, orderFlow: {
+      profile: { ...legacy.orderFlow.profile, showDelta: false },
+      visibleProfile: { ...legacy.orderFlow.visibleProfile, showDelta: false },
+      candleProfile: { rows: 18, showDelta: false, showLabels: false, volumeColor: '#12345600' },
+    } }
+    const storage = new MemoryStorage()
+    saveChartIndicatorPreferences(value, storage)
+    expect(loadChartIndicatorPreferences(storage)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy, value)).toEqual(value)
+    expect(validateChartIndicatorPreferences(legacy)).toEqual(legacy)
+    for (const group of ['profile', 'visibleProfile', 'candleProfile'] as const) {
+      expect(orderFlowSettings(group).showDelta).toBe(true)
+      for (const showDelta of [null, 0, 'false']) {
+        expect(() => validateChartIndicatorPreferences({ ...legacy, orderFlow: { [group]: { showDelta } } }))
+          .toThrow(`orderFlow.${group}.showDelta`)
+      }
+    }
+  })
+
   it('persists independent visible Profile settings and preserves missing fields from legacy archives', () => {
     const legacy = { ...preferences, main: [{ name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null }],
       orderFlow: { profile: { rows: 35 } } }
@@ -103,7 +125,7 @@ describe('chart indicator preferences', () => {
     }
   })
 
-  it.each(['VWAP', 'VISIBLE_VOLUME_PROFILE'])('saves %s visibility locally and validates its main-pane configuration', name => {
+  it.each(['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE'])('saves %s visibility locally and validates its main-pane configuration', name => {
     const indicator = { name, calcParams: [], visible: false, styles: null }
     const value = { ...preferences, main: [indicator] }
     const storage = new MemoryStorage()

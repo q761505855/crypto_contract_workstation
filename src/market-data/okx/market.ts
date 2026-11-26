@@ -1,10 +1,12 @@
 import Decimal from 'decimal.js'
 import type { ChartPriceMarket } from '../ctrader-datafeed'
+import type { CTraderTick } from '../ctrader-market'
 import { alignOpenTime, nextOpenTime, shiftOpenTime } from '../intervals'
 import { INITIAL_LIVE_STATUS } from '../live-models'
 import type { MarketCandle, MarketSymbol } from '../models'
 import { validateOkxTradingTerms, type OkxReplayRisk, type OkxTradingTerms } from '../../simulation/okx-trading'
 import { rememberOkxInstrument } from './trades'
+import { readOkxTradePages } from './live'
 
 const bars: Record<string, string> = {
   '1m': '1m', '2m': '1m', '3m': '3m', '4m': '1m', '5m': '5m', '10m': '5m',
@@ -89,6 +91,7 @@ function groupCandles(rows: MarketCandle[], timeframe: string): MarketCandle[] {
 
 export class OkxMarketService implements ChartPriceMarket {
   readonly source = 'okx'
+  readonly tickWindowMs = 60_000
   private catalog = new Map<string, Instrument>()
   private catalogExpires = 0
   private catalogRequest?: Promise<MarketSymbol[]>
@@ -142,7 +145,7 @@ export class OkxMarketService implements ChartPriceMarket {
     const risk: OkxReplayRisk = { funding: [] }
     const warnings: string[] = []
     try {
-      risk.mark = await this.markAt(candle.symbol, candle.timeframe, candle.openTime, signal)
+      if (bars[candle.timeframe]) risk.mark = await this.markAt(candle.symbol, candle.timeframe, candle.openTime, signal)
     } catch { signal.throwIfAborted() }
     if (!risk.mark) warnings.push('缺少 OKX 标记价格，当前步以成交价估算强平')
     const recent = this.now() - 90 * 86_400_000
@@ -165,6 +168,26 @@ export class OkxMarketService implements ChartPriceMarket {
     }
     if (warnings.length) risk.warning = warnings.join(' · ')
     return risk
+  }
+
+  async loadTicks(symbol: string, from: number, to: number, signal = new AbortController().signal): Promise<CTraderTick[]> {
+    const now = new Date(this.now())
+    const earliest = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, now.getUTCDate())
+    if (from < earliest) throw new Error('OKX 在线逐笔仅提供最近三个月的成交。更早的回放可使用 OKX-本地日档。')
+    await this.getSymbols({ signal })
+    const instrument = this.catalog.get(symbol)
+    if (!instrument) throw new Error('OKX 品种不在当前 USDT 永续交易目录中')
+    const ticks: CTraderTick[] = []
+    const tradeInstrument = { symbol, contractValue: Number(instrument.terms.contractValue),
+      firstDay: new Date(instrument.symbol.onboardDate).toISOString().slice(0, 10) }
+    for await (const { rows } of readOkxTradePages(tradeInstrument, from * 1000, (to + 1) * 1000, signal, this.fetcher)) {
+      for (let index = rows.length - 1; index >= 0; index--) {
+        const trade = rows[index]
+        ticks.push({ timestamp: Math.floor(trade.timeUs / 1000), timeUs: trade.timeUs,
+          price: String(trade.price), size: trade.size })
+      }
+    }
+    return ticks.reverse()
   }
 
   private async markAt(symbol: string, timeframe: string, time: number, signal: AbortSignal): Promise<MarketCandle | undefined> {

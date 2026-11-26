@@ -11,7 +11,7 @@ export interface BybitTrade {
   side: 'buy' | 'sell'
   price: number
   size: number
-  venue?: 'OKX'
+  venue?: 'OKX' | 'CME'
 }
 
 export function bybitFirstDay(symbol: BybitSymbol): string { return catalog.firstDays[symbol] }

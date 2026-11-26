@@ -6,6 +6,7 @@ import type { PriceSource } from '../market-data/price-source-preferences'
 export interface CTraderReplayMarket {
   readonly source?: PriceSource
   readonly historyRevision?: number
+  readonly tickWindowMs?: number
   historyBounds?(symbol: string, signal?: AbortSignal): Promise<{ from: number; to: number } | undefined>
   historyPageSize?(timeframe: string): number
   loadTicks?(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<CTraderTick[]>

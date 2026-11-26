@@ -19,13 +19,15 @@ import { OkxMarketService } from './okx/market'
 import { OkxLocalMarket } from './okx/local-market'
 import { okxLocalFiles } from './okx/local-files'
 import type { PriceSource } from './price-source-preferences'
+import { DatabentoFiles } from './databento/files'
+import { DatabentoMarket } from './databento/market'
 
 export interface MarketDataRuntime {
   accountSelection: CTraderAccountSelection
   datafeed: CTraderDatafeed
   replayDatafeed: CTraderReplayDatafeed
   replayTicks: CTraderReplayTicks
-  service: CTraderMarketService | OkxMarketService | OkxLocalMarket
+  service: CTraderMarketService | OkxMarketService | OkxLocalMarket | DatabentoMarket
   forPriceSource(source: PriceSource): MarketDataRuntime
   replaySessions: IndexedDbReplaySessionStore
   simulationStates: IndexedDbSimulationStateStore
@@ -63,8 +65,9 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
     drawingSync: new DrawingAutoSync(drawings, defaultGitHubClient),
     forPriceSource: source => {
       if (source === 'ctrader') return runtime
-      okx ??= new OkxMarketService()
-      const market = source === 'okx-local' ? new OkxLocalMarket(okxLocalFiles, okx) : okx
+      const market = source === 'databento-cme' ? (databento ??= new DatabentoMarket(new DatabentoFiles()))
+        : source === 'okx-local' ? new OkxLocalMarket(okxLocalFiles, okx ??= new OkxMarketService())
+        : (okx ??= new OkxMarketService())
       const live = new CTraderDatafeed(market)
       const ticks = new CTraderReplayTicks(market)
       return { ...runtime, service: market, datafeed: live, replayTicks: ticks,
@@ -73,5 +76,6 @@ export function createMarketDataRuntime(cloudToken?: string): MarketDataRuntime 
     disposeMarketConnection: () => { service.dispose(); okx?.dispose() },
   }
   let okx: OkxMarketService | undefined
+  let databento: DatabentoMarket | undefined
   return runtime
 }

@@ -57,7 +57,8 @@ export class DrawingOverlays {
   private readonly override: Chart['overrideOverlay']
 
   constructor(private readonly chart: Chart, private readonly store: DrawingStore, private readonly period: () => string,
-    private readonly orderFlow: OrderFlowChart | undefined, private readonly onSelection: (selection: DrawingSelection | null) => void) {
+    private readonly orderFlow: OrderFlowChart | undefined, private readonly onSelection: (selection: DrawingSelection | null) => void,
+    private readonly onVolumeProfileActive?: (active: boolean) => void) {
     this.create = chart.createOverlay
     this.override = chart.overrideOverlay
     // The native toolbar sets the group for its shortcut, but omits it when
@@ -71,7 +72,7 @@ export class DrawingOverlays {
       const id = `drawing-${crypto.randomUUID()}`
       const draft = this.create.call(chart, { ...this.appearance, ...value, groupId: GROUP, id, ...this.callbacks(id, scope) }, PANE)
       if (typeof draft === 'string') {
-        this.draft = draft
+        this.setDraft(draft, value.name === VOLUME_PROFILE_TOOL)
         const overlay = chart.getOverlayById(draft)
         if (overlay) this.toolStyles.set(overlay, structuredClone(overlay.styles))
         this.select()
@@ -162,12 +163,18 @@ export class DrawingOverlays {
     this.removeAll()
   }
 
+  private setDraft(id?: string, volumeProfile = false): void {
+    this.draft = id
+    this.onVolumeProfileActive?.(volumeProfile)
+  }
+
   private removeAll(): void {
     this.applying = true
     try { this.chart.removeOverlay({ groupId: GROUP }) }
     finally { this.applying = false }
     this.rendered.clear()
-    this.draft = this.editing = undefined
+    this.setDraft()
+    this.editing = undefined
     this.select()
     this.grid = ''
   }
@@ -258,7 +265,7 @@ export class DrawingOverlays {
     return {
       onDrawing: ({ overlay }) => { this.previewProfile(overlay); return false },
       onDrawEnd: ({ overlay }) => {
-        if (this.draft === id) this.draft = undefined
+        if (this.draft === id) this.setDraft()
         if (this.scope === scope) {
           if (hasDrawingPoints(overlay.name, overlay.points.length)) this.capture(overlay, scope, true)
           else this.chart.removeOverlay(id)
@@ -302,7 +309,7 @@ export class DrawingOverlays {
       },
       onRemoved: () => {
         this.orderFlow?.removeProfile(id)
-        if (this.draft === id) this.draft = undefined
+        if (this.draft === id) this.setDraft()
         if (this.selectedId === id) this.select()
         if (!this.applying && this.scope === scope) this.write(this.store.remove(id, this.epoch))
         this.queue()
@@ -354,7 +361,7 @@ export class DrawingOverlays {
     const valid = points as ChartDrawing['points']
     if (overlay.name !== VOLUME_PROFILE_TOOL) return valid
     const first = candles[0].timestamp
-    const last = nextOpenTime(candles.at(-1)!.timestamp, period) - 1
+    const last = nextOpenTime(candles.at(-1)!.timestamp, period)
     const low = Math.min(...valid.map(point => point.timestamp))
     const high = Math.max(...valid.map(point => point.timestamp))
     const shift = !wholeProfile ? 0 : low < first ? first - low : high > last ? last - high : 0

@@ -35,6 +35,7 @@ export const EMPTY_DRAWINGS: DrawingArchive = { epoch: 'initial', drawings: [] }
 export function drawingScope(mode: 'live' | 'history', symbol: string, session: string | null, exchange?: string): string {
   if (mode === 'history' && session) return `replay:${session}`
   if (exchange === 'OKX') return `live:OKX:${symbol.toUpperCase()}`
+  if (exchange === 'CME') return `live:CME:${symbol.toUpperCase()}`
   return exchange === 'CTRADER' ? `live:CTRADER:${symbol.toUpperCase()}` : `live:${symbol.toUpperCase()}`
 }
 

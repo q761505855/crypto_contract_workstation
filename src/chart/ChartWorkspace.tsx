@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import type { Datafeed, Period, SymbolInfo } from '@klinecharts/pro'
 import {
@@ -16,18 +16,21 @@ import {
 import type { GitHubContentsClient } from '../github-sync/github-client'
 import type { TradeDownloadChoice, TradeDownloadDay } from '../market-data/bybit/combined-source'
 import { bybitDay } from '../market-data/bybit/trades'
-import { okxArchiveDay } from '../market-data/okx/archive'
 import { orderFlowLabel, orderFlowMapping } from '../market-data/okx/trades'
 import type { OkxLocalMarket } from '../market-data/okx/local-market'
+import type { DatabentoMarket } from '../market-data/databento/market'
+import { DatabentoDataDialog } from '../components/DatabentoDataDialog'
 import type { OkxLocalDownloads } from '../market-data/okx/local-downloads'
 import {
   ProChartAdapter,
   type ChartAdapterPort,
+  type LoadedArchiveRange,
   type SimulationOverlayState,
 } from './pro-chart-adapter'
 import { SymbolPicker } from './SymbolPicker'
 import { PeriodSelector } from './PeriodSelector'
 import { saveCandleType } from './candle-preferences'
+import { DEFAULT_SHOW_CANDLE_HOVER_DETAILS, readShowCandleHoverDetails, saveShowCandleHoverDetails } from './candle-hover-preferences'
 import type { DrawingStore } from './drawings'
 import type { DrawingSelection } from './drawing-overlays'
 import { DrawingSelectionToolbar } from './DrawingSelectionToolbar'
@@ -65,7 +68,7 @@ export interface ChartWorkspaceProps {
   drawingStore?: DrawingStore
   drawingScope?: string | null
   orderFlowCloud?: GitHubContentsClient
-  localTradeMarket?: OkxLocalMarket
+  localTradeMarket?: OkxLocalMarket | DatabentoMarket
   localDownloads?: OkxLocalDownloads
   onLocalFolderChange?: (replaced: boolean) => void
   onLoadLocalArchives?: (symbol: string, days: readonly string[], append: boolean) => Promise<void>
@@ -80,7 +83,7 @@ export interface ChartJumpRequest {
 
 export interface ChartViewportActions {
   step(direction: -1 | 1): number | null
-  loadLocalArchives(ticker: string, days: readonly string[], append: boolean): Promise<void>
+  loadLocalArchives(ticker: string, days: readonly string[], append: boolean): Promise<LoadedArchiveRange | null | undefined>
 }
 
 const noDownloadSubscription = () => () => {}
@@ -152,8 +155,9 @@ export function ChartWorkspace({
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
+  const [volumeProfileActive, setVolumeProfileActive] = useState(false)
   const [drawingSelection, setDrawingSelection] = useState<DrawingSelection | null>(null)
-  const [localDownload, setLocalDownload] = useState<{ anchor: string; symbol: string } | null>(null)
+  const [localDownload, setLocalDownload] = useState<{ anchor: string | undefined; symbol: string } | null>(null)
   const localJob = useSyncExternalStore(localDownloads?.subscribe ?? noDownloadSubscription, localDownloads?.snapshot ?? noDownloadSnapshot)
   const [dayDownloadMessage, setDayDownloadMessage] = useState('')
   const [dayDownloadSelection, setDayDownloadSelection] = useState<DayDownloadSelection | null>(null)
@@ -163,6 +167,12 @@ export function ChartWorkspace({
   const symbolLockedRef = useRef(symbolLocked)
   symbolLockedRef.current = symbolLocked
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
+  const [chartSettingsContainer, setChartSettingsContainer] = useState<HTMLElement | null>(null)
+  const [showCandleHoverDetails, setShowCandleHoverDetails] = useState(readShowCandleHoverDetails)
+  const changeCandleHoverDetails = useCallback((visible: boolean) => {
+    if (!auxiliary) saveShowCandleHoverDetails(visible)
+    setShowCandleHoverDetails(visible)
+  }, [auxiliary])
   const [orderFlowDialog, setOrderFlowDialog] = useState<OrderFlowGroup | null>(null)
   const indicatorSavingPaused = useRef(false)
   const [indicatorInfoVisible, setIndicatorInfoVisible] = useState(() => !(window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)').matches ?? false))
@@ -177,6 +187,7 @@ export function ChartWorkspace({
   const periodRef = useRef(period)
   const reloadKeyRef = useRef(reloadKey)
   const mapping = orderFlowCloud && orderFlowMapping(symbol)
+  const volumeProfilePressed = Boolean(mapping) && volumeProfileActive
   const initialIndicatorPreferencesRef = useRef<
     ChartIndicatorPreferences | null | undefined
   >(undefined)
@@ -192,7 +203,7 @@ export function ChartWorkspace({
   useImperativeHandle(viewportRef, () => ({
     step: direction => adapterRef.current?.stepViewport?.(direction) ?? null,
     async loadLocalArchives(ticker, days, append) {
-      if (localTradeMarket) await adapterRef.current?.loadLocalArchives?.(localTradeMarket, ticker, days, append)
+      if (localTradeMarket) return adapterRef.current?.loadLocalArchives?.(localTradeMarket, ticker, days, append)
     },
   }), [localTradeMarket])
 
@@ -224,7 +235,7 @@ export function ChartWorkspace({
     const drawingBar = host.querySelector<HTMLElement>('.klinecharts-pro-drawing-bar')
     const drawingSlot = orderFlowCloud && drawingBar ? document.createElement('div') : null
     if (drawingSlot) {
-      drawingSlot.className = 'chart-volume-profile-slot'
+      drawingSlot.className = 'item'
       drawingBar?.prepend(drawingSlot)
     }
     setDrawingToolbar(drawingSlot ?? toolbar)
@@ -346,6 +357,37 @@ export function ChartWorkspace({
   }, [indicatorInfoVisible])
 
   useEffect(() => {
+    adapterRef.current?.setCandleHoverDetailsVisible?.(showCandleHoverDetails)
+  }, [showCandleHoverDetails])
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const selector = '.klinecharts-pro-setting-modal-content'
+    const synchronize = () => setChartSettingsContainer(host.querySelector(selector)?.parentElement ?? null)
+    const observer = new MutationObserver(records => {
+      const settingsChanged = records.some(({ addedNodes, removedNodes }) =>
+        [...addedNodes, ...removedNodes].some(node =>
+          node instanceof Element && (node.matches(selector) || node.querySelector(selector))))
+      if (settingsChanged) synchronize()
+    })
+    const restore = (event: MouseEvent) => {
+      const target = event.target
+      const button = target instanceof Element && target.closest('.button-container > button')
+      if (button && button.closest('.klinecharts-pro-modal')?.querySelector(selector)) {
+        changeCandleHoverDetails(DEFAULT_SHOW_CANDLE_HOVER_DETAILS)
+      }
+    }
+    synchronize()
+    observer.observe(host, { childList: true, subtree: true })
+    host.addEventListener('click', restore, true)
+    return () => {
+      observer.disconnect()
+      host.removeEventListener('click', restore, true)
+    }
+  }, [changeCandleHoverDetails])
+
+  useEffect(() => {
     const query = window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)')
     if (!query) return
     const change = () => setIndicatorInfoVisible(!query.matches)
@@ -381,7 +423,7 @@ export function ChartWorkspace({
   }, [period])
 
   useEffect(() => {
-    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope, setDrawingSelection)
+    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope, setDrawingSelection, setVolumeProfileActive)
   }, [drawingStore, drawingScope])
 
   useEffect(() => {
@@ -567,10 +609,11 @@ export function ChartWorkspace({
 
   function openTradeDownload(): void {
     if (localTradeMarket) {
-      const today = okxArchiveDay(Date.now())
+      const today = localTradeMarket.archiveDay(Date.now())
       const visible = adapterRef.current?.getRightmostVisibleCandleTime?.()
-      const day = visible == null ? today : okxArchiveDay(visible)
-      setLocalDownload({ anchor: day > today ? today : day, symbol: symbol.ticker })
+      const day = visible == null ? today : localTradeMarket.archiveDay(visible)
+      const anchor = localTradeMarket.source === 'databento-cme' && visible == null ? undefined : day > today ? today : day
+      setLocalDownload({ anchor, symbol: symbol.ticker })
       return
     }
     try {
@@ -643,13 +686,15 @@ export function ChartWorkspace({
   }
 
   const today = bybitDay(Date.now())
+  const databento = localTradeMarket?.source === 'databento-cme' ? localTradeMarket : undefined
   const dayDownload = (
     <>
       <button className="chart-day-download" type="button" disabled={!localTradeMarket && !mapping}
-        title={localTradeMarket ? `下载 ${symbol.ticker} 官方逐笔归档到本地目录`
+        title={databento ? '按锚点日期加载磁盘里的 Databento 日档'
+          : localTradeMarket ? `下载 ${symbol.ticker} 官方逐笔归档到本地目录`
           : mapping ? `选择 ${orderFlowLabel(mapping)} 逐笔成交的下载日期` : '当前品种暂无成交量'}
         onClick={openTradeDownload}>
-        下载成交数据
+        {databento ? '按锚点加载' : '下载成交数据'}
       </button>
       {localJob && (localJob.status === 'running' || localJob.status === 'stopping') && (
         <div className="chart-day-download-status" role="status">下载成交数据 {localJob.results.length} / {localJob.total}</div>
@@ -718,6 +763,15 @@ export function ChartWorkspace({
       <div className="chart-scroll-port" data-resized={expanded || undefined} ref={scrollPortRef}>
         <div className="chart-surface" style={{ height: expanded ? `${chartHeight}px` : undefined }}>
           <div className="chart-host" data-testid="chart-host" ref={hostRef} />
+          {chartSettingsContainer && createPortal(
+            <button type="button" className="chart-hover-details-setting" role="switch" aria-checked={showCandleHoverDetails}
+              onClick={() => changeCandleHoverDetails(!showCandleHoverDetails)}>
+              <span>悬浮 K 线详情</span>
+              <span className={`klinecharts-pro-switch ${showCandleHoverDetails ? 'turn-on' : 'turn-off'}`} aria-hidden="true">
+                <span className="thumb" />
+              </span>
+            </button>, chartSettingsContainer,
+          )}
           {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
           {priceRangeMode}
           {drawingSelection && <DrawingSelectionToolbar selection={drawingSelection}
@@ -748,8 +802,11 @@ export function ChartWorkspace({
       {orderFlowCloud && drawingToolbar && createPortal(
         <button type="button" className="chart-volume-profile-tool" aria-label="框选成交分布"
           title={mapping ? `框选成交分布 · ${orderFlowLabel(mapping)}` : '当前品种暂无成交量'} disabled={!mapping}
-          onClick={() => adapterRef.current?.startVolumeProfile?.()}>
-          <span aria-hidden="true"><i /><i /><i /></span>
+          aria-pressed={volumeProfilePressed} onClick={() => adapterRef.current?.startVolumeProfile?.()}>
+          <svg className={volumeProfilePressed ? 'icon-overlay selected' : 'icon-overlay'}
+            width="32" height="32" viewBox="0 0 22 22" aria-hidden="true">
+            <path d="M4 4h1v14H4z M6 5h9v2H6z M6 10h12v2H6z M6 15h6v2H6z" fill="inherit" stroke="none" />
+          </svg>
         </button>, drawingToolbar,
       )}
       <WorkspaceDialog open={dayDownloadSelection !== null || dayDownloadReview !== null} title="下载成交数据"
@@ -793,9 +850,13 @@ export function ChartWorkspace({
           </div>
         )}
       </WorkspaceDialog>
-      {localDownload && localTradeMarket && localDownloads && onLoadLocalArchives && <OkxLocalDataDialog
+      {localDownload && localTradeMarket?.source === 'okx-local' && localDownloads && onLoadLocalArchives && <OkxLocalDataDialog
         files={localTradeMarket.files} downloads={localDownloads}
         symbol={localDownload.symbol} anchor={localDownload.anchor} onClose={() => setLocalDownload(null)}
+        onFolderChange={replaced => onLocalFolderChange?.(replaced)} onLoad={onLoadLocalArchives} />}
+      {localDownload && databento && onLoadLocalArchives && <DatabentoDataDialog files={databento.files}
+        revision={databento.files.revision} symbol={symbol.ticker} loadedDays={databento.activeDays(symbol.ticker)}
+        anchor={localDownload.anchor ?? null} onClose={() => setLocalDownload(null)}
         onFolderChange={replaced => onLocalFolderChange?.(replaced)} onLoad={onLoadLocalArchives} />}
       {onChartHeightChange !== undefined ? (
         <div

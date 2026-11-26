@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_OKX_SYMBOL, DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { DEFAULT_CTRADER_PERIOD, DEFAULT_OKX_SYMBOL, DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
+import { SHOW_CANDLE_HOVER_DETAILS_KEY, saveShowCandleHoverDetails } from '../chart/candle-hover-preferences'
 import { DrawingStore } from '../chart/drawings'
 import { CHART_WINDOW_SIZE_KEY, DEFAULT_CHART_WINDOW_SIZE, saveChartWindowSize } from '../chart/chart-window-preferences'
 import { DEFAULT_PINNED_PERIODS, PINNED_PERIODS_KEY } from '../chart/period-preferences'
@@ -10,7 +11,7 @@ import {
   type JsonValue,
 } from '../chart/indicator-preferences'
 import type { MarketCandle, MarketSymbol } from '../market-data/models'
-import { OKX_SYMBOL_STORAGE_KEY, SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
+import { DATABENTO_SYMBOL_STORAGE_KEY, OKX_SYMBOL_STORAGE_KEY, SELECTED_SYMBOL_STORAGE_KEY } from '../market-data/symbol-preferences'
 import { PRICE_SOURCE_KEY, readPriceSource } from '../market-data/price-source-preferences'
 import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
@@ -36,6 +37,31 @@ class MemoryPreferences implements Pick<Storage, 'getItem' | 'setItem'> {
     this.values.set(key, value)
   }
 }
+
+it('round-trips candle hover visibility and rejects malformed saved settings before any write', async () => {
+  const key = SHOW_CANDLE_HOVER_DETAILS_KEY
+  const local = new MemoryPreferences()
+  const target = new MemoryPreferences()
+  const backups = new WorkstationBackupService('candle-hover-source', local)
+  const restores = new WorkstationBackupService('candle-hover-target', target)
+  expect((await backups.exportPreferences()).data.preferences).toMatchObject({ showCandleHoverDetails: true })
+
+  saveShowCandleHoverDetails(false, local)
+  for (const envelope of [await backups.exportPreferences(), await backups.exportAll()]) {
+    expect(envelope.data.preferences).toMatchObject({ showCandleHoverDetails: false })
+    await restores.import(envelope)
+    expect(target.getItem(key)).toBe('false')
+    const { showCandleHoverDetails: _removed, ...legacy } = envelope.data.preferences!
+    await restores.import({ ...envelope, data: { ...envelope.data, preferences: legacy } })
+    expect(target.getItem(key)).toBe('false')
+    for (const invalid of [null, '', 'false', 0, []]) {
+      await expect(restores.import({ ...envelope, data: { ...envelope.data,
+        preferences: { ...legacy, priceSource: 'okx', showCandleHoverDetails: invalid } } })).rejects.toThrow('showCandleHoverDetails')
+      expect(target.getItem(key)).toBe('false')
+      expect(readPriceSource(target)).toBe('ctrader')
+    }
+  }
+})
 
 it('restores drawings from a complete backup and preserves them when an old backup omits the field', async () => {
   const drawing = { id: 'drawing-line', scope: 'live:BTCUSDT', name: 'horizontalStraightLine',
@@ -63,6 +89,36 @@ it('restores drawings from a complete backup and preserves them when an old back
   expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
   await target.import({ ...backup, data: { ...backup.data, drawings: [] } })
   expect(targetDrawings.forScope(drawing.scope)).toEqual([])
+})
+
+it('restores the Databento source and product, keeps legacy omissions, and rejects invalid settings before writes', async () => {
+  const source = new MemoryPreferences()
+  const target = new MemoryPreferences()
+  source.setItem(PRICE_SOURCE_KEY, '"databento-cme"')
+  source.setItem(DATABENTO_SYMBOL_STORAGE_KEY, '"NQ.FUT"')
+  const backups = new WorkstationBackupService('cme-config-source', source)
+  const restores = new WorkstationBackupService('cme-config-target', target)
+  const replay: ReplaySession = { ...session(), marketSource: 'databento-cme',
+    symbol: { ticker: 'NQ.FUT', exchange: 'CME', type: 'FUTURES' }, period: DEFAULT_CTRADER_PERIOD,
+    endTime: 1_799_999, visibleUntil: 900_000, cursorTimeframe: '15m', hasTrades: false }
+  await new IndexedDbReplaySessionStore('cme-config-source').put(replay)
+
+  for (const kind of ['preferences', 'all'] as const) {
+    const envelope = await (kind === 'preferences' ? backups.exportPreferences() : backups.exportAll())
+    expect(envelope.data.preferences).toMatchObject({ priceSource: 'databento-cme', databentoSelectedSymbol: 'NQ.FUT' })
+    await restores.import(envelope)
+    expect(readPriceSource(target)).toBe('databento-cme')
+    expect(target.getItem(DATABENTO_SYMBOL_STORAGE_KEY)).toBe('"NQ.FUT"')
+    const { databentoSelectedSymbol: _removed, ...legacy } = envelope.data.preferences!
+    await restores.import({ ...envelope, data: { ...envelope.data, preferences: legacy } })
+    expect(target.getItem(DATABENTO_SYMBOL_STORAGE_KEY)).toBe('"NQ.FUT"')
+    for (const invalid of ['', null, '../NQ.FUT']) {
+      await expect(restores.import({ ...envelope, data: { ...envelope.data,
+        preferences: { ...legacy, priceSource: 'ctrader', databentoSelectedSymbol: invalid } } })).rejects.toThrow()
+      expect(readPriceSource(target)).toBe('databento-cme')
+    }
+  }
+  expect((await restores.exportSession(replay.id)).data.sessions).toEqual([replay])
 })
 
 function symbol(): MarketSymbol {
@@ -190,9 +246,9 @@ it.each(['okx', 'okx-local'] as const)('round-trips %s preferences and a simulat
   invalid.data.sessions![0].tradingConfig.okx!.contractStep = '0'
   await expect(target.import(invalid)).rejects.toThrow(/OKX 回放交易规格/)
   expect((await target.exportAll()).data).toEqual(full.data)
-  const fineCursor = structuredClone(full)
-  Object.assign(fineCursor.data.sessions![0], { cursorTimeframe: '1s', visibleUntil: 61_000 })
-  await expect(target.import(fineCursor)).rejects.toThrow(/cursorTimeframe/)
+  const invalidCursor = structuredClone(full)
+  Object.assign(invalidCursor.data.sessions![0], { cursorTimeframe: '2s', visibleUntil: 62_000 })
+  await expect(target.import(invalidCursor)).rejects.toThrow(/cursorTimeframe/)
   expect((await target.exportAll()).data).toEqual(full.data)
   const feeMismatch = structuredClone(full)
   feeMismatch.data.sessions![0].tradingConfig.feeRate = '0.0006'
@@ -307,6 +363,28 @@ it('round-trips fine replay settings and Tick cursors while validating them befo
   expect((await target.exportAll()).data.sessions).toEqual([archivedSeconds])
 })
 
+it('round-trips Databento playback mode and speed in session and full archives', async () => {
+  const db = `databento-ticks-${crypto.randomUUID()}`
+  const source = new WorkstationBackupService(db, new MemoryPreferences())
+  const tick = {
+    ...session(), symbol: { exchange: 'CME', ticker: 'NQ.FUT', type: 'FUTURES', pricePrecision: 9, volumePrecision: 0 },
+    marketSource: 'databento-cme', playbackMode: 'tick', tickSpeed: 0.125,
+    cursorTimeframe: 'tick', cursorTickIndex: 1, currentTime: 60_123, currentIndex: 1, visibleUntil: 60_124, endTime: 120_000,
+  } satisfies ReplaySession
+  await new IndexedDbReplaySessionStore(db).put(tick)
+  for (const archive of [await source.exportSession(tick.id), await source.exportAll()]) {
+    const target = new WorkstationBackupService(`databento-restored-${crypto.randomUUID()}`, new MemoryPreferences())
+    for (const invalid of [{ playbackMode: null }, { playbackMode: 'ticks' }, { tickSpeed: null },
+      { tickSpeed: '1' }, { tickSpeed: 0 }, { tickSpeed: false }, { tickSpeed: 0.09 }, { tickSpeed: 1001 }]) {
+      await expect(target.import({ ...archive, data: { ...archive.data, sessions: [{ ...tick, ...invalid }] } }))
+        .rejects.toThrow(/playbackMode|tickSpeed/)
+      expect((await target.exportAll()).data.sessions).toEqual([])
+    }
+    await target.import(archive)
+    expect((await target.exportSession(tick.id)).data.sessions).toEqual([tick])
+  }
+})
+
 it('round-trips the cTrader account preference and rejects invalid values before writes', async () => {
   const target = new WorkstationBackupService(`ctrader-account-${crypto.randomUUID()}`, new MemoryPreferences())
   const archive = await target.exportPreferences()
@@ -354,8 +432,10 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
       bubbles: { marker: 'square', minRadius: 0, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
         minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 280 },
-      profile: { rows: 16, valueArea: 85, showLabels: false },
-      visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false,
+      profile: { rows: 16, valueArea: 85, rowSizePercent: 0.025, showLabels: false, showDelta: false },
+      candleProfile: { type: 'volumeDelta', rows: 22, width: 85, columnWidth: 100, valueArea: 80,
+        showDelta: false, showPoc: false, showLabels: false, showValueArea: true, showValues: true, volumeColor: '#aabbcc00' },
+      visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false, showDelta: false,
         showPoc: true, showValueArea: false, valueArea: 86, showLabels: false, pocColor: '#ff8321', levelColor: '#abcdef',
         volumeColor: '#12345600', valueAreaColor: '#23457800', positiveColor: '#23456780', negativeColor: '#345678' },
       cvd: { reset: 'continuous', showZero: false },
@@ -370,6 +450,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
       { name: 'VWAP', calcParams: [], visible: true, styles: null },
       { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
+      { name: 'CANDLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
       { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
         bubbleMode: 'aggregate',
         bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -492,20 +573,20 @@ describe('WorkstationBackupService', () => {
     expect(await new IndexedDbMarketDataStore(name).getSymbols()).toEqual([])
   })
 
-  it('round-trips candle types in config and full archives, preserving legacy absence', async () => {
+  it.each(['heikin_ashi', 'line'])('round-trips chart type %s in config and full archives, preserving legacy absence', async candleType => {
     const sourceStorage = new MemoryPreferences()
-    sourceStorage.setItem('chart.candleType.v1', JSON.stringify('heikin_ashi'))
-    const source = new WorkstationBackupService(`ha-source-${crypto.randomUUID()}`, sourceStorage)
+    sourceStorage.setItem('chart.candleType.v1', JSON.stringify(candleType))
+    const source = new WorkstationBackupService(`chart-type-source-${crypto.randomUUID()}`, sourceStorage)
     for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
-      expect(archive.data.preferences).toHaveProperty('candleType', 'heikin_ashi')
+      expect(archive.data.preferences).toHaveProperty('candleType', candleType)
       const targetStorage = new MemoryPreferences()
-      const target = new WorkstationBackupService(`ha-target-${crypto.randomUUID()}`, targetStorage)
+      const target = new WorkstationBackupService(`chart-type-target-${crypto.randomUUID()}`, targetStorage)
       await target.import(archive)
       expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
       const legacy = structuredClone(archive)
       delete (legacy.data.preferences as unknown as Record<string, unknown>).candleType
       await target.import(legacy)
-      expect(targetStorage.getItem('chart.candleType.v1')).toBe('"heikin_ashi"')
+      expect(targetStorage.getItem('chart.candleType.v1')).toBe(JSON.stringify(candleType))
       Object.assign(archive.data.preferences!, { candleType: 'candle_solid' })
       await target.import(archive)
       expect(targetStorage.getItem('chart.candleType.v1')).toBe('"candle_solid"')
@@ -677,10 +758,15 @@ describe('WorkstationBackupService', () => {
     await target.import(archive)
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicatorPreferences())
     const legacyIndicators = indicatorPreferences()
-    legacyIndicators.main = legacyIndicators.main.filter(({ name }) => name !== 'VWAP' && name !== 'VISIBLE_VOLUME_PROFILE')
+    legacyIndicators.main = legacyIndicators.main.filter(({ name }) => !['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE'].includes(name))
+    delete legacyIndicators.orderFlow!.candleProfile
+    delete legacyIndicators.orderFlow!.profile!.rowSizePercent
+    delete legacyIndicators.orderFlow!.profile!.showDelta
+    delete legacyIndicators.orderFlow!.visibleProfile!.showDelta
     archive.data.preferences!.chartIndicators = legacyIndicators
     await target.import(archive)
-    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual(legacyIndicators)
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators)
+      .toEqual({ ...legacyIndicators, orderFlow: indicatorPreferences().orderFlow })
     archive.data.preferences!.chartIndicators = indicatorPreferences()
     delete archive.data.preferences!.chartIndicators.orderFlow
     archive.data.preferences!.chartIndicators.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
@@ -706,10 +792,20 @@ describe('WorkstationBackupService', () => {
     ]
     const before = (await target.exportAll()).data
     archive.data.preferences!.binanceRestBaseUrl = 'https://changed.test'
+    for (const rowSizePercent of [null, '', '0.01', 0, -0.01, 0.0000001, 101]) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { profile: { rowSizePercent } } } as ChartIndicatorPreferences
+      await expect(target.import(archive)).rejects.toThrow(/orderFlow.profile.rowSizePercent/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
     for (const visibleProfile of [null, { placement: 'center' }, { showHeaders: null }, { width: 0 },
       { showLabels: 0 }, { showValueArea: null }, { valueArea: 0 }, { pocColor: null }, { valueAreaColor: 'invalid' }]) {
       archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { visibleProfile } } as unknown as ChartIndicatorPreferences
       await expect(target.import(archive)).rejects.toThrow(/orderFlow.visibleProfile/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
+    for (const [group, value] of Object.entries({ profile: { showDelta: null }, visibleProfile: { showDelta: 0 }, candleProfile: { rows: 0 } })) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { [group]: value } }
+      await expect(target.import(archive)).rejects.toThrow(`orderFlow.${group}`)
       expect((await target.exportAll()).data).toEqual(before)
     }
     for (const bubbles of [{ thresholdUnit: null }, { maxQuantity: '10' }, { minLots: 2, maxLots: 1 },

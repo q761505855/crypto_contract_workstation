@@ -8,16 +8,17 @@ it('uses the true low and high after merging price levels from parallel chunks',
   const levels = new VolumeProfileLevels()
   levels.addPacked(runOrderFlowTask({ kind: 'profile', values: new Float64Array([100, 1, 101, 3, 104, 2]) }))
   levels.addPacked(runOrderFlowTask({ kind: 'profile', values: new Float64Array([101, -5, 102, -7]) }))
-  expect(levels.profile(4, 70)?.rows).toEqual([
+  const settings = orderFlowSettings('profile')
+  expect(levels.profile(10_000, settings)?.rows).toEqual([
     { low: 100, high: 101, buy: 1, sell: 0 },
     { low: 101, high: 102, buy: 3, sell: 5 },
     { low: 102, high: 103, buy: 0, sell: 7 },
-    { low: 103, high: 104, buy: 2, sell: 0 },
+    { low: 104, high: 104, buy: 2, sell: 0 },
   ])
   const single = new VolumeProfileLevels()
   single.add(100, 2)
   single.add(100, -1)
-  expect(single.profile(48, 70)).toEqual({ poc: 100, vah: 100, val: 100,
+  expect(single.profile(100, settings)).toEqual({ poc: 100, vah: 100, val: 100,
     rows: [{ low: 100, high: 100, buy: 2, sell: 1 }] })
 })
 

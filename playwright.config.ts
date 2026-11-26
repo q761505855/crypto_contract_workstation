@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['ctrader-workstation.spec.ts', 'workspace-keyboard.spec.ts', 'bybit-workstation.spec.ts', 'okx-workstation.spec.ts'],
+  testMatch: ['ctrader-workstation.spec.ts', 'workspace-keyboard.spec.ts', 'bybit-workstation.spec.ts', 'okx-workstation.spec.ts', 'databento-workstation.spec.ts'],
   workers: 2,
   expect: { timeout: 20_000 },
   retries: process.env.CI ? 1 : 0,

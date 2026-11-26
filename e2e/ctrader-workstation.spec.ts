@@ -274,6 +274,148 @@ test('reloads native history after a live connection is restored', async ({ page
   await expect.poll(async () => (await readChart()).last?.timestamp).toBe(start + 4 * minute - 30_000)
 })
 
+test('turns the candle hover details off in chart settings and remembers the choice', async ({ page }) => {
+  const readChart = await installViewportProbe(page)
+  await connectFixture(page)
+  await page.goto('./')
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  const hoverCandle = async () => {
+    const { rightmost } = await readChart()
+    expect(rightmost).not.toBeNull()
+    const x = await page.evaluate(timestamp => {
+      const chart = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter.coreChart
+      return (chart.convertToPixel({ timestamp: timestamp! }, { paneId: 'candle_pane' }) as { x: number }).x
+    }, rightmost)
+    const plot = (await page.getByLabel('最新 K 线').locator('..').boundingBox())!
+    await page.mouse.move(plot.x + x, plot.y + plot.height / 2)
+  }
+  const details = page.getByLabel('选中 K 线')
+  await hoverCandle()
+  await expect(details).toBeVisible()
+  const openSettings = () => page.locator('.klinecharts-pro-period-bar').getByText('设置', { exact: true }).locator('..').click()
+  const toggle = page.getByRole('switch', { name: '悬浮 K 线详情' })
+  await openSettings()
+  await expect(toggle).toBeChecked()
+  await toggle.click()
+  await expect(toggle).not.toBeChecked()
+  await page.locator('.klinecharts-pro-modal .close-icon').click()
+  await hoverCandle()
+  await expect(details).toBeHidden()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+
+  const openDataManager = async () => {
+    await page.getByRole('button', { name: '工具', exact: true }).click()
+    await page.getByTestId('open-data-manager').click()
+  }
+  await openDataManager()
+  const backupPanel = page.getByTestId('backup-sync-panel')
+  const configDownload = page.waitForEvent('download')
+  await backupPanel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const backupPath = await (await configDownload).path()
+  expect(backupPath).not.toBeNull()
+  await page.getByTestId('close-data-manager').click()
+
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await hoverCandle()
+  await expect(details).toBeHidden()
+  await openSettings()
+  await expect(toggle).not.toBeChecked()
+  await page.locator('.klinecharts-pro-modal').getByRole('button', { name: '恢复默认', exact: true }).click()
+  await hoverCandle()
+  await expect(details).toBeVisible()
+
+  await openDataManager()
+  page.once('dialog', dialog => dialog.accept())
+  await backupPanel.getByTestId('import-backup-file').setInputFiles(backupPath!)
+  await expect(backupPanel.getByTestId('backup-status')).toContainText('刷新')
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await hoverCandle()
+  await expect(details).toBeHidden()
+})
+
+test('switches to a close-price line and restores it from an application archive', async ({ page }) => {
+  const readChart = await installViewportProbe(page)
+  await connectFixture(page)
+  await page.goto('./')
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  const before = await readChart()
+  const readType = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    return coreChart.getStyles().candle.type
+  })
+  await page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    // Keep the fixture's flat moving averages and last-price line off the sampled pixels.
+    coreChart.removeIndicator('candle_pane')
+    coreChart.setStyles({ candle: {
+      area: { value: 'open', lineColor: '#af35fe', lineSize: 4, backgroundColor: '#3058ad' },
+      bar: { upColor: '#15d4a7' },
+      priceMark: { last: { show: false } },
+    } })
+  })
+  const readPlotColors = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const canvas = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.querySelector('canvas')!
+    const context = canvas.getContext('2d')!
+    const [first, second] = coreChart.getDataList().slice(-3, -1)
+    const pixel = (timestamp: number, value: number) => coreChart.convertToPixel({ timestamp, value }, { paneId: 'candle_pane' }) as { x: number; y: number }
+    const firstClose = pixel(first.timestamp, first.close)
+    const secondClose = pixel(second.timestamp, second.close)
+    const body = pixel(first.timestamp, (first.open + first.close) / 2)
+    const underLine = pixel(first.timestamp, (first.low + first.open) / 2)
+    const midpoint = (firstClose.x + secondClose.x) / 2
+    const colorAt = (x: number, y: number) => Array.from(context.getImageData(
+      Math.round(x * canvas.width / canvas.clientWidth), Math.round(y * canvas.height / canvas.clientHeight), 1, 1,
+    ).data)
+    return {
+      closeLine: colorAt(midpoint, (firstClose.y + secondClose.y) / 2),
+      body: colorAt(body.x, body.y),
+      underLine: colorAt(midpoint, underLine.y),
+    }
+  })
+  await expect.poll(async () => (await readPlotColors()).body).toEqual([21, 212, 167, 255])
+  const selectType = async (name: string) => {
+    await page.getByTestId('chart-host').getByText('设置', { exact: true }).locator('..').click()
+    const settings = page.locator('.klinecharts-pro-setting-modal-content')
+    await settings.locator('.klinecharts-pro-select').first().click()
+    await settings.getByText(name, { exact: true }).last().click()
+    await page.locator('.klinecharts-pro-modal .close-icon').click()
+  }
+  await selectType('收盘价折线')
+  await expect.poll(readType).toBe('line')
+  await expect.poll(async () => (await readPlotColors()).closeLine).toEqual([175, 53, 254, 255])
+  const linePlot = await readPlotColors()
+  expect(linePlot.body).not.toEqual([21, 212, 167, 255])
+  expect(linePlot.underLine).not.toEqual([48, 88, 173, 255])
+  expect(await readChart()).toMatchObject({ last: before.last, timestamps: before.timestamps })
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await expect.poll(readType).toBe('line')
+
+  const openDataManager = async () => {
+    await page.getByRole('button', { name: '工具', exact: true }).click()
+    await page.getByTestId('open-data-manager').click()
+  }
+  await openDataManager()
+  const panel = page.getByTestId('backup-sync-panel')
+  const download = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const archive = await (await download).path()
+  expect(JSON.parse(await readFile(archive!, 'utf8')).data.preferences.candleType).toBe('line')
+  await page.getByTestId('close-data-manager').click()
+  await selectType('全实心')
+  await expect.poll(readType).toBe('candle_solid')
+  await openDataManager()
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles(archive!)
+  await expect(panel.getByTestId('backup-status')).toContainText('刷新')
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await expect.poll(readType).toBe('line')
+})
+
 test('updates the open 15m candle on quotes and replaces it with a late official close', async ({ page }) => {
   const start = Date.UTC(2026, 10, 20, 14)
   await page.clock.setFixedTime(new Date(start + 5 * minute))
@@ -672,17 +814,15 @@ test('replays ticks and seconds on a native 5m chart and restores a same-time qu
   await locate.getByRole('button', { name: '跳转', exact: true }).click()
   await expect(controls.locator('.replay-start-time')).toContainText(inputTime.replace('T', ' '))
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
-  const mode = controls.getByLabel('步进周期')
+  const mode = controls.getByLabel('回放模式')
+  const step = controls.getByLabel('步进周期')
   const last = () => readChart().then(chart => chart.last)
   await mode.selectOption('tick')
-  await controls.getByRole('button', { name: '下一笔', exact: true }).click()
-  await expect(controls).toContainText(':00.456')
-  await expect(controls).toContainText('第 2 步')
-  await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1005, volume: 1, ctraderClosed: false })
-  await controls.getByRole('button', { name: '下一笔', exact: true }).click()
+  await controls.getByRole('button', { name: '播放', exact: true }).click()
   await expect(controls).toContainText('第 3 步')
+  await controls.getByRole('button', { name: '暂停', exact: true }).click()
   await expect(controls).toContainText(':00.456')
-  await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1006, volume: 2, ctraderClosed: false })
+  await expect.poll(last).toMatchObject({ timestamp: at, high: 1.1006, close: 1.1006, volume: 2, ctraderClosed: false })
   const tickRequests = () => messages.filter(message => message.type === 2145).length
   expect(tickRequests()).toBe(1)
 
@@ -690,18 +830,16 @@ test('replays ticks and seconds on a native 5m chart and restores a same-time qu
   await expect(mode).toHaveValue('tick')
   await expect(controls).toContainText('第 3 步')
   await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1006, volume: 2 })
-  await controls.getByRole('button', { name: '上一笔', exact: true }).click()
-  await expect(controls).toContainText('第 2 步')
-  await expect.poll(last).toMatchObject({ timestamp: at, close: 1.1005, volume: 1 })
-  await mode.selectOption('5s')
+  await mode.selectOption('kline')
+  await step.selectOption('5s')
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
   await expect(controls).toContainText(':10 ')
-  await expect(controls).toContainText('第 3 步')
+  await expect(controls).toContainText('第 4 步')
   await expect.poll(last).toMatchObject({ timestamp: at, high: 1.1008, close: 1.1007, volume: 4 })
-  await mode.selectOption('1s')
+  await step.selectOption('1s')
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
   await expect.poll(last).toMatchObject({ timestamp: at, high: 1.1009, close: 1.1004, volume: 6 })
-  await mode.selectOption('15s')
+  await step.selectOption('15s')
   await controls.getByRole('button', { name: '下一根', exact: true }).click()
   await expect.poll(last).toMatchObject({ timestamp: at, high: 1.101, low: 1.1003, close: 1.1003, volume: 8 })
   expect(tickRequests()).toBe(2)
