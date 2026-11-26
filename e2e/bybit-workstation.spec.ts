@@ -656,12 +656,26 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
   await expect.poll(async () => (await combined()).profileSell).toBe(50)
   expect(futureReads).toBe(readsBeforeStep)
   expect(await page.evaluate(() => (window as unknown as { __replayStepScans: number }).__replayStepScans)).toBe(0)
-  const tool = chart.locator('.klinecharts-pro-drawing-bar').getByRole('button', { name: '框选成交分布' })
+  const drawingBar = chart.locator('.klinecharts-pro-drawing-bar')
+  const tool = drawingBar.getByRole('button', { name: '框选成交分布' })
   await expect(tool).toBeEnabled()
-  const rail = (await chart.locator('.klinecharts-pro-drawing-bar').boundingBox())!
+  const shapeTool = drawingBar.locator('.item:has(> .icon-arrow)').nth(2)
+  await shapeTool.locator('.icon-arrow').click()
+  const firstShape = shapeTool.locator('.list li').first()
+  await expect(firstShape).toHaveText('矩形')
+  expect(await shapeTool.locator(':scope > span > svg').innerHTML())
+    .toBe(await firstShape.locator('svg').innerHTML())
+
+  const profileIcon = tool.locator('svg')
+  await expect(profileIcon).toHaveClass('icon-overlay')
+  await expect(profileIcon).toHaveCSS('width', '32px')
+  await expect(tool).toHaveAttribute('aria-pressed', 'false')
+  const rail = (await drawingBar.boundingBox())!
   const button = (await tool.boundingBox())!
   expect(Math.abs(rail.x + rail.width / 2 - button.x - button.width / 2)).toBeLessThan(1)
   await tool.click()
+  await expect(tool).toHaveAttribute('aria-pressed', 'true')
+  await expect(profileIcon).toHaveClass(/selected/)
   const endpoints = () => page.evaluate(start => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     const bounds = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
@@ -684,6 +698,8 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     return display?.rows.reduce((sum: number, row: { buy: number; sell: number }) => sum + row.buy + row.sell, 0)
   })).toBe(40)
   await page.mouse.click(ends[1].x, ends[1].y)
+  await expect(tool).toHaveAttribute('aria-pressed', 'false')
+  await expect(profileIcon).toHaveClass('icon-overlay')
   const profileState = (save = false) => page.evaluate(save => {
     const state = window as unknown as { __viewportTestAdapter: {
       coreChart: import('klinecharts').Chart

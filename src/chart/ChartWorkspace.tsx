@@ -155,6 +155,7 @@ export function ChartWorkspace({
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
+  const [volumeProfileActive, setVolumeProfileActive] = useState(false)
   const [drawingSelection, setDrawingSelection] = useState<DrawingSelection | null>(null)
   const [localDownload, setLocalDownload] = useState<{ anchor: string | undefined; symbol: string } | null>(null)
   const localJob = useSyncExternalStore(localDownloads?.subscribe ?? noDownloadSubscription, localDownloads?.snapshot ?? noDownloadSnapshot)
@@ -186,6 +187,7 @@ export function ChartWorkspace({
   const periodRef = useRef(period)
   const reloadKeyRef = useRef(reloadKey)
   const mapping = orderFlowCloud && orderFlowMapping(symbol)
+  const volumeProfilePressed = Boolean(mapping) && volumeProfileActive
   const initialIndicatorPreferencesRef = useRef<
     ChartIndicatorPreferences | null | undefined
   >(undefined)
@@ -233,7 +235,7 @@ export function ChartWorkspace({
     const drawingBar = host.querySelector<HTMLElement>('.klinecharts-pro-drawing-bar')
     const drawingSlot = orderFlowCloud && drawingBar ? document.createElement('div') : null
     if (drawingSlot) {
-      drawingSlot.className = 'chart-volume-profile-slot'
+      drawingSlot.className = 'item'
       drawingBar?.prepend(drawingSlot)
     }
     setDrawingToolbar(drawingSlot ?? toolbar)
@@ -421,7 +423,7 @@ export function ChartWorkspace({
   }, [period])
 
   useEffect(() => {
-    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope, setDrawingSelection)
+    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope, setDrawingSelection, setVolumeProfileActive)
   }, [drawingStore, drawingScope])
 
   useEffect(() => {
@@ -800,8 +802,11 @@ export function ChartWorkspace({
       {orderFlowCloud && drawingToolbar && createPortal(
         <button type="button" className="chart-volume-profile-tool" aria-label="框选成交分布"
           title={mapping ? `框选成交分布 · ${orderFlowLabel(mapping)}` : '当前品种暂无成交量'} disabled={!mapping}
-          onClick={() => adapterRef.current?.startVolumeProfile?.()}>
-          <span aria-hidden="true"><i /><i /><i /></span>
+          aria-pressed={volumeProfilePressed} onClick={() => adapterRef.current?.startVolumeProfile?.()}>
+          <svg className={volumeProfilePressed ? 'icon-overlay selected' : 'icon-overlay'}
+            width="32" height="32" viewBox="0 0 22 22" aria-hidden="true">
+            <path d="M4 4h1v14H4z M6 5h9v2H6z M6 10h12v2H6z M6 15h6v2H6z" fill="inherit" stroke="none" />
+          </svg>
         </button>, drawingToolbar,
       )}
       <WorkspaceDialog open={dayDownloadSelection !== null || dayDownloadReview !== null} title="下载成交数据"

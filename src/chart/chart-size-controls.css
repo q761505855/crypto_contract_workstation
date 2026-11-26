@@ -54,30 +54,19 @@
   .chart-size-backdrop { align-items: end; padding: 0; }
   .chart-size-dialog { width: 100%; max-height: min(85dvh, calc(var(--workspace-viewport-height, 100dvh) - 12px)); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
 }
-.chart-volume-profile-slot {
-  display: flex;
-  justify-content: center;
-  margin-top: 8px;
-}
 .chart-volume-profile-tool {
   display: grid;
   place-items: center;
-  width: 34px;
+  width: 32px;
   height: 32px;
-  flex: 0 0 34px;
   padding: 0;
   border: 0;
-  border-radius: 4px;
   background: transparent;
-  color: #b5cced;
+  fill: inherit;
   cursor: pointer;
 }
-.chart-volume-profile-tool:hover:not(:disabled) { background: #29384e; color: #75ddd4; }
 .chart-volume-profile-tool:disabled { opacity: 0.36; cursor: default; }
-.chart-volume-profile-tool span { display: grid; gap: 2px; width: 18px; border-left: 1px solid currentColor; padding: 1px 2px; }
-.chart-volume-profile-tool i { height: 2px; width: 10px; background: currentColor; }
-.chart-volume-profile-tool i:nth-child(2) { width: 14px; }
-.chart-volume-profile-tool i:nth-child(3) { width: 7px; }
+.chart-volume-profile-tool:disabled > .icon-overlay { pointer-events: none; }
 .chart-host .klinecharts-pro-period-bar > .chart-day-download {
   flex: 0 0 auto;
   height: 28px;

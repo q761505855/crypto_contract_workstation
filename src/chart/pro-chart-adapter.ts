@@ -134,7 +134,8 @@ export interface ChartAdapterPort {
   loadLocalArchives?(market: LocalArchiveMarket, ticker: string, days: readonly string[], append: boolean): Promise<LoadedArchiveRange | null | undefined>
   stepViewport?(direction: -1 | 1): number | null
   setSimulationOverlays(state: SimulationOverlayState): void
-  setDrawingScope?(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void): void
+  setDrawingScope?(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void,
+    onVolumeProfileActive?: (active: boolean) => void): void
   changeSelectedDrawing?(id: string, change: DrawingChange): void
   deleteSelectedDrawing?(id: string): void
 }
@@ -341,9 +342,10 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.requireChart().setTheme(theme)
   }
 
-  setDrawingScope(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void): void {
+  setDrawingScope(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void,
+    onVolumeProfileActive?: (active: boolean) => void): void {
     if (!this.coreChart) return
-    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow, onSelection)
+    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow, onSelection, onVolumeProfileActive)
     this.drawings.setScope(scope)
   }
 
