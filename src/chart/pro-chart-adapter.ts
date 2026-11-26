@@ -54,7 +54,7 @@ import { DrawingOverlays, type DrawingChange, type DrawingSelection } from './dr
 import type { DrawingStore } from './drawings'
 import { CandleReadout } from './candle-readout'
 import { formatDisplayTime } from '../format-display-time'
-import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
+import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
 import { BIG_TRADES } from './order-flow'
 
 type OrderFlowChartOptions = ChartProOptions & {
@@ -264,7 +264,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     })
     const combinedOptions = {
       ...options, datafeed, orderFlowEnabled: !!orderFlowCloud,
-      mainIndicators: orderFlowCloud ? options.mainIndicators : options.mainIndicators?.filter(name => ![FOOTPRINT, BIG_TRADES, VWAP, VISIBLE_VOLUME_PROFILE].includes(name)),
+      mainIndicators: orderFlowCloud ? options.mainIndicators : options.mainIndicators?.filter(name => ![FOOTPRINT, BIG_TRADES, VWAP, VISIBLE_VOLUME_PROFILE, CANDLE_VOLUME_PROFILE].includes(name)),
       subIndicators: orderFlowCloud ? options.subIndicators : options.subIndicators?.filter(name => name !== CVD),
     }
     this.chart = this.factory(combinedOptions)

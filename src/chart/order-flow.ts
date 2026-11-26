@@ -76,6 +76,10 @@ export interface VolumeProfile {
 export type VolumeProfileBounds = Pick<VolumeProfileRow, 'low' | 'high'>
 export type VolumeProfilePrices = Pick<VolumeProfile, 'poc' | 'vah' | 'val'>
 
+export function volumeProfileDisplayType<T extends string>(type: T, showDelta: boolean): T | 'volume' {
+  return !showDelta && (type === 'delta' || type === 'volumeDelta') ? 'volume' : type
+}
+
 export function volumeProfilePrices(rows: readonly VolumeProfileRow[], valueArea: number): VolumeProfilePrices | undefined {
   const volume = rows.map(row => row.buy + row.sell)
   const total = volume.reduce((sum, value) => sum + value, 0)
@@ -109,6 +113,49 @@ export function volumeProfileBarColor(row: VolumeProfileBounds, prices: VolumePr
   const inside = prices && (row.low === row.high
     ? row.low >= prices.val && row.high <= prices.vah : row.low < prices.vah && row.high > prices.val)
   return settings.showValueArea && inside ? settings.valueAreaColor : settings.volumeColor
+}
+
+export function paintVolumeProfileRows(
+  profile: VolumeProfile,
+  type: 'volumeDelta' | 'volume' | 'bidAsk' | 'delta',
+  colors: Parameters<typeof volumeProfileBarColor>[2] & { bidColor: string; askColor: string },
+  { axisX, barWidth, paneHeight, pixelAt }: { axisX: number; barWidth: number; paneHeight: number; pixelAt(price: number): number },
+  paint: (x: number, y: number, width: number, height: number, color: string) => void,
+  paintValue?: (row: VolumeProfileRow, top: number, height: number) => void,
+): void {
+  let maxVolume = 0
+  let maxDelta = 0
+  let maxSide = 0
+  for (const { buy, sell } of profile.rows) {
+    maxVolume = Math.max(maxVolume, buy + sell)
+    maxDelta = Math.max(maxDelta, Math.abs(buy - sell))
+    maxSide = Math.max(maxSide, buy, sell)
+  }
+  for (const row of profile.rows) {
+    const { buy, sell } = row
+    const volume = buy + sell
+    if (!volume) continue
+    const first = pixelAt(row.high)
+    const last = pixelAt(row.low)
+    if (Math.max(first, last) < 0 || Math.min(first, last) >= paneHeight) continue
+    const top = Math.max(0, Math.min(first, last))
+    const height = Math.max(1, Math.min(paneHeight, Math.max(first, last)) - top - 0.7)
+    const delta = buy - sell
+    if (type === 'volume' || type === 'volumeDelta') {
+      paint(axisX, top, volume / maxVolume * barWidth, height, volumeProfileBarColor(row, profile, colors))
+    }
+    if ((type === 'delta' || type === 'volumeDelta') && delta !== 0) {
+      const width = Math.abs(delta) / maxDelta * barWidth
+      const left = type === 'volumeDelta' || delta < 0 ? axisX - width : axisX
+      paint(left, top, width, height, delta > 0 ? colors.askColor : colors.bidColor)
+    }
+    if (type === 'bidAsk') {
+      const sellWidth = sell / maxSide * barWidth
+      if (sell) paint(axisX - sellWidth, top, sellWidth, height, colors.bidColor)
+      if (buy) paint(axisX, top, buy / maxSide * barWidth, height, colors.askColor)
+    }
+    paintValue?.(row, top, height)
+  }
 }
 
 function profileBin(price: number, low: number, high: number, rows: number): number {

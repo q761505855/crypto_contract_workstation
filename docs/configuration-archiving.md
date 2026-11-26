@@ -37,7 +37,7 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
 | 行情 REST 地址 | `marketData.binanceBaseUrl`；`market-data/runtime.ts` | `binanceRestBaseUrl` | `config/preferences.json` |
-| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选与可见范围 Profile 的分档、关键价位与配色、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
+| 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选／可见范围／逐根 K 线成交分布的分档、关键价位、配色与 Delta 开关、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
@@ -61,6 +61,12 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 VWAP 和可见范围成交分布以 `VWAP` 和 `VISIBLE_VOLUME_PROFILE` 加入 `chartIndicators.main`，默认为关闭。二者保存选择和 `visible`，使用显式空 `calcParams` 和空样式。`visible: false` 原样保留。旧档缺少整个 `chartIndicators` 时保留本机指标设置，有指标清单时按清单恢复，其中没有这两项就不启用。空主图列表原样恢复，重复项、副图配置和非法值在任何写入前拒绝。应用配置／完整 JSON 和 GitHub「应用配置」沿用现有差异、校验和及冲突流程。自动恢复会重建图表，手动恢复后按提示刷新。计算结果和图表可见范围属于运行状态。
 
 可见范围 Profile 的参数以 `chartIndicators.orderFlow.visibleProfile` 保存。位置接受 `left` 或 `right`，偏移 0–40% 和宽度 5–50% 为整数，档数为 4–200 的整数。内容接受 `volumeDelta`、`volume` 或 `delta`。默认靠右、偏移 0%、宽度 26%、48 档、双列且显示标题。`showPoc`、`showValueArea` 和 `showLabels` 默认开启，`valueArea` 接受 1–100 的整数百分比，默认 70。`valueAreaColor`、`pocColor` 和 `levelColor` 分别保存价值区成交量、POC 线和 VAH／VAL 线的颜色。旧档缺字段时保留本机值，本机无值时使用默认值。显式偏移 0、`false` 和透明色原样恢复，空值和非法值在任何写入前拒绝。关闭指标后仍保留设置。本地、配置／完整 JSON 和 GitHub「应用配置」沿用现有流程。框选 Profile 的独立设置位于 `chartIndicators.orderFlow.profile`。
+
+K线成交量分布图以 `CANDLE_VOLUME_PROFILE` 保存在 `chartIndicators.main`，默认为关闭，仅允许在主图添加一次，使用空 `calcParams` 和 `styles: null`。设置保存在 `chartIndicators.orderFlow.candleProfile`，与框选分布共用内容、关键价位、各档数字和配色的校验。`rows` 接受 4–200 的整数，默认 24。`width` 接受 5–100 的整数百分比，默认 95，按每根 K 线左侧的可用宽度计算。`columnWidth` 接受 48–240 的整数像素，默认 120。旧档有主图清单但没有该指标时按清单恢复。整个 `chartIndicators` 缺失时保留本地指标选择，缺少的设置字段保留本地值，本地无值时使用默认值。显式 `visible: false`、空指标列表和透明色原样恢复。每根 K 线的逐笔成交及分布计算结果属于运行状态。
+
+逐根分布的配色缺省时沿用框选分布的同名颜色，两处均无值时采用默认色。已有的逐根分布自定义颜色和透明色会原样恢复，保存其他参数时未修改的继承色继续沿用框选配置。旧档缺少逐根分布的价格标签开关时先保留本机值，本机无值时默认隐藏标签。各档数字和价格标签可独立控制。价值区底色与 VAH、VAL 线由「显示 VAH / VAL」控制，两者随现有设置组参与本机、应用配置／完整 JSON 和 GitHub「应用配置」往返。
+
+框选、可见范围和 K 线成交量分布分别以 `orderFlow.profile.showDelta`、`orderFlow.visibleProfile.showDelta` 和 `orderFlow.candleProfile.showDelta` 保存「显示 Delta」。默认开启，显式 `false` 原样恢复并使包含 Delta 的模式改为只画总成交量，已保存的显示模式可在重新开启后继续使用。缺少开关时保留本机值，`null`、数字、字符串及其他非法配置在任何写入前拒绝。指标选择和各项设置随本机、应用配置／完整 JSON 和 GitHub「应用配置」往返，参与现有差异比较、校验和与冲突处理。自动配置恢复会重建图表，手动导入或拉取后按提示刷新。
 
 Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或个别设置字段时保留本机值，本机没有该字段时运行时使用默认值。显式空指标列表、布尔 `false`、数字 `0` 和透明色原样恢复。提供的非法类型、空值、数值范围或枚举值在写入数据前拒绝。自动同步恢复会重建界面，手动恢复后按提示刷新。当前图表缩放、逐笔数据和计算缓存属于运行状态。
 

@@ -5,18 +5,18 @@ import { BYBIT_DAY_MS } from '../market-data/bybit/trades'
 import { DATABENTO_CHART_PRICE_PRECISION, DATABENTO_PRICE_PRECISION } from '../market-data/models'
 import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combined-source'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VolumeProfileLevels, bigTradeMode, bigTradeThresholdUnits,
-  volumeProfileBounds, volumeProfileCenter, volumeProfilePrices, type BigTradeMode, type VolumeProfileBounds } from './order-flow'
+  volumeProfileBounds, volumeProfileCenter, volumeProfilePrices, type BigTradeMode, type VolumeProfile, type VolumeProfileBounds } from './order-flow'
 import { CANDLE_PANE, tradeBubbleOffset, tradeBubbleRadius, type BubbleDisplay, type ProfileDisplay } from './order-flow-renderers'
 import { selectVisibleTradeBubbles, type DisplayedTradeBubble } from './order-flow-bubbles'
 import { OrderFlowBars, tradeBubblePrice, type TradeBar } from './order-flow-bars'
 import { ReplayOrderFlow } from './order-flow-replay'
 import type { DrawingPoint } from './drawings'
 import { drawingIndexAt } from './drawing-coordinates'
-import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, bigTradeThreshold, bubblePreferenceDefaults, orderFlowSettings, withoutBubbleDefaults, type OrderFlowPreferences } from './order-flow-preferences'
+import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, bigTradeThreshold, bubblePreferenceDefaults, orderFlowSettings, withoutBubbleDefaults, type OrderFlowPreferences } from './order-flow-preferences'
 import { calculateFootprint, cumulativeVolumeDelta, dailyTradeVwap, tradeBarProfileLevels, tradeDay, visibleVolumeProfile, type FootprintRow } from './order-flow-metrics'
 import { CandleWorkerResults, orderFlowWorkers, parallelBubbles, parallelFootprint, WORKER_TRADE_THRESHOLD } from './order-flow-workers'
 import { runOrderFlowTask, type TradeColumns } from './order-flow-worker-tasks'
-import type { CvdDisplay, FootprintDisplay, VisibleProfileDisplay, VwapDisplay } from './order-flow-indicators'
+import type { CandleProfileDisplay, CvdDisplay, FootprintDisplay, VisibleProfileDisplay, VwapDisplay } from './order-flow-indicators'
 
 const dataReady = 'onDataReady' as ActionType
 const visibleRangeChange = 'onVisibleRangeChange' as ActionType
@@ -91,12 +91,16 @@ export class OrderFlowChart {
   private footprintSettings = orderFlowSettings('footprint')
   private bubbleSettings = orderFlowSettings('bubbles')
   private profileSettings = orderFlowSettings('profile')
+  private candleProfileSettings = orderFlowSettings('candleProfile')
   private visibleProfileSettings = orderFlowSettings('visibleProfile')
   private cvdSettings = orderFlowSettings('cvd')
   private footprintRows = new WeakMap<TradeBar, { open: number; precision: number; projected: boolean; targetRows: number; rows: FootprintRow[] }>()
+  private candleProfiles = new WeakMap<VolumeProfileLevels, VolumeProfile | undefined>()
   private readonly footprintWorkers = new CandleWorkerResults<FootprintRow[]>(() => this.schedule())
   private readonly bubbleWorkers = new CandleWorkerResults<DisplayedTradeBubble[]>(() => this.schedule())
   private previousBarSpace?: number
+  private orderFlowBarSpace?: number
+  private reserveOrderFlowSpaceOnRight = false
 
   constructor(private readonly chart: Chart, private readonly feed: CombinedBybitSource, private readonly timeframe: () => string,
     private readonly hasCurrentCandles: () => boolean = () => true, private readonly nativePriceVolume = false,
@@ -170,9 +174,13 @@ export class OrderFlowChart {
   }
 
   setPreferences(preferences: OrderFlowPreferences | undefined): void {
-    const oldFootprint = this.footprintSettings
+    const candleProfile = orderFlowSettings('candleProfile', preferences)
+    if (candleProfile.rows !== this.candleProfileSettings.rows || candleProfile.valueArea !== this.candleProfileSettings.valueArea) {
+      this.candleProfiles = new WeakMap()
+    }
     this.settings = preferences
     this.profileSettings = orderFlowSettings('profile', preferences)
+    this.candleProfileSettings = candleProfile
     this.visibleProfileSettings = orderFlowSettings('visibleProfile', preferences)
     this.footprintSettings = orderFlowSettings('footprint', preferences)
     this.bubbleSettings = orderFlowSettings('bubbles', preferences)
@@ -182,9 +190,6 @@ export class OrderFlowChart {
     this.bubbleWorkers.clear()
     for (const [id, request] of this.profiles) {
       this.showProfile(id, { profile: request.levels.profile(this.profileSettings.rows, this.profileSettings.valueArea), message: request.message })
-    }
-    if (this.previousBarSpace !== undefined && oldFootprint.columnWidth !== this.footprintSettings.columnWidth) {
-      this.setFootprintBarSpace(this.footprintSettings.columnWidth)
     }
     this.hideTooltip()
     this.schedule()
@@ -221,6 +226,7 @@ export class OrderFlowChart {
         this.showVolume()
         this.showFootprint()
         this.showCvd()
+        this.showCandleProfile()
         this.showVisibleProfile()
         this.showVwap()
       }
@@ -576,8 +582,10 @@ export class OrderFlowChart {
     const indicator = this.footprint()
     if (!indicator?.visible) return
     const previous = indicator.extendData as FootprintDisplay | undefined
-    if (previous?.settings === this.footprintSettings && previous?.message === message && sameValues(previous.rows, rows)) return
-    const display: FootprintDisplay = { rows, message, settings: this.footprintSettings }
+    const shareCandleSpace = !!this.mainIndicator(CANDLE_VOLUME_PROFILE)?.visible
+    if (previous?.settings === this.footprintSettings && previous.message === message &&
+        previous.shareCandleSpace === shareCandleSpace && sameValues(previous.rows, rows)) return
+    const display: FootprintDisplay = { rows, message, settings: this.footprintSettings, shareCandleSpace }
     this.overrideIndicator.call(this.chart, { name: FOOTPRINT, extendData: display }, CANDLE_PANE)
   }
 
@@ -593,6 +601,17 @@ export class OrderFlowChart {
 
   private readonly profileAxisInset = () => this.chart.getStyles().yAxis.inside
     ? this.chart.getSize(CANDLE_PANE, DomPosition.YAxis)?.width ?? 0 : 0
+
+  private showCandleProfile(profiles?: CandleProfileDisplay['profiles'], message?: string): void {
+    const indicator = this.mainIndicator(CANDLE_VOLUME_PROFILE)
+    if (!indicator?.visible) return
+    const precision = this.chart.getPriceVolumePrecision().price
+    const previous = indicator.extendData as CandleProfileDisplay | undefined
+    if (previous?.settings === this.candleProfileSettings && previous.precision === precision &&
+        previous.message === message && sameValues(previous.profiles, profiles)) return
+    const display: CandleProfileDisplay = { profiles, message, precision, settings: this.candleProfileSettings }
+    this.overrideIndicator.call(this.chart, { name: CANDLE_VOLUME_PROFILE, extendData: display }, CANDLE_PANE)
+  }
 
   private showVisibleProfile(rows?: VisibleProfileDisplay['rows'], message?: string): void {
     const indicator = this.mainIndicator(VISIBLE_VOLUME_PROFILE)
@@ -625,25 +644,30 @@ export class OrderFlowChart {
     this.overrideIndicator.call(this.chart, { name: VWAP, extendData: display }, CANDLE_PANE)
   }
 
-  private syncFootprintSpacing(enabled: boolean): void {
-    if (enabled && this.previousBarSpace === undefined) {
-      this.previousBarSpace = this.chart.getBarSpace()
-      this.chart.setStyles({ candle: { footprint: true } })
-      this.setFootprintBarSpace(this.footprintSettings.columnWidth)
-    } else if (!enabled && this.previousBarSpace !== undefined) {
-      this.setFootprintBarSpace(this.previousBarSpace)
+  private syncOrderFlowSpacing(width: number | undefined, reserveRight: boolean): void {
+    if (width === this.orderFlowBarSpace && reserveRight === this.reserveOrderFlowSpaceOnRight) return
+    this.orderFlowBarSpace = width
+    this.reserveOrderFlowSpaceOnRight = reserveRight
+    if (width !== undefined) {
+      if (this.previousBarSpace === undefined) {
+        this.previousBarSpace = this.chart.getBarSpace()
+        this.chart.setStyles({ candle: { footprint: true } })
+      }
+      this.setOrderFlowBarSpace(width, reserveRight)
+    } else if (this.previousBarSpace !== undefined) {
+      this.setOrderFlowBarSpace(this.previousBarSpace)
       this.previousBarSpace = undefined
       this.chart.setStyles({ candle: { footprint: false } })
     }
   }
 
-  private setFootprintBarSpace(width: number): void {
+  private setOrderFlowBarSpace(width: number, reserveRight = false): void {
     const offset = this.chart.getOffsetRightDistance()
     const liveEdge = this.chart.getVisibleRange().to === this.chart.getDataList().length
     this.chart.setBarSpace(width)
     if (liveEdge) {
       const paneWidth = this.chart.getSize(CANDLE_PANE, DomPosition.Main)?.width ?? Infinity
-      this.chart.setOffsetRightDistance(Math.min(paneWidth / 3, Math.max(offset, width / 2 - 6)))
+      this.chart.setOffsetRightDistance(reserveRight ? Math.min(paneWidth / 3, Math.max(offset, width / 2 - 6)) : offset)
     }
   }
 
@@ -724,7 +748,9 @@ export class OrderFlowChart {
     const bars = new Map<number, TradeBar>()
     const volumes = new Map<number, number>()
     const footprints = new Map<number, FootprintRow[]>()
+    const candleProfiles = new Map<number, VolumeProfile>()
     const footprintEnabled = this.footprint()?.visible
+    const candleProfileEnabled = allTrades && this.mainIndicator(CANDLE_VOLUME_PROFILE)?.visible
     const profileEnabled = allTrades && this.mainIndicator(VISIBLE_VOLUME_PROFILE)?.visible
     const projected = this.feed.mapping?.relation === 'etf'
     const cme = this.feed.localArchive?.source === 'databento-cme'
@@ -742,6 +768,15 @@ export class OrderFlowChart {
       bars.set(timestamp, bar)
       if (bar.firstPrice !== undefined) volumes.set(timestamp, bar.volume)
       partial ||= !bar.complete
+      if (candleProfileEnabled && bar.firstPrice !== undefined) {
+        const levels = tradeBarProfileLevels(bar, open, projected)
+        if (!this.candleProfiles.has(levels)) {
+          const { rows, valueArea } = this.candleProfileSettings
+          this.candleProfiles.set(levels, levels.profile(rows, valueArea))
+        }
+        const profile = this.candleProfiles.get(levels)
+        if (profile) candleProfiles.set(timestamp, profile)
+      }
       if (footprintEnabled && bar.firstPrice !== undefined) {
         const settings = this.footprintSettings
         let targetRows = settings.targetRows
@@ -781,6 +816,9 @@ export class OrderFlowChart {
     this.showBubbles({ bars: unit === 'notional' || allTrades ? bars : undefined, timeframe, mode,
       updating: this.updating, projectToCandle: projected, contractValue, lotSize, message: unitMessage ?? status, settings: this.bubbleSettings })
     if (footprintEnabled) this.showFootprint(footprints, status ?? (footprintPending ? '正在计算足迹…' : undefined))
+    if (candleProfileEnabled) {
+      this.showCandleProfile(candleProfiles, status ?? (candleProfiles.size ? undefined : '可见 K 线暂无成交'))
+    }
     if (profileEnabled) {
       const pricedBars = visible.flatMap(({ timestamp, open }) => {
         const bar = bars.get(timestamp)
@@ -812,10 +850,12 @@ export class OrderFlowChart {
   private async updateFlow(): Promise<void> {
     const indicator = this.bubbleIndicator()
     const footprint = this.footprint()?.visible
+    const candleProfile = this.mainIndicator(CANDLE_VOLUME_PROFILE)?.visible
     const cvd = this.cvd()?.[1].visible
     const profile = this.mainIndicator(VISIBLE_VOLUME_PROFILE)?.visible
     const vwap = this.mainIndicator(VWAP)?.visible
-    this.syncFootprintSpacing(this.supported && !!footprint)
+    const profileSpacing = Math.max(footprint ? this.footprintSettings.columnWidth : 0, candleProfile ? this.candleProfileSettings.columnWidth : 0)
+    this.syncOrderFlowSpacing(this.supported && profileSpacing ? profileSpacing : undefined, this.supported && !!footprint && !candleProfile)
     if (!indicator?.visible) this.bubbleWorkers.retain(new Set())
     if (!footprint) this.footprintWorkers.retain(new Set())
     if (!this.supported) {
@@ -823,6 +863,7 @@ export class OrderFlowChart {
       if (indicator?.visible) this.showBubbles({ message: '此品种暂无成交量' })
       this.showFootprint(undefined, unavailable)
       this.showCvd(undefined, unavailable)
+      this.showCandleProfile(undefined, unavailable)
       this.showVisibleProfile(undefined, unavailable)
       this.showVwap(undefined, unavailable)
       this.hideTooltip()
@@ -833,16 +874,17 @@ export class OrderFlowChart {
     if (!visible.length) {
       this.bubbleWorkers.retain(new Set())
       this.footprintWorkers.retain(new Set())
+      this.showCandleProfile()
       this.showVisibleProfile()
       this.showVwap()
       return
     }
-    if (!indicator?.visible && !showVolume && !footprint && !cvd && !profile && !vwap) return
+    if (!indicator?.visible && !showVolume && !footprint && !cvd && !profile && !candleProfile && !vwap) return
     const timeframe = this.timeframe()
     const mode = bigTradeMode(indicator?.styles)
     const minimum = Number(indicator?.calcParams[0] ?? DEFAULT_BIG_TRADE_NOTIONAL)
     const quantityThreshold = indicator?.visible && this.bubbleSettings.thresholdUnit !== 'notional'
-    const sampleMinimum = mode === 'aggregate' || footprint || cvd || profile || vwap || quantityThreshold ? 0 : minimum
+    const sampleMinimum = mode === 'aggregate' || footprint || cvd || profile || candleProfile || vwap || quantityThreshold ? 0 : minimum
     const source = this.feed.archiveCacheKey
     const key = JSON.stringify([source, sampleMinimum])
     const replaying = this.feed.replaying && !this.feed.localArchive

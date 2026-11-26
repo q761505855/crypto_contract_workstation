@@ -432,8 +432,10 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
       bubbles: { marker: 'square', minRadius: 0, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
         minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 280 },
-      profile: { rows: 16, valueArea: 85, showLabels: false },
-      visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false,
+      profile: { rows: 16, valueArea: 85, showLabels: false, showDelta: false },
+      candleProfile: { type: 'volumeDelta', rows: 22, width: 85, columnWidth: 100, valueArea: 80,
+        showDelta: false, showPoc: false, showLabels: false, showValueArea: true, showValues: true, volumeColor: '#aabbcc00' },
+      visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false, showDelta: false,
         showPoc: true, showValueArea: false, valueArea: 86, showLabels: false, pocColor: '#ff8321', levelColor: '#abcdef',
         volumeColor: '#12345600', valueAreaColor: '#23457800', positiveColor: '#23456780', negativeColor: '#345678' },
       cvd: { reset: 'continuous', showZero: false },
@@ -448,6 +450,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       { name: 'KC', calcParams: [14, 2.5, 10], visible: false, styles: { lines: [{ color: '#123456', size: 0 }] } },
       { name: 'VWAP', calcParams: [], visible: true, styles: null },
       { name: 'VISIBLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
+      { name: 'CANDLE_VOLUME_PROFILE', calcParams: [], visible: false, styles: null },
       { name: 'BIG_TRADES', calcParams: [0], visible: false, styles: {
         bubbleMode: 'aggregate',
         bubbleColors: [{ color: '#12345600' }, { color: '#23456780' }, { color: '#345678' }, { color: '#456789' }],
@@ -755,10 +758,14 @@ describe('WorkstationBackupService', () => {
     await target.import(archive)
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(indicatorPreferences())
     const legacyIndicators = indicatorPreferences()
-    legacyIndicators.main = legacyIndicators.main.filter(({ name }) => name !== 'VWAP' && name !== 'VISIBLE_VOLUME_PROFILE')
+    legacyIndicators.main = legacyIndicators.main.filter(({ name }) => !['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE'].includes(name))
+    delete legacyIndicators.orderFlow!.candleProfile
+    delete legacyIndicators.orderFlow!.profile!.showDelta
+    delete legacyIndicators.orderFlow!.visibleProfile!.showDelta
     archive.data.preferences!.chartIndicators = legacyIndicators
     await target.import(archive)
-    expect((await target.exportPreferences()).data.preferences!.chartIndicators).toEqual(legacyIndicators)
+    expect((await target.exportPreferences()).data.preferences!.chartIndicators)
+      .toEqual({ ...legacyIndicators, orderFlow: indicatorPreferences().orderFlow })
     archive.data.preferences!.chartIndicators = indicatorPreferences()
     delete archive.data.preferences!.chartIndicators.orderFlow
     archive.data.preferences!.chartIndicators.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
@@ -788,6 +795,11 @@ describe('WorkstationBackupService', () => {
       { showLabels: 0 }, { showValueArea: null }, { valueArea: 0 }, { pocColor: null }, { valueAreaColor: 'invalid' }]) {
       archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { visibleProfile } } as unknown as ChartIndicatorPreferences
       await expect(target.import(archive)).rejects.toThrow(/orderFlow.visibleProfile/)
+      expect((await target.exportAll()).data).toEqual(before)
+    }
+    for (const [group, value] of Object.entries({ profile: { showDelta: null }, visibleProfile: { showDelta: 0 }, candleProfile: { rows: 0 } })) {
+      archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { [group]: value } }
+      await expect(target.import(archive)).rejects.toThrow(`orderFlow.${group}`)
       expect((await target.exportAll()).data).toEqual(before)
     }
     for (const bubbles of [{ thresholdUnit: null }, { maxQuantity: '10' }, { minLots: 2, maxLots: 1 },

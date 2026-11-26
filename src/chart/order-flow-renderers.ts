@@ -1,14 +1,14 @@
 import { registerIndicator, registerOverlay, type IndicatorDrawParams, type IndicatorTooltipData,
   type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
 import { BIG_TRADES, DEFAULT_BIG_TRADE_NOTIONAL, VOLUME_PROFILE_TOOL, bigTradeColors, bigTradeMode, bigTradeThresholdUnits,
-  volumeProfileBarColor, volumeProfileBounds, volumeProfileCenter, volumeProfilePriceLines,
+  paintVolumeProfileRows, volumeProfileBounds, volumeProfileCenter, volumeProfileDisplayType, volumeProfilePriceLines,
   type BigTradeMode, type BigTradeThreshold, type BigTradeUnits, type VolumeProfile, type VolumeProfileBounds } from './order-flow'
 import type { TradeRange } from '../market-data/bybit/combined-source'
 import { drawingIndexAt } from './drawing-coordinates'
 import { tradeBubblePrice, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { nextOpenTime } from '../market-data/intervals'
 import { bigTradeThreshold, orderFlowSettings } from './order-flow-preferences'
-import { formatFlowAmount, registerOrderFlowIndicators } from './order-flow-indicators'
+import { formatProfileAmount, registerOrderFlowIndicators } from './order-flow-indicators'
 import type { DisplayedTradeBubble } from './order-flow-bubbles'
 
 export const CANDLE_PANE = 'candle_pane'
@@ -91,46 +91,16 @@ export function drawVolumeProfile({ overlay, coordinates, bounding, yAxis, preci
   }
   if (message) text(message, x + 4, Math.min(paneHeight - 2, top + 17), settings.levelColor)
   if (!profile || !yAxis) return figures
-  const { type } = settings
+  const type = volumeProfileDisplayType(settings.type, settings.showDelta)
   text({ volumeDelta: 'Delta / 成交量', volume: '成交量', bidAsk: 'Bid / Ask', delta: 'Delta' }[type],
     x + 4, Math.min(paneHeight - 2, top + (message ? 30 : 17)), settings.levelColor)
-  const maxVolume = Math.max(...profile.rows.map(row => row.buy + row.sell))
-  const maxDelta = Math.max(...profile.rows.map(row => Math.abs(row.buy - row.sell)))
-  const maxSide = Math.max(...profile.rows.map(row => Math.max(row.buy, row.sell)))
-  const barWidth = width * settings.width / 100
-  const addBar = (left: number, top: number, width: number, height: number, color: string) => {
-    if (width > 0) figures.push({ type: 'rect', attrs: { x: left, y: top, width, height }, styles: { color }, ignoreEvent: true })
-  }
-  for (const row of profile.rows) {
-    const volume = row.buy + row.sell
-    if (!volume) continue
-    const first = yAxis.convertToPixel(row.high)
-    const last = yAxis.convertToPixel(row.low)
-    if (Math.max(first, last) < 0 || Math.min(first, last) >= paneHeight) continue
-    const top = Math.max(0, Math.min(first, last))
-    const rowHeight = Math.max(1, Math.min(paneHeight, Math.max(first, last)) - top - 0.7)
-    const delta = row.buy - row.sell
-    const volumeWidth = volume / maxVolume * barWidth
-    const deltaWidth = maxDelta ? Math.abs(delta) / maxDelta * barWidth : 0
-    if (type === 'volume' || type === 'volumeDelta') {
-      addBar(x, top, volumeWidth, rowHeight, volumeProfileBarColor(row, profile, settings))
-    }
-    if (type === 'delta' || type === 'volumeDelta') {
-      const left = type === 'volumeDelta' || delta < 0 ? x - deltaWidth : x
-      addBar(left, top, deltaWidth, rowHeight, delta > 0 ? settings.askColor : settings.bidColor)
-    }
-    if (type === 'bidAsk') {
-      const sellWidth = row.sell / maxSide * barWidth
-      addBar(x - sellWidth, top, sellWidth, rowHeight, settings.bidColor)
-      addBar(x, top, row.buy / maxSide * barWidth, rowHeight, settings.askColor)
-    }
-    if (settings.showValues && rowHeight >= 13) {
-      const value = type === 'bidAsk' ? `${formatFlowAmount(row.sell)} / ${formatFlowAmount(row.buy)}`
-        : type === 'volumeDelta' ? `${formatFlowAmount(delta)} / ${formatFlowAmount(volume)}`
-          : formatFlowAmount(type === 'delta' ? delta : volume)
-      text(value, x + 4, top + rowHeight, '#e7eef8')
-    }
-  }
+  paintVolumeProfileRows(profile, type, settings, {
+    axisX: x, barWidth: width * settings.width / 100, paneHeight, pixelAt: value => yAxis.convertToPixel(value),
+  }, (left, top, width, height, color) => {
+    figures.push({ type: 'rect', attrs: { x: left, y: top, width, height }, styles: { color }, ignoreEvent: true })
+  }, settings.showValues ? (row, top, height) => {
+    if (height >= 13) text(formatProfileAmount(type, row), x + 4, top + height, '#e7eef8')
+  } : undefined)
   let lastLabel = -Infinity
   for (const { name, value, color, solid, y: level } of volumeProfilePriceLines(profile, settings, value => yAxis.convertToPixel(value))) {
     if (level < 0 || level >= paneHeight) continue

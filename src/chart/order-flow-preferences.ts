@@ -5,6 +5,7 @@ export const FOOTPRINT = 'FOOTPRINT'
 export const CVD = 'CVD'
 export const VWAP = 'VWAP'
 export const VISIBLE_VOLUME_PROFILE = 'VISIBLE_VOLUME_PROFILE'
+export const CANDLE_VOLUME_PROFILE = 'CANDLE_VOLUME_PROFILE'
 export const PROFILE = 'VOLUME_PROFILE_SETTINGS'
 export const MAX_VISIBLE_BUBBLES = 1000
 
@@ -29,6 +30,21 @@ const profilePriceFields = {
   levelColor: color('VAH / VAL 线色', '#aabcda'),
 }
 
+const showProfileDelta = toggle('显示 Delta', true)
+const candleSpacing = (fallback: number) => number('开启时 K 线间距', fallback, 48, 240)
+const selectionProfileFields = {
+  type: select('显示数据', 'volumeDelta', { volumeDelta: 'Delta / 总成交量', volume: '总成交量', bidAsk: 'Bid / Ask', delta: 'Delta' }),
+  showDelta: showProfileDelta,
+  rows: number('价位档数', 48, 4, 200),
+  ...profilePriceFields,
+  showValues: toggle('显示各档成交量', false),
+  volumeColor: color('成交量色', '#3b54766b'),
+  valueAreaColor: color('价值区成交量色', '#5e93d67a'),
+  bidColor: color('Bid 主动卖出色', '#ff827e66'),
+  askColor: color('Ask 主动买入色', '#49d4ae66'),
+}
+export const volumeProfileColorFields = ['volumeColor', 'valueAreaColor', 'bidColor', 'askColor', 'pocColor', 'levelColor'] as const
+
 export const orderFlowFields = {
   footprint: {
     type: select('数值内容', 'bidAsk', footprintTypes),
@@ -38,7 +54,7 @@ export const orderFlowFields = {
     grouping: select('价位分组', 'auto', { auto: '自动', manual: '手动' }),
     targetRows: number('自动目标档数', 22, 4, 96),
     ticksPerRow: number('手动每档 ticks', 1, 1, 100_000),
-    columnWidth: number('开启时 K 线间距', 110, 48, 240),
+    columnWidth: candleSpacing(110),
     minNotional: number('最低成交额（USDT）', 0, 0, 1e12, 0.01),
     maxNotional: number('最高成交额（0 为不限）', 0, 0, 1e12, 0.01),
     shading: select('颜色强度', 'fade', { fade: '随数值变化', fixed: '固定' }),
@@ -81,15 +97,15 @@ export const orderFlowFields = {
     textColor: color('文字色', '#f2f5fa'),
   },
   profile: {
-    type: select('显示数据', 'volumeDelta', { volumeDelta: 'Delta / 总成交量', volume: '总成交量', bidAsk: 'Bid / Ask', delta: 'Delta' }),
-    rows: number('价位档数', 48, 4, 200),
+    ...selectionProfileFields,
     width: number('每侧最大宽度（占选区 %）', 42, 5, 100),
-    ...profilePriceFields,
-    showValues: toggle('显示各档成交量', false),
-    volumeColor: color('成交量色', '#3b54766b'),
-    valueAreaColor: color('价值区成交量色', '#5e93d67a'),
-    bidColor: color('Bid 主动卖出色', '#ff827e66'),
-    askColor: color('Ask 主动买入色', '#49d4ae66'),
+  },
+  candleProfile: {
+    ...selectionProfileFields,
+    rows: number('价位档数', 24, 4, 200),
+    showLabels: toggle('显示价格线标签', false),
+    width: number('最大宽度（占 K 线左侧 %）', 95, 5, 100),
+    columnWidth: candleSpacing(120),
   },
   visibleProfile: {
     placement: select('位置', 'right', { right: '靠右 · 价格轴左侧', left: '靠主图左侧' }),
@@ -97,6 +113,7 @@ export const orderFlowFields = {
     width: number('总宽度（占主图 %）', 26, 5, 50),
     rows: number('价位档数', 48, 4, 200),
     type: select('显示内容', 'volumeDelta', { volumeDelta: '成交量 / Delta', volume: '仅成交量', delta: '仅 Delta' }),
+    showDelta: showProfileDelta,
     showHeaders: toggle('显示列标题', true),
     ...profilePriceFields,
     volumeColor: color('成交量颜色', '#769ce2a6'),
@@ -155,6 +172,11 @@ export function withoutBubbleDefaults(preferences: OrderFlowPreferences | undefi
 
 export function orderFlowSettings<G extends OrderFlowGroup>(group: G, preferences?: OrderFlowPreferences): GroupValues<G> {
   const defaults = Object.fromEntries(orderFlowFieldEntries(group).map(([key, field]) => [key, field.fallback]))
+  if (group === 'candleProfile') {
+    for (const field of volumeProfileColorFields) {
+      defaults[field] = preferences?.profile?.[field] ?? defaults[field]
+    }
+  }
   if (group === 'bubbles' && preferences?.bubbles?.maxRadius === undefined) {
     defaults.maxRadius = Math.max(orderFlowFields.bubbles.maxRadius.fallback, preferences?.bubbles?.minRadius ?? 0)
   }

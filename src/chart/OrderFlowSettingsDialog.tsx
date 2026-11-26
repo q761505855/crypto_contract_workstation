@@ -1,15 +1,15 @@
 import { createChartColorPicker } from '@klinecharts/pro'
 import { useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
-import { bubbleThresholdFields, orderFlowFieldEntries, orderFlowSettings, validateOrderFlowPreferences, type OrderFlowGroup, type OrderFlowPreferences, type orderFlowFields } from './order-flow-preferences'
-import type { BigTradeThresholdUnit } from './order-flow'
-import { cvdTitle, footprintTitle, visibleProfileTitle } from './order-flow-indicators'
+import { bubbleThresholdFields, orderFlowFieldEntries, orderFlowSettings, validateOrderFlowPreferences, volumeProfileColorFields, type OrderFlowGroup, type OrderFlowPreferences, type orderFlowFields } from './order-flow-preferences'
+import { volumeProfileDisplayType, type BigTradeThresholdUnit } from './order-flow'
+import { candleProfileTitle, cvdTitle, footprintTitle, visibleProfileTitle } from './order-flow-indicators'
 import { bigTradesTitle } from './order-flow-renderers'
 import './order-flow-settings.css'
 
 const titles: Record<OrderFlowGroup, string> = {
   footprint: footprintTitle, bubbles: bigTradesTitle, cvd: cvdTitle, profile: '框选成交分布（Profile）',
-  visibleProfile: visibleProfileTitle,
+  visibleProfile: visibleProfileTitle, candleProfile: candleProfileTitle,
 }
 
 type Draft = Record<string, string | number | boolean>
@@ -20,6 +20,10 @@ type SettingsSection<G extends OrderFlowGroup> = {
 }
 
 const thresholdFields = Object.values(bubbleThresholdFields).flat()
+const profileSections = [
+  { title: '关键价位', fields: ['showPoc', 'showValueArea', 'valueArea', 'showLabels'] },
+  { title: '配色', fields: volumeProfileColorFields },
+] as const
 const sections = {
   bubbles: [
     { title: '成交筛选', open: true, fields: ['mode', 'thresholdUnit', ...thresholdFields, 'maxBubbles'] },
@@ -33,12 +37,15 @@ const sections = {
     { title: '配色', fields: ['bidColor', 'askColor', 'textColor', 'pocColor', 'imbalanceColor'] },
   ],
   profile: [
-    { title: '分布与分档', open: true, fields: ['type', 'rows', 'width', 'showValues'] },
-    { title: '关键价位', fields: ['showPoc', 'showValueArea', 'valueArea', 'showLabels'] },
-    { title: '配色', fields: ['volumeColor', 'valueAreaColor', 'bidColor', 'askColor', 'pocColor', 'levelColor'] },
+    { title: '分布与分档', open: true, fields: ['type', 'showDelta', 'rows', 'width', 'showValues'] },
+    ...profileSections,
+  ],
+  candleProfile: [
+    { title: '分布与分档', open: true, fields: ['type', 'showDelta', 'rows', 'width', 'columnWidth', 'showValues'] },
+    ...profileSections,
   ],
   visibleProfile: [
-    { title: '位置与显示', open: true, fields: ['placement', 'offset', 'width', 'rows', 'type', 'showHeaders'] },
+    { title: '位置与显示', open: true, fields: ['placement', 'offset', 'width', 'rows', 'type', 'showDelta', 'showHeaders'] },
     { title: '关键价位', fields: ['showPoc', 'showValueArea', 'valueArea', 'showLabels'] },
     { title: '配色', fields: ['volumeColor', 'valueAreaColor', 'positiveColor', 'negativeColor', 'pocColor', 'levelColor'] },
   ],
@@ -49,6 +56,17 @@ const sections = {
 } satisfies { [G in OrderFlowGroup]: readonly SettingsSection<G>[] }
 
 const thresholdFieldSet = new Set<string>(thresholdFields)
+const effectiveProfileType = (values: Draft) => volumeProfileDisplayType(String(values.type), !!values.showDelta)
+const hasVolumeColumn = (values: Draft) => ['volume', 'volumeDelta'].includes(effectiveProfileType(values))
+const selectionProfileVisibility = {
+  valueArea: (values: Draft) => !!values.showValueArea,
+  showLabels: (values: Draft) => !!(values.showPoc || values.showValueArea),
+  volumeColor: hasVolumeColumn,
+  valueAreaColor: (values: Draft) => !!values.showValueArea && hasVolumeColumn(values),
+  bidColor: (values: Draft) => effectiveProfileType(values) !== 'volume',
+  askColor: (values: Draft) => effectiveProfileType(values) !== 'volume',
+  pocColor: (values: Draft) => !!values.showPoc,
+}
 const visibility: Record<OrderFlowGroup, Readonly<Record<string, (values: Draft) => boolean>>> = {
   bubbles: {
     fixedRadius: values => !values.sizeByVolume,
@@ -68,20 +86,13 @@ const visibility: Record<OrderFlowGroup, Readonly<Record<string, (values: Draft)
     imbalanceRatio: values => !!values.showImbalance,
     imbalanceColor: values => !!values.showImbalance,
   },
-  profile: {
-    valueArea: values => !!values.showValueArea,
-    showLabels: values => !!(values.showPoc || values.showValueArea),
-    volumeColor: values => values.type === 'volume' || values.type === 'volumeDelta',
-    valueAreaColor: values => !!values.showValueArea && (values.type === 'volume' || values.type === 'volumeDelta'),
-    bidColor: values => values.type !== 'volume',
-    askColor: values => values.type !== 'volume',
-    pocColor: values => !!values.showPoc,
-  },
+  profile: selectionProfileVisibility,
+  candleProfile: { ...selectionProfileVisibility, valueAreaColor: values => !!values.showValueArea },
   visibleProfile: {
-    volumeColor: values => values.type !== 'delta',
-    valueAreaColor: values => !!values.showValueArea && values.type !== 'delta',
-    positiveColor: values => values.type !== 'volume',
-    negativeColor: values => values.type !== 'volume',
+    volumeColor: hasVolumeColumn,
+    valueAreaColor: values => !!values.showValueArea && hasVolumeColumn(values),
+    positiveColor: values => effectiveProfileType(values) !== 'volume',
+    negativeColor: values => effectiveProfileType(values) !== 'volume',
     valueArea: values => !!values.showValueArea,
     showLabels: values => !!(values.showPoc || values.showValueArea),
     pocColor: values => !!values.showPoc,
@@ -141,7 +152,14 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     try {
-      const next = validateOrderFlowPreferences({ [group]: values }, preferences)
+      const patch = { ...values }
+      if (group === 'candleProfile') {
+        const palette = orderFlowSettings('candleProfile', preferences)
+        for (const color of volumeProfileColorFields) {
+          if (preferences?.candleProfile?.[color] === undefined && patch[color] === palette[color]) delete patch[color]
+        }
+      }
+      const next = validateOrderFlowPreferences({ [group]: patch }, preferences)
       onSave(next)
     } catch (failure) {
       const message = failure instanceof Error ? failure.message : String(failure)

@@ -1,17 +1,19 @@
 import { registerIndicator, type IndicatorDrawParams, type IndicatorTooltipData } from 'klinecharts'
-import { volumeProfileBarColor, volumeProfilePriceLines, type VolumeProfilePrices, type VolumeProfileRow } from './order-flow'
+import { paintVolumeProfileRows, volumeProfileBarColor, volumeProfileDisplayType, volumeProfilePriceLines, type VolumeProfile, type VolumeProfilePrices, type VolumeProfileRow } from './order-flow'
 import type { FootprintRow, VwapPoint } from './order-flow-metrics'
-import { CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, orderFlowSettings, type FootprintType } from './order-flow-preferences'
+import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, orderFlowSettings, type FootprintType } from './order-flow-preferences'
 
 export const footprintTitle = '足迹图（Footprint）'
 export const cvdTitle = '累计成交量差（CVD）'
 export const visibleProfileTitle = '可见范围成交分布（Volume Profile）'
+export const candleProfileTitle = 'K线成交量分布图'
 const defaultVisibleProfile = orderFlowSettings('visibleProfile')
 
 export interface FootprintDisplay {
   rows?: ReadonlyMap<number, readonly FootprintRow[]>
   settings: ReturnType<typeof orderFlowSettings<'footprint'>>
   message?: string
+  shareCandleSpace?: boolean
 }
 
 export interface CvdDisplay {
@@ -35,8 +37,21 @@ export interface VisibleProfileDisplay {
   message?: string
 }
 
+export interface CandleProfileDisplay {
+  profiles?: ReadonlyMap<number, VolumeProfile>
+  settings: ReturnType<typeof orderFlowSettings<'candleProfile'>>
+  precision: number
+  message?: string
+}
+
 const amount = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 2 })
 export const formatFlowAmount = (value: number): string => amount.format(value)
+
+export function formatProfileAmount(type: CandleProfileDisplay['settings']['type'], { buy, sell }: VolumeProfileRow): string {
+  if (type === 'bidAsk') return `${formatFlowAmount(sell)} / ${formatFlowAmount(buy)}`
+  if (type === 'volumeDelta') return `${formatFlowAmount(buy - sell)} / ${formatFlowAmount(buy + sell)}`
+  return formatFlowAmount(type === 'delta' ? buy - sell : buy + sell)
+}
 
 type DrawFootprintCell = (value: number, maximum: number, left: number, size: number, color: string, imbalance: boolean) => void
 
@@ -45,7 +60,8 @@ function paintFootprint({ ctx, barSpace, bounding, indicator, kLineDataList, vis
   if (!display?.rows || barSpace.bar < 18 || (foreground && !display.settings.showText)) return
   const { settings } = display
   const plotType = settings.plotType === 'matchText' ? settings.type : settings.plotType
-  const width = barSpace.bar - 14
+  const width = display.shareCandleSpace ? barSpace.bar / 2 - 8 : barSpace.bar - 14
+  if (width < 4) return
   const half = (width - 1) / 2
   const splitText = settings.type === 'bidAsk' || settings.type === 'volumeDelta'
   if (foreground && (splitText ? half : width) < 10) return
@@ -202,12 +218,104 @@ function drawVwap({ ctx, indicator, visibleRange, xAxis, yAxis, barSpace }: Indi
   return true
 }
 
+function paintCandleVolumeProfile({ ctx, barSpace, bounding, indicator, kLineDataList, visibleRange, xAxis, yAxis }: IndicatorDrawParams, foreground: boolean): void {
+  const display = indicator.extendData as CandleProfileDisplay | undefined
+  if (!display?.profiles?.size) return
+  const { profiles, settings, precision } = display
+  if (foreground && !settings.showPoc && !settings.showValueArea) return
+  const type = volumeProfileDisplayType(settings.type, settings.showDelta)
+  const split = type !== 'volume'
+  const availableWidth = barSpace.bar / 2 - 6
+  const minimumWidth = split ? 5 : 2
+  if (availableWidth < minimumWidth) return
+  const width = Math.max(minimumWidth, availableWidth * settings.width / 100)
+  const barWidth = split ? width / 2 : width
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, bounding.width, bounding.height)
+  ctx.clip()
+  ctx.globalCompositeOperation = foreground ? 'source-over' : 'destination-over'
+  ctx.font = '10px system-ui'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'bottom'
+  const pixelAt = (value: number) => yAxis.convertToPixel(value)
+  const paintBar = (x: number, top: number, size: number, height: number, color: string) => {
+    ctx.fillStyle = color
+    ctx.fillRect(x, top, size, height)
+  }
+  for (let index = Math.max(0, visibleRange.from); index < Math.min(visibleRange.to, kLineDataList.length); index++) {
+    const profile = profiles.get(kLineDataList[index].timestamp)
+    if (!profile) continue
+    const candleX = xAxis.convertToPixel(index)
+    const right = candleX - 6
+    const axisX = right - barWidth
+    if (!foreground) {
+      paintVolumeProfileRows(profile, type, settings, { axisX, barWidth, paneHeight: bounding.height, pixelAt },
+        paintBar, settings.showValues && barWidth >= 18 ? (row, top, height) => {
+          if (height < 13) return
+          ctx.fillStyle = '#e7eef8'
+          ctx.fillText(formatProfileAmount(type, row), axisX + 2, top + height, barWidth - 2)
+        } : undefined)
+      if (settings.showValueArea) {
+        const vah = pixelAt(profile.vah)
+        const val = pixelAt(profile.val)
+        const top = Math.max(0, Math.min(vah, val))
+        const bottom = Math.min(bounding.height, Math.max(vah, val))
+        if (bottom > top) {
+          // In destination-over mode this later fill goes behind the bars.
+          const alpha = ctx.globalAlpha
+          ctx.globalAlpha = alpha * 0.20
+          paintBar(axisX, top, barWidth, bottom - top, settings.valueAreaColor)
+          ctx.globalAlpha = alpha
+        }
+      }
+      continue
+    }
+    const lineEnd = candleX + barSpace.bar / 2
+    let lastLabel = -Infinity
+    for (const { name, value, color, solid, y } of volumeProfilePriceLines(profile, settings, pixelAt)) {
+      if (y < 0 || y >= bounding.height) continue
+      ctx.strokeStyle = color
+      ctx.lineWidth = solid ? 1.5 : 1
+      ctx.setLineDash(solid ? [] : [4, 3])
+      ctx.beginPath()
+      ctx.moveTo(axisX, y)
+      ctx.lineTo(lineEnd, y)
+      ctx.stroke()
+      if (settings.showLabels && barWidth >= 24) {
+        const label = `${name} ${value.toFixed(precision)}`
+        lastLabel = Math.max(10, y, lastLabel + 11)
+        if (lastLabel > bounding.height) continue
+        const labelWidth = Math.min(barWidth, ctx.measureText(label).width + 4)
+        ctx.fillStyle = 'rgba(18,26,39,0.86)'
+        ctx.fillRect(axisX, lastLabel - 10, labelWidth, 11)
+        ctx.fillStyle = color
+        ctx.fillText(label, axisX + 2, lastLabel, labelWidth - 2)
+      }
+    }
+  }
+  ctx.restore()
+}
+
+export function drawCandleVolumeProfile(params: IndicatorDrawParams): boolean {
+  paintCandleVolumeProfile(params, false)
+  // Keep the lines visible with an older chart runtime during an update.
+  if (!params.indicator.drawForeground) drawCandleVolumeProfileLevels(params)
+  return true
+}
+
+export function drawCandleVolumeProfileLevels(params: IndicatorDrawParams): void {
+  paintCandleVolumeProfile(params, true)
+}
+
 export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: IndicatorDrawParams): boolean {
   const display = indicator.extendData as VisibleProfileDisplay | undefined
   if (!display?.rows?.length) return true
   const { settings = defaultVisibleProfile, rows, prices } = display
-  const showVolume = settings.type !== 'delta'
-  const showDelta = settings.type !== 'volume'
+  const type = volumeProfileDisplayType(settings.type, settings.showDelta)
+  const showVolume = type !== 'delta'
+  const showDelta = type !== 'volume'
   const both = showVolume && showDelta
   const right = bounding.width - display.axisInset() - 3
   const available = right - 3
@@ -256,8 +364,6 @@ export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: In
   }
   ctx.restore()
   if (prices) {
-    const lineRight = settings.placement === 'right' ? left + totalWidth : right
-    const lineLeft = settings.placement === 'right' ? 0 : left
     const lines = volumeProfilePriceLines(prices, settings, value => yAxis.convertToPixel(value))
     ctx.save()
     ctx.font = '11px system-ui'
@@ -270,8 +376,8 @@ export function drawVisibleVolumeProfile({ ctx, bounding, indicator, yAxis }: In
       ctx.lineWidth = solid ? 1.5 : 1
       ctx.setLineDash(solid ? [] : [4, 3])
       ctx.beginPath()
-      ctx.moveTo(lineRight, y)
-      ctx.lineTo(lineLeft, y)
+      ctx.moveTo(left, y)
+      ctx.lineTo(0, y)
       ctx.stroke()
       if (settings.showLabels && totalWidth > 6) {
         const label = `${name} ${value.toFixed(display.precision)}`
@@ -310,6 +416,15 @@ export function registerOrderFlowIndicators(): void {
       if (price !== undefined) values.push({ title: '', value: price.toFixed(display?.precision ?? 2) })
       if (display?.message) values.push({ title: '', value: display.message })
       return flowTooltip(VWAP, defaultStyles, indicator.visible, values)
+    },
+  })
+  registerIndicator({
+    name: CANDLE_VOLUME_PROFILE, shortName: candleProfileTitle, calcParams: [], figures: [], zLevel: -1, calc: () => [],
+    draw: drawCandleVolumeProfile,
+    drawForeground: drawCandleVolumeProfileLevels,
+    createTooltipDataSource: ({ indicator, defaultStyles }) => {
+      const message = (indicator.extendData as CandleProfileDisplay | undefined)?.message
+      return flowTooltip(candleProfileTitle, defaultStyles, indicator.visible, message ? [{ title: '', value: message }] : [], true)
     },
   })
   registerIndicator({
