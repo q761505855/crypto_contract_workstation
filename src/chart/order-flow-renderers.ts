@@ -25,6 +25,7 @@ export function profileDisplayCenter(display?: ProfileDisplay): number | undefin
 }
 
 export interface BubbleDisplay extends BigTradeUnits {
+  candleOpen?: (index: number) => number | undefined
   bars?: ReadonlyMap<number, TradeBar>
   points?: ReadonlyMap<number, readonly DisplayedTradeBubble[]>
   minimumNotional?: number
@@ -161,7 +162,9 @@ function drawBigTrades({ ctx, indicator, xAxis, yAxis, visibleRange, bounding, k
     for (const point of points) {
       const { trade, amount } = point
       const radius = tradeBubbleRadius(amount, threshold, settings)
-      const y = yAxis.convertToPixel(tradeBubblePrice(trade, bar, candle.open, display.projectToCandle))
+      const open = display.candleOpen ? display.candleOpen(index) : candle.open
+      if (open === undefined) continue
+      const y = yAxis.convertToPixel(tradeBubblePrice(trade, bar, open, display.projectToCandle))
       if (y + radius < 0 || y - radius > bounding.height) continue
       const x = xAxis.convertToPixel(index + tradeBubbleOffset(point, candle.timestamp, end))
       const { fill, outline } = colors[trade.side]

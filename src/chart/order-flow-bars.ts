@@ -4,6 +4,7 @@ import type { CombinedBybitSource, TradeRange } from '../market-data/bybit/combi
 import { BYBIT_DAY_MS, BYBIT_HOUR_MS, type BybitTrade } from '../market-data/bybit/trades'
 import type { OkxTradePage } from '../market-data/okx/live'
 import type { BigTradeMode } from './order-flow'
+import { cashRanges } from './new-york-cash'
 
 export interface TradeBubble { trade: BybitTrade; count?: number }
 
@@ -314,13 +315,16 @@ export class OrderFlowBars {
   }
 
   async load(starts: readonly number[], timeframe: string, cursor: number, source: CombinedBybitSource, signal: AbortSignal,
-    onUpdate: (range?: TradeRange) => void): Promise<void> {
+    onUpdate: (range?: TradeRange) => void, cashOnly = false): Promise<void> {
     const requested = new Set<number>()
     for (const start of starts) {
       if (start * 1000 >= cursor) break
       const end = Math.min(cursor, nextOpenTime(start, timeframe) * 1000)
-      for (let hour = hourOf(start); hour * 1000 < end; hour += BYBIT_HOUR_MS) {
-        if (source.shouldScanTradeHour(hour)) requested.add(hour)
+      const ranges = cashOnly ? cashRanges(start, end / 1000) : [[start, end / 1000]]
+      for (const [from, until] of ranges) {
+        for (let hour = hourOf(from); hour < until; hour += BYBIT_HOUR_MS) {
+          if (source.shouldScanTradeHour(hour)) requested.add(hour)
+        }
       }
     }
     for (const day of source.downloadedDays) {

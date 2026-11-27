@@ -26,6 +26,7 @@ describe('main indicator tooltip visibility', () => {
     const store = {
       getStyles: () => styles, getTooltipStore: () => ({ getCrosshair: () => crosshair, getActiveIcon: () => null }),
       getDataList: () => [crosshair.kLineData], getPrecision: () => ({ price: 2, volume: 2 }),
+      getDisplayDataList: () => [crosshair.kLineData],
       getLocale: () => 'zh-CN', getCustomApi: () => ({}), getThousandsSeparator: () => ',', getDecimalFoldThreshold: () => 3,
       getIndicatorStore: () => ({ getInstances: () => new Map() }), getTimeScaleStore: () => ({ getDateTimeFormat: () => ({}) }),
     }

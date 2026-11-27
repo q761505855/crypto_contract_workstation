@@ -17,6 +17,7 @@ import { calculateFootprint, cumulativeVolumeDelta, dailyTradeVwap, tradeBarProf
 import { CandleWorkerResults, orderFlowWorkers, parallelBubbles, parallelFootprint, WORKER_TRADE_THRESHOLD } from './order-flow-workers'
 import { runOrderFlowTask, type TradeColumns } from './order-flow-worker-tasks'
 import type { CandleProfileDisplay, CvdDisplay, FootprintDisplay, VisibleProfileDisplay, VwapDisplay } from './order-flow-indicators'
+import { cashTradeEnd, cashTradeRanges, displayCandles, isCashChart, latestDisplayCandle, readCashTradeBar } from './new-york-cash'
 
 const dataReady = 'onDataReady' as ActionType
 const visibleRangeChange = 'onVisibleRangeChange' as ActionType
@@ -102,6 +103,7 @@ export class OrderFlowChart {
   private previousBarSpace?: number
   private orderFlowBarSpace?: number
   private reserveOrderFlowSpaceOnRight = false
+  private cashOnly = false
 
   constructor(private readonly chart: Chart, private readonly feed: CombinedBybitSource, private readonly timeframe: () => string,
     private readonly hasCurrentCandles: () => boolean = () => true, private readonly nativePriceVolume = false,
@@ -127,7 +129,18 @@ export class OrderFlowChart {
       if (bubble && !this.bubbleIndicator()) this.settings = this.withBubblePreferences(bubble)
       this.schedule()
     }
-    this.resize = this.schedule.bind(this)
+    this.cashOnly = isCashChart(chart)
+    this.resize = () => {
+      const cashOnly = isCashChart(chart)
+      if (cashOnly !== this.cashOnly) {
+        this.cashOnly = cashOnly
+        this.cancelFlow()
+        this.refresh(true)
+        this.redrawProfiles()
+        this.hideTooltip()
+      }
+      this.schedule()
+    }
     chart.subscribeAction(dataReady, this.resize)
     chart.subscribeAction(visibleRangeChange, this.resize)
     this.pane = chart.getDom(CANDLE_PANE, DomPosition.Main)
@@ -260,6 +273,13 @@ export class OrderFlowChart {
     }
   }
 
+  refreshProjectedProfiles(): void {
+    if (this.feed.mapping?.relation !== 'etf' || !this.profiles.size) return
+    this.invalidateProfiles()
+    this.redrawProfiles()
+    this.schedule()
+  }
+
   removeProfile(id: string): void {
     this.profiles.get(id)?.operation?.abort()
     this.profiles.delete(id)
@@ -347,7 +367,7 @@ export class OrderFlowChart {
   }
 
   private updateProfileReferencePrice(): void {
-    const price = this.chart.getDataList().at(-1)?.close
+    const price = latestDisplayCandle(this.chart)?.close
     if (price === this.profileReferencePrice) return
     this.profileReferencePrice = price
     this.candleProfiles = new WeakMap()
@@ -356,13 +376,15 @@ export class OrderFlowChart {
 
   private *profileCandles(fromUs: number, untilUs: number) {
     const candles = this.chart.getDataList()
+    const display = displayCandles(this.chart)
     if (!candles.length || untilUs <= fromUs) return
     const period = this.timeframe()
     const first = Math.max(0, Math.floor(drawingIndexAt(candles, fromUs / 1000, period)))
     for (let index = first; index < candles.length; index++) {
-      const candle = candles[index]
-      const start = candle.timestamp * 1000
+      const start = candles[index].timestamp * 1000
       if (start >= untilUs) break
+      const candle = display[index]
+      if (!candle) continue
       const end = nextOpenTime(candle.timestamp, period) * 1000
       if (end > fromUs) yield { candle, start, end }
     }
@@ -380,6 +402,7 @@ export class OrderFlowChart {
   }
 
   private cachedProfileLevels(fromUs: number, untilUs: number): VolumeProfileLevels | undefined {
+    if (this.cashOnly) return
     const flow = this.feed.replaying && !this.feed.localArchive ? this.replayFlow : this.flow
     if (flow?.key !== JSON.stringify([this.feed.archiveCacheKey, 0]) ||
         this.flowInvalidations.some(range => range.fromUs < untilUs && range.untilUs > fromUs)) return
@@ -456,17 +479,21 @@ export class OrderFlowChart {
         levels.merge(parallel.levels)
         complete = parallel.complete
       } else {
-        const project = this.projectPrices(this.chart.getDataList(), timeframe, request.prices ??= new Map())
+        const project = this.projectPrices(timeframe, request.prices ??= new Map())
         let nextPreview = performance.now() + 120
-        complete = await this.feed.visitTrades({ fromUs, untilUs }, trade => {
-          const price = project(trade)
-          if (price !== undefined && trade.timeUs >= request.cursor) levels.add(price, trade.side === 'buy' ? trade.size : -trade.size)
-        }, operation.signal, coverage => {
-          if (operation.signal.aborted || coverage.untilUs >= untilUs || performance.now() < nextPreview) return
-          const profile = levels.profile(this.profileReferencePrice, this.profileSettings)
-          if (profile) this.showProfile(id, { profile, bounds: this.profileCandleBounds(request.range), message: '正在计算区间成交…' })
-          nextPreview = performance.now() + 120
-        })
+        complete = true
+        for (const range of this.profileTradeRanges(fromUs, untilUs)) {
+          const covered = await this.feed.visitTrades(range, trade => {
+            const price = project(trade)
+            if (price !== undefined && trade.timeUs >= request.cursor) levels.add(price, trade.side === 'buy' ? trade.size : -trade.size)
+          }, operation.signal, coverage => {
+            if (operation.signal.aborted || coverage.untilUs >= untilUs || performance.now() < nextPreview) return
+            const profile = levels.profile(this.profileReferencePrice, this.profileSettings)
+            if (profile) this.showProfile(id, { profile, bounds: this.profileCandleBounds(request.range), message: '正在计算区间成交…' })
+            nextPreview = performance.now() + 120
+          })
+          complete &&= covered
+        }
       }
       operation.signal.throwIfAborted()
       this.finishProfile(id, request, untilUs, complete)
@@ -485,6 +512,10 @@ export class OrderFlowChart {
         request.pendingUntil = undefined
       }
     }
+  }
+
+  private profileTradeRanges(fromUs: number, untilUs: number): TradeRange[] {
+    return this.cashOnly ? cashTradeRanges(fromUs, untilUs) : [{ fromUs, untilUs }]
   }
 
   private async calculateProfile(request: ProfileRequest, timeframe: string, fromUs: number, untilUs: number, signal: AbortSignal) {
@@ -507,25 +538,30 @@ export class OrderFlowChart {
       if (pending.length >= orderFlowWorkers.parallelism) await merge()
     }
     try {
-      let complete: boolean
+      let complete = true
+      const ranges = this.profileTradeRanges(fromUs, untilUs)
       let anchors: Map<number, number> | undefined
-      if (local) complete = await local.visitPriceSizes(symbol, fromUs, untilUs, submit, batchSignal)
-      else {
+      if (local) {
+        for (const range of ranges) complete = await local.visitPriceSizes(symbol, range.fromUs, range.untilUs, submit, batchSignal) && complete
+      } else {
         anchors = new Map(request.prices)
-        const project = this.projectPrices(this.chart.getDataList(), timeframe, anchors)
+        const project = this.projectPrices(timeframe, anchors)
         let values = new Float64Array(32_768 * 2)
         let write = 0
-        complete = await this.feed.visitTrades({ fromUs, untilUs }, trade => {
-          const price = project(trade)
-          if (price === undefined || trade.timeUs < request.cursor) return
-          values[write++] = price
-          values[write++] = trade.side === 'buy' ? trade.size : -trade.size
-          if (write < values.length) return
-          const batch = values
-          values = new Float64Array(batch.length)
-          write = 0
-          return submit(batch)
-        }, batchSignal)
+        for (const range of ranges) {
+          const covered = await this.feed.visitTrades(range, trade => {
+            const price = project(trade)
+            if (price === undefined || trade.timeUs < request.cursor) return
+            values[write++] = price
+            values[write++] = trade.side === 'buy' ? trade.size : -trade.size
+            if (write < values.length) return
+            const batch = values
+            values = new Float64Array(batch.length)
+            write = 0
+            return submit(batch)
+          }, batchSignal)
+          complete &&= covered
+        }
         if (write >= WORKER_TRADE_THRESHOLD * 2) await submit(values.subarray(0, write))
         else if (write > 0) levels.addPacked(runOrderFlowTask({ kind: 'profile', values: values.subarray(0, write) }))
       }
@@ -576,7 +612,9 @@ export class OrderFlowChart {
     if (previous?.points !== points) this.hideTooltip()
     this.displayedBubbleCount = count
     this.displayedBubbleVersion = workerVersion
-    this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: { ...display, points, minimumNotional } }, CANDLE_PANE)
+    this.overrideIndicator.call(this.chart, { name: BIG_TRADES, extendData: {
+      ...display, points, minimumNotional, candleOpen: this.cashOnly ? this.visibleCashOpens : undefined,
+    } }, CANDLE_PANE)
   }
 
   private footprint(): Indicator | undefined {
@@ -687,9 +725,11 @@ export class OrderFlowChart {
     }
   }
 
-  private projectPrices(candles: readonly KLineData[], timeframe: string, anchors: Map<number, number>) {
+  private readonly visibleCashOpens = (index: number): number | undefined => displayCandles(this.chart)[index]?.open
+
+  private projectPrices(timeframe: string, anchors: Map<number, number>) {
     if (this.feed.mapping?.relation !== 'etf') return (trade: BybitTrade) => trade.price
-    const inputs = new Map(candles.map(bar => [bar.timestamp, bar.open]))
+    const inputs = new Map(displayCandles(this.chart).flatMap(bar => bar ? [[bar.timestamp, bar.open] as const] : []))
     return (trade: BybitTrade): number | undefined => {
       if (trade.venue) return trade.price
       const start = alignOpenTime(Math.floor(trade.timeUs / 1000), timeframe, 'floor')
@@ -733,9 +773,9 @@ export class OrderFlowChart {
   }
 
   private visibleCandles(): KLineData[] {
-    const candles = this.chart.getDataList()
+    const candles = displayCandles(this.chart)
     const { from, to } = this.chart.getVisibleRange()
-    return candles.slice(Math.max(0, from), Math.max(0, to))
+    return candles.slice(Math.max(0, from), Math.max(0, to)).filter(candle => candle !== undefined)
   }
 
   private flowCandles(dayOf?: (timestamp: number) => number): KLineData[] {
@@ -746,16 +786,20 @@ export class OrderFlowChart {
       const day = dayOf(candles[start].timestamp)
       while (start > 0 && dayOf(candles[start - 1].timestamp) === day) start--
     }
-    return candles.slice(start, Math.min(candles.length, to + 1))
+    return displayCandles(this.chart).slice(start, Math.min(candles.length, to + 1)).filter(candle => candle !== undefined)
   }
 
   private cvdDay(timeframe: string, cursor: number): ((timestamp: number) => number) | undefined {
     if (this.cvdSettings.reset !== 'daily') return
-    return timestamp => Math.floor((Math.min(cursor, nextOpenTime(timestamp, timeframe) * 1000) - 1) / (BYBIT_DAY_MS * 1000))
+    const dayOf = this.vwapDay(timeframe, cursor)
+    return timestamp => dayOf(timestamp) / BYBIT_DAY_MS
   }
 
   private vwapDay(timeframe: string, cursor: number): (timestamp: number) => number {
-    return timestamp => tradeDay(Math.min(cursor, nextOpenTime(timestamp, timeframe) * 1000))
+    return timestamp => {
+      const until = Math.min(cursor, nextOpenTime(timestamp, timeframe) * 1000)
+      return tradeDay((this.cashOnly ? cashTradeEnd(timestamp, until) : undefined) ?? until)
+    }
   }
 
   private displayFlow(timeframe: string, mode: BigTradeMode, read: (start: number, until: number) => TradeBar | undefined,
@@ -844,7 +888,7 @@ export class OrderFlowChart {
       this.showVisibleProfile(profile, status ?? (profile ? undefined : '可见范围暂无成交'))
     }
     if (allTrades && this.mainIndicator(VWAP)?.visible) {
-      const { values, partial: incompleteVwap } = dailyTradeVwap(this.flowCandles(this.vwapDay(timeframe, cursor)), timeframe, cursor, read, projected)
+      const { values, partial: incompleteVwap } = dailyTradeVwap(this.flowCandles(this.vwapDay(timeframe, cursor)), timeframe, cursor, read, projected, this.cashOnly)
       this.showVwap(values, message ?? (this.updating ? '正在计算逐笔成交…' : incompleteVwap ? missingHistory : undefined))
     }
     if (this.cvd()?.[1].visible) {
@@ -890,6 +934,10 @@ export class OrderFlowChart {
     if (!visible.length) {
       this.bubbleWorkers.retain(new Set())
       this.footprintWorkers.retain(new Set())
+      this.showBubbles({})
+      this.showFootprint()
+      this.showCvd()
+      this.showVolume()
       this.showCandleProfile()
       this.showVisibleProfile()
       this.showVwap()
@@ -914,7 +962,8 @@ export class OrderFlowChart {
     const flow = this.flow
     const replay = this.replayFlow
     const cursor = this.feed.tradeCursorUs
-    const read = (start: number, until: number) => replay?.read(start, until, this.feed) ?? flow?.read(start, until, this.feed)
+    const readRaw = (start: number, until: number) => replay?.read(start, until, this.feed) ?? flow?.read(start, until, this.feed)
+    const read = this.cashOnly ? (start: number, until: number) => readCashTradeBar(start, until, readRaw) : readRaw
     this.displayFlow(timeframe, mode, read, sampleMinimum === 0)
     if (this.flowOperation) {
       this.flowPending = true
@@ -936,7 +985,7 @@ export class OrderFlowChart {
         await replay.prepare(this.feed.downloadedDays, this.feed, operation.signal, update)
       } else {
         const candles = cvd ? this.flowCandles(this.cvdDay(timeframe, cursor)) : vwap ? this.flowCandles(this.vwapDay(timeframe, cursor)) : visible
-        await flow?.load(candles.map(bar => bar.timestamp), timeframe, cursor, this.feed, operation.signal, update)
+        await flow?.load(candles.map(bar => bar.timestamp), timeframe, cursor, this.feed, operation.signal, update, this.cashOnly)
       }
     } catch (error) {
       if (!operation.signal.aborted) {
@@ -976,11 +1025,12 @@ export class OrderFlowChart {
     const converted = this.chart.convertFromPixel([{ x: cursorX }], { paneId: CANDLE_PANE })
     const indexAtPointer = (Array.isArray(converted) ? converted[0] : converted)?.dataIndex
     if (indexAtPointer === undefined) { this.hideTooltip(); return }
-    const candles = this.chart.getDataList()
+    const candles = displayCandles(this.chart)
     const largestRadius = settings.sizeByVolume ? settings.maxRadius : settings.fixedRadius
     const margin = Math.ceil((largestRadius + 3) / this.chart.getBarSpace()) + 1
     for (let index = Math.max(0, indexAtPointer - margin); index < Math.min(candles.length, indexAtPointer + margin + 1); index++) {
       const candle = candles[index]
+      if (!candle) continue
       const points = display.points.get(candle.timestamp)
       const bar = display.bars?.get(candle.timestamp)
       if (!points || !bar) continue

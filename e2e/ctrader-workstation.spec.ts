@@ -416,6 +416,81 @@ test('switches to a close-price line and restores it from an application archive
   await expect.poll(readType).toBe('line')
 })
 
+test('New York cash candles keep time slots and exclude pre-market volume from the opening hourly bar', async ({ page }) => {
+  const boundary = Date.UTC(2026, 10, 20, 14)
+  const now = Date.UTC(2026, 10, 20, 22, 8)
+  await page.clock.setFixedTime(now)
+  await connectFixture(page, false, {
+    historyAvailable: stamp => stamp >= boundary - 2 * 60 * minute,
+    historyVolume: (_, minutes) => minutes === 30 ? 11 : 42,
+  })
+  const probe = await installViewportProbe(page)
+  await page.goto('./')
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await page.getByTestId('chart-host').locator('.symbol').click()
+  const picker = page.getByRole('dialog', { name: '选择交易对' })
+  await picker.getByRole('tab', { name: '全部' }).click()
+  await picker.getByRole('button', { name: '选择 USDCHF', exact: true }).click()
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 1h', exact: true }).click()
+  await expect.poll(async () => {
+    const { period, timestamps } = await probe()
+    return period === '1h' && timestamps.includes(now - 68 * minute) && timestamps.every(stamp => stamp % (60 * minute) === 0)
+  }).toBe(true)
+
+  const inspect = () => page.evaluate(boundary => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const raw = coreChart.getDataList()
+    const display = coreChart.getDisplayDataList()
+    const indicators = coreChart.getIndicatorByPaneId() as Map<string, Map<string, import('klinecharts').Indicator>>
+    const volume = [...indicators.values()].find(pane => pane.has('VOL'))?.get('VOL')
+    const indices = [-1, 0, 1, 7].map(offset => raw.findIndex(row => row.timestamp === boundary + offset * 3_600_000))
+    const coordinates = indices.map(dataIndex => (coreChart.convertToPixel({ dataIndex }, { paneId: 'candle_pane' }) as { x: number }).x)
+    return {
+      type: coreChart.getStyles().candle.type,
+      timestamps: raw.map(row => row.timestamp),
+      coordinates,
+      bars: indices.map(index => display[index]?.volume ?? null),
+      volume: indices.map(index => volume?.result[index]?.volume ?? null),
+    }
+  }, boundary)
+  await expect.poll(async () => (await inspect()).volume).toEqual([42, 42, 42, 42])
+  const before = await inspect()
+  const select = async (name: string) => {
+    await page.getByTestId('chart-host').getByText('设置', { exact: true }).locator('..').click()
+    const settings = page.locator('.klinecharts-pro-setting-modal-content')
+    await settings.locator('.klinecharts-pro-select').first().click()
+    await settings.getByText(name, { exact: true }).last().click()
+    await page.locator('.klinecharts-pro-modal .close-icon').click()
+  }
+  await select('纽约现金时段 K 线')
+  await expect.poll(inspect).toEqual({
+    ...before, type: 'new_york_cash', bars: [null, 11, 42, null], volume: [null, 11, 42, null],
+  })
+  const openDataManager = async () => {
+    await page.getByRole('button', { name: '工具', exact: true }).click()
+    await page.getByTestId('open-data-manager').click()
+  }
+  await openDataManager()
+  const panel = page.getByTestId('backup-sync-panel')
+  const download = page.waitForEvent('download')
+  await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
+  const archive = (await (await download).path())!
+  expect(JSON.parse(await readFile(archive, 'utf8')).data.preferences.candleType).toBe('new_york_cash')
+  await page.reload()
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await expect.poll(async () => (await inspect()).type).toBe('new_york_cash')
+  await select('全实心')
+  await expect.poll(async () => (await inspect()).type).toBe('candle_solid')
+  await openDataManager()
+  page.once('dialog', dialog => dialog.accept())
+  await panel.getByTestId('import-backup-file').setInputFiles(archive)
+  await expect(panel.getByTestId('backup-status')).toContainText('刷新')
+  await page.reload()
+  await page.waitForFunction(() => '__viewportTestAdapter' in window)
+  await expect.poll(async () => (await inspect()).type).toBe('new_york_cash')
+})
+
 test('updates the open 15m candle on quotes and replaces it with a late official close', async ({ page }) => {
   const start = Date.UTC(2026, 10, 20, 14)
   await page.clock.setFixedTime(new Date(start + 5 * minute))

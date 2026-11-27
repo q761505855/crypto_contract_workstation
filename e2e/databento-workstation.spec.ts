@@ -40,6 +40,61 @@ async function connectDirectory(page: Page, files: Record<string, Buffer>) {
   return { chart, dialog }
 }
 
+test('New York cash mode filters per-candle and visible volume profiles at the exact open', async ({ page }) => {
+  const day = '2026-11-24'
+  const open = Date.parse(`${day}T14:30:00Z`)
+  const { dialog, chart } = await connectDirectory(page, {
+    [filename(day)]: zstdCompressSync(tradeDbn([
+      ['NQZ6', open - 35 * 60_000, 25900, 80, 'B'],
+      ['NQZ6', open - 1, 25950, 90, 'B'],
+      ['NQZ6', open, 26000, 7, 'B'],
+      ['NQZ6', open + 10 * 60_000, 26002, 3, 'A'],
+      ['NQZ6', open + 40 * 60_000, 26004, 5, 'B'],
+    ])),
+  })
+  await expect(dialog.getByRole('heading', { name: 'ES.FUT 日档' })).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭Databento-CME 本地数据' }).click()
+  const host = page.getByTestId('chart-host')
+  await host.getByText('ES.FUT', { exact: true }).first().click()
+  await page.getByRole('dialog', { name: '选择交易对' }).getByText('NQ.FUT', { exact: true }).first().click()
+  await host.getByRole('button', { name: '按锚点加载', exact: true }).click()
+  const anchor = page.getByRole('dialog', { name: '按锚点加载本地成交' })
+  await anchor.getByLabel('锚点日期').fill(day)
+  await expect(anchor.getByRole('status')).toContainText('已有 1 个日档')
+  await anchor.getByRole('button', { name: '加载本地日档', exact: true }).click()
+  await expect(anchor).toBeHidden()
+  await page.getByRole('button', { name: '图表周期', exact: true }).click()
+  await page.getByRole('button', { name: '选择周期 1h', exact: true }).click()
+  await expect.poll(async () => (await chart()).last?.close).toBe(26004)
+  await host.getByText('指标', { exact: true }).click()
+  const indicators = page.locator('.klinecharts-pro-indicator-modal-list')
+  await indicators.getByRole('button', { name: 'K线成交量分布图', exact: true }).click()
+  await indicators.getByRole('button', { name: '可见范围成交分布（Volume Profile）', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+
+  const totals = () => page.evaluate(open => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const indicator = (name: string) => (coreChart.getIndicatorByPaneId('candle_pane', name) as import('klinecharts').Indicator | null)?.extendData
+    const profiles = indicator('CANDLE_VOLUME_PROFILE')?.profiles as import('../src/chart/order-flow-indicators').CandleProfileDisplay['profiles']
+    const visible = indicator('VISIBLE_VOLUME_PROFILE') as import('../src/chart/order-flow-indicators').VisibleProfileDisplay | undefined
+    const total = (rows?: readonly { buy: number; sell: number }[]) => rows?.reduce((sum, row) => sum + row.buy + row.sell, 0) ?? null
+    const hour = open - 30 * 60_000
+    const rows = coreChart.getDisplayDataList()
+    return {
+      bars: [hour - 3_600_000, hour, hour + 3_600_000].map(timestamp => rows.find(row => row?.timestamp === timestamp)?.volume ?? null),
+      profiles: [hour - 3_600_000, hour, hour + 3_600_000].map(timestamp => total(profiles?.get(timestamp)?.rows)),
+      visible: total(visible?.rows),
+    }
+  }, open)
+  await expect.poll(totals).toEqual({ bars: [80, 100, 5], profiles: [80, 100, 5], visible: 185 })
+  await host.getByText('设置', { exact: true }).locator('..').click()
+  const settings = page.locator('.klinecharts-pro-setting-modal-content')
+  await settings.locator('.klinecharts-pro-select').first().click()
+  await settings.getByText('纽约现金时段 K 线', { exact: true }).last().click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click()
+  await expect.poll(totals).toEqual({ bars: [null, 10, 5], profiles: [null, 10, 5], visible: 15 })
+})
+
 test('Databento uses the preceding Chicago session, only loads selected dates, and replays without downloads', async ({ page }) => {
   const day = '2026-11-23'
   const time = Date.parse(`${day}T15:00:00Z`)

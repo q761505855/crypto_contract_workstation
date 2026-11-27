@@ -1,6 +1,7 @@
 import type { KLineData } from 'klinecharts'
 import { BYBIT_DAY_MS, type BybitTrade } from '../market-data/bybit/trades'
 import { nextOpenTime } from '../market-data/intervals'
+import { cashTradeEnd } from './new-york-cash'
 import { tradeBubblePrice, tradeBubbles, type TradeBar, type TradeBubble } from './order-flow-bars'
 import { VolumeProfileLevels, type VolumeProfileCalculation } from './order-flow'
 import type { orderFlowSettings } from './order-flow-preferences'
@@ -158,7 +159,7 @@ function weightedTrades(bar: TradeBar, scale: number): { volume: number; weighte
 }
 
 export function dailyTradeVwap(candles: readonly FlowCandle[], timeframe: string,
-  cursor: number, read: TradeRead, projected: boolean): { values: Map<number, VwapPoint>; partial: boolean } {
+  cursor: number, read: TradeRead, projected: boolean, cashOnly = false): { values: Map<number, VwapPoint>; partial: boolean } {
   const values = new Map<number, VwapPoint>()
   let day = -Infinity
   let end = 0
@@ -166,8 +167,9 @@ export function dailyTradeVwap(candles: readonly FlowCandle[], timeframe: string
   let volume = 0
   let partial = false
   for (const { timestamp, open } of candles) {
-    const until = Math.min(cursor, nextOpenTime(timestamp, timeframe) * 1000)
-    if (until <= timestamp * 1000) continue
+    const barEnd = Math.min(cursor, nextOpenTime(timestamp, timeframe) * 1000)
+    const until = cashOnly ? cashTradeEnd(timestamp, barEnd) : barEnd
+    if (until === undefined || until <= timestamp * 1000) continue
     const currentDay = tradeDay(until)
     if (currentDay !== day) {
       day = currentDay
@@ -177,7 +179,7 @@ export function dailyTradeVwap(candles: readonly FlowCandle[], timeframe: string
     }
     // Native prices can include trades in gaps between candles. Projected prices need the containing candle's open.
     const start = projected ? Math.max(end, timestamp, day) : end
-    partial ||= start > end
+    partial ||= !cashOnly && start > end
     const bar = read(start, until)
     end = until / 1000
     partial ||= !bar?.complete

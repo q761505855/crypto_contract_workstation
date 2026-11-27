@@ -1,8 +1,8 @@
 diff --git a/node_modules/klinecharts/dist/index.d.ts b/node_modules/klinecharts/dist/index.d.ts
-index db8d576..77af76f 100644
+index db8d576..b5d3a7b 100644
 --- a/node_modules/klinecharts/dist/index.d.ts
 +++ b/node_modules/klinecharts/dist/index.d.ts
-@@ -211,16 +211,19 @@ export interface CandleTooltipCustomCallbackData {
+@@ -211,16 +211,20 @@ export interface CandleTooltipCustomCallbackData {
  }
  export type CandleTooltipCustomCallback = (data: CandleTooltipCustomCallbackData, styles: CandleStyle) => TooltipLegend[];
  export interface CandleTooltipStyle extends TooltipStyle, Offset {
@@ -11,6 +11,7 @@ index db8d576..77af76f 100644
  	rect: CandleTooltipRectStyle;
  }
  export declare enum CandleType {
++	NewYorkCash = "new_york_cash",
 +	HeikinAshi = "heikin_ashi",
  	CandleSolid = "candle_solid",
  	CandleStroke = "candle_stroke",
@@ -23,7 +24,7 @@ index db8d576..77af76f 100644
  }
  export interface CandleBarColor extends ChangeColor {
  	upBorderColor: string;
-@@ -231,6 +234,8 @@ export interface CandleBarColor extends ChangeColor {
+@@ -231,6 +235,8 @@ export interface CandleBarColor extends ChangeColor {
  	noChangeWickColor: string;
  }
  export interface CandleStyle {
@@ -32,10 +33,14 @@ index db8d576..77af76f 100644
  	type: CandleType;
  	bar: CandleBarColor;
  	area: CandleAreaStyle;
-@@ -840,10 +845,14 @@ export interface Chart {
+@@ -840,10 +846,18 @@ export interface Chart {
  	getLocale: () => string;
  	setStyles: (styles: string | DeepPartial<Styles>) => void;
  	getStyles: () => Styles;
++	setCashCandleProjection: (project: (candles: readonly KLineData[]) => (KLineData | undefined)[]) => void;
++	refreshCashCandles: () => void;
++	getDisplayDataList: () => readonly (KLineData | undefined)[];
++	getLatestDisplayData: () => KLineData | undefined;
 +	setXAxisAfterCandle: () => void;
 +	setPriceRangeAuto: (auto: boolean) => void;
 +	getPriceRangeAuto: () => boolean;
@@ -47,7 +52,7 @@ index db8d576..77af76f 100644
  	getTimezone: () => string;
  	setOffsetRightDistance: (distance: number) => void;
  	getOffsetRightDistance: () => number;
-@@ -1110,6 +1119,7 @@ export interface Indicator<D = any> {
+@@ -1110,6 +1124,7 @@ export interface Indicator<D = any> {
  	 * Custom draw
  	 */
  	draw: Nullable<IndicatorDrawCallback<D>>;
@@ -56,13 +61,14 @@ index db8d576..77af76f 100644
  	 * Calculation result
  	 */
 diff --git a/node_modules/klinecharts/dist/index.esm.js b/node_modules/klinecharts/dist/index.esm.js
-index 86b1dce..10b7467 100644
+index 86b1dce..ddcdfc2 100644
 --- a/node_modules/klinecharts/dist/index.esm.js
 +++ b/node_modules/klinecharts/dist/index.esm.js
-@@ -179,12 +179,14 @@ var CandleTooltipRectPosition;
+@@ -179,12 +179,15 @@ var CandleTooltipRectPosition;
  })(CandleTooltipRectPosition || (CandleTooltipRectPosition = {}));
  var CandleType;
  (function (CandleType) {
++    CandleType["NewYorkCash"] = "new_york_cash";
 +    CandleType["HeikinAshi"] = "heikin_ashi";
      CandleType["CandleSolid"] = "candle_solid";
      CandleType["CandleStroke"] = "candle_stroke";
@@ -74,7 +80,7 @@ index 86b1dce..10b7467 100644
  })(CandleType || (CandleType = {}));
  var YAxisPosition;
  (function (YAxisPosition) {
-@@ -1052,6 +1054,7 @@ var IndicatorImp = /** @class */ (function () {
+@@ -1052,6 +1055,7 @@ var IndicatorImp = /** @class */ (function () {
          this.regenerateFigures = regenerateFigures !== null && regenerateFigures !== void 0 ? regenerateFigures : null;
          this.createTooltipDataSource = createTooltipDataSource !== null && createTooltipDataSource !== void 0 ? createTooltipDataSource : null;
          this.draw = draw !== null && draw !== void 0 ? draw : null;
@@ -82,7 +88,53 @@ index 86b1dce..10b7467 100644
      }
      IndicatorImp.prototype.setShortName = function (shortName) {
          if (this.shortName !== shortName) {
-@@ -1961,6 +1964,8 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -1166,25 +1170,27 @@ var IndicatorImp = /** @class */ (function () {
+         }
+         return false;
+     };
+-    IndicatorImp.prototype.calcIndicator = function (dataList) {
+-        return __awaiter(this, void 0, void 0, function () {
++    IndicatorImp.prototype.calcIndicator = async function (dataList, displayDataList) {
++        var sequence = (this._calculationSequence || 0) + 1;
++        this._calculationSequence = sequence;
++        try {
+             var result;
+-            return __generator(this, function (_a) {
+-                switch (_a.label) {
+-                    case 0:
+-                        _a.trys.push([0, 2, , 3]);
+-                        return [4 /*yield*/, this.calc(dataList, this)];
+-                    case 1:
+-                        result = _a.sent();
+-                        this.result = result;
+-                        return [2 /*return*/, true];
+-                    case 2:
+-                        _a.sent();
+-                        return [2 /*return*/, false];
+-                    case 3: return [2 /*return*/];
+-                }
+-            });
+-        });
++            if (displayDataList === dataList) {
++                result = await this.calc(dataList, this);
++            }
++            else {
++                var rows = displayDataList.filter(Boolean);
++                var compact = rows.length ? await this.calc(rows, this) : [];
++                var index = 0;
++                result = displayDataList.map(function (row) { return row ? compact[index++] : undefined; });
++            }
++            if (this._calculationSequence !== sequence) return false;
++            this.result = result;
++            return true;
++        }
++        catch (_error) {
++            return false;
++        }
+     };
+     IndicatorImp.extend = function (template) {
+         var Custom = /** @class */ (function (_super) {
+@@ -1961,6 +1967,8 @@ var TimeScaleStore = /** @class */ (function () {
           * Distance from the last data to the right of the drawing area
           */
          this._offsetRightDistance = DEFAULT_OFFSET_RIGHT_DISTANCE;
@@ -91,7 +143,7 @@ index 86b1dce..10b7467 100644
          /**
           * The number of bar to the right of the drawing area from the last data when scrolling starts
           */
-@@ -2005,7 +2010,7 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2005,7 +2013,7 @@ var TimeScaleStore = /** @class */ (function () {
      /**
       * adjust visible range
       */
@@ -100,7 +152,7 @@ index 86b1dce..10b7467 100644
          var _a, _b;
          var dataList = this._chartStore.getDataList();
          var totalBarCount = dataList.length;
-@@ -2022,7 +2027,11 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2022,7 +2030,11 @@ var TimeScaleStore = /** @class */ (function () {
          }
          leftMinVisibleBarCount = Math.max(0, leftMinVisibleBarCount);
          rightMinVisibleBarCount = Math.max(0, rightMinVisibleBarCount);
@@ -112,7 +164,7 @@ index 86b1dce..10b7467 100644
          if (this._lastBarRightSideDiffBarCount > maxRightOffsetBarCount) {
              this._lastBarRightSideDiffBarCount = maxRightOffsetBarCount;
          }
-@@ -2040,6 +2049,9 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2040,6 +2052,9 @@ var TimeScaleStore = /** @class */ (function () {
              from = 0;
          }
          var realFrom = this._lastBarRightSideDiffBarCount > 0 ? Math.round(totalBarCount + this._lastBarRightSideDiffBarCount - visibleBarCount) - 1 : from;
@@ -122,7 +174,7 @@ index 86b1dce..10b7467 100644
          this._visibleRange = { from: from, to: to, realFrom: realFrom, realTo: realTo };
          this._chartStore.getActionStore().execute(ActionType.OnVisibleRangeChange, this._visibleRange);
          this._chartStore.adjustVisibleDataList();
-@@ -2052,7 +2064,7 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2052,7 +2067,7 @@ var TimeScaleStore = /** @class */ (function () {
                  data: firstData !== null && firstData !== void 0 ? firstData : null
              });
          }
@@ -131,7 +183,7 @@ index 86b1dce..10b7467 100644
              this._chartStore.executeLoadDataCallback({
                  type: LoadDataType.Backward,
                  data: (_b = dataList[totalBarCount - 1]) !== null && _b !== void 0 ? _b : null
-@@ -2102,7 +2114,8 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2102,7 +2117,8 @@ var TimeScaleStore = /** @class */ (function () {
          };
      };
      TimeScaleStore.prototype.setBarSpace = function (barSpace, adjustBeforeFunc) {
@@ -141,7 +193,7 @@ index 86b1dce..10b7467 100644
              return;
          }
          this._barSpace = barSpace;
-@@ -2120,6 +2133,25 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2120,6 +2136,25 @@ var TimeScaleStore = /** @class */ (function () {
          }
          return this;
      };
@@ -167,7 +219,7 @@ index 86b1dce..10b7467 100644
      TimeScaleStore.prototype.setOffsetRightDistance = function (distance, isUpdate) {
          this._offsetRightDistance = this._scrollLimitRole === 1 /* ScrollLimitRole.Distance */ ? Math.min(this._maxOffsetDistance.right, distance) : distance;
          this._lastBarRightSideDiffBarCount = this._offsetRightDistance / this._barSpace;
-@@ -2169,6 +2201,11 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2169,6 +2204,11 @@ var TimeScaleStore = /** @class */ (function () {
      TimeScaleStore.prototype.getVisibleRange = function () {
          return this._visibleRange;
      };
@@ -179,7 +231,7 @@ index 86b1dce..10b7467 100644
      TimeScaleStore.prototype.startScroll = function () {
          this._startLastBarRightSideDiffBarCount = this._lastBarRightSideDiffBarCount;
      };
-@@ -2179,7 +2216,7 @@ var TimeScaleStore = /** @class */ (function () {
+@@ -2179,7 +2219,7 @@ var TimeScaleStore = /** @class */ (function () {
          var distanceBarCount = distance / this._barSpace;
          var prevLastBarRightSideDistance = this._lastBarRightSideDiffBarCount * this._barSpace;
          this._lastBarRightSideDiffBarCount = this._startLastBarRightSideDiffBarCount - distanceBarCount;
@@ -188,7 +240,7 @@ index 86b1dce..10b7467 100644
          this._chartStore.getTooltipStore().recalculateCrosshair(true);
          this._chartStore.getChart().adjustPaneViewport(false, true, true, true);
          var realDistance = Math.round(prevLastBarRightSideDistance - this._lastBarRightSideDiffBarCount * this._barSpace);
-@@ -3497,6 +3534,31 @@ var rateOfChange = {
+@@ -3497,6 +3537,31 @@ var rateOfChange = {
  var relativeStrengthIndex = {
      name: 'RSI',
      shortName: 'RSI',
@@ -220,9 +272,69 @@ index 86b1dce..10b7467 100644
      calcParams: [6, 12, 24],
      figures: [
          { key: 'rsi1', title: 'RSI1: ', type: 'line' },
-@@ -4429,12 +4491,15 @@ var TooltipStore = /** @class */ (function () {
+@@ -4205,7 +4270,7 @@ var IndicatorStore = /** @class */ (function () {
+                         paneInstances.push(instance);
+                         this._instances.set(paneId, paneInstances);
+                         this._sort(paneId);
+-                        return [4 /*yield*/, instance.calcIndicator(this._chartStore.getDataList())];
++                        return [4 /*yield*/, instance.calcIndicator(this._chartStore.getDataList(), this._chartStore.getDisplayDataList())];
+                     case 3: return [2 /*return*/, _a.sent()];
+                 }
+             });
+@@ -4254,7 +4319,7 @@ var IndicatorStore = /** @class */ (function () {
+                                 if (isValid(paneInstances)) {
+                                     instance = paneInstances.find(function (ins) { return ins.name === name; });
+                                     if (isValid(instance)) {
+-                                        tasks.push(instance.calcIndicator(this._chartStore.getDataList()));
++                                        tasks.push(instance.calcIndicator(this._chartStore.getDataList(), this._chartStore.getDisplayDataList()));
+                                     }
+                                 }
+                             }
+@@ -4262,7 +4327,7 @@ var IndicatorStore = /** @class */ (function () {
+                                 this._instances.forEach(function (paneInstances) {
+                                     var instance = paneInstances.find(function (ins) { return ins.name === name; });
+                                     if (isValid(instance)) {
+-                                        tasks.push(instance.calcIndicator(_this._chartStore.getDataList()));
++                                        tasks.push(instance.calcIndicator(_this._chartStore.getDataList(), _this._chartStore.getDisplayDataList()));
+                                     }
+                                 });
+                             }
+@@ -4270,7 +4335,7 @@ var IndicatorStore = /** @class */ (function () {
+                         else {
+                             this._instances.forEach(function (paneInstances) {
+                                 paneInstances.forEach(function (instance) {
+-                                    tasks.push(instance.calcIndicator(_this._chartStore.getDataList()));
++                                    tasks.push(instance.calcIndicator(_this._chartStore.getDataList(), _this._chartStore.getDisplayDataList()));
+                                 });
+                             });
+                         }
+@@ -4358,7 +4423,7 @@ var IndicatorStore = /** @class */ (function () {
+                                     sortFlag = true;
+                                 }
+                                 if (overrideResult[1]) {
+-                                    tasks.push(instance.calcIndicator(_this._chartStore.getDataList()));
++                                    tasks.push(instance.calcIndicator(_this._chartStore.getDataList(), _this._chartStore.getDisplayDataList()));
+                                 }
+                                 else {
+                                     if (overrideResult[0]) {
+@@ -4408,6 +4473,7 @@ var TooltipStore = /** @class */ (function () {
+     TooltipStore.prototype.setCrosshair = function (crosshair, options) {
+         var _a = options !== null && options !== void 0 ? options : {}, notInvalidate = _a.notInvalidate, notExecuteAction = _a.notExecuteAction;
+         var dataList = this._chartStore.getDataList();
++        var displayDataList = this._chartStore.getDisplayDataList();
+         var cr = crosshair !== null && crosshair !== void 0 ? crosshair : {};
+         var realDataIndex;
+         var dataIndex;
+@@ -4425,16 +4491,20 @@ var TooltipStore = /** @class */ (function () {
          }
-         var kLineData = dataList[dataIndex];
+         else {
+             realDataIndex = dataList.length - 1;
+-            dataIndex = realDataIndex;
++            var lastDisplayData = this._chartStore.getLatestDisplayData();
++            dataIndex = lastDisplayData && displayDataList !== dataList ? displayDataList.lastIndexOf(lastDisplayData) : realDataIndex;
+         }
+-        var kLineData = dataList[dataIndex];
++        var kLineData = displayDataList[dataIndex];
          var realX = this._chartStore.getTimeScaleStore().dataIndexToCoordinate(realDataIndex);
 -        var prevCrosshair = { x: this._crosshair.x, y: this._crosshair.y, paneId: this._crosshair.paneId };
 +        var prevCrosshair = this._crosshair;
@@ -241,7 +353,43 @@ index 86b1dce..10b7467 100644
              if (!(notInvalidate !== null && notInvalidate !== void 0 ? notInvalidate : false)) {
                  this._chartStore.getChart().updatePane(1 /* UpdateLevel.Overlay */);
              }
-@@ -6491,12 +6556,35 @@ var ChartStore = /** @class */ (function () {
+@@ -6412,7 +6482,7 @@ var ChartStore = /** @class */ (function () {
+         this._visibleDataList = [];
+         var _a = this._timeScaleStore.getVisibleRange(), realFrom = _a.realFrom, realTo = _a.realTo;
+         for (var i = realFrom; i < realTo; i++) {
+-            var kLineData = this._dataList[i];
++            var kLineData = this.getDisplayDataList()[i];
+             var x = this._timeScaleStore.dataIndexToCoordinate(i);
+             this._visibleDataList.push({
+                 dataIndex: i,
+@@ -6483,20 +6553,62 @@ var ChartStore = /** @class */ (function () {
+     ChartStore.prototype.getDataList = function () {
+         return this._dataList;
+     };
++    ChartStore.prototype.projectCashCandles = function () {
++        this._displayDataList = this._styles.candle.type === CandleType.NewYorkCash && this._cashCandleProjection
++            ? this._cashCandleProjection(this._dataList)
++            : undefined;
++        this._latestDisplayData = this._displayDataList ? this._displayDataList.findLast(Boolean) : undefined;
++    };
++    ChartStore.prototype.getDisplayDataList = function () {
++        return this._displayDataList || this._dataList;
++    };
++    ChartStore.prototype.getLatestDisplayData = function () {
++        return this._displayDataList ? this._latestDisplayData : this._dataList[this._dataList.length - 1];
++    };
+     ChartStore.prototype.getVisibleFirstData = function () {
+         var _a;
+         var from = this._timeScaleStore.getVisibleRange().from;
++        if (this._displayDataList) {
++            var to = this._timeScaleStore.getVisibleRange().to;
++            for (var i = Math.max(0, from); i < to; i++) {
++                if (this._displayDataList[i]) return this._displayDataList[i];
++            }
++            return null;
++        }
+         return (_a = this._dataList[from]) !== null && _a !== void 0 ? _a : null;
+     };
      ChartStore.prototype.getVisibleDataList = function () {
          return this._visibleDataList;
      };
@@ -277,7 +425,7 @@ index 86b1dce..10b7467 100644
                          success = false;
                          adjustFlag = false;
                          dataLengthChange = 0;
-@@ -6512,7 +6600,10 @@ var ChartStore = /** @class */ (function () {
+@@ -6512,7 +6624,10 @@ var ChartStore = /** @class */ (function () {
                                      break;
                                  }
                                  case LoadDataType.Backward: {
@@ -289,7 +437,7 @@ index 86b1dce..10b7467 100644
                                      this._backwardMore = more !== null && more !== void 0 ? more : false;
                                      adjustFlag = dataLengthChange > 0;
                                      break;
-@@ -6545,6 +6636,20 @@ var ChartStore = /** @class */ (function () {
+@@ -6545,6 +6660,20 @@ var ChartStore = /** @class */ (function () {
                                  success = true;
                                  adjustFlag = true;
                              }
@@ -310,7 +458,15 @@ index 86b1dce..10b7467 100644
                          }
                          if (!success) return [3 /*break*/, 5];
                          _b.label = 1;
-@@ -6588,8 +6693,11 @@ var ChartStore = /** @class */ (function () {
+@@ -6552,6 +6681,7 @@ var ChartStore = /** @class */ (function () {
+                         _b.trys.push([1, 4, , 5]);
+                         this._overlayStore.updatePointPosition(dataLengthChange, type);
+                         if (!adjustFlag) return [3 /*break*/, 3];
++                        this.projectCashCandles();
+                         this._timeScaleStore.adjustVisibleRange();
+                         this._tooltipStore.recalculateCrosshair(true);
+                         return [4 /*yield*/, this._indicatorStore.calcInstance()];
+@@ -6588,8 +6718,11 @@ var ChartStore = /** @class */ (function () {
              isValid(this._loadDataCallback) &&
              ((this._forwardMore && params.type === LoadDataType.Forward) ||
                  (this._backwardMore && params.type === LoadDataType.Backward))) {
@@ -323,15 +479,18 @@ index 86b1dce..10b7467 100644
              };
              this._loading = true;
              this._loadDataCallback(__assign(__assign({}, params), { callback: cb }));
-@@ -6601,6 +6709,7 @@ var ChartStore = /** @class */ (function () {
+@@ -6600,7 +6733,10 @@ var ChartStore = /** @class */ (function () {
+         this._backwardMore = true;
          this._loading = true;
          this._dataList = [];
++        this._displayDataList = undefined;
++        this._latestDisplayData = undefined;
          this._visibleDataList = [];
 +        this._heikinAshiData = [];
          this._timeScaleStore.clear();
          this._tooltipStore.clear();
      };
-@@ -6686,6 +6795,7 @@ var Canvas = /** @class */ (function () {
+@@ -6686,6 +6822,7 @@ var Canvas = /** @class */ (function () {
          this._nextPixelWidth = 0;
          this._nextPixelHeight = 0;
          this._requestAnimationId = DEFAULT_REQUEST_ID;
@@ -339,7 +498,7 @@ index 86b1dce..10b7467 100644
          this._mediaQueryListener = function () {
              var pixelRatio = getPixelRatio(_this._element);
              _this._nextPixelWidth = Math.round(_this._element.clientWidth * pixelRatio);
-@@ -6736,10 +6846,15 @@ var Canvas = /** @class */ (function () {
+@@ -6736,10 +6873,15 @@ var Canvas = /** @class */ (function () {
      };
      Canvas.prototype._executeListener = function (fn) {
          var _this = this;
@@ -356,7 +515,7 @@ index 86b1dce..10b7467 100644
                  _this._listener();
                  _this._requestAnimationId = DEFAULT_REQUEST_ID;
              });
-@@ -7628,7 +7743,13 @@ var CandleBarView = /** @class */ (function (_super) {
+@@ -7628,7 +7770,13 @@ var CandleBarView = /** @class */ (function (_super) {
              }
              var yAxis_1 = pane.getAxisComponent();
              this.eachChildren(function (data, barSpace) {
@@ -370,15 +529,16 @@ index 86b1dce..10b7467 100644
                  if (isValid(kLineData)) {
                      var open_1 = kLineData.open, high = kLineData.high, low = kLineData.low, close_1 = kLineData.close;
                      var type = candleBarOptions.type, styles = candleBarOptions.styles;
-@@ -7658,6 +7779,7 @@ var CandleBarView = /** @class */ (function (_super) {
+@@ -7658,6 +7806,8 @@ var CandleBarView = /** @class */ (function (_super) {
                      priceY.sort(function (a, b) { return a - b; });
                      var rects = [];
                      switch (type) {
++                        case CandleType.NewYorkCash:
 +                        case CandleType.HeikinAshi:
                          case CandleType.CandleSolid: {
                              rects = _this._createSolidBar(x, priceY, barSpace, colors);
                              break;
-@@ -7732,7 +7854,8 @@ var CandleBarView = /** @class */ (function (_super) {
+@@ -7732,7 +7882,8 @@ var CandleBarView = /** @class */ (function (_super) {
          var candleStyles = chartStore.getStyles().candle;
          return {
              type: candleStyles.type,
@@ -388,7 +548,7 @@ index 86b1dce..10b7467 100644
          };
      };
      CandleBarView.prototype._createSolidBar = function (x, priceY, barSpace, colors) {
-@@ -7861,6 +7984,32 @@ var IndicatorView = /** @class */ (function (_super) {
+@@ -7861,6 +8012,32 @@ var IndicatorView = /** @class */ (function (_super) {
          }
          return null;
      };
@@ -421,7 +581,26 @@ index 86b1dce..10b7467 100644
      IndicatorView.prototype.drawImp = function (ctx) {
          var _this = this;
          _super.prototype.drawImp.call(this, ctx);
-@@ -8512,16 +8661,14 @@ var OverlayView = /** @class */ (function (_super) {
+@@ -7932,7 +8109,7 @@ var IndicatorView = /** @class */ (function (_super) {
+                                 nextCoordinate[key] = yAxis.convertToPixel(nextValue);
+                             }
+                         });
+-                        eachFigures(dataList, indicator, dataIndex, defaultStyles, function (figure, figureStyles, figureIndex) {
++                        eachFigures(chartStore.getDisplayDataList(), indicator, dataIndex, defaultStyles, function (figure, figureStyles, figureIndex) {
+                             var _a, _b, _c;
+                             if (isValid(currentData === null || currentData === void 0 ? void 0 : currentData[figure.key])) {
+                                 var valueY = currentCoordinate[figure.key];
+@@ -8294,7 +8471,8 @@ var IndicatorTooltipView = /** @class */ (function (_super) {
+         var legends = [];
+         if (indicator.visible) {
+             var indicatorData_1 = (_b = result[dataIndex]) !== null && _b !== void 0 ? _b : {};
+-            eachFigures(dataList, indicator, dataIndex, styles, function (figure, figureStyles) {
++            var displayDataList = this.getWidget().getPane().getChart().getChartStore().getDisplayDataList();
++            eachFigures(displayDataList, indicator, dataIndex, styles, function (figure, figureStyles) {
+                 var _a;
+                 if (isString(figure.title)) {
+                     var color = figureStyles.color;
+@@ -8512,16 +8690,14 @@ var OverlayView = /** @class */ (function (_super) {
          }).registerEvent('pressedMouseMoveEvent', function (event) {
              var _a, _b;
              var _c = overlayStore.getPressedInstanceInfo(), instance = _c.instance, figureType = _c.figureType, figureIndex = _c.figureIndex, figureKey = _c.figureKey;
@@ -446,7 +625,7 @@ index 86b1dce..10b7467 100644
                      }
                  }
                  return true;
-@@ -8589,6 +8736,8 @@ var OverlayView = /** @class */ (function (_super) {
+@@ -8589,6 +8765,8 @@ var OverlayView = /** @class */ (function (_super) {
          var _this = this;
          return function (event) {
              var _a;
@@ -455,7 +634,7 @@ index 86b1dce..10b7467 100644
              var pane = _this.getWidget().getPane();
              var paneId = pane.getId();
              var overlayStore = pane.getChart().getChartStore().getOverlayStore();
-@@ -8877,6 +9026,7 @@ var IndicatorWidget = /** @class */ (function (_super) {
+@@ -8877,6 +9055,7 @@ var IndicatorWidget = /** @class */ (function (_super) {
          _this._gridView = new GridView(_this);
          _this._indicatorView = new IndicatorView(_this);
          _this._crosshairLineView = new CrosshairLineView(_this);
@@ -463,7 +642,7 @@ index 86b1dce..10b7467 100644
          _this._tooltipView = _this.createTooltipView();
          _this._overlayView = new OverlayView(_this);
          _this.addChild(_this._tooltipView);
-@@ -8903,7 +9053,14 @@ var IndicatorWidget = /** @class */ (function (_super) {
+@@ -8903,7 +9082,14 @@ var IndicatorWidget = /** @class */ (function (_super) {
      IndicatorWidget.prototype.updateOverlay = function (ctx) {
          this._overlayView.draw(ctx);
          this._crosshairLineView.draw(ctx);
@@ -478,7 +657,7 @@ index 86b1dce..10b7467 100644
      };
      return IndicatorWidget;
  }(DrawWidget));
-@@ -8953,14 +9110,17 @@ var CandleAreaView = /** @class */ (function (_super) {
+@@ -8953,14 +9139,17 @@ var CandleAreaView = /** @class */ (function (_super) {
          var lastDataIndex = dataList.length - 1;
          var bounding = widget.getBounding();
          var yAxis = pane.getAxisComponent();
@@ -498,7 +677,7 @@ index 86b1dce..10b7467 100644
              if (isNumber(value)) {
                  var y = yAxis.convertToPixel(value);
                  if (areaStartX === Number.MIN_SAFE_INTEGER) {
-@@ -8980,9 +9140,15 @@ var CandleAreaView = /** @class */ (function (_super) {
+@@ -8980,9 +9169,15 @@ var CandleAreaView = /** @class */ (function (_super) {
                  styles: {
                      color: styles.lineColor,
                      size: styles.lineSize,
@@ -515,7 +694,7 @@ index 86b1dce..10b7467 100644
              // render area
              var backgroundColor = styles.backgroundColor;
              var color = void 0;
-@@ -9081,6 +9247,9 @@ var CandleHighLowPriceView = /** @class */ (function (_super) {
+@@ -9081,6 +9276,9 @@ var CandleHighLowPriceView = /** @class */ (function (_super) {
              var lowX_1 = 0;
              this.eachChildren(function (data) {
                  var kLineData = data.data, x = data.x;
@@ -525,7 +704,26 @@ index 86b1dce..10b7467 100644
                  if (isValid(kLineData)) {
                      if (high_1 < kLineData.high) {
                          high_1 = kLineData.high;
-@@ -9343,6 +9512,10 @@ var CandleTooltipView = /** @class */ (function (_super) {
+@@ -9192,8 +9390,7 @@ var CandleLastPriceView = /** @class */ (function (_super) {
+         var lastPriceMarkLineStyles = lastPriceMarkStyles.line;
+         if (priceMarkStyles.show && lastPriceMarkStyles.show && lastPriceMarkLineStyles.show) {
+             var yAxis = pane.getAxisComponent();
+-            var dataList = chartStore.getDataList();
+-            var data = dataList[dataList.length - 1];
++            var data = chartStore.getLatestDisplayData();
+             if (data != null) {
+                 var close_1 = data.close, open_1 = data.open;
+                 var priceY = yAxis.convertToNicePixel(close_1);
+@@ -9331,7 +9528,7 @@ var CandleTooltipView = /** @class */ (function (_super) {
+         if (isValid(crosshair.kLineData)) {
+             var bounding = widget.getBounding();
+             var yAxisBounding = pane.getYAxisWidget().getBounding();
+-            var dataList = chartStore.getDataList();
++            var dataList = chartStore.getDisplayDataList();
+             var precision = chartStore.getPrecision();
+             var locale = chartStore.getLocale();
+             var customApi = chartStore.getCustomApi();
+@@ -9343,6 +9540,10 @@ var CandleTooltipView = /** @class */ (function (_super) {
              var styles = chartStore.getStyles();
              var candleStyles = styles.candle;
              var indicatorStyles = styles.indicator;
@@ -536,7 +734,7 @@ index 86b1dce..10b7467 100644
              if (candleStyles.tooltip.showType === TooltipShowType.Rect &&
                  indicatorStyles.tooltip.showType === TooltipShowType.Rect) {
                  var isDrawCandleTooltip = this.isDrawTooltip(crosshair, candleStyles.tooltip);
-@@ -9662,13 +9835,15 @@ var CandleWidget = /** @class */ (function (_super) {
+@@ -9662,13 +9863,15 @@ var CandleWidget = /** @class */ (function (_super) {
      }
      CandleWidget.prototype.updateMainContent = function (ctx) {
          var candleStyles = this.getPane().getChart().getStyles().candle;
@@ -556,15 +754,53 @@ index 86b1dce..10b7467 100644
          }
          this._candleLastPriceLineView.draw(ctx);
      };
-@@ -10142,7 +10317,17 @@ var CrosshairHorizontalLabelView = /** @class */ (function (_super) {
+@@ -9868,8 +10071,7 @@ var CandleLastPriceLabelView = /** @class */ (function (_super) {
+         if (priceMarkStyles.show && lastPriceMarkStyles.show && lastPriceMarkTextStyles.show) {
+             var precision = chartStore.getPrecision();
+             var yAxis = pane.getAxisComponent();
+-            var dataList = chartStore.getDataList();
+-            var data = dataList[dataList.length - 1];
++            var data = chartStore.getLatestDisplayData();
+             if (isValid(data)) {
+                 var close_1 = data.close, open_1 = data.open;
+                 var priceY = yAxis.convertToNicePixel(close_1);
+@@ -9886,6 +10088,7 @@ var CandleLastPriceLabelView = /** @class */ (function (_super) {
+                 var text = void 0;
+                 if (yAxis.getType() === YAxisType.Percentage) {
+                     var fromData = chartStore.getVisibleFirstData();
++                    if (!fromData) return;
+                     var fromClose = fromData.close;
+                     text = "".concat(((close_1 - fromClose) / fromClose * 100).toFixed(2), "%");
+                 }
+@@ -9950,8 +10153,9 @@ var IndicatorLastValueView = /** @class */ (function (_super) {
+         var lastValueMarkTextStyles = lastValueMarkStyles.text;
+         if (lastValueMarkStyles.show) {
+             var yAxis_1 = pane.getAxisComponent();
+-            var dataList_1 = chartStore.getDataList();
+-            var dataIndex_1 = dataList_1.length - 1;
++            var dataList_1 = chartStore.getDisplayDataList();
++            var lastData = chartStore.getLatestDisplayData();
++            var dataIndex_1 = lastData ? dataList_1.lastIndexOf(lastData) : -1;
+             var indicators = chartStore.getIndicatorStore().getInstances(pane.getId());
+             var thousandsSeparator_1 = chartStore.getThousandsSeparator();
+             var decimalFoldThreshold_1 = chartStore.getDecimalFoldThreshold();
+@@ -10120,6 +10324,7 @@ var CrosshairHorizontalLabelView = /** @class */ (function (_super) {
+         var text;
+         if (yAxis.getType() === YAxisType.Percentage) {
+             var fromData = chartStore.getVisibleFirstData();
++            if (!fromData) return '';
+             text = "".concat(((value - fromData.close) / fromData.close * 100).toFixed(2), "%");
+         }
+         else {
+@@ -10142,7 +10347,17 @@ var CrosshairHorizontalLabelView = /** @class */ (function (_super) {
                  text = chartStore.getCustomApi().formatBigNumber(text);
              }
          }
 -        return formatFoldDecimal(formatThousands(text, chartStore.getThousandsSeparator()), chartStore.getDecimalFoldThreshold());
 +        var formatted = formatFoldDecimal(formatThousands(text, chartStore.getThousandsSeparator()), chartStore.getDecimalFoldThreshold());
 +        if (yAxis.isInCandle()) {
-+            var rows = chartStore.getDataList();
-+            var latest = rows.length ? rows[rows.length - 1].close : NaN;
++            var latestCandle = chartStore.getLatestDisplayData();
++            var latest = latestCandle ? latestCandle.close : NaN;
 +            if (Number.isFinite(latest) && latest > 0 && Number.isFinite(value)) {
 +                var difference = (value - latest) / latest * 100;
 +                var rounded = Number(difference.toFixed(2));
@@ -575,7 +811,7 @@ index 86b1dce..10b7467 100644
      };
      CrosshairHorizontalLabelView.prototype.getTextAttrs = function (text, _textWidth, crosshair, bounding, axis, _styles) {
          var yAxis = axis;
-@@ -10184,6 +10369,8 @@ var YAxisWidget = /** @class */ (function (_super) {
+@@ -10184,6 +10399,8 @@ var YAxisWidget = /** @class */ (function (_super) {
          _this._overlayYAxisView = new OverlayYAxisView(_this);
          _this._crosshairHorizontalLabelView = new CrosshairHorizontalLabelView(_this);
          _this.getContainer().style.cursor = 'ns-resize';
@@ -584,7 +820,7 @@ index 86b1dce..10b7467 100644
          _this.addChild(_this._overlayYAxisView);
          return _this;
      }
-@@ -10303,7 +10490,8 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10303,7 +10520,8 @@ var YAxisImp = /** @class */ (function (_super) {
          var specifyMin = Number.MAX_SAFE_INTEGER;
          var specifyMax = Number.MIN_SAFE_INTEGER;
          var indicatorPrecision = Number.MAX_SAFE_INTEGER;
@@ -594,7 +830,7 @@ index 86b1dce..10b7467 100644
          indicators.forEach(function (indicator) {
              var _a, _b, _c;
              if (!shouldOhlc) {
-@@ -10346,6 +10534,7 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10346,6 +10564,7 @@ var YAxisImp = /** @class */ (function (_super) {
              var dataIndex = _a.dataIndex, data = _a.data;
              if (isValid(data)) {
                  if (shouldCompareHighLow) {
@@ -602,13 +838,13 @@ index 86b1dce..10b7467 100644
                      min = Math.min(min, data.low);
                      max = Math.max(max, data.high);
                  }
-@@ -10617,6 +10806,15 @@ var YAxisImp = /** @class */ (function (_super) {
+@@ -10617,6 +10836,15 @@ var YAxisImp = /** @class */ (function (_super) {
                  valueText = customApi.formatBigNumber(valueText);
              }
              valueText = formatFoldDecimal(valueText, chartStore.getDecimalFoldThreshold());
 +            if (this.isInCandle()) {
-+                var rows = chartStore.getDataList();
-+                var latest = rows.length ? rows[rows.length - 1].close : NaN;
++                var latestCandle = chartStore.getLatestDisplayData();
++                var latest = latestCandle ? latestCandle.close : NaN;
 +                if (Number.isFinite(latest) && latest > 0) {
 +                    var range = this.getRange();
 +                    var maxDifference = Math.max(Math.abs((range.to - latest) / latest * 100), Math.abs((range.from - latest) / latest * 100));
@@ -618,7 +854,7 @@ index 86b1dce..10b7467 100644
              crosshairVerticalTextWidth += (crosshairStyles.horizontal.text.paddingLeft +
                  crosshairStyles.horizontal.text.paddingRight +
                  crosshairStyles.horizontal.text.borderSize * 2 +
-@@ -10760,6 +10958,7 @@ var Pane = /** @class */ (function () {
+@@ -10760,6 +10988,7 @@ var Pane = /** @class */ (function () {
              overflow: 'hidden',
              boxSizing: 'border-box'
          });
@@ -626,7 +862,7 @@ index 86b1dce..10b7467 100644
          if (afterElement !== null) {
              rootContainer.insertBefore(this._container, afterElement);
          }
-@@ -11089,14 +11288,13 @@ var CrosshairVerticalLabelView = /** @class */ (function (_super) {
+@@ -11089,14 +11318,13 @@ var CrosshairVerticalLabelView = /** @class */ (function (_super) {
          return _super !== null && _super.apply(this, arguments) || this;
      }
      CrosshairVerticalLabelView.prototype.compare = function (crosshair) {
@@ -643,7 +879,7 @@ index 86b1dce..10b7467 100644
          return chartStore.getCustomApi().formatDate(chartStore.getTimeScaleStore().getDateTimeFormat(), timestamp, 'YYYY-MM-DD HH:mm', FormatDateType.Crosshair);
      };
      CrosshairVerticalLabelView.prototype.getTextAttrs = function (text, textWidth, crosshair, bounding, _axis, styles) {
-@@ -11176,10 +11374,12 @@ var XAxisImp = /** @class */ (function (_super) {
+@@ -11176,10 +11404,12 @@ var XAxisImp = /** @class */ (function (_super) {
      }
      XAxisImp.prototype.calcRange = function () {
          var chartStore = this.getParent().getChart().getChartStore();
@@ -660,7 +896,7 @@ index 86b1dce..10b7467 100644
          return {
              from: af, to: at,
              range: range,
-@@ -11187,83 +11387,34 @@ var XAxisImp = /** @class */ (function (_super) {
+@@ -11187,83 +11417,34 @@ var XAxisImp = /** @class */ (function (_super) {
          };
      };
      XAxisImp.prototype.optimalTicks = function (ticks) {
@@ -765,7 +1001,7 @@ index 86b1dce..10b7467 100644
      XAxisImp.prototype.getAutoSize = function () {
          var styles = this.getParent().getChart().getStyles();
          var xAxisStyles = styles.xAxis;
-@@ -12085,16 +12236,26 @@ var SyntheticEvent = /** @class */ (function () {
+@@ -12085,16 +12266,26 @@ var SyntheticEvent = /** @class */ (function () {
          {
              var boundTouchMoveWithDownHandler_1 = this._touchMoveHandler.bind(this);
              var boundTouchEndHandler_1 = this._touchEndHandler.bind(this);
@@ -792,7 +1028,7 @@ index 86b1dce..10b7467 100644
          if (this._tapTimeoutId === null) {
              this._tapCount = 0;
              this._tapTimeoutId = setTimeout(this._resetTapTimeout.bind(this), 500 /* Delay.ResetClick */);
-@@ -12135,6 +12296,11 @@ var SyntheticEvent = /** @class */ (function () {
+@@ -12135,6 +12326,11 @@ var SyntheticEvent = /** @class */ (function () {
              return;
          }
          this._processEvent(this._makeCompatEvent(downEvent), this._handler.mouseDownEvent);
@@ -804,7 +1040,7 @@ index 86b1dce..10b7467 100644
          if (this._clickTimeoutId === null) {
              this._clickCount = 0;
              this._clickTimeoutId = setTimeout(this._resetClickTimeout.bind(this), 500 /* Delay.ResetClick */);
-@@ -12375,6 +12541,9 @@ var Event = /** @class */ (function () {
+@@ -12375,6 +12571,9 @@ var Event = /** @class */ (function () {
          // 用来记录捏合缩放的尺寸
          this._pinchScale = 1;
          this._mouseDownWidget = null;
@@ -814,7 +1050,7 @@ index 86b1dce..10b7467 100644
          this._prevYAxisRange = null;
          this._xAxisStartScaleCoordinate = null;
          this._xAxisStartScaleDistance = 0;
-@@ -12416,12 +12585,32 @@ var Event = /** @class */ (function () {
+@@ -12416,12 +12615,32 @@ var Event = /** @class */ (function () {
          container.addEventListener('keydown', this._boundKeyBoardDownEvent);
      }
      Event.prototype.pinchStartEvent = function () {
@@ -847,7 +1083,7 @@ index 86b1dce..10b7467 100644
          if ((pane === null || pane === void 0 ? void 0 : pane.getId()) !== PaneIdConstants.X_AXIS && (widget === null || widget === void 0 ? void 0 : widget.getName()) === WidgetNameConstants.MAIN) {
              var event_1 = this._makeWidgetEvent(e, widget);
              var zoomScale = (scale - this._pinchScale) * 5;
-@@ -12438,13 +12627,30 @@ var Event = /** @class */ (function () {
+@@ -12438,13 +12657,30 @@ var Event = /** @class */ (function () {
          return true;
      };
      Event.prototype.mouseWheelVertEvent = function (e, scale) {
@@ -879,7 +1115,7 @@ index 86b1dce..10b7467 100644
          return false;
      };
      Event.prototype.mouseDownEvent = function (e) {
-@@ -12707,6 +12913,14 @@ var Event = /** @class */ (function () {
+@@ -12707,6 +12943,14 @@ var Event = /** @class */ (function () {
      };
      Event.prototype.touchStartEvent = function (e) {
          var _a = this._findWidgetByEvent(e), pane = _a.pane, widget = _a.widget;
@@ -894,7 +1130,7 @@ index 86b1dce..10b7467 100644
          if (widget !== null) {
              var event_8 = this._makeWidgetEvent(e, widget);
              var name_7 = widget.getName();
-@@ -12727,6 +12941,14 @@ var Event = /** @class */ (function () {
+@@ -12727,6 +12971,14 @@ var Event = /** @class */ (function () {
                      }
                      this._flingStartTime = new Date().getTime();
                      this._startScrollCoordinate = { x: event_8.x, y: event_8.y };
@@ -909,7 +1145,7 @@ index 86b1dce..10b7467 100644
                      chartStore.getTimeScaleStore().startScroll();
                      this._touchZoomed = false;
                      if (this._touchCoordinate !== null) {
-@@ -12758,8 +12980,28 @@ var Event = /** @class */ (function () {
+@@ -12758,8 +13010,28 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchMoveEvent = function (e) {
@@ -939,7 +1175,7 @@ index 86b1dce..10b7467 100644
          if (widget !== null) {
              var event_9 = this._makeWidgetEvent(e, widget);
              var name_8 = widget.getName();
-@@ -12778,8 +13020,31 @@ var Event = /** @class */ (function () {
+@@ -12778,8 +13050,31 @@ var Event = /** @class */ (function () {
                          tooltipStore.setCrosshair({ x: event_9.x, y: event_9.y, paneId: pane === null || pane === void 0 ? void 0 : pane.getId() });
                      }
                      else {
@@ -972,7 +1208,7 @@ index 86b1dce..10b7467 100644
                              var distance = event_9.x - this._startScrollCoordinate.x;
                              chartStore.getTimeScaleStore().scroll(distance);
                          }
-@@ -12800,8 +13065,15 @@ var Event = /** @class */ (function () {
+@@ -12800,8 +13095,15 @@ var Event = /** @class */ (function () {
          return false;
      };
      Event.prototype.touchEndEvent = function (e) {
@@ -989,7 +1225,7 @@ index 86b1dce..10b7467 100644
          if (widget !== null) {
              var event_10 = this._makeWidgetEvent(e, widget);
              var name_9 = widget.getName();
-@@ -12935,14 +13207,6 @@ var Event = /** @class */ (function () {
+@@ -12935,14 +13237,6 @@ var Event = /** @class */ (function () {
          }
          var widget = null;
          if (pane !== null) {
@@ -1004,7 +1240,7 @@ index 86b1dce..10b7467 100644
              if (widget === null) {
                  var yAxisWidget = pane.getYAxisWidget();
                  if (yAxisWidget !== null) {
-@@ -12953,6 +13217,14 @@ var Event = /** @class */ (function () {
+@@ -12953,6 +13247,14 @@ var Event = /** @class */ (function () {
                      }
                  }
              }
@@ -1019,7 +1255,7 @@ index 86b1dce..10b7467 100644
          }
          return { pane: pane, widget: widget };
      };
-@@ -13088,6 +13360,7 @@ var ChartImp = /** @class */ (function () {
+@@ -13088,6 +13390,7 @@ var ChartImp = /** @class */ (function () {
              default: {
                  for (var i = this._drawPanes.length - 1; i > -1; i--) {
                      var p = this._drawPanes[i];
@@ -1027,7 +1263,7 @@ index 86b1dce..10b7467 100644
                      var prevP = this._drawPanes[i - 1];
                      if ((p === null || p === void 0 ? void 0 : p.getOptions().position) === "bottom" /* PanePosition.Bottom */ &&
                          (prevP === null || prevP === void 0 ? void 0 : prevP.getOptions().position) !== "bottom" /* PanePosition.Bottom */) {
-@@ -13143,6 +13416,19 @@ var ChartImp = /** @class */ (function () {
+@@ -13143,6 +13446,19 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype._measurePaneHeight = function () {
          var _this = this;
          var _a;
@@ -1047,7 +1283,7 @@ index 86b1dce..10b7467 100644
          var totalHeight = Math.floor(this._container.clientHeight);
          var separatorSize = this._chartStore.getStyles().separator.size;
          var xAxisHeight = this._xAxisPane.getAxisComponent().getAutoSize();
-@@ -13320,6 +13606,10 @@ var ChartImp = /** @class */ (function () {
+@@ -13320,6 +13636,10 @@ var ChartImp = /** @class */ (function () {
          var _this = this;
          var actionStore = this._chartStore.getActionStore();
          if (actionStore.has(ActionType.OnCrosshairChange)) {
@@ -1058,7 +1294,7 @@ index 86b1dce..10b7467 100644
              var indicatorData_1 = {};
              this._drawPanes.forEach(function (pane) {
                  var id = pane.getId();
-@@ -13332,9 +13622,7 @@ var ChartImp = /** @class */ (function () {
+@@ -13332,9 +13652,7 @@ var ChartImp = /** @class */ (function () {
                  });
                  indicatorData_1[id] = paneIndicatorData;
              });
@@ -1069,7 +1305,46 @@ index 86b1dce..10b7467 100644
          }
      };
      ChartImp.prototype.getDom = function (paneId, position) {
-@@ -13427,6 +13715,19 @@ var ChartImp = /** @class */ (function () {
+@@ -13394,7 +13712,9 @@ var ChartImp = /** @class */ (function () {
+     };
+     ChartImp.prototype.setStyles = function (styles) {
+         var _a, _b;
++        var wasCash = this._chartStore.getStyles().candle.type === CandleType.NewYorkCash;
+         this._chartStore.setOptions({ styles: styles });
++        if (wasCash !== (this._chartStore.getStyles().candle.type === CandleType.NewYorkCash)) this.refreshCashCandles();
+         var realStyles;
+         if (isString(styles)) {
+             realStyles = getStyles(styles);
+@@ -13410,6 +13730,28 @@ var ChartImp = /** @class */ (function () {
+     ChartImp.prototype.getStyles = function () {
+         return this._chartStore.getStyles();
+     };
++    ChartImp.prototype.setCashCandleProjection = function (project) {
++        this._chartStore._cashCandleProjection = project;
++        if (this.getStyles().candle.type === CandleType.NewYorkCash) this.refreshCashCandles();
++    };
++    ChartImp.prototype.refreshCashCandles = function () {
++        var chart = this;
++        var store = this._chartStore;
++        store.projectCashCandles();
++        store.adjustVisibleDataList();
++        store.getTooltipStore().recalculateCrosshair(true);
++        store.getIndicatorStore().calcInstance().then(function () {
++            if (chart._destroyed) return;
++            chart.adjustPaneViewport(false, true, true, true);
++            store.getActionStore().execute(ActionType.OnDataReady);
++        }).catch(function () {});
++    };
++    ChartImp.prototype.getDisplayDataList = function () {
++        return this._chartStore.getDisplayDataList();
++    };
++    ChartImp.prototype.getLatestDisplayData = function () {
++        return this._chartStore.getLatestDisplayData();
++    };
+     ChartImp.prototype.setLocale = function (locale) {
+         this._chartStore.setOptions({ locale: locale });
+         this.adjustPaneViewport(true, true, true, true, true);
+@@ -13427,6 +13769,19 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getPriceVolumePrecision = function () {
          return this._chartStore.getPrecision();
      };
@@ -1089,7 +1364,7 @@ index 86b1dce..10b7467 100644
      ChartImp.prototype.setTimezone = function (timezone) {
          this._chartStore.setOptions({ timezone: timezone });
          this._xAxisPane.getAxisComponent().buildTicks(true);
-@@ -13435,6 +13736,14 @@ var ChartImp = /** @class */ (function () {
+@@ -13435,6 +13790,14 @@ var ChartImp = /** @class */ (function () {
      ChartImp.prototype.getTimezone = function () {
          return this._chartStore.getTimeScaleStore().getTimezone();
      };
@@ -1104,3 +1379,11 @@ index 86b1dce..10b7467 100644
      ChartImp.prototype.setOffsetRightDistance = function (distance) {
          this._chartStore.getTimeScaleStore().setOffsetRightDistance(distance, true);
      };
+@@ -13839,6 +14202,7 @@ var ChartImp = /** @class */ (function () {
+         this.adjustPaneViewport(true, true, true, true, true);
+     };
+     ChartImp.prototype.destroy = function () {
++        this._destroyed = true;
+         this._chartEvent.destroy();
+         this._drawPanes.forEach(function (pane) {
+             pane.destroy();

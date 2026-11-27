@@ -69,12 +69,21 @@ const markets: MarketCalendar[] = [
     id: 'newYork', timezone: 'America/New_York', open: 9 * 60 + 30, close: 16 * 60,
     midday: [12 * 60, 14 * 60],
     // https://www.nyse.com/trade/hours-calendars
+    // Historical dates: NYSE Group's 2022–2024 and 2023–2025 published calendars.
     closed: new Set([
+      ...dates(2022, '01-17 02-21 04-15 05-30 06-20 07-04 09-05 11-24 12-26'),
+      ...dates(2023, '01-02 01-16 02-20 04-07 05-29 06-19 07-04 09-04 11-23 12-25'),
+      ...dates(2024, '01-01 01-15 02-19 03-29 05-27 06-19 07-04 09-02 11-28 12-25'),
+      ...dates(2025, '01-01 01-09 01-20 02-17 04-18 05-26 06-19 07-04 09-01 11-27 12-25'),
       ...dates(2026, '01-01 01-19 02-16 04-03 05-25 06-19 07-03 09-07 11-26 12-25'),
       ...dates(2027, '01-01 01-18 02-15 03-26 05-31 06-18 07-05 09-06 11-25 12-24'),
       ...dates(2028, '01-17 02-21 04-14 05-29 06-19 07-04 09-04 11-23 12-25'),
     ]),
-    earlyClose: { minute: 13 * 60, dates: new Set(['2026-11-27', '2026-12-24', '2027-11-26', '2028-07-03', '2028-11-24']) },
+    earlyClose: { minute: 13 * 60, dates: new Set([
+      ...dates(2022, '11-25'), ...dates(2023, '07-03 11-24'),
+      ...dates(2024, '07-03 11-29 12-24'), ...dates(2025, '07-03 11-28 12-24'),
+      ...dates(2026, '11-27 12-24'), ...dates(2027, '11-26'), ...dates(2028, '07-03 11-24'),
+    ]) },
   },
 ]
 
@@ -142,6 +151,14 @@ export function marketSessionWindows(from: number, to: number): MarketSessionWin
     }
   }
   return windows
+}
+
+/** New York's cash hours are contained within the same UTC calendar date. */
+export function* newYorkCashWindows(from: number, until: number): Iterable<MarketSessionWindow> {
+  for (let day = Math.floor(from / DAY) * DAY; day < until; day += DAY) {
+    const session = sessionsOn(day)[SESSION_MARKETS.newYork.index]
+    if (!session.closed && session.open < until && session.close > from) yield session
+  }
 }
 
 export function marketSessionForecast(reference: number, visibility = DEFAULT_MARKET_SESSION_VISIBILITY) {

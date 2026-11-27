@@ -15,7 +15,7 @@ export interface SimulationTradeLabel {
 interface SimulationTradeLabelData {
   chart: Chart
   trades: SimulationTradeLabel[]
-  displayCandle: (index: number, candle: KLineData) => KLineData
+  displayCandle: (index: number, candle: KLineData, timestamp: number) => KLineData | undefined
   timeframe: string
 }
 
@@ -95,7 +95,8 @@ const simulationTradeLabel: OverlayTemplate = {
       const trade = trades[index]
       const candleIndex = visible.get(alignOpenTime(trade.timestamp, timeframe, 'floor'))
       if (candleIndex === undefined) continue
-      const candle = displayCandle(candleIndex, candles[candleIndex])
+      const candle = displayCandle(candleIndex, candles[candleIndex], trade.timestamp)
+      if (!candle) continue
       const x = xAxis.convertToPixel(candleIndex)
       const wick = candleStyles.type === 'area' ? yAxis.convertToPixel(Number(candle[candleStyles.area.value])) :
         Math.min(yAxis.convertToPixel(candle.high), yAxis.convertToPixel(candle.low))

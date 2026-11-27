@@ -56,6 +56,8 @@ import { CandleReadout } from './candle-readout'
 import { formatDisplayTime } from '../format-display-time'
 import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
 import { BIG_TRADES } from './order-flow'
+import { CashCandleHistory } from './cash-candle-history'
+import { cashRanges, displayCandles, isCashChart } from './new-york-cash'
 
 type OrderFlowChartOptions = ChartProOptions & {
   orderFlowCloud?: GitHubContentsClient
@@ -204,6 +206,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private readonly candleOwners = new WeakMap<object, string>()
   private priceLabels?: SimulationPriceLabels
   private candleReadout?: CandleReadout
+  private cashHistory?: CashCandleHistory
   private drawings?: DrawingOverlays
   private orderFlow?: OrderFlowChart
   private source?: CombinedBybitSource
@@ -221,6 +224,8 @@ export class ProChartAdapter implements ChartAdapterPort {
   dispose(): void {
     this.candleReadout?.dispose()
     this.candleReadout = undefined
+    this.cashHistory?.reset()
+    this.cashHistory = undefined
     this.drawings?.dispose()
     this.drawings = undefined
     this.orderFlow?.dispose()
@@ -270,6 +275,16 @@ export class ProChartAdapter implements ChartAdapterPort {
     }
     this.chart = this.factory(combinedOptions)
     this.coreChart = this.chart.getChart()
+    if (this.coreChart.setCashCandleProjection) {
+      const cash = new CashCandleHistory(this.coreChart, options.datafeed, () => this.hasCurrentCandles() ? {
+        symbol: this.getSymbol(), period: this.getPeriod(), until: (this.replayHistoryEnd() ?? Date.now() - 1) + 1,
+      } : undefined, () => this.orderFlow?.refreshProjectedProfiles())
+      this.cashHistory = cash
+      this.coreChart.setCashCandleProjection(candles => cash.project(candles, this.getPeriod(), (this.replayHistoryEnd() ?? Date.now() - 1) + 1))
+      const loadCashHistory = () => cash.loadVisible()
+      this.coreChart.subscribeAction(ON_DATA_READY, loadCashHistory)
+      this.coreChart.subscribeAction('onVisibleRangeChange' as ActionType, loadCashHistory)
+    }
     this.applySymbolDisplayPrecision(options.symbol)
     if (orderFlowCloud) {
       const feed = options.datafeed as Datafeed & {
@@ -579,6 +594,7 @@ export class ProChartAdapter implements ChartAdapterPort {
   private cancelHistoryWork(): void {
     this.historyAbort.abort()
     this.historyAbort = new AbortController()
+    this.cashHistory?.reset()
   }
 
   private selectionKey(symbol: SymbolInfo, period: Period): string {
@@ -1036,7 +1052,8 @@ export class ProChartAdapter implements ChartAdapterPort {
 
     if (state.trades.length > 0) {
       const trades = [...state.trades].sort((first, second) => first.timestamp - second.timestamp)
-      const displayCandle = (index: number, candle: KLineData): KLineData => {
+      const displayCandle = (index: number, candle: KLineData, timestamp: number): KLineData | undefined => {
+        if (isCashChart(chart)) return cashRanges(timestamp, timestamp + 1).length ? displayCandles(chart)[index] : undefined
         if (chart.getStyles().candle.type !== 'heikin_ashi') return candle
         // The patched renderer caches the same Heikin Ashi series used by the axis.
         const core = chart as Chart & { getChartStore(): { getHeikinAshiData(index: number): KLineData } }

@@ -40,7 +40,7 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 | 指标选择、参数、样式、副图布局（含 RSI 水平线、全部颜色透明度、KC、TTM Squeeze、TTM Wave A/B/C、Pivots 分组色与上期线、市场开收盘逐市场显隐与午间时间开关、足迹图的数值与图形内容、大单气泡的阈值、最大显示数量、形状、数字与动态样式、框选／可见范围／逐根 K 线成交分布的分档、关键价位、配色与 Delta 开关、VWAP 和 CVD） | `chart.indicators.v1`；`chart/indicator-preferences.ts` | `chartIndicators` | `config/preferences.json` |
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
-| 蜡烛图类型（含 Heikin Ashi 和收盘价折线） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
+| 蜡烛图类型（含 Heikin Ashi、收盘价折线和纽约现金时段 K 线） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
 | 悬浮 K 线详情 | `chart.showCandleHoverDetails.v1`；`chart/candle-hover-preferences.ts` | `showCandleHoverDetails` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
 | 行情来源（cTrader、OKX、OKX-本地、Databento-CME） | `marketData.priceSource.v1`；`market-data/price-source-preferences.ts` | `priceSource` | `config/preferences.json` |
@@ -174,7 +174,9 @@ Pivots 配置保持 `PIVOTS` 名称，沿用 calcParams 前 30 项以兼容旧�
 
 ## 验收与回归
 
-蜡烛图类型使用可选字段 `candleType`，支持 `candle_solid`、`candle_stroke`、`candle_up_stroke`、`candle_down_stroke`、`ohlc`、`area`、`heikin_ashi` 和收盘价折线 `line`，默认全实心。选择经统一入口保存。配置／全部 JSON 导出及 GitHub“应用配置”的比较、上传与拉取均包含该字段。继续使用顶层 Schema 1。旧本地／云端存档缺少字段时保留目标已有类型，无本地设置时使用默认值。显式普通类型会恢复普通图，`null`、空字符串、布尔值、数字、数组、对象及未知枚举均在任何数据写入前拒绝，本地损坏值则回退默认。自动配置恢复随图表重建生效，手动导入或拉取后按提示刷新，未操作的旧图表不会反写刚恢复的类型。
+蜡烛图类型使用可选字段 `candleType`，支持 `candle_solid`、`candle_stroke`、`candle_up_stroke`、`candle_down_stroke`、`ohlc`、`area`、`heikin_ashi`、收盘价折线 `line` 和纽约现金时段 `new_york_cash`，默认全实心。选择经统一入口保存。配置／全部 JSON 导出及 GitHub“应用配置”的比较、上传与拉取均包含该字段。继续使用顶层 Schema 1。旧本地／云端存档缺少字段时保留目标已有类型，无本地设置时使用默认值。显式普通类型会恢复普通图，`null`、空字符串、布尔值、数字、数组、对象及未知枚举均在任何数据写入前拒绝，本地损坏值则回退默认。自动配置恢复随图表重建生效，手动导入或拉取后按提示刷新，未操作的旧图表不会反写刚恢复的类型。
+
+`new_york_cash` 只保存图表类型。盘内 K 线和相应的成交量指标随画面及回放游标重新计算。K 线的原时间位置保留，盘外位置留空，跨越时段边界的 K 线用盘内细周期行情重算。底层行情和模拟成交记录仍按原始数据存档。
 
 Heikin Ashi 仅影响蜡烛、可见高低标记和价格轴范围，不改原始行情、提示框、指标、最新价及模拟成交价格。首根 HA 开盘为首根原始开收均值，其余使用上一根 HA 开收均值；仅从当前已加载且回放可见的历史向前递推。实时末根更新重新计算该根，新根延续前值；向左补历史及切换产品、周期或回放重置后重建缓存。新增历史会改变起算点，靠近历史左边界的 HA 值可能随之变化；不读取未来行情，不将合成行情写入业务存档。
 

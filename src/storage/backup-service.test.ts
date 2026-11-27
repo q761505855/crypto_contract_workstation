@@ -574,7 +574,7 @@ describe('WorkstationBackupService', () => {
     expect(await new IndexedDbMarketDataStore(name).getSymbols()).toEqual([])
   })
 
-  it.each(['heikin_ashi', 'line'])('round-trips chart type %s in config and full archives, preserving legacy absence', async candleType => {
+  it.each(['heikin_ashi', 'line', 'new_york_cash'])('round-trips chart type %s in config and full archives, preserving legacy absence', async candleType => {
     const sourceStorage = new MemoryPreferences()
     sourceStorage.setItem('chart.candleType.v1', JSON.stringify(candleType))
     const source = new WorkstationBackupService(`chart-type-source-${crypto.randomUUID()}`, sourceStorage)

@@ -69,7 +69,7 @@ function candle(openTime: number, close = '100'): MarketCandle {
 function backup(): BackupEnvelope {
   // Required ensures newly introduced configuration fields need archive coverage.
   const preferences: Required<BackupPreferences> = {
-    candleType: 'line',
+    candleType: 'new_york_cash',
     showCandleHoverDetails: false,
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
@@ -494,7 +494,7 @@ describe('GitHubSyncService', () => {
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect(targetStorage.getItem('chart.candleType.v1')).toBe('"candle_solid"')
-    sourceStorage.setItem('chart.candleType.v1', '"line"')
+    sourceStorage.setItem('chart.candleType.v1', JSON.stringify(complete.candleType))
 
     const changed = {
       schemaVersion: 1,
@@ -529,7 +529,7 @@ describe('GitHubSyncService', () => {
     await rewrite(legacy)
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
-    expect(targetStorage.getItem('chart.candleType.v1')).toBe('"line"')
+    expect(targetStorage.getItem('chart.candleType.v1')).toBe(JSON.stringify(complete.candleType))
     expect(targetStorage.getItem('chart.showCandleHoverDetails.v1')).toBe('false')
     expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('false')

@@ -7,11 +7,13 @@ export async function connectFixture(page: Page, multipleAccounts = false, {
   initialQuote = true,
   rejectedAccount = 0,
   historyAvailable,
+  historyVolume,
   ticks = [],
 }: {
   initialQuote?: boolean
   rejectedAccount?: number
   historyAvailable?: (timestamp: number) => boolean
+  historyVolume?: (timestamp: number, minutes: number) => number
   ticks?: { timestamp: number; price: number }[]
 } = {}) {
   const messages: { type: number; accountId?: number; period?: number; symbolId?: number; live: boolean }[] = []
@@ -80,7 +82,7 @@ export async function connectFixture(page: Page, multipleAccounts = false, {
           const first = historyAvailable ? start : Math.max(start, end - 10 * width)
           for (let stamp = first; stamp <= end; stamp += width) {
             if (historyAvailable && !historyAvailable(stamp * minute)) continue
-            trendbar.push({ utcTimestampInMinutes: stamp, period: payload.period, low: 110000, deltaOpen: 20, deltaHigh: 70, deltaClose: 50, volume: 42 })
+            trendbar.push({ utcTimestampInMinutes: stamp, period: payload.period, low: 110000, deltaOpen: 20, deltaHigh: 70, deltaClose: 50, volume: historyVolume?.(stamp * minute, width) ?? 42 })
           }
           response(2138, { ...accountPayload, symbolId: payload.symbolId, period: payload.period, trendbar, hasMore: false })
           break

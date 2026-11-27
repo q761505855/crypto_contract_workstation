@@ -1,5 +1,6 @@
 import { ActionType, type Chart, type Crosshair, type KLineData } from 'klinecharts'
 import { formatDisplayTime } from '../format-display-time'
+import { displayCandles, latestDisplayCandle } from './new-york-cash'
 
 const percent = new Intl.NumberFormat('zh-CN', {
   style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -67,7 +68,7 @@ export class CandleReadout {
   }
 
   private readonly updateLatest = (): void => {
-    const candle = this.chart.getDataList().at(-1)
+    const candle = latestDisplayCandle(this.chart)
     this.summary.hidden = candle === undefined
     if (!candle) {
       this.clearSelection()
@@ -85,7 +86,9 @@ export class CandleReadout {
       this.clearSelection()
       return
     }
-    const previous = this.chart.getDataList()[index - 1]
+    const display = displayCandles(this.chart)
+    let previous: KLineData | undefined
+    for (let prior = index - 1; prior >= 0 && previous === undefined; prior--) previous = display[prior]
     if (candle !== this.selected || previous !== this.previous) {
       this.renderSelection(candle, previous)
       this.selected = candle
