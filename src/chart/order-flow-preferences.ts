@@ -87,7 +87,7 @@ export const orderFlowFields = {
     opacityByVolume: toggle('按成交量调整透明度', false),
     fixedRadius: number('固定半径', 8, 1, 40),
     minRadius: number('最小半径', 0, 0, 40),
-    maxRadius: number('最大半径', 20, 1, 40),
+    maxRadius: number('最大半径', 20, 1, 80),
     hollow: toggle('空心标记', false),
     showText: toggle('显示成交量', false),
     buyFillColor: color('主动买入填充色', defaultBubbleColors.buy.fill),

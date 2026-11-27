@@ -55,6 +55,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   const marker = settings.getByLabel('标记形状', { exact: true })
   const dynamicSize = settings.getByLabel('按成交量调整大小', { exact: true })
   const dynamicOpacity = settings.getByLabel('按成交量调整透明度', { exact: true })
+  const maxRadius = settings.getByLabel('最大半径', { exact: true })
   const fixedRadius = settings.getByLabel('固定半径', { exact: true })
   const maxBubbles = settings.getByLabel('最大显示数量', { exact: true })
   const palette = settings.getByRole('button', { name: '配色', exact: true })
@@ -87,10 +88,13 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   await maxBubbles.fill('250')
   await expect(dynamicSize).toBeChecked()
   await expect(dynamicOpacity).not.toBeChecked()
+  await expect(maxRadius).toHaveValue('20')
+  await expect(maxRadius).toHaveAttribute('max', '80')
+  await maxRadius.fill('80')
   await marker.selectOption('square')
   await dynamicSize.uncheck()
   await dynamicOpacity.check()
-  await expect(settings.getByLabel('最大半径', { exact: true })).toHaveCount(0)
+  await expect(maxRadius).toHaveCount(0)
   await fixedRadius.fill('11')
   await settings.getByLabel('显示成交量', { exact: true }).check()
   const appearance = settings.getByRole('button', { name: '气泡样式', exact: true })
@@ -120,6 +124,9 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   await expect(dynamicSize).not.toBeChecked()
   await expect(dynamicOpacity).toBeChecked()
   await expect(fixedRadius).toHaveValue('11')
+  await dynamicSize.check()
+  await expect(maxRadius).toHaveValue('80')
+  await dynamicSize.uncheck()
   await expect(maxBubbles).toHaveValue('250')
   await expect(unit).toHaveValue('contracts')
   await expect(settings.getByLabel('最低成交张数', { exact: true })).toHaveValue('12.5')
@@ -145,7 +152,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   const styles = archive.data.preferences.chartIndicators.main.find((setting: { name: string }) => setting.name === 'BIG_TRADES').styles
   const thresholds = archive.data.preferences.chartIndicators.orderFlow.bubbles
   expect(thresholds).toMatchObject({ thresholdUnit: 'contracts', minQuantity: 0.025, minContracts: 12.5, maxContracts: 20 })
-  expect(thresholds).toMatchObject({ marker: 'square', showText: true, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 250 })
+  expect(thresholds).toMatchObject({ marker: 'square', showText: true, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxRadius: 80, maxBubbles: 250 })
   expect(styles.bubbleMode).toBe('aggregate')
   expect(styles.bubbleColors.map(({ color }: { color: string }) => color))
     .toEqual(['#12345600', '#ff827e6b', '#49d4aee6', '#ff827e'])
@@ -157,6 +164,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   thresholds.marker = 'circle'
   thresholds.sizeByVolume = true
   thresholds.opacityByVolume = false
+  thresholds.maxRadius = 72
   thresholds.maxBubbles = 600
   page.once('dialog', dialog => dialog.accept())
   await page.getByTestId('import-backup-file').setInputFiles({
@@ -170,6 +178,7 @@ test('大单气泡阈值单位、模式和样式可刷新恢复，也支持配�
   await expect(marker).toHaveValue('circle')
   await expect(dynamicSize).toBeChecked()
   await expect(dynamicOpacity).not.toBeChecked()
+  await expect(maxRadius).toHaveValue('72')
   await expect(maxBubbles).toHaveValue('600')
   await expect(fixedRadius).toHaveCount(0)
   await expect(settings.getByLabel('最低成交手数', { exact: true })).toHaveValue('0.02')

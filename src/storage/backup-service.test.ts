@@ -471,7 +471,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
     schemaVersion: 1,
     orderFlow: {
       footprint: { showPoc: false, type: 'bidAsk', plotType: 'delta', maxNotional: 0 },
-      bubbles: { marker: 'square', minRadius: 0, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
+      bubbles: { marker: 'square', minRadius: 0, maxRadius: 80, showText: true, thresholdUnit: 'quantity', minQuantity: 0.025, maxQuantity: 0,
         minContracts: 10, maxContracts: 80, minLots: 0.01, maxLots: 0, sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 280 },
       profile: { rows: 16, valueArea: 85, rowSizePercent: 0.025, showLabels: false, showDelta: false },
       candleProfile: { type: 'volumeDelta', rows: 22, width: 85, columnWidth: 100, valueArea: 80,
@@ -836,6 +836,7 @@ describe('WorkstationBackupService', () => {
     const legacyIndicators = indicatorPreferences()
     legacyIndicators.main = legacyIndicators.main.filter(({ name }) => !['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE'].includes(name))
     delete legacyIndicators.orderFlow!.candleProfile
+    delete legacyIndicators.orderFlow!.bubbles!.maxRadius
     delete legacyIndicators.orderFlow!.profile!.rowSizePercent
     delete legacyIndicators.orderFlow!.profile!.showDelta
     delete legacyIndicators.orderFlow!.visibleProfile!.showDelta
@@ -886,7 +887,8 @@ describe('WorkstationBackupService', () => {
       expect((await target.exportAll()).data).toEqual(before)
     }
     for (const bubbles of [{ thresholdUnit: null }, { maxQuantity: '10' }, { minLots: 2, maxLots: 1 },
-      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 0 }]) {
+      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 0 },
+      { maxRadius: null }, { maxRadius: 0 }, { maxRadius: 79.5 }, { maxRadius: 81 }]) {
       archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { bubbles } } as unknown as ChartIndicatorPreferences
       await expect(target.import(archive)).rejects.toThrow(/orderFlow.bubbles/)
       expect((await target.exportAll()).data).toEqual(before)

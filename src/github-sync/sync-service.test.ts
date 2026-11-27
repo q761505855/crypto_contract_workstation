@@ -93,7 +93,7 @@ function backup(): BackupEnvelope {
       schemaVersion: 1,
       orderFlow: {
         footprint: { type: 'bidAsk', plotType: 'delta', layout: 'histogram', showText: false, minNotional: 0, columnWidth: 128 },
-        bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxNotional: 0, thresholdUnit: 'contracts',
+        bubbles: { marker: 'diamond', hollow: true, minRadius: 0, maxRadius: 60, maxNotional: 0, thresholdUnit: 'contracts',
           minQuantity: 0, maxQuantity: 2.5, minContracts: 10, maxContracts: 0, minLots: 0.01, maxLots: 0.5,
           sizeByVolume: false, opacityByVolume: true, fixedRadius: 11, maxBubbles: 320 },
         profile: { type: 'bidAsk', rows: 26, valueArea: 82, rowSizePercent: 0.02, showPoc: false, pocColor: '#ffcc7000', showDelta: false },
@@ -950,6 +950,14 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(appearanceChanged)
 
+    const largerRadius = structuredClone(appearanceChanged)
+    largerRadius.orderFlow!.bubbles!.maxRadius = 80
+    sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(largerRadius))
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    await target.pull(client(remote))
+    expect(JSON.parse(targetStorage.getItem(CHART_INDICATORS_PREFERENCE)!)).toEqual(largerRadius)
+
     const thresholdChanged = structuredClone(indicators)
     Object.assign(thresholdChanged.orderFlow!.bubbles!, { thresholdUnit: 'lots', minLots: 0, maxLots: 0 })
     sourceStorage.setItem(CHART_INDICATORS_PREFERENCE, JSON.stringify(thresholdChanged))
@@ -1086,6 +1094,7 @@ describe('GitHubSyncService', () => {
     const legacyDefaults = structuredClone(indicators)
     legacyDefaults.main = legacyDefaults.main.filter(({ name }) => !['VWAP', 'VISIBLE_VOLUME_PROFILE', 'CANDLE_VOLUME_PROFILE'].includes(name))
     delete legacyDefaults.orderFlow!.candleProfile
+    delete legacyDefaults.orderFlow!.bubbles!.maxRadius
     delete legacyDefaults.orderFlow!.profile!.rowSizePercent
     delete legacyDefaults.orderFlow!.profile!.showDelta
     delete legacyDefaults.orderFlow!.visibleProfile!.showDelta
@@ -1120,7 +1129,8 @@ describe('GitHubSyncService', () => {
       expect((await targetBackups.exportAll()).data).toEqual(before)
     }
     for (const bubbles of [{ thresholdUnit: '' }, { minContracts: null }, { minLots: 4, maxLots: 2 },
-      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 41 }]) {
+      { sizeByVolume: null }, { opacityByVolume: 0 }, { fixedRadius: 41 },
+      { maxRadius: null }, { maxRadius: 0 }, { maxRadius: 79.5 }, { maxRadius: 81 }]) {
       await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: { ...indicators, orderFlow: { bubbles } } })
       await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.bubbles/)
       expect((await targetBackups.exportAll()).data).toEqual(before)
