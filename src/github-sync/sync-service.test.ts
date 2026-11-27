@@ -5,6 +5,7 @@ import { orderFlowSettings } from '../chart/order-flow-preferences'
 import { PIVOTS_DEFAULT_PARAMS } from '../chart/pivots'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import { ReplayEngine } from '../replay/replay-engine'
+import type { ReplaySession } from '../replay/models'
 import { SimulationEngine } from '../simulation/simulation-engine'
 import { IndexedDbReplaySessionStore } from '../storage/replay-session-store'
 import { IndexedDbSimulationStateStore } from '../storage/simulation-state-store'
@@ -604,6 +605,28 @@ describe('GitHubSyncService', () => {
       await expect(target.pull(client(remote))).rejects.toThrow(/workspace/)
       expect((await targetBackups.exportAll()).data).toEqual(before)
     }
+  })
+
+  it('preserves the Databento fee snapshot and charged fees in GitHub session sync', async () => {
+    const sourceDb = `cme-cloud-${crypto.randomUUID()}`
+    const storage = { getItem: () => null, setItem: () => undefined }
+    const source = new GitHubSyncService(new WorkstationBackupService(sourceDb, storage))
+    const targetBackups = new WorkstationBackupService(`${sourceDb}-restored`, storage)
+    const target = new GitHubSyncService(targetBackups)
+    const row = { ...candle(0), source: 'databento-cme' as const, symbol: 'NQ.FUT' }
+    const symbol = { ticker: row.symbol, exchange: 'CME', type: 'FUTURES', pricePrecision: 9, volumePrecision: 0 }
+    const original = ReplayEngine.create({ symbol, period: SUPPORTED_PERIODS[0], startTime: 0, endTime: 60_000 }, [row], { buffered: true }).snapshot()
+    const replay: ReplaySession = { ...original, marketSource: 'databento-cme', cursorTimeframe: '1m', visibleUntil: 60_000, hasTrades: true,
+      tradingConfig: { ...original.tradingConfig, feeRate: '0', liquidationFeeRate: '0', cmeFeePerContractSide: '2.87' } }
+    await new IndexedDbReplaySessionStore(sourceDb).put(replay)
+    const engine = SimulationEngine.create(replay)
+    engine.open('long', { quantity: '1' }, row)
+    expect(engine.closeAll('long', row).fee).toBe('2.87')
+    await new IndexedDbSimulationStateStore(sourceDb).save(engine.snapshot())
+    const remote = new MemoryGitHubClient()
+    await source.upload(client(remote), 'stop', { config: false, sessions: true, marketData: false })
+    await target.pull(client(remote))
+    expect((await targetBackups.exportSession(replay.id)).data).toMatchObject({ sessions: [replay], simulations: [engine.snapshot()] })
   })
 
   it('restores both risk-bound positions through real storage and rejects corrupt cloud positions atomically', async () => {

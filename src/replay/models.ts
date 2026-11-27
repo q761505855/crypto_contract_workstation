@@ -31,6 +31,8 @@ export interface ReplayTradingConfig {
   liquidationFeeRate: string
   ctrader?: CTraderTradingTerms
   okx?: OkxTradingTerms
+  /** USD per contract per side. Null marks a replay with no fee available for trading. */
+  cmeFeePerContractSide?: string | null
 }
 
 export type ReplayOrderSettings = Pick<ReplayTradingConfig, 'leverage' | 'slippageRate'>
@@ -84,6 +86,7 @@ export interface CreateReplaySessionInput {
   initialBalance?: string
   leverage?: number
   slippageRate?: string
+  cmeFeePerContractSide?: string
 }
 
 export interface ReplayContext {

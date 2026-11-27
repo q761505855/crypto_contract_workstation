@@ -61,20 +61,25 @@ function stores(saved?: ReplaySession) {
 describe('cTrader replay', () => {
   it('uses real trade gaps, pauses the replay clock and processes every same-time trade', async () => {
     const at = monday + minute
+    const cmeSymbol = { ticker: 'UNLISTED.FUT', exchange: 'CME', type: 'FUTURES' }
     const trades = [
       { timestamp: at + 50, price: '100', size: 2 },
       { timestamp: at + 50, price: '101', size: 3 },
       { timestamp: at + 250, price: '99', size: 4 },
     ]
     const market = {
-      ...service([{ ...mondayFirst, source: 'databento-cme' }]),
+      ...service([{ ...mondayFirst, symbol: cmeSymbol.ticker, source: 'databento-cme' }]),
       source: 'databento-cme' as const,
       loadTicks: vi.fn(async () => trades),
     }
     const replaySessions = stores()
     const { result, unmount } = renderHook(() => useCTraderReplayController({ service: market, replaySessions }, '1m'))
     await waitFor(() => expect(result.current.busy).toBe(false))
-    await act(() => result.current.createSession({ symbol, period: m1, startTime: monday, endTime: at + 1000 }))
+    await act(() => result.current.createSession({
+      symbol: cmeSymbol,
+      period: m1, startTime: monday, endTime: at + 1000, cmeFeePerContractSide: '0.75',
+    }))
+    expect(result.current.session?.tradingConfig.cmeFeePerContractSide).toBe('0.75')
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
     try {
       const prices: string[] = []

@@ -1,7 +1,9 @@
 import Decimal from 'decimal.js'
 import type { MarketCandle } from '../market-data/models'
 import type { ReplayOrderSettings, ReplaySession, ReplayTradingConfig } from '../replay/models'
-import { cTraderCommission, cTraderLeverage, cTraderMargin, cTraderSwap, cTraderTotalMargin, quoteToAccount, sameCTraderTradingTerms, validateCTraderTradingTerms } from './ctrader-trading'
+import { cTraderLeverage, cTraderMargin, cTraderSwap, cTraderTotalMargin, quoteToAccount, sameCTraderTradingTerms, validateCTraderTradingTerms } from './ctrader-trading'
+import { validateCmeFeePerContractSide } from './cme-fees'
+import { tradingCommission } from './trading-commission'
 import { okxMaximumLeverage, okxRiskTier, sameOkxTradingTerms, validateOkxTradingTerms, type OkxReplayRisk } from './okx-trading'
 import { isAdjustableLeverage, MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage, normalizeSimulationStatePrices } from './models'
 import type {
@@ -82,13 +84,17 @@ export function validateSimulationConfig(
   if (!Number.isInteger(config.leverage) || config.leverage < 1) {
     throw new Error('杠杆必须是大于等于 1 的整数')
   }
-  nonNegative(config.feeRate, '手续费率')
+  const feeRate = nonNegative(config.feeRate, '手续费率')
   const slippageRate = nonNegative(config.slippageRate, '滑点率')
-  nonNegative(config.maintenanceMarginRate, '维持保证金率')
-  nonNegative(config.liquidationFeeRate, '强平费用率')
-  const riskRates = decimal(config.maintenanceMarginRate, '维持保证金率').plus(
-    config.liquidationFeeRate,
-  )
+  const maintenanceMarginRate = nonNegative(config.maintenanceMarginRate, '维持保证金率')
+  const liquidationFeeRate = nonNegative(config.liquidationFeeRate, '强平费用率')
+  const cmeFee = config.cmeFeePerContractSide
+  validateCmeFeePerContractSide(cmeFee)
+  if (cmeFee !== undefined && (config.ctrader !== undefined || config.okx !== undefined ||
+      !feeRate.isZero() || !liquidationFeeRate.isZero())) {
+    throw new Error('CME 每张单边手续费规格无效')
+  }
+  const riskRates = maintenanceMarginRate.plus(liquidationFeeRate)
   if (riskRates.greaterThanOrEqualTo(1)) {
     throw new Error('维持保证金率与强平费用率之和必须小于 1')
   }
@@ -133,7 +139,7 @@ export class SimulationEngine {
       if (entry.type === 'balance_adjustment') this.balanceAdjustments = this.balanceAdjustments.plus(entry.amount)
     }
     this.pricePrecision = symbolPrecision.price
-    this.quantityPrecision = symbolPrecision.quantity
+    this.quantityPrecision = this.state.config.cmeFeePerContractSide === undefined ? symbolPrecision.quantity : 0
   }
 
   static create(
@@ -205,6 +211,9 @@ export class SimulationEngine {
         (state.config.feeRate !== session.tradingConfig.feeRate ||
           state.config.liquidationFeeRate !== session.tradingConfig.liquidationFeeRate))) {
       throw new Error('模拟交易状态与回放会话的 OKX 交易规格不匹配')
+    }
+    if (state.config.cmeFeePerContractSide !== session.tradingConfig.cmeFeePerContractSide) {
+      throw new Error('模拟交易状态与回放会话的 CME 手续费不匹配')
     }
     return new SimulationEngine(
       state,
@@ -420,6 +429,7 @@ export class SimulationEngine {
     if (this.state.config.ctrader && !requested.eq(quantity)) throw new Error('减仓手数不符合 IC Markets 手数步长')
     const okx = this.state.config.okx
     if (okx && !requested.eq(quantity)) throw new Error('减仓张数不符合 OKX 下单步长')
+    if (this.state.config.cmeFeePerContractSide !== undefined && !requested.eq(quantity)) throw new Error('CME 减仓张数必须为整数')
     if (quantity.lessThanOrEqualTo(0)) throw new Error('按当前精度计算后的减仓数量为 0')
     if (quantity.greaterThan(currentQuantity)) {
       throw new Error('减仓数量不能大于当前持仓数量')
@@ -525,8 +535,7 @@ export class SimulationEngine {
   }
 
   private commission(quantity: Decimal, price: Decimal): Decimal {
-    const terms = this.state.config.ctrader
-    return terms ? cTraderCommission(terms, quantity, price) : quantity.mul(price).mul(this.state.config.feeRate)
+    return tradingCommission(this.state.config, quantity, price)
   }
 
   private positionPnl(position: SimulationPosition, price: Decimal, quantity: Decimal, realized = false): Decimal {
@@ -810,6 +819,8 @@ export class SimulationEngine {
       const quantity = count.mul(value)
       return { quantity, margin: quantity.mul(fillPrice).div(leverage) }
     }
+    const cmeFee = this.state.config.cmeFeePerContractSide
+    if (cmeFee === null) throw new Error('此品种缺少手续费。请在新建回放时填写单边手续费。')
     const hasMargin = size.margin !== undefined && size.margin.trim() !== ''
     const hasQuantity =
       size.quantity !== undefined && size.quantity.trim() !== ''
@@ -829,9 +840,9 @@ export class SimulationEngine {
         margin: quantity.mul(fillPrice).div(this.state.config.leverage),
       }
     }
-    const quantity = this.roundQuantity(
-      positive(size.quantity!, '仓位数量'),
-    )
+    const requested = positive(size.quantity!, '仓位数量')
+    const quantity = this.roundQuantity(requested)
+    if (cmeFee !== undefined && !requested.eq(quantity)) throw new Error('CME 下单张数必须为整数')
     if (quantity.lessThanOrEqualTo(0)) {
       throw new Error('按当前精度计算后的仓位数量为 0')
     }
@@ -937,9 +948,9 @@ export class SimulationEngine {
         : entry.minus(exitPrice).mul(quantity)
     const notional = exitPrice.mul(quantity)
     const fee =
-      action === 'liquidation'
+      action === 'liquidation' && this.state.config.cmeFeePerContractSide === undefined
         ? ZERO
-        : notional.mul(this.state.config.feeRate)
+        : this.commission(quantity, exitPrice)
     const liquidationFee =
       action === 'liquidation'
         ? notional.mul(this.state.config.liquidationFeeRate)

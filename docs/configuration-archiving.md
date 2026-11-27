@@ -26,7 +26,7 @@ cTrader 账户选择以 `ctraderAccount` 保存模拟或真实环境及账户 ID
 
 OKX 和 OKX-本地回放会话沿用 Schema 2，分别保存 `marketSource: "okx"` 和 `marketSource: "okx-local"`，以及步进游标、排他边界和会话与模拟状态中的 `tradingConfig.okx`、`config.okx` 合约规格。已结算资金费保存在账户流水，`fundingCheckedThrough` 保存逐仓处理边界。会话按来源隔离。会话／完整 JSON 与 GitHub“会话与交易”原样保存业务记录。两份规格和费率必须一致，非法规格在写入前拒绝。OKX 行情缓存、标记价格、资金费率原始响应和本地归档文件属于行情运行数据。
 
-Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进游标、排他边界和通用模拟状态，支持会话 JSON、完整 JSON 和 GitHub“会话与交易”。刷新或更换设备后，先加载会话用到的日档，再从回放设置恢复会话。日档选择和行情缓存属于当前页面的运行状态。
+Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进游标、排他边界和模拟状态，支持本地 IndexedDB、会话 JSON、完整 JSON 和 GitHub“会话与交易”。新会话在 `tradingConfig.cmeFeePerContractSide` 和 `config.cmeFeePerContractSide` 保存同一个 USD 每张单边手续费。未内置费率的品种在创建时可输入券商费率，输入仅用于该会话。字符串 `"0"` 表示零费率，`null` 表示仅回放行情，缺少字段的旧会话使用原有规则。非法金额或两处快照不一致会在写入前拒绝。刷新或更换设备后，先加载会话用到的日档，再从回放设置恢复会话。日档选择和行情缓存属于当前页面的运行状态。
 
 四种行情来源的会话可保存 `playbackMode`（`kline` 或 `tick`）和 `tickSpeed`（`0.1–1000` 的数字）。两者随会话进入 IndexedDB、会话／完整 JSON 和 GitHub“会话与交易”，恢复时暂停并保留原游标。旧会话缺少模式时，逐笔游标或 cTrader 旧应用设置中的 `tick` 对应逐笔模式，其余使用 K 线模式。缺少逐笔倍率时使用 `1×`，显式非法值在写入前拒绝。创建前的模式选择只在当前页面有效。K 线步进周期沿用应用配置字段 `replayStepPeriod`，旧 `tick` 值仍可导入导出，在 K 线模式中以 `1m` 运行。
 

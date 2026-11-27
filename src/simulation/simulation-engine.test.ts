@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import Decimal from 'decimal.js'
 import { DEFAULT_SYMBOL, SUPPORTED_PERIODS } from '../chart/chart-config'
 import type { MarketCandle } from '../market-data/models'
 import type { ReplaySession, ReplayTradingConfig } from '../replay/models'
 import { SimulationEngine } from './simulation-engine'
 import { normalizeSimulationStatePrices, type LegacySimulationState } from './models'
 import type { CTraderTradingTerms } from './ctrader-trading'
+import { defaultCmeFeePerContractSide } from './cme-fees'
+import { estimateRiskPnl } from './risk-price'
 
 const ZERO_FEE_CONFIG: ReplayTradingConfig = {
   initialBalance: '10000',
@@ -83,6 +86,49 @@ const icMarketsTerms: CTraderTradingTerms = {
   canShort: true, tradingMode: 0, pnlConversionFeeRate: '0',
 }
 const IC_MARKETS_CONFIG = { ...ZERO_FEE_CONFIG, maintenanceMarginRate: '0', leverage: 100, ctrader: icMarketsTerms }
+
+describe('Databento-CME trading fees', () => {
+  const config = { ...ZERO_FEE_CONFIG, maintenanceMarginRate: '0', cmeFeePerContractSide: '2.87' }
+  const replay: ReplaySession = { ...session(config), marketSource: 'databento-cme',
+    symbol: { ticker: 'NQ.FUT', exchange: 'CME', type: 'FUTURES', pricePrecision: 9, volumePrecision: 0 } }
+
+  it('looks up product and dated contract codes without borrowing fees for spreads', () => {
+    expect(defaultCmeFeePerContractSide('NQ.FUT')).toBe('2.87')
+    expect(defaultCmeFeePerContractSide('MNQZ6')).toBe('0.94')
+    expect(defaultCmeFeePerContractSide('6EH27')).toBe('3.09')
+    expect(defaultCmeFeePerContractSide('NQZ6-NQH7')).toBeNull()
+  })
+
+  it('charges each filled side and uses the same fee for previews, reductions and triggered exits', () => {
+    const engine = SimulationEngine.create(replay)
+    expect(engine.previewOpen('long', { margin: '25' }, '100')).toMatchObject({ quantity: '2', fee: '5.74' })
+    expect(() => engine.open('long', { quantity: '1.5' }, candle(0))).toThrow('整数')
+    expect(engine.open('long', { quantity: '2' }, candle(0)).fee).toBe('5.74')
+    expect(engine.open('long', { quantity: '1' }, candle(60_000)).fee).toBe('2.87')
+    expect(() => engine.reduce('long', '1.5', candle(120_000))).toThrow('整数')
+    expect(engine.reduce('long', '1', candle(120_000, { close: '110' })).fee).toBe('2.87')
+    const restored = SimulationEngine.restore(engine.snapshot(), replay)
+    expect(estimateRiskPnl(restored.snapshot().positions[0], new Decimal(120), config).toString()).toBe('34.26')
+    restored.setTakeProfit('long', '120', 120_000)
+    expect(restored.processCandle(candle(180_000, { open: '115', close: '120' })).exitAction).toBe('take_profit')
+    const state = restored.snapshot()
+    expect(state.account).toMatchObject({ totalFees: '17.22', walletBalance: '10032.78' })
+    expect(state.trades.at(-1)).toMatchObject({ action: 'take_profit', quantity: '2', fee: '5.74' })
+    expect(state.ledger.filter(entry => entry.type === 'trading_fee').map(entry => entry.amount))
+      .toEqual(['-5.74', '-2.87', '-2.87', '-5.74'])
+  })
+
+  it('charges the contract fee on liquidation and rejects orders without a fee schedule', () => {
+    const engine = SimulationEngine.create(replay)
+    engine.open('long', { quantity: '2' }, candle(0))
+    expect(engine.processCandle(candle(60_000, { open: '80' })).exitAction).toBe('liquidation')
+    expect(engine.snapshot().trades.at(-1)).toMatchObject({ action: 'liquidation', fee: '5.74', liquidationFee: '0' })
+    const playbackOnly = SimulationEngine.create({ ...replay, tradingConfig: { ...config, cmeFeePerContractSide: null } })
+    expect(() => playbackOnly.previewOpen('long', { quantity: '1' }, '100')).toThrow('缺少手续费')
+    const legacy = SimulationEngine.create({ ...replay, tradingConfig: ZERO_FEE_CONFIG })
+    expect(legacy.open('long', { quantity: '1' }, candle(0)).fee).toBe('0')
+  })
+})
 
 describe('IC Markets replay', () => {
   it('sets a target wallet balance without changing positions or trading returns, including after restore', () => {

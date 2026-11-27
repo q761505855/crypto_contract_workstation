@@ -352,7 +352,6 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
       return { currentTime, positions: [], trades: [] }
     }
     const precision = marketSelection.symbol.pricePrecision ?? 8
-    const feeRate = state.config.feeRate
     return {
       currentTime,
       positions: state.positions.map(position => {
@@ -370,7 +369,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
           stopLossPrice: position.stopLossPrice === null ? null : Number(position.stopLossPrice),
           liquidationPrice: Number(position.liquidationPrice),
           unrealizedPnl: position.unrealizedPnl,
-          estimateRiskPnl: (price: number) => estimateRiskPnl(position, new Decimal(priceText(price)), feeRate, state.config.ctrader).toNumber(),
+          estimateRiskPnl: (price: number) => estimateRiskPnl(position, new Decimal(priceText(price)), state.config).toNumber(),
           previewEntryRisk,
           onTakeProfitPriceDrag,
           onStopLossPriceDrag,
@@ -572,7 +571,8 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   const accounts = marketRuntime.accountSelection?.getSnapshot()
   const canSwitchAccount = source === 'ctrader' && liveStatus.connection === 'disconnected' && !simulation.busy &&
     accounts?.selectedKey !== undefined && accounts.accounts.length > 1
-  const simulationCurrency = replay.session?.tradingConfig.ctrader?.accountCurrency ?? replay.session?.symbol.priceCurrency ?? ''
+  const simulationCurrency = replay.session?.tradingConfig.cmeFeePerContractSide !== undefined
+    ? 'USD' : replay.session?.tradingConfig.ctrader?.accountCurrency ?? replay.session?.symbol.priceCurrency ?? ''
   const visible = (panel: keyof WorkspacePreferences['panels']) => !focusMode && layout.panels[panel]
   const currentLocalLoad = localLoadStatus?.symbol === marketSelection.symbol.ticker ? localLoadStatus : undefined
   const statusMessages = [replayHistoryStatus, marketWarning, currentLocalLoad?.message,

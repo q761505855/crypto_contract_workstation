@@ -3,7 +3,7 @@ import Decimal from 'decimal.js'
 import { formatDisplayTime } from '../format-display-time'
 import { displayAmount, displayRate as rate } from '../format-amount'
 import type { ReplaySession } from '../replay/models'
-import type { CTraderTradingTerms } from '../simulation/ctrader-trading'
+import type { CommissionConfig } from '../simulation/trading-commission'
 import type { PositionSide, OrderPreview, SimulationPosition, SimulationState } from '../simulation/models'
 import { estimateRiskPnl, riskPricePercent, riskTriggerPrice, type RiskInputMode, type RiskPriceTarget } from '../simulation/risk-price'
 import type { SimulationController } from '../simulation/useSimulationController'
@@ -53,16 +53,18 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
   const state = simulation.state
   const terms = session?.tradingConfig.ctrader
   const okx = session?.tradingConfig.okx
-  const currency = terms?.accountCurrency ?? session?.symbol.priceCurrency ?? ''
-  const minimumLots = okx?.minContracts ?? (terms ? new Decimal(terms.minQuantity).div(terms.lotSize).toString() : undefined)
+  const cmeFee = session?.tradingConfig.cmeFeePerContractSide
+  const cme = cmeFee !== undefined
+  const currency = cme ? 'USD' : terms?.accountCurrency ?? session?.symbol.priceCurrency ?? ''
+  const minimumLots = cme ? '1' : okx?.minContracts ?? (terms ? new Decimal(terms.minQuantity).div(terms.lotSize).toString() : undefined)
   useEffect(() => {
     setPreview(null)
     if (minimumLots !== undefined) { setMode('quantity'); setValue(minimumLots) }
   }, [session?.id, minimumLots])
   useEffect(() => setPreview(null), [state?.config.leverage, state?.config.slippageRate])
-  const canOpen = terms === undefined || (terms.tradingMode === 0 && (direction === 'long' || terms.canShort))
+  const canOpen = cmeFee !== null && (terms === undefined || (terms.tradingMode === 0 && (direction === 'long' || terms.canShort)))
   const size = mode === 'margin' ? { margin: value } : terms || okx ? { lots: value } : { quantity: value }
-  const sizeLabel = okx ? '合约张数' : terms ? '手数' : '仓位数量'
+  const sizeLabel = okx || cme ? '合约张数' : terms ? '手数' : '仓位数量'
 
   return <aside className="order-panel side-panel" aria-label="模拟下单面板">
     <header className="panel-heading"><h2>模拟下单</h2><PanelToggle label="下单面板" expanded controls="workspace-order-content" direction="right" onToggle={onClose} /></header>
@@ -78,15 +80,16 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
         if (minimumLots !== undefined) setValue(next === 'quantity' ? minimumLots : '100')
         setPreview(null)
       }}><option value="margin">保证金金额</option><option value="quantity">{sizeLabel}</option></select></label>
-      <label className="panel-field">{mode === 'margin' ? `保证金${currency ? `（${currency}）` : ''}` : sizeLabel}<input aria-label={mode === 'margin' ? '保证金金额' : sizeLabel} inputMode="decimal" type="number" min={mode === 'quantity' ? minimumLots ?? '0' : '0'} step={mode === 'quantity' ? okx?.contractStep ?? 'any' : 'any'} value={value} onChange={event => { setValue(event.target.value); setPreview(null) }} /></label>
+      <label className="panel-field">{mode === 'margin' ? `保证金${currency ? `（${currency}）` : ''}` : sizeLabel}<input aria-label={mode === 'margin' ? '保证金金额' : sizeLabel} inputMode="decimal" type="number" min={mode === 'quantity' ? minimumLots ?? '0' : '0'} step={mode === 'quantity' ? okx?.contractStep ?? (cme ? '1' : 'any') : 'any'} value={value} onChange={event => { setValue(event.target.value); setPreview(null) }} /></label>
       {mode === 'margin' && <div className="compact-actions">{[25, 50, 75, 100].map(percent => <button type="button" key={percent} onClick={() => { setValue(new Decimal(state.account.availableBalance).mul(percent).div(100).toDecimalPlaces(4).toString()); setPreview(null) }}>{percent}%</button>)}</div>}
       <p className="order-available">可用 {displayAmount(state.account.availableBalance)} {currency}</p>
       <div className="button-row"><button type="button" disabled={simulation.busy || !canOpen} onClick={() => void simulation.preview(direction, size).then(setPreview)}>计算预估</button><button type="button" className={direction === 'long' ? 'long-button' : 'short-button'} disabled={simulation.busy || !canOpen} onClick={() => void simulation.open(direction, size)}>{state.positions.some(position => position.side === direction) ? '同向加仓' : direction === 'long' ? '开多' : '开空'}</button></div>
-      {!canOpen && <p className="muted-text">当前品种规格限制此方向开仓。</p>}
+      {!canOpen && <p className="muted-text">{cmeFee === null ? '新建回放时填写单边手续费即可下单。' : '当前品种规格限制此方向开仓。'}</p>}
       {preview && <dl className="order-preview detail-list">{[
         okx ? ['预计张数', new Decimal(preview.quantity).div(okx.contractValue).toString()]
-          : terms ? ['预计手数', new Decimal(preview.quantity).div(terms.lotSize).toString()] : ['预计数量', preview.quantity],
-        ['预计成交价', preview.fillPrice], ['所需保证金', preview.requiredMargin], ['佣金', preview.fee],
+          : terms ? ['预计手数', new Decimal(preview.quantity).div(terms.lotSize).toString()] : [cme ? '预计张数' : '预计数量', preview.quantity],
+        ['预计成交价', preview.fillPrice], ['所需保证金', preview.requiredMargin],
+        cme ? ['手续费', `${preview.fee} USD`] : ['佣金', preview.fee],
         ...(terms ? [] : [['预估强平价', preview.estimatedLiquidationPrice]]),
       ].map(([label, amount]) => <div key={label}><dt>{label}</dt><dd>{amount}</dd></div>)}</dl>}
       <p className="muted-text">在对应仓位设置止盈止损、减仓或平仓。</p>
@@ -97,11 +100,10 @@ export function SimulationOrder({ session, simulation, requestedSide, onClose }:
 
 export type TradingTab = 'positions' | 'trades' | 'stats' | 'ledger'
 
-function RiskEditor({ position, simulation, feeRate, terms, precision, currency }: {
+function RiskEditor({ position, simulation, config, precision, currency }: {
   position: SimulationPosition
   simulation: SimulationController
-  feeRate: string
-  terms?: CTraderTradingTerms
+  config: CommissionConfig
   precision: number
   currency: string
 }) {
@@ -131,7 +133,7 @@ function RiskEditor({ position, simulation, feeRate, terms, precision, currency 
       const label = takeProfit ? '止盈' : '止损'
       const inputLabel = `${label}${mode === 'price' ? '价格' : '百分比'}`
       const price = priceFor(target)
-      const pnl = price === null ? null : estimateRiskPnl(position, price, feeRate, terms)
+      const pnl = price === null ? null : estimateRiskPnl(position, price, config)
       const save = takeProfit ? simulation.setTakeProfit : simulation.setStopLoss
       return <div key={target}>
         <label className="panel-field">{inputLabel}{mode === 'percent' && '（%）'}<input aria-label={inputLabel} type="number" inputMode="decimal" step="any" value={values[target]} onChange={event => setValues({ ...values, [target]: event.target.value })} /></label>
@@ -160,8 +162,9 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
   const state = simulation.state
   const terms = state?.config.ctrader
   const okx = state?.config.okx
+  const cme = state?.config.cmeFeePerContractSide !== undefined
   const unitSize = okx?.contractValue ?? terms?.lotSize
-  const quantityLabel = okx ? '张数' : terms ? '手数' : '数量'
+  const quantityLabel = okx || cme ? '张数' : terms ? '手数' : '数量'
   const volumeText = (units: string) => unitSize ? new Decimal(units).div(unitSize).toString() : units
   const position = state?.positions.find(position => position.side === editing?.side)
   useEffect(() => { if (editing && !position) setEditing(null) }, [editing, position])
@@ -198,11 +201,11 @@ export function SimulationDock({ simulation, onClose, tab, onTabChange, pricePre
       {editing && position && state && <>
         <p className="muted-text">
           {position.symbol} · {sideName(position.side)}
-          {editing.kind !== 'details' && ` · 剩余 ${volumeText(position.quantity)}${okx ? ' 张' : terms ? ' 手' : ''}`}
+          {editing.kind !== 'details' && ` · 剩余 ${volumeText(position.quantity)}${okx || cme ? ' 张' : terms ? ' 手' : ''}`}
         </p>
-        {editing.kind === 'risk' && <RiskEditor key={`${state.sessionId}:${position.side}`} position={position} simulation={simulation} feeRate={state.config.feeRate} terms={terms} precision={pricePrecision} currency={currency} />}
+        {editing.kind === 'risk' && <RiskEditor key={`${state.sessionId}:${position.side}`} position={position} simulation={simulation} config={state.config} precision={pricePrecision} currency={currency} />}
         {editing.kind === 'reduce' && <>
-          <label className="panel-field">减仓{quantityLabel}<input aria-label={`减仓${quantityLabel}`} type="number" inputMode="decimal" step={okx?.contractStep ?? 'any'} value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
+          <label className="panel-field">减仓{quantityLabel}<input aria-label={`减仓${quantityLabel}`} type="number" inputMode="decimal" step={okx?.contractStep ?? (cme ? '1' : 'any')} value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
           <div className="compact-actions">{([25, 50, 75] as const).map(value => <button key={value} type="button" disabled={simulation.busy} onClick={() => void simulation.reducePercent(editing.side, value)}>减 {value}%</button>)}</div>
           <div className="button-row"><button type="button" disabled={simulation.busy || !quantity} onClick={() => void simulation.reduce(editing.side, unitSize ? new Decimal(quantity).mul(unitSize).toString() : quantity)}>按{quantityLabel}减仓</button><button type="button" className="danger-button" disabled={simulation.busy} onClick={() => void simulation.closeAll(editing.side)}>全部平仓</button></div>
         </>}

@@ -51,6 +51,7 @@ import { isCTraderReplayStepPeriod, isFineStepPeriod, SECOND_STEP_MS, type Repla
 import { validateSimulationConfig } from '../simulation/simulation-engine'
 import { sameCTraderTradingTerms, validateCTraderTradingTerms } from '../simulation/ctrader-trading'
 import { sameOkxTradingTerms, validateOkxTradingTerms } from '../simulation/okx-trading'
+import { validateCmeFeePerContractSide } from '../simulation/cme-fees'
 import type {
   SimulationLedgerEntry,
   SimulationState,
@@ -439,6 +440,9 @@ function validateSession(value: unknown, index: number): ReplaySession {
   )
   const ctrader = tradingConfig.ctrader
   const okx = tradingConfig.okx
+  const cmeFeePerContractSide = tradingConfig.cmeFeePerContractSide
+  validateCmeFeePerContractSide(cmeFeePerContractSide)
+  if (cmeFeePerContractSide !== undefined && !cmeSource) throw new Error('CME 手续费要求 Databento-CME 会话')
   if (okxSource) validateOkxTradingTerms(okx)
   else if (okx !== undefined) throw new Error(`${field}.tradingConfig.okx 要求 OKX 会话`)
   if (ctrader !== undefined) {
@@ -477,6 +481,7 @@ function validateSession(value: unknown, index: number): ReplaySession {
     ),
     ...(ctrader === undefined ? {} : { ctrader }),
     ...(okx === undefined ? {} : { okx }),
+    ...(cmeFeePerContractSide === undefined ? {} : { cmeFeePerContractSide }),
   }
   validateSimulationConfig(config)
   if (
@@ -636,6 +641,8 @@ function validateSimulation(
   const config = record(item.config, `${field}.config`)
   const ctrader = config.ctrader
   const okx = config.okx
+  const cmeFeePerContractSide = config.cmeFeePerContractSide
+  validateCmeFeePerContractSide(cmeFeePerContractSide)
   if (ctrader !== undefined) validateCTraderTradingTerms(ctrader)
   if (okx !== undefined) validateOkxTradingTerms(okx)
   validateSimulationConfig({
@@ -667,6 +674,7 @@ function validateSimulation(
     ),
     ...(ctrader === undefined ? {} : { ctrader }),
     ...(okx === undefined ? {} : { okx }),
+    ...(cmeFeePerContractSide === undefined ? {} : { cmeFeePerContractSide }),
   })
   const trades = arrayValue(item.trades, `${field}.trades`).map(
     (trade, tradeIndex) =>
@@ -906,6 +914,19 @@ export function validateBackupEnvelope(value: unknown, currentIndicators?: Chart
         (session.tradingConfig.feeRate !== simulation.config.feeRate ||
           session.tradingConfig.liquidationFeeRate !== simulation.config.liquidationFeeRate))) {
       throw new Error('回放会话与模拟状态的 OKX 交易规格不一致')
+    }
+    if (session.tradingConfig.cmeFeePerContractSide !== simulation.config.cmeFeePerContractSide) {
+      throw new Error('回放会话与模拟状态的 CME 手续费不一致')
+    }
+    const cmeFee = simulation.config.cmeFeePerContractSide
+    if (cmeFee !== undefined) {
+      if (cmeFee === null && (simulation.positions.length || simulation.trades.length)) {
+        throw new Error('缺少 CME 手续费的会话仅可回放行情')
+      }
+      const hasFractionalContracts = (item: { quantity: string }) => !new Decimal(item.quantity).isInteger()
+      if (simulation.positions.some(hasFractionalContracts) || simulation.trades.some(hasFractionalContracts)) {
+        throw new Error('CME 模拟持仓和成交的张数必须为整数')
+      }
     }
   }
   return {

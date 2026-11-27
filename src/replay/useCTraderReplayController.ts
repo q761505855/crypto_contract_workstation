@@ -4,6 +4,7 @@ import { cTraderLeverage } from '../simulation/ctrader-trading'
 import { OKX_SIMULATION_TAKER_FEE, okxMaximumLeverage, type OkxReplayRisk, type ReplayTradingTerms } from '../simulation/okx-trading'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
 import { cmeTradingBounds, cmeTradingDay } from '../market-data/databento/trading-day'
+import { defaultCmeFeePerContractSide } from '../simulation/cme-fees'
 import type { ReplaySessionStore } from '../storage/replay-session-store'
 import { CTraderReplayBars, loadClosedReplayBars, type CTraderReplayMarket } from './ctrader-replay-bars'
 import { CTraderReplayTicks, type ReplayPriceCandle } from './ctrader-replay-ticks'
@@ -287,7 +288,7 @@ export function useCTraderReplayController(
       pause()
       const candle = await history.find(input.symbol.ticker, input.period.text, input.startTime, endTime, 1, signal)
       if (candle === undefined) throw new Error('所选区间没有已收盘的 K 线，请将图表移到更早的时间。')
-      const terms = await service.getReplayTradingTerms(input.symbol.ticker, candle.openTime, signal)
+      const terms = source === 'databento-cme' ? undefined : await service.getReplayTradingTerms(input.symbol.ticker, candle.openTime, signal)
       const economics = !terms ? {
         leverage: input.leverage ?? DEFAULT_TRADING_CONFIG.leverage,
         feeRate: '0', maintenanceMarginRate: '0', liquidationFeeRate: '0',
@@ -302,6 +303,9 @@ export function useCTraderReplayController(
       const tradingConfig = {
         initialBalance: input.initialBalance ?? DEFAULT_TRADING_CONFIG.initialBalance,
         slippageRate: input.slippageRate ?? '0', ...economics,
+        ...(source === 'databento-cme' && {
+          cmeFeePerContractSide: defaultCmeFeePerContractSide(input.symbol.ticker) ?? input.cmeFeePerContractSide ?? null,
+        }),
       }
       validateSimulationConfig(tradingConfig)
       signal.throwIfAborted()

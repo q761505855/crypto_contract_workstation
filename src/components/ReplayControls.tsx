@@ -14,6 +14,7 @@ import { validateReplayStepPeriod } from '../replay/step-preferences'
 import { FINE_STEP_PERIODS, isCTraderReplayStepPeriod, isFineStepPeriod, type ReplayStepPeriod } from '../replay/step-periods'
 import { cTraderLeverage, type CTraderTradingTerms } from '../simulation/ctrader-trading'
 import { OKX_SIMULATION_TAKER_FEE, okxMaximumLeverage, type ReplayTradingTerms as TradingTerms } from '../simulation/okx-trading'
+import { defaultCmeFeePerContractSide, isCmeFeePerContractSide } from '../simulation/cme-fees'
 import { MAX_ADJUSTABLE_LEVERAGE, minimumContractLeverage } from '../simulation/models'
 import type { SimulationController } from '../simulation/useSimulationController'
 import { WorkspaceDialog } from './WorkspaceDialog'
@@ -78,7 +79,6 @@ function TickSpeedControl({ speed, onChange, disabled }: { speed: number; onChan
 }
 
 function ReplayTradingTerms({ terms, waiting, source }: { terms?: TradingTerms; waiting?: string; source: PriceSource }) {
-  if (source === 'databento-cme') return <p className="muted-text">使用通用价格模拟。盈亏以价格变动乘数量计算。</p>
   if (isOkxPriceSource(source)) {
     const okx = terms && 'tickSize' in terms ? terms : undefined
     return <details className="replay-advanced">
@@ -199,6 +199,7 @@ export function ReplayControls({
     DEFAULT_TRADING_CONFIG.initialBalance,
   )
   const [slippageRate, setSlippageRate] = useState('0')
+  const [cmeFeeDraft, setCmeFeeDraft] = useState('')
   const [leverageDraft, setLeverageDraft] = useState<string | null>(null)
   const [activeLeverage, setActiveLeverage] = useState<string | null>(null)
   const [activeSlippage, setActiveSlippage] = useState<string | null>(null)
@@ -227,6 +228,10 @@ export function ReplayControls({
   const state = session !== null && simulation.state?.sessionId === session.id ? simulation.state : null
   const config = state?.config ?? session?.tradingConfig
   const displayedTerms = session === null ? terms : config?.okx ?? config?.ctrader
+  const cme = priceSource === 'databento-cme'
+  const defaultCmeFee = cme ? defaultCmeFeePerContractSide(ticker) : null
+  const needsCmeFee = cme && defaultCmeFee === null
+  const validCmeFee = !needsCmeFee || cmeFeeDraft === '' || isCmeFeePerContractSide(cmeFeeDraft)
   const okx = displayedTerms && 'tickSize' in displayedTerms ? displayedTerms : undefined
   const minimumLeverage = session !== null && !config?.ctrader && state ? minimumContractLeverage(state) : 1
   const sourceMaximum = displayedTerms ? ('tickSize' in displayedTerms ? okxMaximumLeverage(displayedTerms) : cTraderLeverage(displayedTerms)) : undefined
@@ -242,12 +247,12 @@ export function ReplayControls({
     (Number.isInteger(leverage) && leverage >= minimumLeverage && (maximumLeverage === undefined || leverage <= maximumLeverage))
   const validSlippage = slippageText === config?.slippageRate || (slippageText !== '' && slippage >= 0 && slippage < 1)
   const balance = Number(initialBalance)
-  const validCreation = chartStartTime !== null && validLeverage && validSlippage && Number.isFinite(balance) && balance > 0
+  const validCreation = chartStartTime !== null && validLeverage && validSlippage && validCmeFee && Number.isFinite(balance) && balance > 0
   const walletBalance = Number(walletDraft)
   const validWalletBalance = walletDraft !== null && walletDraft !== '' && Number.isFinite(walletBalance) && walletBalance >= 0
 
   useEffect(() => {
-    if (!settingsOpen || session !== null || chartStartTime === null) return
+    if (cme || !settingsOpen || session !== null || chartStartTime === null) return
     const request = new AbortController()
     setTerms(null)
     setTermsError('')
@@ -257,11 +262,12 @@ export function ReplayControls({
       if (!request.signal.aborted) setTermsError(error instanceof Error ? error.message : '无法读取交易规格')
     })
     return () => request.abort()
-  }, [settingsOpen, session?.id, ticker, chartStartTime, market])
+  }, [cme, settingsOpen, session?.id, ticker, chartStartTime, market])
 
   const selectedSession = replay.sessions.find((session) => session.id === selectedSessionId) ?? replay.sessions[0]
 
   useEffect(() => setLeverageDraft(null), [ticker])
+  useEffect(() => setCmeFeeDraft(''), [ticker, session?.id])
   useEffect(() => setSettingsOpen(false), [session?.id])
 
   function openSettings(): void {
@@ -279,6 +285,7 @@ export function ReplayControls({
       symbol: selection.symbol, period: selection.period, startTime: chartStartTime,
       initialBalance, slippageRate, playbackMode,
       ...(leverageDraft === null ? {} : { leverage }),
+      ...(needsCmeFee && cmeFeeDraft !== '' && { cmeFeePerContractSide: cmeFeeDraft }),
     })
     setSettingsOpen(false)
   }
@@ -374,7 +381,7 @@ export function ReplayControls({
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
         <p className="muted-text">{selection.symbol.ticker} · {selection.period.text} · 起点：{startLabel}</p>
         <label className="panel-field">
-          初始资金{terms ? '（' + terms.accountCurrency + '）' : ''}
+          初始资金{cme ? '（USD）' : terms ? '（' + terms.accountCurrency + '）' : ''}
           <input
             aria-label="初始资金"
             min="0"
@@ -385,8 +392,15 @@ export function ReplayControls({
           />
         </label>
         {orderFields}
-        <ReplayTradingTerms terms={terms ?? undefined} source={priceSource}
-          waiting={termsError || (chartStartTime === null ? '请先在图表上选定回放起点。' : '正在读取账户和品种规格…')} />
+        {cme ? defaultCmeFee !== null
+          ? <p className="muted-text">NinjaTrader Free 总手续费 {defaultCmeFee} USD / 张 / 单边</p>
+          : <label className="panel-field">单边手续费（USD / 张）
+              <input aria-label="单边手续费（USD / 张）" type="number" inputMode="decimal" min="0" step="any" value={cmeFeeDraft}
+                aria-invalid={!validCmeFee} onChange={event => setCmeFeeDraft(event.target.value)} />
+              <span className="muted-text">请填写券商的每张总手续费。留空仅回放行情。</span>
+            </label>
+          : <ReplayTradingTerms terms={terms ?? undefined} source={priceSource}
+            waiting={termsError || (chartStartTime === null ? '请先在图表上选定回放起点。' : '正在读取账户和品种规格…')} />}
         {selectedSession && (
           <>
             <select
@@ -483,7 +497,7 @@ export function ReplayControls({
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
         <p className="muted-text">{session.symbol.ticker} · {session.period.text} · 起点 {formatDisplayTime(session.startTime)}</p>
         <dl className="detail-list">
-          <div><dt>初始资金</dt><dd>{session.tradingConfig.initialBalance} {displayedTerms?.accountCurrency ?? session.symbol.priceCurrency}</dd></div>
+          <div><dt>初始资金</dt><dd>{session.tradingConfig.initialBalance} {config?.cmeFeePerContractSide !== undefined ? 'USD' : displayedTerms?.accountCurrency ?? session.symbol.priceCurrency}</dd></div>
           <div><dt>当前进度</dt><dd>{formatDisplayTime(currentTime, undefined, precision)}</dd></div>
         </dl>
         <div className="replay-wallet-setting">
@@ -500,7 +514,9 @@ export function ReplayControls({
           (activeLeverage === null && activeSlippage === null)} onClick={() => void applyOrderSettings()}>应用交易参数</button>
         {simulation.error && <p className="panel-error" role="alert">{simulation.error}</p>}
         {replay.error && <p className="replay-error" role="alert">{replay.error}</p>}
-        {displayedTerms ? <ReplayTradingTerms terms={displayedTerms} source={priceSource} /> : <details className="replay-advanced">
+        {config?.cmeFeePerContractSide !== undefined ? <p className="muted-text">{config.cmeFeePerContractSide === null
+          ? '当前会话仅回放行情。' : `单边手续费 ${config.cmeFeePerContractSide} USD / 张`}</p>
+          : displayedTerms ? <ReplayTradingTerms terms={displayedTerms} source={priceSource} /> : <details className="replay-advanced">
           <summary>会话交易规格</summary>
           <div><dl className="detail-list">
             <div><dt>手续费率</dt><dd>{new Decimal(session.tradingConfig.feeRate).mul(100).toString()}%</dd></div>

@@ -391,6 +391,41 @@ it('round-trips Databento playback mode and speed in session and full archives',
   }
 })
 
+it('round-trips CME session fees and rejects invalid or inconsistent fees before import', async () => {
+  const db = `cme-fees-${crypto.randomUUID()}`
+  const source = new WorkstationBackupService(db, new MemoryPreferences())
+  const target = new WorkstationBackupService(`${db}-restored`, new MemoryPreferences())
+  const original = session()
+  const replay: ReplaySession = { ...original, marketSource: 'databento-cme', cursorTimeframe: '1m', visibleUntil: 60_000,
+    symbol: { exchange: 'CME', ticker: 'NQ.FUT', type: 'FUTURES', pricePrecision: 9, volumePrecision: 0 },
+    tradingConfig: { ...original.tradingConfig, liquidationFeeRate: '0', cmeFeePerContractSide: '2.87' } }
+  await new IndexedDbReplaySessionStore(db).put(replay)
+  const engine = SimulationEngine.create(replay)
+  engine.open('long', { quantity: '1' }, candle())
+  await new IndexedDbSimulationStateStore(db).save(engine.snapshot())
+  for (const archive of [await source.exportSession(replay.id), await source.exportAll()]) {
+    await target.import(archive)
+    const before = (await target.exportAll()).data
+    expect(before.sessions).toEqual([replay])
+    expect(before.simulations).toEqual([engine.snapshot()])
+    for (const value of ['', '-0.01', 'Infinity', 0, false, [], '0.94', null, undefined]) {
+      const broken = { ...replay, tradingConfig: { ...replay.tradingConfig, cmeFeePerContractSide: value } }
+      await expect(target.import({ ...archive, data: { ...archive.data, sessions: [broken] } })).rejects.toThrow('CME')
+      expect((await target.exportAll()).data).toEqual(before)
+    }
+    const fractional = engine.snapshot()
+    fractional.positions[0].quantity = '1.5'
+    await expect(target.import({ ...archive, data: { ...archive.data, simulations: [fractional] } })).rejects.toThrow('CME')
+    expect((await target.exportAll()).data).toEqual(before)
+    for (const value of ['0', null]) {
+      const sessionWithoutTrades = { ...replay, hasTrades: false, tradingConfig: { ...replay.tradingConfig, cmeFeePerContractSide: value } }
+      const state = SimulationEngine.create(sessionWithoutTrades).snapshot()
+      await target.import({ ...archive, data: { ...archive.data, sessions: [sessionWithoutTrades], simulations: [state] } })
+      expect((await target.exportSession(replay.id)).data).toMatchObject({ sessions: [sessionWithoutTrades], simulations: [state] })
+    }
+  }
+})
+
 it('round-trips the cTrader account preference and rejects invalid values before writes', async () => {
   const target = new WorkstationBackupService(`ctrader-account-${crypto.randomUUID()}`, new MemoryPreferences())
   const archive = await target.exportPreferences()
