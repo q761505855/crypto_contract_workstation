@@ -184,7 +184,7 @@ npm run dev
 
 打开终端显示的本地地址。
 
-Windows 也可以直接双击 `start-dev.bat`。依赖已经安装时，脚本会跳过 `npm ci`。
+Windows 也可以直接双击 `start-dev.bat`。依赖已经安装时，脚本会跳过 `npm ci`。开发服务就绪后，页面会自动在默认浏览器中打开。
 
 ## 验证
 

@@ -21,7 +21,7 @@ echo [2/2] Starting the development server...
 echo Press Ctrl+C to stop it.
 echo.
 
-call npm.cmd run dev
+call npm.cmd run dev -- --open
 set "exit_code=%errorlevel%"
 
 if not "%exit_code%"=="0" (
