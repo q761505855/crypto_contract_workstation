@@ -32,7 +32,7 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 
 ## 当前配置清单
 
-独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型、悬浮 K 线详情和固定周期作为初始显示，窗口内对这些配置的临时调整不会写回。
+独立副图窗口的打开状态、位置、各窗口所选周期和未点击“设为默认大小”的缩放都是本次浏览的临时状态。新窗口读取已有指标、蜡烛图类型、K 线透明度、悬浮 K 线详情和固定周期作为初始显示，窗口内对这些配置的调整仅在该窗口内生效。
 
 | 配置 | 本地键与读写入口 | `BackupPreferences` 字段 | 云端文件 |
 | --- | --- | --- | --- |
@@ -41,6 +41,7 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 | 收藏产品列表 | `marketData.favoriteSymbols`；`market-data/favorites.ts` | `favoriteSymbols` | `config/favorites.json` |
 | 固定周期列表 | `chart.pinnedPeriods.v1`；`chart/period-preferences.ts` | `pinnedPeriods` | `config/preferences.json` |
 | 蜡烛图类型（含 Heikin Ashi、收盘价折线和纽约现金时段 K 线） | `chart.candleType.v1`；`chart/candle-preferences.ts` | `candleType` | `config/preferences.json` |
+| K 线透明度（所有蜡烛样式、OHLC、收盘价折线及面积图） | `chart.candleTransparency.v1`；`chart/candle-preferences.ts` | `candleTransparency` | `config/preferences.json` |
 | 悬浮 K 线详情 | `chart.showCandleHoverDetails.v1`；`chart/candle-hover-preferences.ts` | `showCandleHoverDetails` | `config/preferences.json` |
 | 当前产品及图表精度等元信息 | `marketData.selectedSymbol`；`market-data/symbol-preferences.ts` | `selectedSymbol` | `config/preferences.json` |
 | 行情来源（cTrader、OKX、OKX-本地、Databento-CME） | `marketData.priceSource.v1`；`market-data/price-source-preferences.ts` | `priceSource` | `config/preferences.json` |
@@ -55,6 +56,8 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 上述入口均位于 `src/`。新增配置必须更新本表，不得在组件中另建脱离存档的持久化键。配置读写和校验应放在可独立调用的模块中，备份服务不能依赖 React 组件。
 
 图表设置的“悬浮 K 线详情”默认开启，关闭后立即隐藏悬浮详情。主图的选择随本地、应用配置／完整 JSON 和 GitHub“应用配置”往返。恢复默认时重新开启。旧档缺字段时保留本机值，本机无设置时默认开启。字段接受布尔值，显式 `false` 原样恢复，空值与非法值在任何写入前拒绝。自动配置恢复随图表重建生效，手动恢复后按提示刷新。
+
+图表设置的「K 线透明度」使用可选字段 `candleTransparency`，接受 0–100 的整数百分比。默认 0% 沿用原有配色，100% 隐藏价格图形。移动滑杆立即更新蜡烛图形、折线和面积填充，所有价格图形共用该设置。点击「恢复默认」重设为 0%。主图的选择随本地、应用配置／完整 JSON 和 GitHub「应用配置」往返，参与现有差异比较、校验和及冲突处理。继续使用 Schema 1。旧档缺字段时保留本机值，本机缺失或损坏时使用默认值。显式 `0` 原样恢复，空值、字符串、小数或越界值在任何写入前拒绝。自动配置恢复随图表重建生效，手动恢复后按提示刷新。
 
 订单流的足迹图和大单气泡选择保存在 `chartIndicators.main`，CVD 选择保存在 `chartIndicators.sub`。足迹图与 CVD 使用显式空 `calcParams`。新增的足迹图、气泡样式、Profile 和 CVD 参数保存在可选的 `chartIndicators.orderFlow` 中。大单气泡启用时，模式、最低成交额和买卖颜色保存在既有主图指标字段。关闭时移入 `orderFlow.bubbles`，重新开启会应用已保存的值。因为显示半径、成交额上下限成对校验，自动同步以足迹图和大单气泡的各自设置组为单位检测并处理并发冲突。Profile 选区保存在既有绘图存档中，设置属于应用配置。
 

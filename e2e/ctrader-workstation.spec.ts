@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { installViewportProbe } from './viewport-probe'
 
@@ -335,7 +336,52 @@ test('turns the candle hover details off in chart settings and remembers the cho
   await expect(details).toBeHidden()
 })
 
-test('switches to a close-price line and restores it from an application archive', async ({ page }) => {
+test('restores K-line transparency from GitHub on startup and applies cloud changes to the open chart', async ({ page }) => {
+  await connectFixture(page)
+  await installViewportProbe(page)
+  const root = 'projects/crypto-contract-workstation/experiments/ctrader'
+  const cloudFiles = (candleTransparency: number) => {
+    const files = new Map([
+      ['config/preferences.json', Buffer.from(JSON.stringify({ schemaVersion: 1, binanceRestBaseUrl: 'https://fapi.binance.com', candleTransparency }))],
+      ['config/favorites.json', Buffer.from(JSON.stringify({ schemaVersion: 1, favoriteSymbols: [] }))],
+    ])
+    const updatedAt = Date.now()
+    const entries = [...files].map(([path, bytes]) => ({
+      path, size: bytes.length, checksum: createHash('sha256').update(bytes).digest('hex'), category: 'config', updatedAt,
+    }))
+    files.set('manifest.json', Buffer.from(JSON.stringify({
+      fileType: 'crypto-contract-workstation-manifest', schemaVersion: 1, updatedAt, files: entries,
+    })))
+    return files
+  }
+  const snapshots = new Map([['config-start', cloudFiles(35)], ['config-update', cloudFiles(0)]])
+  let head = 'config-start'
+  await page.route('https://api.github.com/**', route => {
+    const headers = { 'access-control-allow-origin': '*' }
+    const url = new URL(route.request().url())
+    if (url.pathname.includes('/git/ref/heads/')) return route.fulfill({ headers, json: { object: { sha: head } } })
+    if (url.pathname.includes('/git/commits/')) return route.fulfill({ headers, json: { tree: { sha: 'mock-tree' } } })
+    const prefix = `/contents/${root}/`
+    const path = url.pathname.split(prefix)[1]
+    const file = snapshots.get(url.searchParams.get('ref') ?? '')?.get(path)
+    return file ? route.fulfill({ headers, json: { type: 'file', path, sha: 'mock-file', encoding: 'base64', content: file.toString('base64') } })
+      : route.fulfill({ headers, status: 404 })
+  })
+  const readTransparency = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    return coreChart.getStyles().candle.transparency
+  })
+  await page.goto('./')
+  await expect(page.getByLabel('最新 K 线')).toBeVisible()
+  await expect.poll(readTransparency).toBe(35)
+  head = 'config-update'
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await expect.poll(readTransparency).toBe(0)
+  await page.getByTestId('chart-host').getByText('设置', { exact: true }).locator('..').click()
+  await expect(page.getByRole('slider', { name: 'K 线透明度' })).toHaveValue('0')
+})
+
+test('applies transparency to candles, the area fill and the close-price line and restores it from an application archive', async ({ page }) => {
   const readChart = await installViewportProbe(page)
   await connectFixture(page)
   await page.goto('./')
@@ -349,7 +395,7 @@ test('switches to a close-price line and restores it from an application archive
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     // Keep the fixture's flat moving averages and last-price line off the sampled pixels.
     coreChart.removeIndicator('candle_pane')
-    coreChart.setStyles({ candle: {
+    coreChart.setStyles({ grid: { show: false }, candle: {
       area: { value: 'open', lineColor: '#af35fe', lineSize: 4, backgroundColor: '#3058ad' },
       bar: { upColor: '#15d4a7' },
       priceMark: { last: { show: false } },
@@ -364,35 +410,63 @@ test('switches to a close-price line and restores it from an application archive
     const firstClose = pixel(first.timestamp, first.close)
     const secondClose = pixel(second.timestamp, second.close)
     const body = pixel(first.timestamp, (first.open + first.close) / 2)
-    const underLine = pixel(first.timestamp, (first.low + first.open) / 2)
     const midpoint = (firstClose.x + secondClose.x) / 2
+    const closeY = (firstClose.y + secondClose.y) / 2
+    const plotY = coreChart.getStyles().candle.type === 'area'
+      ? (pixel(first.timestamp, first.open).y + pixel(second.timestamp, second.open).y) / 2
+      : closeY
     const colorAt = (x: number, y: number) => Array.from(context.getImageData(
       Math.round(x * canvas.width / canvas.clientWidth), Math.round(y * canvas.height / canvas.clientHeight), 1, 1,
     ).data)
     return {
-      closeLine: colorAt(midpoint, (firstClose.y + secondClose.y) / 2),
+      closeLine: colorAt(midpoint, closeY),
       body: colorAt(body.x, body.y),
-      underLine: colorAt(midpoint, underLine.y),
+      underLine: colorAt(midpoint, (plotY + canvas.clientHeight - 2) / 2),
     }
   })
   await expect.poll(async () => (await readPlotColors()).body).toEqual([21, 212, 167, 255])
+  const openSettings = () => page.getByTestId('chart-host').getByText('设置', { exact: true }).locator('..').click()
+  const closeSettings = () => page.locator('.klinecharts-pro-modal .close-icon').click()
+  const transparency = page.getByRole('slider', { name: 'K 线透明度' })
   const selectType = async (name: string) => {
-    await page.getByTestId('chart-host').getByText('设置', { exact: true }).locator('..').click()
+    await openSettings()
     const settings = page.locator('.klinecharts-pro-setting-modal-content')
     await settings.locator('.klinecharts-pro-select').first().click()
     await settings.getByText(name, { exact: true }).last().click()
-    await page.locator('.klinecharts-pro-modal .close-icon').click()
+    await closeSettings()
   }
+  await openSettings()
+  await expect(transparency).toHaveValue('0')
+  await transparency.press('End')
+  await expect.poll(async () => (await readPlotColors()).body[3]).toBe(0)
+  await transparency.fill('50')
+  await expect(transparency).toHaveAttribute('aria-valuetext', '50%')
+  await expect.poll(async () => (await readPlotColors()).body[3]).toBe(128)
+  await closeSettings()
+  await selectType('面积图')
+  await expect.poll(readType).toBe('area')
+  await expect.poll(async () => (await readPlotColors()).underLine[3]).toBe(128)
   await selectType('收盘价折线')
   await expect.poll(readType).toBe('line')
-  await expect.poll(async () => (await readPlotColors()).closeLine).toEqual([175, 53, 254, 255])
+  await expect.poll(async () => (await readPlotColors()).closeLine[3]).toBe(128)
   const linePlot = await readPlotColors()
   expect(linePlot.body).not.toEqual([21, 212, 167, 255])
-  expect(linePlot.underLine).not.toEqual([48, 88, 173, 255])
+  expect(linePlot.underLine[3]).toBe(0)
   expect(await readChart()).toMatchObject({ last: before.last, timestamps: before.timestamps })
   await page.reload()
   await expect(page.getByLabel('最新 K 线')).toBeVisible()
   await expect.poll(readType).toBe('line')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openSettings()
+  await expect(transparency).toHaveValue('50')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+  await page.locator('.klinecharts-pro-modal').getByText('恢复默认', { exact: true }).click()
+  await openSettings()
+  await expect(transparency).toHaveValue('0')
+  await transparency.fill('50')
+  await closeSettings()
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await selectType('收盘价折线')
 
   const openDataManager = async () => {
     await page.getByRole('button', { name: '工具', exact: true }).click()
@@ -403,10 +477,13 @@ test('switches to a close-price line and restores it from an application archive
   const download = page.waitForEvent('download')
   await panel.getByRole('button', { name: '导出应用配置', exact: true }).click()
   const archive = await (await download).path()
-  expect(JSON.parse(await readFile(archive!, 'utf8')).data.preferences.candleType).toBe('line')
+  expect(JSON.parse(await readFile(archive!, 'utf8')).data.preferences).toMatchObject({ candleType: 'line', candleTransparency: 50 })
   await page.getByTestId('close-data-manager').click()
   await selectType('全实心')
   await expect.poll(readType).toBe('candle_solid')
+  await openSettings()
+  await transparency.press('Home')
+  await closeSettings()
   await openDataManager()
   page.once('dialog', dialog => dialog.accept())
   await panel.getByTestId('import-backup-file').setInputFiles(archive!)
@@ -414,6 +491,8 @@ test('switches to a close-price line and restores it from an application archive
   await page.reload()
   await expect(page.getByLabel('最新 K 线')).toBeVisible()
   await expect.poll(readType).toBe('line')
+  await openSettings()
+  await expect(transparency).toHaveValue('50')
 })
 
 test('New York cash candles keep time slots and exclude pre-market volume from the opening hourly bar', async ({ page }) => {

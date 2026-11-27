@@ -6,7 +6,7 @@ import type {
 } from '@klinecharts/pro'
 import type { ChartIndicatorPreferences } from './indicator-preferences'
 import type { CandleType, TooltipShowRule } from 'klinecharts'
-import { readCandleType } from './candle-preferences'
+import { readCandleTransparency, readCandleType } from './candle-preferences'
 import { CTRADER_TIMEFRAMES } from '../market-data/intervals'
 
 export const DEFAULT_SYMBOL: SymbolInfo = Object.freeze({
@@ -83,6 +83,7 @@ export function createChartOptions(
     styles: {
       candle: {
         type: readCandleType() as CandleType,
+        transparency: readCandleTransparency(),
         tooltip: { showRule: 'none' as TooltipShowRule, offsetLeft: 24, offsetTop: 26 },
       },
       indicator: { tooltip: { offsetLeft: 24 } },

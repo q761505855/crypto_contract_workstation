@@ -70,6 +70,7 @@ function backup(): BackupEnvelope {
   // Required ensures newly introduced configuration fields need archive coverage.
   const preferences: Required<BackupPreferences> = {
     candleType: 'new_york_cash',
+    candleTransparency: 37,
     showCandleHoverDetails: false,
     binanceRestBaseUrl: 'https://fapi.binance.com',
     favoriteSymbols: ['BTCUSDT'],
@@ -494,7 +495,14 @@ describe('GitHubSyncService', () => {
     await source.upload(client(remote), 'stop', selection)
     await target.pull(client(remote))
     expect(targetStorage.getItem('chart.candleType.v1')).toBe('"candle_solid"')
+    sourceStorage.setItem('chart.candleTransparency.v1', '0')
+    await expect(source.compare(client(remote), selection)).resolves.toMatchObject({ changedFiles: 1 })
+    await source.upload(client(remote), 'stop', selection)
+    expect((await target.readConfig(client(remote))).preferences).toEqual({ ...complete, candleTransparency: 0, candleType: 'candle_solid' })
+    await target.pull(client(remote))
+    expect(targetStorage.getItem('chart.candleTransparency.v1')).toBe('0')
     sourceStorage.setItem('chart.candleType.v1', JSON.stringify(complete.candleType))
+    sourceStorage.setItem('chart.candleTransparency.v1', JSON.stringify(complete.candleTransparency))
 
     const changed = {
       schemaVersion: 1,
@@ -520,6 +528,7 @@ describe('GitHubSyncService', () => {
     const legacy = JSON.parse(decoder.decode(remote.files.get('config/preferences.json')!.bytes))
     delete legacy.workspace
     delete legacy.candleType
+    delete legacy.candleTransparency
     delete legacy.showCandleHoverDetails
     delete legacy.replayStepPeriod
     delete legacy.showTradeOverlays
@@ -530,6 +539,7 @@ describe('GitHubSyncService', () => {
     await target.pull(client(remote))
     expect(JSON.parse(targetStorage.getItem('workspace.layout.v1')!)).toEqual(changed)
     expect(targetStorage.getItem('chart.candleType.v1')).toBe(JSON.stringify(complete.candleType))
+    expect(targetStorage.getItem('chart.candleTransparency.v1')).toBe(JSON.stringify(complete.candleTransparency))
     expect(targetStorage.getItem('chart.showCandleHoverDetails.v1')).toBe('false')
     expect(targetStorage.getItem('replay.stepPeriod.v1')).toBe('"1M"')
     expect(targetStorage.getItem('chart.showTradeOverlays.v1')).toBe('false')
@@ -538,6 +548,12 @@ describe('GitHubSyncService', () => {
     expect(targetStorage.getItem('marketData.ctraderAccount.v1')).toBe('"live:19"')
 
     const before = (await targetBackups.exportAll()).data
+    for (const candleTransparency of [null, '', false, '50', -1, 101, 50.5, {}, []]) {
+      await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', candleTransparency })
+      await expect(target.readConfig(client(remote))).rejects.toThrow(/candleTransparency/)
+      await expect(target.pull(client(remote))).rejects.toThrow(/candleTransparency/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     for (const showCandleHoverDetails of [null, '', 0, 'false', [], {}]) {
       await rewrite({ ...legacy, binanceRestBaseUrl: 'https://changed.test', showCandleHoverDetails })
       await expect(target.readConfig(client(remote))).rejects.toThrow('showCandleHoverDetails')

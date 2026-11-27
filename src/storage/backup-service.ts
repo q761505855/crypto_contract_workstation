@@ -1,6 +1,9 @@
 import Decimal from 'decimal.js'
 import { validateDrawings, type ChartDrawing, type DrawingStore } from '../chart/drawings'
-import { CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType } from '../chart/candle-preferences'
+import {
+  CANDLE_TRANSPARENCY_KEY, readCandleTransparency, validateCandleTransparency,
+  CANDLE_TYPE_KEY, readCandleType, validateCandleType, type ChartCandleType,
+} from '../chart/candle-preferences'
 import { SHOW_CANDLE_HOVER_DETAILS_KEY, readShowCandleHoverDetails, validateShowCandleHoverDetails } from '../chart/candle-hover-preferences'
 import { readShowTradeOverlays, SHOW_TRADE_OVERLAYS_KEY, validateShowTradeOverlays } from '../chart/trade-overlay-preferences'
 import { CHART_WINDOW_SIZE_KEY, readChartWindowSize, validateChartWindowSize, type ChartWindowSize } from '../chart/chart-window-preferences'
@@ -78,6 +81,7 @@ export type BackupKind =
 
 export interface BackupPreferences {
   candleType?: ChartCandleType
+  candleTransparency?: number
   showCandleHoverDetails?: boolean
   binanceRestBaseUrl: string
   favoriteSymbols: string[]
@@ -212,6 +216,7 @@ function validatePreferences(value: unknown, currentIndicators?: ChartIndicatorP
     binanceRestBaseUrl,
     favoriteSymbols,
     ...(item.candleType === undefined ? {} : { candleType: validateCandleType(item.candleType) }),
+    ...(item.candleTransparency === undefined ? {} : { candleTransparency: validateCandleTransparency(item.candleTransparency) }),
     ...(item.showCandleHoverDetails === undefined ? {} : { showCandleHoverDetails: validateShowCandleHoverDetails(item.showCandleHoverDetails) }),
     ...(item.pinnedPeriods === undefined ? {} : { pinnedPeriods: validatePinnedPeriods(item.pinnedPeriods) }),
     ...(item.replayStepPeriod === undefined ? {} : { replayStepPeriod: validateReplayStepPeriod(item.replayStepPeriod) }),
@@ -929,6 +934,7 @@ function defaultPreferences(storage: StorageLike): BackupPreferences {
     priceSource: readPriceSource(storage),
     chartWindowSize: readChartWindowSize(storage),
     candleType: readCandleType(storage),
+    candleTransparency: readCandleTransparency(storage),
     showCandleHoverDetails: readShowCandleHoverDetails(storage),
     workspace: loadWorkspacePreferences(storage),
     ...(selectedSymbol === null ? {} : { selectedSymbol }),
@@ -1124,6 +1130,7 @@ export class WorkstationBackupService {
       chartWindowSize: CHART_WINDOW_SIZE_KEY,
       workspace: WORKSPACE_PREFERENCES_KEY,
       candleType: CANDLE_TYPE_KEY,
+      candleTransparency: CANDLE_TRANSPARENCY_KEY,
       showCandleHoverDetails: SHOW_CANDLE_HOVER_DETAILS_KEY,
     } as const
     for (const [field, key] of Object.entries(fields)) {

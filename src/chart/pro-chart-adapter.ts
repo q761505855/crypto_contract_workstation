@@ -129,6 +129,7 @@ export interface ChartAdapterPort {
   setTheme(theme: string): void
   setTimezone(timezone: string): void
   getCandleType?(): ChartCandleType
+  setCandleTransparency?(transparency: number): void
   getIndicatorPreferences?(): ChartIndicatorPreferences
   applyIndicatorPreferences?(preferences: ChartIndicatorPreferences): void
   getRightmostVisibleCandleTime?(): number | null
@@ -545,6 +546,12 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   getCandleType(): ChartCandleType {
     return validateCandleType(this.requireCoreChart().getStyles().candle.type)
+  }
+
+  setCandleTransparency(transparency: number): void {
+    const chart = this.requireCoreChart()
+    if (chart.getStyles().candle.transparency === transparency) return
+    chart.setStyles({ candle: { transparency } })
   }
 
   setSymbol(symbol: SymbolInfo): void {

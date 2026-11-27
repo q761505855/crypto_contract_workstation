@@ -608,6 +608,40 @@ describe('WorkstationBackupService', () => {
     expect(storage.getItem('chart.candleType.v1')).toBeNull()
     expect(await new IndexedDbMarketDataStore(databaseName).getSymbols()).toEqual([])
   })
+  it.each([0, 45, 100])('round-trips candle transparency %i in both JSON archives and preserves it for legacy archives', async candleTransparency => {
+    const sourceStorage = new MemoryPreferences()
+    const source = new WorkstationBackupService(`chart-transparency-source-${crypto.randomUUID()}`, sourceStorage)
+    expect((await source.exportPreferences()).data.preferences).toHaveProperty('candleTransparency', 0)
+    sourceStorage.setItem('chart.candleTransparency.v1', JSON.stringify(candleTransparency))
+    for (const archive of [await source.exportPreferences(), await source.exportAll()]) {
+      expect(archive.data.preferences).toHaveProperty('candleTransparency', candleTransparency)
+      const targetStorage = new MemoryPreferences()
+      targetStorage.setItem('chart.candleTransparency.v1', '60')
+      const target = new WorkstationBackupService(`chart-transparency-target-${crypto.randomUUID()}`, targetStorage)
+      await target.import(archive)
+      expect((await target.exportPreferences()).data.preferences).toEqual(archive.data.preferences)
+      delete archive.data.preferences!.candleTransparency
+      await target.import(archive)
+      expect(targetStorage.getItem('chart.candleTransparency.v1')).toBe(JSON.stringify(candleTransparency))
+    }
+  })
+
+  it.each([null, '', false, '50', -1, 101, 50.5, {}, []].map(value => [value]))(
+    'rejects invalid candle transparency before any writes (%j)', async candleTransparency => {
+      const storage = new MemoryPreferences()
+      storage.setItem('marketData.binanceBaseUrl', 'https://original.test')
+      const name = `chart-transparency-invalid-${crypto.randomUUID()}`
+      const service = new WorkstationBackupService(name, storage)
+      const archive = await service.exportAll()
+      archive.data.symbols = [symbol()]
+      Object.assign(archive.data.preferences!, { binanceRestBaseUrl: 'https://changed.test', candleTransparency })
+      await expect(service.import(archive)).rejects.toThrow(/candleTransparency/)
+      expect(storage.getItem('marketData.binanceBaseUrl')).toBe('https://original.test')
+      expect(storage.getItem('chart.candleTransparency.v1')).toBeNull()
+      expect(await new IndexedDbMarketDataStore(name).getSymbols()).toEqual([])
+    },
+  )
+
   it('round-trips chart window size in config and full archives and preserves it for legacy archives', async () => {
     const sourceStorage = new MemoryPreferences()
     const source = new WorkstationBackupService(`chart-window-source-${crypto.randomUUID()}`, sourceStorage)

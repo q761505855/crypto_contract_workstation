@@ -29,7 +29,7 @@ import {
 } from './pro-chart-adapter'
 import { SymbolPicker } from './SymbolPicker'
 import { PeriodSelector } from './PeriodSelector'
-import { saveCandleType } from './candle-preferences'
+import { DEFAULT_CANDLE_TRANSPARENCY, readCandleTransparency, saveCandleTransparency, saveCandleType } from './candle-preferences'
 import { DEFAULT_SHOW_CANDLE_HOVER_DETAILS, readShowCandleHoverDetails, saveShowCandleHoverDetails } from './candle-hover-preferences'
 import type { DrawingStore } from './drawings'
 import type { DrawingSelection } from './drawing-overlays'
@@ -168,6 +168,7 @@ export function ChartWorkspace({
   symbolLockedRef.current = symbolLocked
   const [priceRangeAuto, setPriceRangeAuto] = useState(true)
   const [chartSettingsContainer, setChartSettingsContainer] = useState<HTMLElement | null>(null)
+  const [candleTransparency, setCandleTransparency] = useState(readCandleTransparency)
   const [showCandleHoverDetails, setShowCandleHoverDetails] = useState(readShowCandleHoverDetails)
   const changeCandleHoverDetails = useCallback((visible: boolean) => {
     if (!auxiliary) saveShowCandleHoverDetails(visible)
@@ -183,6 +184,11 @@ export function ChartWorkspace({
   onCloseLayoutSettingsRef.current = onCloseLayoutSettings
   const heightDragRef = useRef<{ pointerId: number; startY: number; height: number } | null>(null)
   const adapterRef = useRef<ChartAdapterPort | null>(null)
+  const changeCandleTransparency = useCallback((value: number) => {
+    if (!auxiliary) saveCandleTransparency(value)
+    setCandleTransparency(value)
+    adapterRef.current?.setCandleTransparency?.(value)
+  }, [auxiliary])
   const symbolRef = useRef(symbol)
   const periodRef = useRef(period)
   const reloadKeyRef = useRef(reloadKey)
@@ -375,6 +381,7 @@ export function ChartWorkspace({
       const target = event.target
       const button = target instanceof Element && target.closest('.button-container > button')
       if (button && button.closest('.klinecharts-pro-modal')?.querySelector(selector)) {
+        changeCandleTransparency(DEFAULT_CANDLE_TRANSPARENCY)
         changeCandleHoverDetails(DEFAULT_SHOW_CANDLE_HOVER_DETAILS)
       }
     }
@@ -385,7 +392,7 @@ export function ChartWorkspace({
       observer.disconnect()
       host.removeEventListener('click', restore, true)
     }
-  }, [changeCandleHoverDetails])
+  }, [changeCandleHoverDetails, changeCandleTransparency])
 
   useEffect(() => {
     const query = window.matchMedia?.('(max-width: 767px), (max-width: 1023px) and (max-height: 520px)')
@@ -764,13 +771,21 @@ export function ChartWorkspace({
         <div className="chart-surface" style={{ height: expanded ? `${chartHeight}px` : undefined }}>
           <div className="chart-host" data-testid="chart-host" ref={hostRef} />
           {chartSettingsContainer && createPortal(
-            <button type="button" className="chart-hover-details-setting" role="switch" aria-checked={showCandleHoverDetails}
-              onClick={() => changeCandleHoverDetails(!showCandleHoverDetails)}>
-              <span>悬浮 K 线详情</span>
-              <span className={`klinecharts-pro-switch ${showCandleHoverDetails ? 'turn-on' : 'turn-off'}`} aria-hidden="true">
-                <span className="thumb" />
-              </span>
-            </button>, chartSettingsContainer,
+            <div className="chart-price-settings">
+              <label className="chart-candle-transparency-setting">
+                <span>K 线透明度</span>
+                <input type="range" min="0" max="100" value={candleTransparency} aria-valuetext={`${candleTransparency}%`}
+                  onChange={event => changeCandleTransparency(event.currentTarget.valueAsNumber)} />
+                <span className="chart-candle-transparency-value" aria-hidden="true">{candleTransparency}%</span>
+              </label>
+              <button type="button" className="chart-hover-details-setting" role="switch" aria-checked={showCandleHoverDetails}
+                onClick={() => changeCandleHoverDetails(!showCandleHoverDetails)}>
+                <span>悬浮 K 线详情</span>
+                <span className={`klinecharts-pro-switch ${showCandleHoverDetails ? 'turn-on' : 'turn-off'}`} aria-hidden="true">
+                  <span className="thumb" />
+                </span>
+              </button>
+            </div>, chartSettingsContainer,
           )}
           {periodToolbar === null ? indicatorInfoToggle : createPortal(indicatorInfoToggle, periodToolbar)}
           {priceRangeMode}

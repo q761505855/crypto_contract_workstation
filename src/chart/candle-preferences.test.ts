@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { CANDLE_TYPE_KEY, CANDLE_TYPES, readCandleType, saveCandleType } from './candle-preferences'
+import {
+  CANDLE_TRANSPARENCY_KEY, readCandleTransparency, saveCandleTransparency,
+  CANDLE_TYPE_KEY, CANDLE_TYPES, readCandleType, saveCandleType,
+} from './candle-preferences'
 
 describe('candle type preferences', () => {
   it('persists every supported type including the New York cash session', () => {
@@ -21,5 +24,22 @@ describe('candle type preferences', () => {
     expect(readCandleType(storage)).toBe('candle_solid')
     expect(() => saveCandleType(value as never, storage)).toThrow(/candleType/)
     expect(values.get(CANDLE_TYPE_KEY)).toBe(JSON.stringify(value))
+  })
+})
+
+describe('candle transparency preferences', () => {
+  it('recovers from corrupt local settings and persists an explicit zero', () => {
+    let saved = 'null'
+    const storage = {
+      getItem: (key: string) => key === CANDLE_TRANSPARENCY_KEY ? saved : null,
+      setItem: (key: string, value: string) => { if (key === CANDLE_TRANSPARENCY_KEY) saved = value },
+    }
+    expect(readCandleTransparency(storage)).toBe(0)
+    saveCandleTransparency(100, storage)
+    expect(readCandleTransparency(storage)).toBe(100)
+    expect(() => saveCandleTransparency(101, storage)).toThrow(/candleTransparency/)
+    expect(readCandleTransparency(storage)).toBe(100)
+    saveCandleTransparency(0, storage)
+    expect(saved).toBe('0')
   })
 })

@@ -322,7 +322,7 @@ export class GitHubSyncService {
       const value = parseJson(file.bytes, entry.path) as Record<string, unknown> | null
       if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) throw new Error(`${entry.path} 格式无效`)
       if (entry.path === 'config/favorites.json') preferences.favoriteSymbols = value.favoriteSymbols
-      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'okxSelectedSymbol', 'databentoSelectedSymbol', 'ctraderAccount', 'priceSource', 'pinnedPeriods', 'workspace', 'candleType', 'showCandleHoverDetails', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
+      else for (const key of ['binanceRestBaseUrl', 'chartIndicators', 'selectedSymbol', 'okxSelectedSymbol', 'databentoSelectedSymbol', 'ctraderAccount', 'priceSource', 'pinnedPeriods', 'workspace', 'candleType', 'candleTransparency', 'showCandleHoverDetails', 'replayStepPeriod', 'showTradeOverlays', 'chartWindowSize']) {
         if (value[key] !== undefined) preferences[key] = value[key]
       }
     }
@@ -670,6 +670,7 @@ export class GitHubSyncService {
           pinnedPeriods?: unknown
           workspace?: unknown
           candleType?: unknown
+          candleTransparency?: unknown
           showCandleHoverDetails?: unknown
           replayStepPeriod?: unknown
           showTradeOverlays?: unknown
@@ -684,6 +685,9 @@ export class GitHubSyncService {
         preferences.binanceRestBaseUrl = value.binanceRestBaseUrl
         if (value.candleType !== undefined) {
           preferences.candleType = value.candleType as BackupPreferences['candleType']
+        }
+        if (value.candleTransparency !== undefined) {
+          preferences.candleTransparency = value.candleTransparency as BackupPreferences['candleTransparency']
         }
         if (value.showCandleHoverDetails !== undefined) {
           preferences.showCandleHoverDetails = value.showCandleHoverDetails as BackupPreferences['showCandleHoverDetails']
