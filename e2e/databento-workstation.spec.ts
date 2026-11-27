@@ -450,8 +450,8 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   const at = start + 15 * 60_000
   const { dialog, chart } = await connectDirectory(page, {
     [filename(day)]: zstdCompressSync(tradeDbn([
-      ['NQZ6', start, 26000, 1, 'B'],
-      ['NQZ6', at + 200, 26001, 2, 'A'],
+      ['NQZ6', start, 25980, 1, 'B'],
+      ['NQZ6', at + 200, 26020, 2, 'A'],
       ['NQZ6', at + 200, 26002, 3, 'N'],
       ['NQZ6', at + 90_000, 26003, 4, 'B'],
     ])),
@@ -487,7 +487,7 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   await controls.getByRole('button', { name: '播放', exact: true }).click()
   await expect(controls).toContainText('第 3 步')
   await controls.getByRole('button', { name: '暂停', exact: true }).click()
-  await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26002, close: 26002, volume: 5 })
+  await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26020, close: 26002, volume: 5 })
   await expect.poll(() => page.evaluate(() => {
     const { source } = (window as unknown as { __viewportTestAdapter: {
       source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
@@ -505,7 +505,7 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   await controls.getByRole('button', { name: '播放', exact: true }).click()
   await expect(controls).toContainText('第 4 步')
   await controls.getByRole('button', { name: '暂停', exact: true }).click()
-  await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26003, close: 26003, volume: 9 })
+  await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26020, close: 26003, volume: 9 })
   await speed.fill('1.25')
   await speed.press('Enter')
   await expect(slider).toHaveAttribute('aria-valuetext', '1.25×')
@@ -534,6 +534,29 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   await order.getByRole('button', { name: '开多', exact: true }).click()
   const position = page.getByTestId('position-long')
   await expect(position).toBeVisible()
+  await position.getByRole('button', { name: '止盈止损', exact: true }).click()
+  const risk = page.getByRole('dialog', { name: '多仓 · 止盈止损' })
+  await risk.getByLabel('止盈价格').fill('26013')
+  await risk.getByRole('button', { name: '设置止盈', exact: true }).click()
+  await risk.getByLabel('止损价格').fill('25993')
+  await risk.getByRole('button', { name: '设置止损', exact: true }).click()
+  await risk.getByRole('button', { name: '完成', exact: true }).click()
+  const takeProfit = page.getByRole('button', { name: '多仓止盈', exact: true })
+  const stopLoss = page.getByRole('button', { name: '多仓止损', exact: true })
+  const stopLossPnl = stopLoss.locator('.simulation-label-pnl')
+  await expect(takeProfit.locator('.simulation-label-pnl')).toHaveText('+14.26 (+0.27%)')
+  await expect(stopLossPnl).toHaveText('-25.74 (-0.49%)')
+  await stopLoss.click()
+  const box = (await stopLoss.boundingBox())!
+  const x = box.x + box.width / 2, y = box.y + box.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y - 18, { steps: 4 })
+  await expect(stopLossPnl).toHaveText(/^-[\d.]+ \(-[\d.]+%\)$/)
+  await expect(stopLossPnl).not.toContainText('-0.49%')
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(stopLossPnl).toHaveText('-25.74 (-0.49%)')
   await position.getByRole('button', { name: '减仓 / 平仓', exact: true }).click()
   await page.getByRole('button', { name: '全部平仓', exact: true }).click()
   await expect(position).toBeHidden()

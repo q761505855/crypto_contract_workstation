@@ -3037,8 +3037,8 @@ test('shows PnL in chart labels and highlights their prices on the axis', async 
     adapter.setSimulationOverlays({
       currentTime: rows.at(-20)!.timestamp,
       positions: [
-        { side: 'long', entryPrice: price(3), takeProfitPrice: price(5), stopLossPrice: price(1), liquidationPrice: price(0), unrealizedPnl: '-12.5', estimateRiskPnl: value => (value - price(3)) / (price(5) - price(3)) * 20 },
-        { side: 'short', entryPrice: price(3), takeProfitPrice: price(2), stopLossPrice: price(6), liquidationPrice: price(7), unrealizedPnl: '12.5', estimateRiskPnl: value => (price(3) - value) / (price(6) - price(3)) * 30 },
+        { side: 'long', entryPrice: price(3), takeProfitPrice: price(5), stopLossPrice: price(1), liquidationPrice: price(0), isolatedMargin: 80, unrealizedPnl: '-12.5', estimateRiskPnl: value => (value - price(3)) / (price(5) - price(3)) * 20 },
+        { side: 'short', entryPrice: price(3), takeProfitPrice: price(2), stopLossPrice: price(6), liquidationPrice: price(7), isolatedMargin: 200, unrealizedPnl: '12.5', estimateRiskPnl: value => (price(3) - value) / (price(6) - price(3)) * 30 },
       ],
       trades: [],
     })
@@ -3047,8 +3047,8 @@ test('shows PnL in chart labels and highlights their prices on the axis', async 
   })
   await expect(page.locator('#simulation-long-entry')).toHaveText('多仓-12.50')
   await expect(page.locator('#simulation-short-entry')).toHaveText('空仓+12.50')
-  await expect(page.locator('#simulation-long-take-profit')).toHaveText('多仓止盈+20.00')
-  await expect(page.locator('#simulation-short-stop-loss')).toHaveText('空仓止损-30.00')
+  await expect(page.locator('#simulation-long-take-profit')).toHaveText('多仓止盈+20.00 (+25.00%)')
+  await expect(page.locator('#simulation-short-stop-loss')).toHaveText('空仓止损-30.00 (-15.00%)')
   await expect(page.locator('#simulation-long-entry')).toHaveCSS('color', 'rgb(79, 212, 159)')
   await expect(page.locator('#simulation-short-entry')).toHaveCSS('color', 'rgb(255, 127, 121)')
   await expect(page.locator('#simulation-long-take-profit')).toHaveCSS('color', 'rgb(79, 212, 159)')
@@ -3169,7 +3169,7 @@ test.describe('touch chart labels', () => {
         currentTime: rows.at(-20)!.timestamp,
         positions: [{
           side: 'long', entryPrice: entry, unrealizedPnl: '12', takeProfitPrice: target,
-          stopLossPrice: null, liquidationPrice: low,
+          stopLossPrice: null, liquidationPrice: low, isolatedMargin: 100,
           estimateRiskPnl: value => (value - entry) * 2,
           onTakeProfitPriceDrag: value => state.testDraggedPrices.push(value),
         }],

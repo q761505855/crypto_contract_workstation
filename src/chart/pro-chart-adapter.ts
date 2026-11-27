@@ -82,6 +82,7 @@ export interface SimulationPositionOverlay {
   takeProfitPrice: number | null
   stopLossPrice: number | null
   liquidationPrice: number
+  isolatedMargin: number
   unrealizedPnl: string
   estimateRiskPnl: (price: number) => number
   previewEntryRisk?: (price: number) => 'take-profit' | 'stop-loss' | null
@@ -101,6 +102,9 @@ const formatPnl = new Intl.NumberFormat('zh-CN', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
   signDisplay: 'exceptZero',
+})
+const formatPnlRate = new Intl.NumberFormat('zh-CN', {
+  style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'exceptZero',
 })
 
 export interface ChartAdapterPort {
@@ -1083,9 +1087,12 @@ export class ProChartAdapter implements ChartAdapterPort {
         const id = `simulation-${position.side}`
         const riskText = (target: 'take-profit' | 'stop-loss', price: number): PriceLabelText => {
           const pnl = position.estimateRiskPnl(price)
+          const margin = position.isolatedMargin
+          const rate = pnl / margin
           return {
             name: `${name}${target === 'take-profit' ? '止盈' : '止损'}`,
             pnl: formatPnl.format(pnl),
+            pnlRate: margin > 0 && Number.isFinite(margin) && Number.isFinite(rate) ? formatPnlRate.format(rate) : undefined,
             color: pnl >= 0 ? SIMULATION_BUY_COLOR : SIMULATION_SELL_COLOR,
           }
         }

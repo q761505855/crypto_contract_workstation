@@ -8,6 +8,10 @@ import type { Chart } from 'klinecharts'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@klinecharts/pro', () => ({ KLineChartPro: vi.fn() }))
+vi.mock('klinecharts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('klinecharts')>(),
+  DomPosition: { Root: 'root', Main: 'main', YAxis: 'yAxis' },
+}))
 import { ProChartAdapter } from './pro-chart-adapter'
 import { validateChartIndicatorPreferences } from './indicator-preferences'
 
@@ -457,10 +461,12 @@ describe('ProChartAdapter', () => {
   })
 
   it('renders simulation lines and trade annotations through core overlays', () => {
+    const pane = document.createElement('div')
     const coreChart = {
       createOverlay: vi.fn(),
       removeOverlay: vi.fn(),
       setPaneOptions: vi.fn(),
+      getDom: vi.fn().mockReturnValueOnce(null).mockReturnValue(pane),
     } as unknown as Chart
     const chart = fakeChart(coreChart)
     const adapter = new ProChartAdapter(() => chart)
@@ -480,7 +486,7 @@ describe('ProChartAdapter', () => {
       currentTime: 60_000,
       positions: [{
         side: 'long', entryPrice: 100, takeProfitPrice: 110, stopLossPrice: 90, liquidationPrice: 80,
-        unrealizedPnl: '5', estimateRiskPnl: price => price - 100,
+        isolatedMargin: 40, unrealizedPnl: '5', estimateRiskPnl: price => price - 100,
       }],
       trades: [
         {
@@ -500,7 +506,7 @@ describe('ProChartAdapter', () => {
           id: 'simulation-long-entry',
           name: 'simulationPriceLine',
           lock: true,
-          extendData: { color: '#4fd49f', active: false },
+          extendData: expect.objectContaining({ color: '#4fd49f', active: false }),
         }),
         expect.objectContaining({
           id: 'simulation-trade-markers',
@@ -510,5 +516,8 @@ describe('ProChartAdapter', () => {
       ]),
       'candle_pane',
     )
+    expect(pane.querySelector('#simulation-long-entry .simulation-label-pnl')).toHaveTextContent('+5.00')
+    expect(pane.querySelector('#simulation-long-take-profit .simulation-label-pnl')).toHaveTextContent('+10.00 (+25.00%)')
+    expect(pane.querySelector('#simulation-long-stop-loss .simulation-label-pnl')).toHaveTextContent('-10.00 (-25.00%)')
   })
 })

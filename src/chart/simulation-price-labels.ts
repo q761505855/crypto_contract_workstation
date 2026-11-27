@@ -4,6 +4,7 @@ import type { SimulationPriceLineData } from './simulation-price-line'
 export interface PriceLabelText {
   name: string
   pnl?: string
+  pnlRate?: string
   color: string
 }
 
@@ -130,8 +131,9 @@ export class SimulationPriceLabels {
 
   private show(control: LabelControl, text: PriceLabelText): void {
     control.element.style.setProperty('--label-color', text.color)
+    control.element.toggleAttribute('data-pnl-rate', text.pnlRate !== undefined)
     control.name.textContent = text.name
-    control.pnl.textContent = text.pnl ?? ''
+    control.pnl.textContent = text.pnlRate === undefined ? text.pnl ?? '' : `${text.pnl} (${text.pnlRate})`
   }
 
   private layout(): void {

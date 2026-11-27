@@ -368,6 +368,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
           takeProfitPrice: position.takeProfitPrice === null ? null : Number(position.takeProfitPrice),
           stopLossPrice: position.stopLossPrice === null ? null : Number(position.stopLossPrice),
           liquidationPrice: Number(position.liquidationPrice),
+          isolatedMargin: Number(position.isolatedMargin),
           unrealizedPnl: position.unrealizedPnl,
           estimateRiskPnl: (price: number) => estimateRiskPnl(position, new Decimal(priceText(price)), state.config).toNumber(),
           previewEntryRisk,

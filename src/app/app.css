@@ -581,8 +581,10 @@ button:disabled {
 }
 
 .chart-host .simulation-price-label[hidden] { display: none; }
-.simulation-price-label[data-side='left'] { left: 4px; max-width: calc(48% - 4px); }
-.simulation-price-label[data-side='right'] { right: 8px; max-width: calc(52% - 8px); }
+.simulation-price-label[data-side='left'] { left: 4px; --label-max-width: calc(48% - 4px); }
+.simulation-price-label[data-side='right'] { right: 8px; --label-max-width: calc(52% - 8px); }
+.simulation-price-label { max-width: var(--label-max-width); }
+.simulation-price-label[data-pnl-rate] { max-width: max(var(--label-max-width), min(200px, calc(100% - 12px))); }
 .simulation-price-label::after {
   content: '';
   position: absolute;
