@@ -32,14 +32,15 @@ import { PeriodSelector } from './PeriodSelector'
 import { DEFAULT_CANDLE_TRANSPARENCY, readCandleTransparency, saveCandleTransparency, saveCandleType } from './candle-preferences'
 import { DEFAULT_SHOW_CANDLE_HOVER_DETAILS, readShowCandleHoverDetails, saveShowCandleHoverDetails } from './candle-hover-preferences'
 import type { DrawingStore } from './drawings'
-import type { DrawingSelection } from './drawing-overlays'
+import type { DrawingDraft, DrawingSelection } from './drawing-overlays'
 import { DrawingSelectionToolbar } from './DrawingSelectionToolbar'
+import { RiskRewardToolbar } from './RiskRewardToolbar'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
 import { OkxLocalDataDialog } from '../components/OkxLocalDataDialog'
 import { resolveDayDownloadRange, TradeDownloadRange, type DayDownloadSelection } from '../components/TradeDownloadRange'
 import { OrderFlowSettingsDialog } from './OrderFlowSettingsDialog'
 import { bubblePreferenceDefaults, type OrderFlowGroup } from './order-flow-preferences'
-import { BIG_TRADES } from './order-flow'
+import { BIG_TRADES, VOLUME_PROFILE_TOOL } from './order-flow'
 import { PREFERENCES_RESTORED } from '../storage/preference-events'
 import './chart-size-controls.css'
 
@@ -155,7 +156,8 @@ export function ChartWorkspace({
   const [periodToolbar, setPeriodToolbar] = useState<HTMLElement | null>(null)
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false)
   const [drawingToolbar, setDrawingToolbar] = useState<HTMLElement | null>(null)
-  const [volumeProfileActive, setVolumeProfileActive] = useState(false)
+  const [riskRewardToolbar, setRiskRewardToolbar] = useState<HTMLElement | null>(null)
+  const [drawingDraft, setDrawingDraft] = useState<DrawingDraft | null>(null)
   const [drawingSelection, setDrawingSelection] = useState<DrawingSelection | null>(null)
   const [localDownload, setLocalDownload] = useState<{ anchor: string | undefined; symbol: string } | null>(null)
   const localJob = useSyncExternalStore(localDownloads?.subscribe ?? noDownloadSubscription, localDownloads?.snapshot ?? noDownloadSnapshot)
@@ -184,6 +186,7 @@ export function ChartWorkspace({
   onCloseLayoutSettingsRef.current = onCloseLayoutSettings
   const heightDragRef = useRef<{ pointerId: number; startY: number; height: number } | null>(null)
   const adapterRef = useRef<ChartAdapterPort | null>(null)
+  const cancelRiskReward = useCallback(() => adapterRef.current?.cancelRiskReward?.(), [])
   const changeCandleTransparency = useCallback((value: number) => {
     if (!auxiliary) saveCandleTransparency(value)
     setCandleTransparency(value)
@@ -193,7 +196,7 @@ export function ChartWorkspace({
   const periodRef = useRef(period)
   const reloadKeyRef = useRef(reloadKey)
   const mapping = orderFlowCloud && orderFlowMapping(symbol)
-  const volumeProfilePressed = Boolean(mapping) && volumeProfileActive
+  const volumeProfilePressed = Boolean(mapping) && drawingDraft?.name === VOLUME_PROFILE_TOOL
   const initialIndicatorPreferencesRef = useRef<
     ChartIndicatorPreferences | null | undefined
   >(undefined)
@@ -245,6 +248,18 @@ export function ChartWorkspace({
       drawingBar?.prepend(drawingSlot)
     }
     setDrawingToolbar(drawingSlot ?? toolbar)
+    const drawingContainer = host.querySelector('.klinecharts-pro-content')
+    const riskRewardSlot = drawingContainer && document.createElement('div')
+    const mountRiskRewardTool = () => {
+      const bar = drawingContainer?.querySelector('.klinecharts-pro-drawing-bar')
+      if (riskRewardSlot && bar && riskRewardSlot.parentElement !== bar) bar.prepend(riskRewardSlot)
+    }
+    if (riskRewardSlot) riskRewardSlot.className = 'item'
+    mountRiskRewardTool()
+    // The chart recreates the sidebar when it is reopened, including on phones.
+    const drawingBarObserver = new MutationObserver(mountRiskRewardTool)
+    if (drawingContainer) drawingBarObserver.observe(drawingContainer, { childList: true })
+    setRiskRewardToolbar(riskRewardSlot)
     const priceAxis = adapter?.getPriceAxisContainer?.() ?? null
     priceAxis?.classList.add('chart-price-axis')
     const synchronizePriceControl = () => {
@@ -315,6 +330,8 @@ export function ChartWorkspace({
       synchronizeLayoutRef.current = null
       host.removeEventListener('click', openSymbolPicker, true)
       drawingSlot?.remove()
+      drawingBarObserver.disconnect()
+      riskRewardSlot?.remove()
       dayDownloadRequest.current++
       dayDownloadReviewAbort.current?.abort()
       adapter?.dispose?.()
@@ -430,7 +447,7 @@ export function ChartWorkspace({
   }, [period])
 
   useEffect(() => {
-    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope, setDrawingSelection, setVolumeProfileActive)
+    if (drawingStore) adapterRef.current?.setDrawingScope?.(drawingStore, drawingScope, setDrawingSelection, setDrawingDraft)
   }, [drawingStore, drawingScope])
 
   useEffect(() => {
@@ -815,7 +832,7 @@ export function ChartWorkspace({
           setOrderFlowDialog(null)
         }} />}
       {orderFlowCloud && drawingToolbar && createPortal(
-        <button type="button" className="chart-volume-profile-tool" aria-label="框选成交分布"
+        <button type="button" className="chart-drawing-tool-button" aria-label="框选成交分布"
           title={mapping ? `框选成交分布 · ${orderFlowLabel(mapping)}` : '当前品种暂无成交量'} disabled={!mapping}
           aria-pressed={volumeProfilePressed} onClick={() => adapterRef.current?.startVolumeProfile?.()}>
           <svg className={volumeProfilePressed ? 'icon-overlay selected' : 'icon-overlay'}
@@ -823,6 +840,10 @@ export function ChartWorkspace({
             <path d="M4 4h1v14H4z M6 5h9v2H6z M6 10h12v2H6z M6 15h6v2H6z" fill="inherit" stroke="none" />
           </svg>
         </button>, drawingToolbar,
+      )}
+      {drawingStore && riskRewardToolbar && createPortal(
+        <RiskRewardToolbar draft={drawingDraft} onCancel={cancelRiskReward}
+          onStart={side => adapterRef.current?.startRiskReward?.(side) ?? false} />, riskRewardToolbar,
       )}
       <WorkspaceDialog open={dayDownloadSelection !== null || dayDownloadReview !== null} title="下载成交数据"
         onClose={() => finishDayDownloadReview(canDownloadHistory ? 'archives' : 'cancel')}

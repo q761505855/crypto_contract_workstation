@@ -73,3 +73,17 @@ it('leaves local drawings untouched when the remote checksum is invalid', async 
   expect(sync.getStatus().phase).toBe('error')
   expect(store.forScope(drawing.scope)).toEqual([drawing])
 })
+
+it('syncs a short risk/reward drawing alongside existing drawing types', async () => {
+  const { client } = repository()
+  const first = device()
+  const second = device()
+  const short = { ...drawing, id: 'drawing-short', name: 'riskRewardShort', points: [
+    { timestamp: 120_000, value: 100 }, { timestamp: 180_000, value: 105 }, { timestamp: 180_000, value: 90 },
+  ] }
+  await first.save(drawing)
+  await first.save(short)
+  await new DrawingAutoSync(first, client).flush()
+  await new DrawingAutoSync(second, client).flush()
+  expect(second.forScope(drawing.scope)).toEqual([drawing, short])
+})

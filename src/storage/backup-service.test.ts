@@ -66,27 +66,33 @@ it('round-trips candle hover visibility and rejects malformed saved settings bef
 it('restores drawings from a complete backup and preserves them when an old backup omits the field', async () => {
   const drawing = { id: 'drawing-line', scope: 'live:BTCUSDT', name: 'horizontalStraightLine',
     points: [{ timestamp: 120_000, value: 123 }], locked: true, styles: { line: { color: '#ffee33', size: 3 } } }
+  const riskReward = { id: 'drawing-risk-reward', scope: drawing.scope, name: 'riskRewardLong', points: [
+    { timestamp: 120_000, value: 123 }, { timestamp: 180_000, value: 117 }, { timestamp: 180_000, value: 135 },
+  ] }
+  const drawings = [drawing, riskReward]
   const sourceStorage = new MemoryPreferences()
   const sourceDrawings = new DrawingStore(sourceStorage)
-  await sourceDrawings.save(drawing)
+  await sourceDrawings.replace(drawings)
   const source = new WorkstationBackupService(`drawings-source-${crypto.randomUUID()}`, sourceStorage, Date.now, sourceDrawings)
   const backup = await source.exportAll()
-  expect(backup.data.drawings).toEqual([drawing])
+  expect(backup.data.drawings).toEqual(drawings)
   expect((await source.exportPreferences()).data.drawings).toBeUndefined()
 
   const targetStorage = new MemoryPreferences()
   const targetDrawings = new DrawingStore(targetStorage)
   const target = new WorkstationBackupService(`drawings-target-${crypto.randomUUID()}`, targetStorage, Date.now, targetDrawings)
   await target.import(backup)
-  expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
+  expect(targetDrawings.forScope(drawing.scope)).toEqual(drawings)
   delete backup.data.drawings
   await target.import(backup)
-  expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
+  expect(targetDrawings.forScope(drawing.scope)).toEqual(drawings)
   const invalid = { ...backup, data: { ...backup.data, drawings: null } }
   await expect(target.import(invalid)).rejects.toThrow('绘图存档格式无效')
   await expect(target.import({ ...backup, data: { ...backup.data, drawings: [{ ...drawing, locked: null }] } }))
     .rejects.toThrow('绘图存档格式无效')
-  expect(targetDrawings.forScope(drawing.scope)).toEqual([drawing])
+  await expect(target.import({ ...backup, data: { ...backup.data, drawings: [{ ...riskReward, points: [...riskReward.points.slice(0, 2), riskReward.points[0]] }] } }))
+    .rejects.toThrow('绘图存档格式无效')
+  expect(targetDrawings.forScope(drawing.scope)).toEqual(drawings)
   await target.import({ ...backup, data: { ...backup.data, drawings: [] } })
   expect(targetDrawings.forScope(drawing.scope)).toEqual([])
 })

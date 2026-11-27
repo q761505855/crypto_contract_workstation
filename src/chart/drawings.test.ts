@@ -71,6 +71,32 @@ describe('drawing archive', () => {
     expect(() => validateDrawings(null)).toThrow()
   })
 
+  it('validates both directions of a risk/reward drawing and rejects invalid anchors', () => {
+    const entry = { timestamp: 60_000, value: 100 }
+    const stop = { timestamp: 120_000, value: 95 }
+    const target = { timestamp: 120_000, value: 112 }
+    const long = { ...drawing, id: 'drawing-long', name: 'riskRewardLong', points: [entry, stop, target] }
+    const short = { ...drawing, id: 'drawing-short', name: 'riskRewardShort', points: [entry, target, stop] }
+    expect(validateDrawings([drawing, long, short])).toEqual([drawing, long, short])
+    for (const points of [[entry, stop], [entry, entry, target], [entry, target, stop], [entry, stop, stop]]) {
+      expect(() => validateDrawings([{ ...long, points }])).toThrow('绘图存档格式无效')
+    }
+  })
+
+  it('keeps a valid risk/reward drawing when concurrent edits would cross its anchors', async () => {
+    const values = new Map<string, string>()
+    const store = new DrawingStore({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) } })
+    const entry = { timestamp: 60_000, value: 100 }
+    const stop = { timestamp: 120_000, value: 95 }
+    const target = { timestamp: 120_000, value: 112 }
+    const original = { ...drawing, name: 'riskRewardLong', points: [entry, stop, target] }
+    const changedEntry = { ...original, points: [{ ...entry, value: 97 }, stop, target] }
+    await store.save(original)
+    await store.edit(changedEntry, 'initial', original)
+    await store.edit({ ...original, points: [entry, { ...stop, value: 98 }, target] }, 'initial', original)
+    expect(store.forScope(drawing.scope)).toEqual([changedEntry])
+  })
+
   it('keeps style and lock edits when a drag from another window finishes', async () => {
     const values = new Map<string, string>()
     const store = new DrawingStore({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) } })

@@ -54,7 +54,7 @@
   .chart-size-backdrop { align-items: end; padding: 0; }
   .chart-size-dialog { width: 100%; max-height: min(85dvh, calc(var(--workspace-viewport-height, 100dvh) - 12px)); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
 }
-.chart-volume-profile-tool {
+.chart-drawing-tool-button {
   display: grid;
   place-items: center;
   width: 32px;
@@ -65,8 +65,36 @@
   fill: inherit;
   cursor: pointer;
 }
-.chart-volume-profile-tool:disabled { opacity: 0.36; cursor: default; }
-.chart-volume-profile-tool:disabled > .icon-overlay { pointer-events: none; }
+.chart-drawing-tool-button:disabled { opacity: 0.36; cursor: default; }
+.chart-drawing-tool-button:disabled > .icon-overlay { pointer-events: none; }
+.chart-risk-reward-menu, .chart-risk-reward-status {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 1px);
+  z-index: 99;
+  border: 1px solid var(--klinecharts-pro-border-color, #34465d);
+  border-radius: 4px;
+  background: var(--klinecharts-pro-popover-background-color, #182638);
+  color: var(--klinecharts-pro-text-color, #e3eaf2);
+  box-shadow: 0 6px 12px #0004;
+  font-size: 12px;
+}
+.chart-risk-reward-menu { padding: 4px; min-width: max-content; }
+.chart-risk-reward-menu button {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  border: 0;
+  border-radius: 3px;
+  padding: 4px 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chart-risk-reward-menu button:is(:hover, :focus-visible) { background: var(--klinecharts-pro-hover-background-color, #263b51); }
+.chart-risk-reward-status { width: max-content; max-width: min(270px, 65vw); padding: 6px 9px; pointer-events: none; }
 .chart-host .klinecharts-pro-period-bar > .chart-day-download {
   flex: 0 0 auto;
   height: 28px;

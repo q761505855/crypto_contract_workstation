@@ -2,6 +2,7 @@ import type { OverlayCreate } from 'klinecharts'
 
 import { browserStorageKey, ctraderStorage } from '../storage/ctrader-storage'
 import { VOLUME_PROFILE_TOOL } from './order-flow'
+import { RISK_REWARD_TOOLS, riskRewardMetrics, riskRewardSide } from './risk-reward'
 
 export const DRAWING_STORAGE_KEY = 'chart.drawings.v1'
 const DRAWINGS_CHANGED = 'workstation:drawings-changed'
@@ -10,6 +11,7 @@ const fixedPoints: Readonly<Record<string, number>> = Object.freeze({
   horizontalRayLine: 2, horizontalSegment: 2, verticalRayLine: 2, verticalSegment: 2,
   straightLine: 2, rayLine: 2, segment: 2, arrow: 2, circle: 2, rect: 2,
   [VOLUME_PROFILE_TOOL]: 2,
+  [RISK_REWARD_TOOLS.long]: 3, [RISK_REWARD_TOOLS.short]: 3,
   priceChannelLine: 3, parallelStraightLine: 3, parallelogram: 3, triangle: 3,
   fibonacciLine: 2, fibonacciSegment: 2, fibonacciCircle: 2, fibonacciSpiral: 2,
   fibonacciSpeedResistanceFan: 2, fibonacciExtension: 3, gannBox: 2,
@@ -89,6 +91,8 @@ export function validateDrawings(value: unknown): ChartDrawing[] {
       return { timestamp: point.timestamp, value: point.value }
     })
     const { id, scope, name, styles, locked } = row
+    const side = riskRewardSide(name)
+    if (side && !riskRewardMetrics(side, points)) invalid()
     if (locked !== undefined && typeof locked !== 'boolean') invalid()
     if (styles !== undefined && (!object(styles) || !Object.entries(styles).every(([group, entries]) => styleGroups.includes(group) &&
       object(entries) && Object.entries(entries).every(([key, value]) => styleValue(key, value))))) invalid()
@@ -195,6 +199,10 @@ export class DrawingStore {
         styles: sameDrawingData(drawing.styles, before.styles) ? previous.styles : drawing.styles,
         locked: drawing.locked === before.locked ? previous.locked : drawing.locked,
       } : drawing
+      const side = riskRewardSide(next.name)
+      if (previous && before && side && !riskRewardMetrics(side, next.points) && riskRewardMetrics(side, drawing.points)) {
+        next.points = previous.points
+      }
       if (sameDrawingData(previous, next)) return
       const drawings = validateDrawings([...state.local.drawings.filter(row => row.id !== drawing.id), next])
       return { ...state, local: { ...state.local, drawings } }

@@ -50,7 +50,8 @@ import {
   SIMULATION_PRICE_LINE, SIMULATION_TRADE_LABEL, type SimulationTradeLabel,
 } from './simulation-price-line'
 import { SimulationPriceLabels, type PriceLabel, type PriceLabelText } from './simulation-price-labels'
-import { DrawingOverlays, type DrawingChange, type DrawingSelection } from './drawing-overlays'
+import { DrawingOverlays, type DrawingChange, type DrawingDraft, type DrawingSelection } from './drawing-overlays'
+import { registerRiskRewardOverlays, type RiskRewardSide } from './risk-reward'
 import type { DrawingStore } from './drawings'
 import { CandleReadout } from './candle-readout'
 import { formatDisplayTime } from '../format-display-time'
@@ -107,6 +108,8 @@ export interface ChartAdapterPort {
   mount(options: OrderFlowChartOptions): void
   setOrderFlowPreferences?(preferences: OrderFlowPreferences): void
   startVolumeProfile?(): boolean
+  startRiskReward?(side: RiskRewardSide): boolean
+  cancelRiskReward?(): void
   getVisibleBybitDay?(): string
   downloadBybitDays?(start: string, end: string, report: (message: string) => void, review?: TradeDownloadReview): Promise<string>
   getPeriod(): Period
@@ -138,7 +141,7 @@ export interface ChartAdapterPort {
   stepViewport?(direction: -1 | 1): number | null
   setSimulationOverlays(state: SimulationOverlayState): void
   setDrawingScope?(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void,
-    onVolumeProfileActive?: (active: boolean) => void): void
+    onDraftChange?: (draft: DrawingDraft | null) => void): void
   changeSelectedDrawing?(id: string, change: DrawingChange): void
   deleteSelectedDrawing?(id: string): void
 }
@@ -163,6 +166,7 @@ const pivotHistoryReset = new WeakMap<ChartPro, () => void>()
 
 const createProChart: ChartProFactory = (options) => {
   registerSimulationPriceLine()
+  registerRiskRewardOverlays()
   registerSupertrendIndicator()
   registerKeltnerIndicator()
   registerTtmSqueezeIndicator()
@@ -359,9 +363,9 @@ export class ProChartAdapter implements ChartAdapterPort {
   }
 
   setDrawingScope(store: DrawingStore, scope: string | null, onSelection: (selection: DrawingSelection | null) => void,
-    onVolumeProfileActive?: (active: boolean) => void): void {
+    onDraftChange?: (draft: DrawingDraft | null) => void): void {
     if (!this.coreChart) return
-    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow, onSelection, onVolumeProfileActive)
+    this.drawings ??= new DrawingOverlays(this.coreChart, store, () => this.getPeriod().text, this.orderFlow, onSelection, onDraftChange)
     this.drawings.setScope(scope)
   }
 
@@ -375,6 +379,14 @@ export class ProChartAdapter implements ChartAdapterPort {
 
   startVolumeProfile(): boolean {
     return this.drawings?.startVolumeProfile() ?? false
+  }
+
+  startRiskReward(side: RiskRewardSide): boolean {
+    return this.drawings?.startRiskReward(side) ?? false
+  }
+
+  cancelRiskReward(): void {
+    this.drawings?.cancelRiskReward()
   }
 
   getVisibleBybitDay(): string {

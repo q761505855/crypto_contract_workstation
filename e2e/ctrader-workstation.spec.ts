@@ -7,6 +7,178 @@ import { config, connectFixture } from './ctrader-fixture'
 
 const minute = 60_000
 
+test('gives main and subpane indicator buttons priority over overlapping drawings', async ({ page }) => {
+  const now = Date.UTC(2026, 10, 20, 14, 45, 30)
+  await page.clock.setFixedTime(now)
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= now - 180 * 15 * minute })
+  await page.addInitScript(() => {
+    localStorage.setItem('crypto-contract-workstation:ctrader:chart.indicators.v1', JSON.stringify({
+      schemaVersion: 1,
+      main: [{ name: 'MA', calcParams: [5], visible: true, styles: null }],
+      sub: [{ indicators: [{ name: 'MACD', calcParams: [12, 26, 9], visible: true, styles: null }] }],
+    }))
+    const gears = new Map<string, { x: number; y: number }>()
+    Object.assign(window, { indicatorGears: gears })
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...width) {
+      const paneId = this.canvas.closest('[data-pane-id]')?.getAttribute('data-pane-id')
+      if (paneId && text === '\ue902') {
+        const point = new DOMPoint(x, y).matrixTransform(this.getTransform())
+        const rect = this.canvas.getBoundingClientRect()
+        gears.set(paneId, { x: rect.left + point.x / devicePixelRatio + 3, y: rect.top + point.y / devicePixelRatio + 3 })
+      }
+      fillText.call(this, text, x, y, ...width)
+    }
+  })
+  await installViewportProbe(page)
+  await page.goto('./')
+  const gearPaneIds = () => page.evaluate(() =>
+    [...(window as unknown as { indicatorGears: Map<string, unknown> }).indicatorGears.keys()])
+  const settlePaint = () => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+  await expect.poll(gearPaneIds).toHaveLength(2)
+  await page.evaluate(async () => { await document.fonts.ready })
+  await settlePaint()
+  const settings = page.locator('.klinecharts-pro-indicator-setting-modal-content')
+  for (const paneId of await gearPaneIds()) {
+    const { outside, id } = await page.evaluate(paneId => {
+      const { __viewportTestAdapter: { coreChart }, indicatorGears } = window as unknown as {
+        __viewportTestAdapter: { coreChart: import('klinecharts').Chart }
+        indicatorGears: Map<string, { x: number; y: number }>
+      }
+      const gear = indicatorGears.get(paneId)!
+      const bounds = coreChart.getDom(paneId, 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
+      const coordinate = { x: gear.x - bounds.left, y: gear.y - bounds.top }
+      const point = coreChart.convertFromPixel(coordinate, { paneId }) as import('klinecharts').Point
+      const id = coreChart.createOverlay({ name: 'horizontalStraightLine', groupId: 'indicator-test', points: [point],
+        onClick: () => { Object.assign(window, { indicatorTestDrawingClick: paneId }); return false },
+        onPressedMoveStart: () => { Object.assign(window, { indicatorTestDrawingPress: paneId }); return false },
+      }, paneId) as string
+      return { outside: { x: bounds.left + bounds.width * 0.7, y: gear.y }, id }
+    }, paneId)
+    expect(id).toBeTruthy()
+    await settlePaint()
+    await page.mouse.click(outside.x, outside.y)
+    const drawingEvent = (key: 'indicatorTestDrawingClick' | 'indicatorTestDrawingPress') => page.evaluate(key => Reflect.get(window, key), key)
+    await expect.poll(() => drawingEvent('indicatorTestDrawingClick')).toBe(paneId)
+    expect(await drawingEvent('indicatorTestDrawingPress')).toBe(paneId)
+    await page.evaluate(() => { Reflect.deleteProperty(window, 'indicatorTestDrawingPress') })
+
+    await settlePaint()
+    const gear = await page.evaluate(paneId =>
+      (window as unknown as { indicatorGears: Map<string, { x: number; y: number }> }).indicatorGears.get(paneId)!, paneId)
+    const cursorAt = (point: typeof gear) => page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, point)
+    await page.mouse.move(gear.x, gear.y)
+    await expect.poll(() => cursorAt(gear), { timeout: 2_000 }).toBe('pointer')
+    await page.mouse.move(outside.x, outside.y)
+    await expect.poll(() => cursorAt(outside)).toBe('crosshair')
+    await page.mouse.move(gear.x, gear.y)
+    await page.mouse.click(gear.x, gear.y)
+    await expect(settings).toBeVisible({ timeout: 2_000 })
+    expect(await drawingEvent('indicatorTestDrawingPress')).toBeUndefined()
+    await page.getByText('确定', { exact: true }).click()
+    await expect(settings).toBeHidden()
+  }
+})
+
+test('draws, edits and restores long and short risk/reward measurements', async ({ page }) => {
+  const now = Date.UTC(2026, 10, 20, 14, 45, 30)
+  await page.clock.install({ time: now })
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= now - 180 * 15 * minute })
+  const probe = await installViewportProbe(page)
+  await page.addInitScript(() => {
+    const drawText = CanvasRenderingContext2D.prototype.fillText
+    const labels = new Set<string>()
+    Object.assign(window, { riskRewardLabels: labels })
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...width) {
+      if (text.includes('盈亏比')) labels.add(text)
+      drawText.call(this, text, x, y, ...width)
+    }
+  })
+  await page.goto('./')
+  await page.waitForFunction(() => '__viewportTestAdapter' in window)
+  await expect.poll(async () => (await probe()).timestamps.length).toBeGreaterThan(0)
+  const tool = page.locator('.klinecharts-pro-drawing-bar').getByRole('button', { name: '盈亏比', exact: true })
+  const choose = async (side: '做多' | '做空') => {
+    await tool.click()
+    await page.getByRole('button', { name: `${side}盈亏比`, exact: true }).click()
+    await expect(page.getByText(`${side} · 在 K 线主图依次点击入场、止损、止盈`)).toBeVisible()
+  }
+  const drawings = () => page.evaluate(() => {
+    const raw = localStorage.getItem('crypto-contract-workstation:ctrader:chart.drawings.v1')
+    return raw ? (JSON.parse(raw).local.drawings as import('../src/chart/drawings').ChartDrawing[]) : []
+  })
+  const bounds = await page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    return coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect().toJSON()
+  })
+  const click = (x: number, y: number) => page.mouse.click(bounds.left + bounds.width * x, bounds.top + bounds.height * y)
+
+  await choose('做多')
+  await click(0.25, 0.5)
+  await page.keyboard.press('Escape')
+  await expect(page.getByText(/依次点击入场/)).toHaveCount(0)
+  expect(await drawings()).toEqual([])
+  await page.clock.fastForward(550)
+
+  await choose('做多')
+  await click(0.25, 0.5)
+  await click(0.4, 0.38)
+  await click(0.42, 0.18)
+  await expect(page.getByText('做多需要止损价低于入场价，止盈价高于入场价')).toBeVisible()
+  expect(await drawings()).toEqual([])
+
+  await choose('做多')
+  await click(0.25, 0.5)
+  await click(0.4, 0.68)
+  await click(0.42, 0.18)
+  await expect.poll(drawings, { timeout: 3000 }).toHaveLength(1)
+  const [long] = await drawings()
+  expect(long.name).toBe('riskRewardLong')
+  expect(long.points[1].value).toBeLessThan(long.points[0].value)
+  expect(long.points[2].value).toBeGreaterThan(long.points[0].value)
+  const [entryPrice, stopPrice, targetPrice] = long.points.map(point => point.value)
+  const ratio = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format((targetPrice - entryPrice) / (entryPrice - stopPrice))
+  await expect.poll(() => page.evaluate(() => [...(window as unknown as { riskRewardLabels: Set<string> }).riskRewardLabels]))
+    .toEqual(expect.arrayContaining([expect.stringContaining(`盈亏比 ${ratio} : 1`)]))
+  await page.clock.fastForward(550)
+
+  await choose('做空')
+  await click(0.59, 0.5)
+  await click(0.76, 0.36)
+  await click(0.78, 0.82)
+  await expect.poll(drawings).toHaveLength(2)
+  const short = (await drawings()).find(drawing => drawing.name === 'riskRewardShort')!
+  expect(short.points[1].value).toBeGreaterThan(short.points[0].value)
+  expect(short.points[2].value).toBeLessThan(short.points[0].value)
+
+  const targetPosition = () => page.evaluate(id => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const anchor = coreChart.getOverlayById(id)!.points[2]
+    return coreChart.convertToPixel(anchor, { paneId: 'candle_pane' }) as { x: number; y: number }
+  }, short.id)
+  const target = await targetPosition()
+  const x = bounds.left + target.x
+  const y = bounds.top + target.y
+  await page.mouse.click(x, y)
+  await page.clock.fastForward(550)
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y - 25, { steps: 4 })
+  await page.mouse.up()
+  await expect.poll(async () => (await drawings()).find(drawing => drawing.id === short.id)?.points[2].value).toBeGreaterThan(short.points[2].value)
+  const adjusted = await targetPosition()
+  await page.mouse.move(bounds.left + adjusted.x, bounds.top + adjusted.y)
+  await page.mouse.down()
+  await page.mouse.move(bounds.left + adjusted.x, bounds.top + bounds.height * 0.25, { steps: 5 })
+  await page.mouse.up()
+  await expect.poll(targetPosition).toEqual(adjusted)
+  await page.reload()
+  await expect.poll(() => page.evaluate(id => {
+    const adapter = (window as unknown as { __viewportTestAdapter?: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    return adapter?.coreChart.getOverlayById(id)?.points.length
+  }, short.id)).toBe(3)
+})
+
 test('edits, locks, unlocks and deletes a selected drawing', async ({ page }) => {
   const now = Date.UTC(2026, 10, 20, 14, 45, 30)
   await page.clock.setFixedTime(now)
@@ -91,6 +263,36 @@ test('edits, locks, unlocks and deletes a selected drawing', async ({ page }) =>
 
 test.describe('绘图触屏操作', () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } })
+
+  test('draws a risk/reward measurement after reopening the mobile drawing bar', async ({ page }) => {
+    await connectFixture(page)
+    const probe = await installViewportProbe(page)
+    await page.goto('./')
+    await page.waitForFunction(() => '__viewportTestAdapter' in window)
+    await expect.poll(async () => (await probe()).timestamps.length).toBeGreaterThan(0)
+    const toggle = page.locator('.klinecharts-pro-period-bar .menu-container')
+    const tool = page.locator('.klinecharts-pro-drawing-bar').getByRole('button', { name: '盈亏比', exact: true })
+    await expect(tool).toHaveCount(0)
+    await toggle.tap()
+    await tool.tap()
+    await expect(page.getByRole('button', { name: '做空盈亏比' })).toBeVisible()
+    await toggle.tap()
+    await expect(tool).toHaveCount(0)
+    await toggle.tap()
+    await tool.tap()
+    await page.getByRole('button', { name: '做空盈亏比' }).tap()
+    const bounds = await page.evaluate(() => {
+      const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+      return coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect().toJSON()
+    })
+    for (const [x, y] of [[0.3, 0.46], [0.55, 0.23], [0.55, 0.76]]) {
+      await page.touchscreen.tap(bounds.left + bounds.width * x, bounds.top + bounds.height * y)
+    }
+    await expect.poll(() => page.evaluate(() => {
+      const raw = localStorage.getItem('crypto-contract-workstation:ctrader:chart.drawings.v1')
+      return raw ? JSON.parse(raw).local.drawings[0]?.name : undefined
+    })).toBe('riskRewardShort')
+  })
 
   test('拖过锁定绘图平移图表，轻点才选中', async ({ page }) => {
     const now = Date.UTC(2026, 10, 20, 14, 45, 30)

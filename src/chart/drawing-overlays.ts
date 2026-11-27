@@ -5,6 +5,7 @@ import { VOLUME_PROFILE_TOOL } from './order-flow'
 import type { OrderFlowChart } from './order-flow-chart'
 import { profileDisplayCenter, type ProfileDisplay } from './order-flow-renderers'
 import { nextOpenTime } from '../market-data/intervals'
+import { RISK_REWARD_TOOLS, riskRewardMetrics, riskRewardSide, type RiskRewardSide } from './risk-reward'
 
 const GROUP = 'drawing_tools'
 const PANE = 'candle_pane'
@@ -29,6 +30,11 @@ export type DrawingChange =
   | { color: string }
   | { width: number }
   | { pattern: LineType }
+
+export interface DrawingDraft {
+  name: string
+  invalid?: boolean
+}
 
 function strokeGroup(name: string): 'line' | 'arc' | 'circle' | 'polygon' | 'rect' {
   if (name === 'circle' || name === 'fibonacciCircle') return 'circle'
@@ -58,7 +64,7 @@ export class DrawingOverlays {
 
   constructor(private readonly chart: Chart, private readonly store: DrawingStore, private readonly period: () => string,
     private readonly orderFlow: OrderFlowChart | undefined, private readonly onSelection: (selection: DrawingSelection | null) => void,
-    private readonly onVolumeProfileActive?: (active: boolean) => void) {
+    private readonly onDraftChange?: (draft: DrawingDraft | null) => void) {
     this.create = chart.createOverlay
     this.override = chart.overrideOverlay
     // The native toolbar sets the group for its shortcut, but omits it when
@@ -72,7 +78,7 @@ export class DrawingOverlays {
       const id = `drawing-${crypto.randomUUID()}`
       const draft = this.create.call(chart, { ...this.appearance, ...value, groupId: GROUP, id, ...this.callbacks(id, scope) }, PANE)
       if (typeof draft === 'string') {
-        this.setDraft(draft, value.name === VOLUME_PROFILE_TOOL)
+        this.setDraft(draft, value.name)
         const overlay = chart.getOverlayById(draft)
         if (overlay) this.toolStyles.set(overlay, structuredClone(overlay.styles))
         this.select()
@@ -89,7 +95,10 @@ export class DrawingOverlays {
             if (locked) this.override.call(chart, { id, lock: true })
           }
         }
-        if (value.visible === false) this.select()
+        if (value.visible === false) {
+          this.cancelRiskReward()
+          this.select()
+        }
         else this.publishSelection()
       } else this.override.call(chart, value)
     }
@@ -107,6 +116,14 @@ export class DrawingOverlays {
 
   startVolumeProfile(): boolean {
     return this.chart.createOverlay({ name: VOLUME_PROFILE_TOOL }) !== null
+  }
+
+  startRiskReward(side: RiskRewardSide): boolean {
+    return this.appearance.visible !== false && this.chart.createOverlay({ name: RISK_REWARD_TOOLS[side] }) !== null
+  }
+
+  cancelRiskReward(): void {
+    if (this.draft && riskRewardSide(this.chart.getOverlayById(this.draft)?.name)) this.chart.removeOverlay(this.draft)
   }
 
   changeSelection(id: string, change: DrawingChange): void {
@@ -163,9 +180,9 @@ export class DrawingOverlays {
     this.removeAll()
   }
 
-  private setDraft(id?: string, volumeProfile = false): void {
+  private setDraft(id?: string, name?: string): void {
     this.draft = id
-    this.onVolumeProfileActive?.(volumeProfile)
+    this.onDraftChange?.(name ? { name } : null)
   }
 
   private removeAll(): void {
@@ -267,8 +284,11 @@ export class DrawingOverlays {
       onDrawEnd: ({ overlay }) => {
         if (this.draft === id) this.setDraft()
         if (this.scope === scope) {
-          if (hasDrawingPoints(overlay.name, overlay.points.length)) this.capture(overlay, scope, true)
-          else this.chart.removeOverlay(id)
+          const complete = hasDrawingPoints(overlay.name, overlay.points.length)
+          if (!complete || !this.capture(overlay, scope, true)) {
+            this.chart.removeOverlay(id)
+            if (complete && riskRewardSide(overlay.name)) this.onDraftChange?.({ name: overlay.name, invalid: true })
+          }
         }
         this.queue()
         return false
@@ -302,7 +322,10 @@ export class DrawingOverlays {
           this.editing = undefined
           if (edit.moved && this.scope === scope) {
             const keepTime = x !== undefined && edit.x !== undefined && Math.abs(x - edit.x) < 1
-            this.capture(overlay, scope, false, keepTime, edit.preview)
+            if (!this.capture(overlay, scope, false, keepTime, edit.preview)) {
+              this.grid = ''
+              this.queue()
+            }
           } else this.queue()
         }
         return false
@@ -368,14 +391,17 @@ export class DrawingOverlays {
     return valid.map(point => ({ ...point, timestamp: Math.min(last, Math.max(first, point.timestamp + shift)) }))
   }
 
-  private capture(overlay: Overlay, scope: string, isNew: boolean, keepTime = false, preview?: ChartDrawing['points']): void {
+  private capture(overlay: Overlay, scope: string, isNew: boolean, keepTime = false, preview?: ChartDrawing['points']): boolean {
     const points = preview ?? this.readPoints(overlay, keepTime)
-    if (!points) return
+    if (!points) return false
+    const side = riskRewardSide(overlay.name)
+    if (side && (overlay.paneId !== PANE || !riskRewardMetrics(side, points))) return false
     const previous = this.rendered.get(overlay.id)
     const drawing = previous ? { ...previous, points } : { id: overlay.id, name: overlay.name, scope, points,
       ...(overlay.styles !== null ? { styles: structuredClone(overlay.styles) } : {}) }
     if (overlay.name === VOLUME_PROFILE_TOOL) this.orderFlow?.setProfile(overlay.id, points)
     this.write(isNew ? this.store.save(drawing, this.epoch) : this.store.edit(drawing, this.epoch, previous), !isNew)
+    return true
   }
 
   private write(write: Promise<void>, reproject = false): void {
