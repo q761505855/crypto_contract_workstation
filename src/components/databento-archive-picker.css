@@ -1,0 +1,51 @@
+.okx-local-content .databento-archive-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.okx-local-content .databento-archive-range {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+}
+
+.databento-archive-form p { grid-column: 1 / -1; }
+.databento-archive-form button { white-space: nowrap; }
+
+.databento-archive-toolbar { margin-top: 4px; }
+.databento-archive-month { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.workspace-dialog .databento-archive-month select {
+  width: auto;
+  border-radius: 6px;
+  color-scheme: dark;
+}
+
+.okx-local-list.databento-archive-list { max-height: clamp(150px, 30vh, 250px); }
+.okx-local-list.databento-archive-list li { display: block; padding: 0; }
+.databento-archive-list li label {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.databento-archive-list li:hover { background: #1b2a3e; }
+.databento-archive-list li[data-located] {
+  background: #223f60;
+  box-shadow: inset 3px 0 #82bfff;
+}
+
+.databento-archive-footer {
+  justify-content: space-between;
+  padding-top: 4px;
+}
+
+@media (max-width: 520px) {
+  .okx-local-content .databento-archive-range { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .databento-archive-range button { grid-column: 1 / -1; }
+}
+
+@media (max-width: 360px) {
+  .okx-local-content .databento-archive-range { grid-template-columns: minmax(0, 1fr); }
+}

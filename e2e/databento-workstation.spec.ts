@@ -162,6 +162,68 @@ test('Databento uses the preceding Chicago session, only loads selected dates, a
   expect(Math.abs((source!.y + source!.height / 2) - (tools!.y + tools!.height / 2))).toBeLessThan(3)
 })
 
+test('Databento locates dates and loads an inclusive range across archive months', async ({ page }) => {
+  const days = [
+    ...Array.from({ length: 29 }, (_, index) => `2026-10-${String(index + 1).padStart(2, '0')}`),
+    '2026-11-02', '2026-11-03', '2026-11-04',
+  ]
+  const tradeTime = (day: string) => Date.parse(`${day}T15:00:00Z`)
+  const mapping = { from: 20261001, to: 20261105 }
+  const { dialog, chart } = await connectDirectory(page, Object.fromEntries(days.map(day => [
+    filename(day), zstdCompressSync(tradeDbn([['NQH7', tradeTime(day), 26000, 1, 'B']], mapping)),
+  ])))
+  await dialog.getByRole('button', { name: '关闭Databento-CME 本地数据' }).click()
+  await page.getByTestId('chart-host').getByText('ES.FUT', { exact: true }).first().click()
+  await page.getByRole('dialog', { name: '选择交易对' }).getByText('NQ.FUT', { exact: true }).first().click()
+  await page.getByRole('button', { name: '本地数据管理', exact: true }).click()
+
+  const month = dialog.getByLabel('浏览月份')
+  const date = (day: string) => dialog.getByRole('checkbox', { name: day, exact: true })
+  await expect(month).toHaveValue('2026-11')
+  await expect(date('2026-10-29')).toHaveCount(0)
+  await date('2026-11-03').check()
+
+  const locate = dialog.getByLabel('定位日期', { exact: true })
+  await locate.fill('2026-10-29')
+  await locate.press('Enter')
+  await expect(month).toHaveValue('2026-10')
+  await expect(date('2026-10-29')).toBeFocused()
+  await expect(date('2026-10-29')).toBeInViewport()
+  await expect(date('2026-10-29')).not.toBeChecked()
+  await locate.fill('2026-10-30')
+  await dialog.getByRole('button', { name: '定位', exact: true }).click()
+  await expect(dialog.getByRole('status').filter({ hasText: '2026-10-30' })).toContainText('没有本地日档')
+
+  const start = dialog.getByLabel('开始日期', { exact: true })
+  const end = dialog.getByLabel('结束日期', { exact: true })
+  const selectRange = dialog.getByRole('button', { name: '选中此区间' })
+  await start.fill('2026-11-02')
+  await end.fill('2026-10-29')
+  await expect(selectRange).toBeDisabled()
+  await expect(dialog.getByRole('status').filter({ hasText: '开始日期' })).toContainText('不能晚于结束日期')
+  await start.fill('2026-10-30')
+  await end.fill('2026-10-31')
+  await expect(selectRange).toBeDisabled()
+  await expect(dialog.getByRole('status').filter({ hasText: '区间内没有' })).toBeVisible()
+  await start.fill('2026-10-29')
+  await end.fill('2026-11-02')
+  await expect(dialog.getByRole('status').filter({ hasText: '区间内有 2 个日档' })).toBeVisible()
+  await selectRange.click()
+  await expect(date('2026-10-29')).toBeChecked()
+  await month.selectOption('2026-11')
+  await expect(date('2026-11-02')).toBeChecked()
+  await expect(date('2026-11-03')).not.toBeChecked()
+  await expect(dialog.getByRole('status').filter({ hasText: '已选 2 / 32 个日档' })).toBeVisible()
+
+  await page.setViewportSize({ width: 320, height: 740 })
+  for (const region of [dialog.locator('.workspace-dialog-body'), dialog.getByRole('list', { name: '本地 DBN 文件' })]) {
+    expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  }
+  await dialog.getByRole('button', { name: '加载所选日期' }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(async () => (await chart()).timestamps).toEqual([tradeTime('2026-10-29'), tradeTime('2026-11-02')])
+})
+
 test('matches Databento profiles across chart views and regroups when the latest price changes', async ({ page }) => {
   const day = '2026-11-23'
   const nextDay = '2026-11-24'

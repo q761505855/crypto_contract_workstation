@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { bybitDay } from '../market-data/bybit/trades'
 import type { DatabentoArchive, DatabentoFiles } from '../market-data/databento/files'
+import { DatabentoArchivePicker } from './DatabentoArchivePicker'
 import { resolveDayDownloadRange, TradeDownloadRange, type DayDownloadSelection } from './TradeDownloadRange'
 import { WorkspaceDialog } from './WorkspaceDialog'
 import './okx-local-data.css'
@@ -16,7 +17,7 @@ export function DatabentoDataDialog({ files, revision, symbol, loadedDays, ancho
   onLoad(symbol: string, days: readonly string[], append: boolean): Promise<void>
 }) {
   const [products, setProducts] = useState<Map<string, DatabentoArchive[]>>()
-  const [changes, setChanges] = useState<Record<string, boolean>>({})
+  const [selectionVersion, setSelectionVersion] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [rangeInput, setRangeInput] = useState<DayDownloadSelection>()
@@ -29,8 +30,6 @@ export function DatabentoDataDialog({ files, revision, symbol, loadedDays, ancho
   const { start, end } = range ?? {}
   const matching = start && end ? entries.filter(file => file.day >= start && file.day <= end).map(file => file.day) : []
   const pendingCount = matching.filter(day => !loadedDays.includes(day)).length
-  const selected = entries.filter(file => changes[file.day] ?? loadedDays.includes(file.day)).map(file => file.day)
-  const allSelected = entries.length > 0 && selected.length === entries.length
 
   useEffect(() => {
     let active = true
@@ -61,7 +60,7 @@ export function DatabentoDataDialog({ files, revision, symbol, loadedDays, ancho
           <div className="okx-local-actions">
             <button type="button" disabled={!available || busy} onClick={() => void run(async () => {
               await files.choose()
-              setChanges({})
+              setSelectionVersion(version => version + 1)
               onFolderChange(true)
             })}>选择文件夹</button>
             {name && !ready && <button type="button" disabled={busy} onClick={() => void run(() => files.authorize())}>允许读取</button>}
@@ -108,25 +107,12 @@ export function DatabentoDataDialog({ files, revision, symbol, loadedDays, ancho
           }}>刷新列表</button>
         </div>
         {!products ? !error && <p role="status" className="okx-local-note">正在扫描文件夹…</p>
-          : entries.length === 0 ? <p className="okx-local-note">暂无可用的 CME Trades DBN 日档。</p> : <>
-            <p className="okx-local-note">列表按文件的 UTC 日期显示。</p>
-            <label className="okx-local-archive-choice"><input type="checkbox" checked={allSelected} disabled={busy}
-              onChange={event => setChanges(Object.fromEntries(entries.map(file => [file.day, event.target.checked])))}/>全选日期</label>
-            <ul aria-label="本地 DBN 文件" className="okx-local-list">
-              {entries.map(file => <li key={file.day}>
-                <label className="okx-local-archive-choice"><input type="checkbox" disabled={busy}
-                  checked={changes[file.day] ?? loadedDays.includes(file.day)}
-                  onChange={event => setChanges(current => ({ ...current, [file.day]: event.target.checked }))}/>
-                  <time dateTime={file.day}>{file.day}</time></label>
-                <span title={file.filename}>{file.filename}</span>
-              </li>)}
-            </ul>
-            <div className="okx-local-actions"><button type="button" className="okx-local-primary"
-              disabled={busy || (!selected.length && !loadedDays.length)} onClick={() => void run(async () => {
-                await onLoad(symbol, selected, false)
-                onClose()
-              })}>{busy ? '正在加载…' : '加载所选日期'}</button></div>
-          </>}
+          : entries.length === 0 && <p className="okx-local-note">暂无可用的 CME Trades DBN 日档。</p>}
+        <DatabentoArchivePicker key={`${symbol}:${selectionVersion}`} entries={entries} loadedDays={loadedDays}
+          busy={busy} onLoad={days => void run(async () => {
+            await onLoad(symbol, days, false)
+            onClose()
+          })} />
       </section>}
     </div>
   </WorkspaceDialog>

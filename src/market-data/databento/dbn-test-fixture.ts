@@ -1,4 +1,5 @@
-export function tradeDbn(trades: readonly [string, number, number, number, string][]): Uint8Array<ArrayBuffer> {
+export function tradeDbn(trades: readonly [string, number, number, number, string][],
+  mapping = { from: 20261119, to: 20261125 }): Uint8Array<ArrayBuffer> {
   const symbols = [...new Set(trades.map(([symbol]) => symbol))]
   const headerLength = 128 + symbols.length * 154
   const data = new Uint8Array(headerLength + trades.length * 48)
@@ -11,7 +12,7 @@ export function tradeDbn(trades: readonly [string, number, number, number, strin
   for (const [index, symbol] of symbols.entries()) {
     const offset = 128 + index * 154
     write(offset, symbol); view.setUint32(offset + 71, 1, true)
-    view.setUint32(offset + 75, 20261119, true); view.setUint32(offset + 79, 20261125, true)
+    view.setUint32(offset + 75, mapping.from, true); view.setUint32(offset + 79, mapping.to, true)
     write(offset + 83, String(index + 1))
   }
   for (const [index, [symbol, time, price, size, side]] of trades.entries()) {
