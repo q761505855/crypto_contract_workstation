@@ -1,4 +1,5 @@
 import type { Chart, KLineData } from 'klinecharts'
+import { klineCloseBoundary } from '../market-data/intervals'
 import type { TradeBar } from './order-flow-bars'
 import { NEW_YORK_CASH } from './candle-preferences'
 import { newYorkCashWindows } from './market-session-times'
@@ -8,6 +9,11 @@ type TimeRange = readonly [from: number, until: number]
 export function cashRanges(from: number, until: number): TimeRange[] {
   if (!Number.isFinite(from) || !Number.isFinite(until) || until <= from) return []
   return Array.from(newYorkCashWindows(from, until), ({ open, close }) => [Math.max(from, open), Math.min(until, close)])
+}
+
+export function candleIntersectsCash(timestamp: number, timeframe: string, until: number): boolean {
+  const end = Math.min(until, klineCloseBoundary(timestamp, timeframe))
+  return end > timestamp && !newYorkCashWindows(timestamp, end)[Symbol.iterator]().next().done
 }
 
 export function cashTradeRanges(fromUs: number, untilUs: number) {

@@ -40,7 +40,7 @@ import { toChartCandle } from '../market-data/chart-candle'
 import type { GitHubContentsClient } from '../github-sync/github-client'
 import { OrderFlowChart } from './order-flow-chart'
 import { registerOrderFlow } from './order-flow-renderers'
-import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference } from './market-session-times'
+import { MARKET_SESSIONS, isMarketSessionTimeframe, marketSessionForecast, marketSessionReference, newYorkCashWindows } from './market-session-times'
 import { marketSessionStyles } from './market-session-styles'
 import { readChartHistory } from '../market-data/indicator-history'
 import { replayConfirmedUntil, replayVisibleUntil, type ReplayContext } from '../replay/models'
@@ -57,7 +57,7 @@ import { formatDisplayTime } from '../format-display-time'
 import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
 import { BIG_TRADES } from './order-flow'
 import { CashCandleHistory } from './cash-candle-history'
-import { cashRanges, displayCandles, isCashChart } from './new-york-cash'
+import { candleIntersectsCash, cashRanges, displayCandles, isCashChart } from './new-york-cash'
 
 type OrderFlowChartOptions = ChartProOptions & {
   orderFlowCloud?: GitHubContentsClient
@@ -644,6 +644,57 @@ export class ProChartAdapter implements ChartAdapterPort {
     }
   }
 
+  private isShowingCashCandles(): boolean {
+    return !!this.cashHistory && !!this.coreChart && isCashChart(this.coreChart)
+  }
+
+  private async readInitialHistory(symbol: SymbolInfo, period: Period, from: number, to: number,
+    notifySelection: boolean, signal?: AbortSignal, preferLatestArchive?: boolean): Promise<KLineData[]> {
+    const feed = this.datafeed!
+    const candles = await readChartHistory(feed, symbol, period, from, to, notifySelection, signal, preferLatestArchive)
+    signal?.throwIfAborted()
+    if (!notifySelection || !this.isShowingCashCandles()) return candles
+    const until = (this.replayHistoryEnd() ?? Date.now() - 1) + 1
+    if (candles.some(candle => candleIntersectsCash(candle.timestamp, period.text, until))) return candles
+    // A short-period history page can land entirely between cash sessions.
+    const before = Math.min(candles[0]?.timestamp ?? to + 1, until)
+    const session = Array.from(newYorkCashWindows(Math.max(0, before - 10 * BYBIT_DAY_MS), before)).at(-1)
+    if (!session) return candles
+    try {
+      const earlier = await readChartHistory(feed, symbol, period, alignOpenTime(session.open, period.text, 'floor'),
+        Math.min(before, session.close) - 1, true, signal, false)
+      signal?.throwIfAborted()
+      return earlier.length ? earlier : candles
+    } catch {
+      signal?.throwIfAborted()
+      return candles
+    }
+  }
+
+  private showCashIfViewportIsBlank(period: Period): boolean {
+    if (!this.isShowingCashCandles()) return false
+    const core = this.requireCoreChart()
+    const rows = core.getDataList()
+    const { from, to } = core.getVisibleRange()
+    const start = Math.max(0, Math.min(rows.length, from))
+    const end = Math.max(start, Math.min(rows.length, to))
+    const until = (this.replayHistoryEnd() ?? Date.now() - 1) + 1
+    const hasCash = (row: KLineData) => candleIntersectsCash(row.timestamp, period.text, until)
+    if (rows.slice(start, end).some(hasCash)) return false
+    let row: KLineData | undefined
+    for (let index = start - 1; index >= 0; index--) {
+      if (hasCash(rows[index])) {
+        row = rows[index]
+        break
+      }
+    }
+    row ??= rows.slice(end).find(hasCash)
+    if (!row) return false
+    core.scrollToTimestamp(row.timestamp, 0)
+    core.scrollByDistance(core.getBarSpace(), 0)
+    return true
+  }
+
   private async loadChartHistory(symbol: SymbolInfo, period: Period, from: number, to: number, notifySelection?: boolean) {
     const restore = this.viewportRestore
     const anchored = notifySelection !== false && restore !== null && !restore.started &&
@@ -658,20 +709,23 @@ export class ProChartAdapter implements ChartAdapterPort {
     let candles: ReturnType<Chart['getDataList']>
     try {
       const preferLatestArchive = anchored && this.datafeed?.allowOlderArchives ? false : undefined
-      candles = await readChartHistory(this.datafeed!, symbol, period, from, to, notifySelection !== false, signal, preferLatestArchive)
+      candles = await this.readInitialHistory(symbol, period, from, to, notifySelection !== false, signal, preferLatestArchive)
       signal?.throwIfAborted()
     } catch (error) {
       if (signal?.aborted) return []
       throw error
     }
     if (anchored && restore.sequence === this.reloadSequence) {
-      this.positionWhenReady(candles, restore.timestamp, period, restore.sequence)
+      this.positionWhenReady(candles, restore.timestamp, period, restore.sequence, false, true)
+    } else if (!anchored && notifySelection !== false && this.isShowingCashCandles() && candles.length) {
+      this.positionWhenReady(candles, candles.at(-1)!.timestamp, period, this.reloadSequence, true, true)
     }
     this.ownLastCandle(candles, symbol, period)
     return candles
   }
 
-  private positionWhenReady(candles: ReturnType<Chart['getDataList']>, timestamp: number, period: Period, sequence: number, followLatest = false): number | null {
+  private positionWhenReady(candles: ReturnType<Chart['getDataList']>, timestamp: number, period: Period, sequence: number,
+    followLatest = false, revealCash = false): number | null {
     if (candles.length === 0) {
       this.clearPosition()
       return null
@@ -690,10 +744,15 @@ export class ProChartAdapter implements ChartAdapterPort {
       if (followLatest && this.replayHistoryEnd() === undefined) {
         this.viewportAnchor = null
         core.scrollToRealTime(0)
+        if (revealCash) this.showCashIfViewportIsBlank(period)
         return
       }
       core.scrollToTimestamp(actual, 0)
       core.scrollByDistance(core.getBarSpace(), 0)
+      if (revealCash && this.showCashIfViewportIsBlank(period)) {
+        this.viewportAnchor = null
+        return
+      }
       this.viewportAnchor = {
         timestamp: actual === target ? timestamp : actual,
         visibleTime: actual,
@@ -724,12 +783,15 @@ export class ProChartAdapter implements ChartAdapterPort {
     if (replay) coreChart.applyNewData([], false)
     let candles: ReturnType<Chart['getDataList']>
     try {
-      candles = await readChartHistory(datafeed, chart.getSymbol(), chart.getPeriod(), Number.MIN_SAFE_INTEGER, Date.now(), true, signal)
+      candles = await this.readInitialHistory(chart.getSymbol(), chart.getPeriod(), Number.MIN_SAFE_INTEGER, Date.now(), true, signal)
     } catch (error) {
       if (signal.aborted) return
       throw error
     }
     if (sequence !== this.reloadSequence) return
+    if (this.isShowingCashCandles() && candles.length) {
+      this.positionWhenReady(candles, candles.at(-1)!.timestamp, chart.getPeriod(), sequence, true, true)
+    }
     this.ownLastCandle(candles, chart.getSymbol(), chart.getPeriod())
     coreChart.applyNewData(candles, candles.length > 0)
   }
@@ -769,7 +831,7 @@ export class ProChartAdapter implements ChartAdapterPort {
     pivotHistoryReset.get(chart)?.()
     const last = candles.at(-1)
     if (last) this.datafeed?.allowOlderArchives?.()
-    if (last) this.positionWhenReady(candles, anchor ?? last.timestamp, period, sequence, anchor === null)
+    if (last) this.positionWhenReady(candles, anchor ?? last.timestamp, period, sequence, anchor === null, true)
     this.ownLastCandle(candles, symbol, period)
     core.applyNewData(candles, candles.length > 0)
     return loaded

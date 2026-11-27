@@ -1,15 +1,10 @@
-.okx-local-content .databento-archive-form {
-  grid-template-columns: minmax(0, 1fr) auto;
+.okx-local-content .databento-archive-range {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
   align-items: end;
   gap: 8px;
 }
 
-.okx-local-content .databento-archive-range {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
-}
-
-.databento-archive-form p { grid-column: 1 / -1; }
-.databento-archive-form button { white-space: nowrap; }
+.databento-archive-range button { white-space: nowrap; }
 
 .databento-archive-toolbar { margin-top: 4px; }
 .databento-archive-month { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
@@ -31,11 +26,6 @@
 }
 
 .databento-archive-list li:hover { background: #1b2a3e; }
-.databento-archive-list li[data-located] {
-  background: #223f60;
-  box-shadow: inset 3px 0 #82bfff;
-}
-
 .databento-archive-footer {
   justify-content: space-between;
   padding-top: 4px;

@@ -419,6 +419,15 @@ test('switches to a close-price line and restores it from an application archive
 test('New York cash candles keep time slots and exclude pre-market volume from the opening hourly bar', async ({ page }) => {
   const boundary = Date.UTC(2026, 10, 20, 14)
   const now = Date.UTC(2026, 10, 20, 22, 8)
+  await page.addInitScript(() => {
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (text, ...args) {
+      if (/^MA(?:\(|$)/.test(text) && this.canvas.closest('[data-pane-id="candle_pane"]')) {
+        Object.assign(window, { cashIndicatorLegendDrawn: true })
+      }
+      Reflect.apply(fillText, this, [text, ...args])
+    }
+  })
   await page.clock.setFixedTime(now)
   await connectFixture(page, false, {
     historyAvailable: stamp => stamp >= boundary - 2 * 60 * minute,
@@ -467,6 +476,12 @@ test('New York cash candles keep time slots and exclude pre-market volume from t
   await expect.poll(inspect).toEqual({
     ...before, type: 'new_york_cash', bars: [null, 11, 42, null], volume: [null, 11, 42, null],
   })
+  const plot = (await page.getByLabel('最新 K 线').locator('..').boundingBox())!
+  await page.evaluate(() => Object.assign(window, { cashIndicatorLegendDrawn: false }))
+  await page.mouse.move(plot.x + before.coordinates[0], plot.y + plot.height / 2)
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'cashIndicatorLegendDrawn'))).toBe(true)
+  await expect(page.getByLabel('选中 K 线')).toBeHidden()
+
   const openDataManager = async () => {
     await page.getByRole('button', { name: '工具', exact: true }).click()
     await page.getByTestId('open-data-manager').click()
@@ -489,6 +504,37 @@ test('New York cash candles keep time slots and exclude pre-market volume from t
   await page.reload()
   await page.waitForFunction(() => '__viewportTestAdapter' in window)
   await expect.poll(async () => (await inspect()).type).toBe('new_york_cash')
+})
+
+test('switching cash periods reveals the previous session when the live viewport is entirely pre-market', async ({ page }) => {
+  const previousOpen = Date.UTC(2026, 10, 19, 14, 30)
+  const previousClose = Date.UTC(2026, 10, 19, 21)
+  await page.clock.setFixedTime(Date.UTC(2026, 10, 20, 10, 8))
+  await connectFixture(page, false, { historyAvailable: stamp => stamp >= previousOpen })
+  const probe = await installViewportProbe(page)
+  await page.addInitScript(() => {
+    localStorage.setItem('crypto-contract-workstation:ctrader:chart.candleType.v1', '"new_york_cash"')
+  })
+  await page.goto('./')
+  await page.waitForFunction(() => '__viewportTestAdapter' in window)
+  await expect.poll(async () => (await probe()).timestamps.length).toBeGreaterThan(0)
+  const cashInView = (duration: number) => page.evaluate(({ previousOpen, previousClose, duration }) => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const { from, to } = coreChart.getVisibleRange()
+    const raw = coreChart.getDataList()
+    if (!raw.every(row => row.timestamp % duration === 0) ||
+      !raw.some((row, index) => index > 0 && row.timestamp - raw[index - 1].timestamp === duration)) return false
+    return coreChart.getDisplayDataList().slice(Math.max(0, from), to)
+      .some(row => row && row.timestamp >= previousOpen && row.timestamp < previousClose)
+  }, { previousOpen, previousClose, duration })
+  const selectPeriod = async (period: string) => {
+    await page.getByRole('button', { name: '图表周期', exact: true }).click()
+    await page.getByRole('button', { name: `选择周期 ${period}`, exact: true }).click()
+    await expect.poll(async () => (await probe()).period).toBe(period)
+    await expect.poll(() => cashInView(period === '1m' ? minute : 60 * minute)).toBe(true)
+  }
+  await selectPeriod('1m')
+  await selectPeriod('1h')
 })
 
 test('updates the open 15m candle on quotes and replaces it with a late official close', async ({ page }) => {
