@@ -217,6 +217,68 @@ test('Databento uses the preceding Chicago session, only loads selected dates, a
   expect(Math.abs((source!.y + source!.height / 2) - (tools!.y + tools!.height / 2))).toBeLessThan(3)
 })
 
+test('Databento keeps the simulation open at the end and replays future dates added through either dialog', async ({ page }) => {
+  const days = ['2026-11-23', '2026-11-24', '2026-11-25']
+  const times = days.map(day => Date.parse(`${day}T15:00:00Z`))
+  const { dialog, chart } = await connectDirectory(page, Object.fromEntries(days.map((day, index) =>
+    [filename(day), zstdCompressSync(tradeDbn([['NQZ6', times[index], 26000 + index, 1, 'B']],
+      { from: 20261123, to: 20261126 }))],
+  )))
+  await expect(dialog.getByRole('heading', { name: 'ES.FUT 日档' })).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭Databento-CME 本地数据' }).click()
+  const chartHost = page.getByTestId('chart-host')
+  await chartHost.getByText('ES.FUT', { exact: true }).first().click()
+  await page.getByRole('dialog', { name: '选择交易对' }).getByText('NQ.FUT', { exact: true }).first().click()
+  const localData = page.getByRole('button', { name: '本地数据管理', exact: true })
+  await localData.click()
+  await dialog.getByRole('checkbox', { name: days[0] }).check()
+  await dialog.getByRole('button', { name: '加载所选日期' }).click()
+  await expect.poll(async () => (await chart()).last?.timestamp).toBe(times[0])
+
+  const controls = page.getByTestId('replay-controls')
+  const play = controls.getByRole('button', { name: '播放', exact: true })
+  const pause = controls.getByRole('button', { name: '暂停', exact: true })
+  const endNotice = page.getByRole('dialog', { name: '回放数据提示' })
+  await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  const order = page.getByRole('complementary', { name: '模拟下单面板' })
+  await order.getByRole('spinbutton', { name: '合约张数' }).fill('1')
+  await order.getByRole('button', { name: '开多', exact: true }).click()
+  const position = page.getByTestId('position-long')
+  await expect(position).toBeVisible()
+  await controls.getByLabel('回放速度').selectOption('10')
+  await play.click()
+  await expect(endNotice).toContainText('当前回放数据末尾')
+  await expect(controls).toContainText('第 1 步')
+  await expect(pause).toBeVisible()
+  await endNotice.getByRole('button', { name: '确定' }).click()
+  await pause.click()
+
+  await localData.click()
+  await expect(dialog.getByRole('checkbox', { name: days[0] })).toBeDisabled()
+  await dialog.getByRole('checkbox', { name: days[1] }).check()
+  await dialog.getByRole('button', { name: '加载所选日期' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.locator('#workspace-status-content')).toContainText(`已追加 1 个日档（UTC ${days[1]}） · 随回放进度显示`)
+  await expect(controls).toContainText('第 1 步')
+  await expect.poll(async () => (await chart()).timestamps).toEqual([times[0]])
+  await play.click()
+  await expect(controls).toContainText('第 2 步')
+  await expect.poll(async () => (await chart()).last?.timestamp).toBe(times[1])
+  await expect(endNotice).toBeVisible()
+  await endNotice.getByRole('button', { name: '确定' }).click()
+
+  await chartHost.getByRole('button', { name: '按锚点加载', exact: true }).click()
+  const anchor = page.getByRole('dialog', { name: '按锚点加载本地成交' })
+  await anchor.getByLabel('锚点日期').fill(days[2])
+  await anchor.getByRole('button', { name: '加载本地日档', exact: true }).click()
+  await expect(anchor).toBeHidden()
+  await expect(controls).toContainText('第 3 步')
+  await expect.poll(async () => (await chart()).timestamps).toEqual(times)
+  await expect(endNotice).toBeVisible()
+  await expect(pause).toBeVisible()
+  await expect(position).toBeVisible()
+})
+
 test('Databento filters archive results and selects all only in the current result', async ({ page }) => {
   const days = [
     ...Array.from({ length: 29 }, (_, index) => `2026-10-${String(index + 1).padStart(2, '0')}`),
@@ -504,6 +566,9 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   await expect(speed).toHaveValue('1000')
   await controls.getByRole('button', { name: '播放', exact: true }).click()
   await expect(controls).toContainText('第 4 步')
+  const endNotice = page.getByRole('dialog', { name: '回放数据提示' })
+  await expect(endNotice).toBeVisible()
+  await endNotice.getByRole('button', { name: '确定' }).click()
   await controls.getByRole('button', { name: '暂停', exact: true }).click()
   await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26020, close: 26003, volume: 9 })
   await speed.fill('1.25')

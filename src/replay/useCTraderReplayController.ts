@@ -31,6 +31,7 @@ interface ReplayCursor {
   candle: ReplayPriceCandle
   initial: ReplayPriceCandle
   contractWindow?: { from: number; to: number }
+  archiveEnd?: { revision: number | undefined; time: number }
 }
 
 interface TickClock {
@@ -78,7 +79,8 @@ function moveCursor(cursor: ReplayCursor, candle: ReplayPriceCandle, index: numb
     cursorTickIndex: candle.tickIndex,
     currentIndex: index,
     candleCount: Math.max(cursor.session.candleCount, index + 1),
-    status: candle.timeframe !== 'tick' && candle.closeTime === cursor.session.endTime ? 'completed' : 'paused',
+    endTime: Math.max(cursor.session.endTime, candle.closeTime, cursor.archiveEnd?.time ?? 0),
+    status: 'paused',
   })
 }
 
@@ -98,10 +100,13 @@ function stepPeriod(session: ReplaySession, fineSteps: boolean, requested?: Repl
 export function useCTraderReplayController(
   runtime: CTraderReplayRuntime,
   stepTimeframe?: ReplayStepPeriod,
+  historyRevision = runtime.service.historyRevision,
 ): ReplayController<ReplayStepPeriod> & {
   supportsTicks: boolean
   mode: ReplayMode
   tradeUntilUs?: number
+  endNotice: string
+  dismissEndNotice(): void
   setMode(mode: ReplayMode): void
   setTickSpeed(speed: number): void
 } {
@@ -123,6 +128,8 @@ export function useCTraderReplayController(
   const [sessions, setSessions] = useState<ReplaySession[]>([])
   const [busy, setBusy] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [endNotice, setEndNotice] = useState('')
+  const [waiting, setWaiting] = useState<{ period: CTraderReplayStepPeriod; revision: number | undefined }>()
   const [error, setError] = useState('')
   const [preparationStatus, setPreparationStatus] = useState('')
   const mode = session !== null && supportsTicks ? sessionPlaybackMode(session, legacyTick) : 'kline'
@@ -136,6 +143,14 @@ export function useCTraderReplayController(
     const operation = operationRef.current
     if (operation && !operation.foreground) operation.controller.abort()
     setIsPlaying(false)
+    setWaiting(undefined)
+  }, [])
+
+  const waitForHistory = useCallback((period: CTraderReplayStepPeriod, revision: number | undefined) => {
+    setWaiting({ period, revision })
+    setEndNotice(period === 'tick' || period === '1m'
+      ? '已到达当前回放数据末尾。'
+      : '当前步进周期已没有下一根完整 K 线。可以尝试更小的步进周期。')
   }, [])
 
   const findStep = useCallback((
@@ -156,16 +171,11 @@ export function useCTraderReplayController(
     return saveQueue.current
   }, [replaySessions])
 
-  const publish = useCallback(async (cursor: ReplayCursor, finishOnCompletion = false) => {
-    const finished = finishOnCompletion && cursor.session.status === 'completed'
-    if (finished) {
-      updateCursor(cursor, { active: false })
-    }
+  const publish = useCallback(async (cursor: ReplayCursor) => {
     const saved = cursor.session
     await queueSave(saved)
     if (cursorRef.current !== cursor || cursor.session !== saved) return
-    if (finished) cursorRef.current = null
-    setView(finished ? null : { session: saved, tradeUntilUs: cursor.candle.tradeUntilUs })
+    setView({ session: saved, tradeUntilUs: cursor.candle.tradeUntilUs })
     remember(saved)
   }, [queueSave, remember])
 
@@ -269,16 +279,17 @@ export function useCTraderReplayController(
       remember(prior.session)
     }
     signal.throwIfAborted()
-    const finished = create && cursor.session.status === 'completed'
     clockRef.current = null
-    cursorRef.current = finished ? null : cursor
-    setView(finished ? null : { session: cursor.session, tradeUntilUs: cursor.candle.tradeUntilUs })
+    cursorRef.current = cursor
+    setEndNotice('')
+    setView({ session: cursor.session, tradeUntilUs: cursor.candle.tradeUntilUs })
     remember(cursor.session)
   }, [queueSave, remember, replaySessions])
 
   const createSession = useCallback((input: CreateReplaySessionInput) => run(
     '创建回放失败',
     async signal => {
+      const revision = service.historyRevision
       const bounds = await service.historyBounds?.(input.symbol.ticker, signal)
       if (service.historyBounds && !bounds) throw new Error('请先在本地数据管理中添加此品种的逐笔成交归档。')
       const endTime = Math.min(input.endTime ?? Date.now(), Date.now() - 1, bounds?.to ?? Infinity)
@@ -310,7 +321,6 @@ export function useCTraderReplayController(
       validateSimulationConfig(tradingConfig)
       signal.throwIfAborted()
       const now = Date.now()
-      const completed = candle.closeTime === endTime
       const next: ReplaySession = {
         schemaVersion: 2,
         marketSource: source,
@@ -328,14 +338,16 @@ export function useCTraderReplayController(
           playbackMode: supportsTicks ? input.playbackMode : 'kline',
         }),
         speed: input.speed ?? 1,
-        status: completed ? 'completed' : 'paused',
-        active: !completed,
+        status: 'paused',
+        active: true,
         hasTrades: false,
         tradingConfig: { ...tradingConfig },
         createdAt: now,
         updatedAt: now,
       }
-      await activate({ session: next, candle, initial: candle }, signal, true)
+      await activate({ session: next, candle, initial: candle,
+        ...(source === 'databento-cme' && bounds && { archiveEnd: { revision, time: endTime } }),
+      }, signal, true)
     },
     source === 'databento-cme' ? '正在准备 CME 历史回放…'
       : `正在准备回放行情和 ${isOkxPriceSource(source) ? 'OKX' : 'IC Markets'} 交易规格…`,
@@ -365,6 +377,7 @@ export function useCTraderReplayController(
     const cursor = cursorRef.current
     cursorRef.current = null
     clockRef.current = null
+    setEndNotice('')
     setView(null)
     setBusy(false)
     setPreparationStatus('')
@@ -382,12 +395,24 @@ export function useCTraderReplayController(
     setSessions(current => current.filter(item => item.id !== id))
   }), [replaySessions, run])
 
-  const followingStep = useCallback((cursor: ReplayCursor, timeframe: CTraderReplayStepPeriod, signal: AbortSignal) => {
+  const followingStep = useCallback(async (cursor: ReplayCursor, timeframe: CTraderReplayStepPeriod, signal: AbortSignal) => {
     const { session: saved } = cursor
     const tickIndex = timeframe === 'tick' ? saved.cursorTickIndex : undefined
     const from = tickIndex === undefined ? sessionVisibleUntil(saved) : saved.currentTime
-    return findStep(saved.symbol.ticker, timeframe, from, saved.endTime, 1, signal, tickIndex)
-  }, [findStep])
+    for (;;) {
+      signal.throwIfAborted()
+      const revision = service.historyRevision
+      if (source === 'databento-cme' && service.historyBounds &&
+          (!cursor.archiveEnd || cursor.archiveEnd.revision !== revision)) {
+        const bounds = await service.historyBounds(saved.symbol.ticker, signal)
+        if (revision !== service.historyRevision) continue
+        cursor.archiveEnd = { revision, time: Math.min(bounds?.to ?? -1, Date.now() - 1) }
+      }
+      const candle = await findStep(saved.symbol.ticker, timeframe, from, cursor.archiveEnd?.time ?? saved.endTime,
+        1, signal, tickIndex)
+      if (revision === service.historyRevision) return { candle, revision }
+    }
+  }, [findStep, service, source])
 
   const applyStep = useCallback(async (cursor: ReplayCursor, candle: ReplayPriceCandle, signal: AbortSignal, canAdvance?: () => boolean) => {
     const { session: saved, contractWindow } = cursor
@@ -418,16 +443,10 @@ export function useCTraderReplayController(
 
   const advance = useCallback(async (cursor: ReplayCursor, timeframe: CTraderReplayStepPeriod, signal: AbortSignal) => {
     const saved = cursor.session
-    const candle = await followingStep(cursor, timeframe, signal)
+    const { candle, revision } = await followingStep(cursor, timeframe, signal)
     signal.throwIfAborted()
     if (candle === undefined) {
-      pause()
-      const remaining = timeframe === '1m' || timeframe === 'tick' ? undefined : await history.find(
-        saved.symbol.ticker, '1m', sessionVisibleUntil(saved), saved.endTime, 1, signal,
-      )
-      signal.throwIfAborted()
-      if (remaining === undefined) updateCursor(cursor, { status: 'completed' })
-      else setError('所选周期在结束前没有下一根完整 K 线，可换用更小的步进周期。')
+      waitForHistory(timeframe, revision)
       return false
     }
     // Publish the reached cursor even if simulation reports an error, so a
@@ -435,20 +454,21 @@ export function useCTraderReplayController(
     try {
       await applyStep(cursor, candle, signal)
     } catch (reason) {
-      if (!signal.aborted && cursor.session !== saved) await publish(cursor, true)
+      if (!signal.aborted && cursor.session !== saved) await publish(cursor)
       throw reason
     }
-    if (cursor.session.status === 'completed') pause()
-    return cursor.session.status !== 'completed'
-  }, [applyStep, followingStep, history, pause, publish])
+    setWaiting(undefined)
+    setEndNotice('')
+    return true
+  }, [applyStep, followingStep, publish, waitForHistory])
 
   const next = useCallback((timeframe = stepTimeframe) => run('推进回放失败', async signal => {
     const cursor = cursorRef.current
     if (cursor === null || cursor.session.status === 'completed' || cursor.session.playbackMode === 'tick') return
     clockRef.current = null
-    await advance(cursor, stepPeriod(cursor.session, supportsTicks, timeframe), signal)
+    const moved = await advance(cursor, stepPeriod(cursor.session, supportsTicks, timeframe), signal)
     signal.throwIfAborted()
-    await publish(cursor, true)
+    if (moved) await publish(cursor)
   }), [advance, publish, run, stepTimeframe, supportsTicks])
 
   const previous = useCallback((timeframe = stepTimeframe) => run('回退回放失败', async signal => {
@@ -456,6 +476,7 @@ export function useCTraderReplayController(
     if (cursor === null || cursor.session.hasTrades || cursor.candle.closeTime === cursor.initial.closeTime ||
       cursor.session.playbackMode === 'tick') return
     pause()
+    setEndNotice('')
     clockRef.current = null
     const { session: saved, initial } = cursor
     const period = stepPeriod(saved, supportsTicks, timeframe)
@@ -474,28 +495,29 @@ export function useCTraderReplayController(
     const cursor = cursorRef.current
     if (cursor === null) return
     pause()
+    setEndNotice('')
     clockRef.current = null
     moveCursor(cursor, cursor.initial, 0)
     await notify({ type: 'reset', candle: cursor.initial })
     signal.throwIfAborted()
-    updateCursor(cursor, { hasTrades: false, active: cursor.session.status !== 'completed' })
-    await publish(cursor, true)
+    updateCursor(cursor, { hasTrades: false, active: true })
+    await publish(cursor)
   }), [notify, pause, publish, run])
 
   const jumpToEnd = useCallback(() => run('跳转回放失败', async signal => {
     const cursor = cursorRef.current
-    if (cursor === null || sessionPlaybackMode(cursor.session, legacyTick) === 'tick') return
+    if (cursor?.session.status !== 'paused' || sessionPlaybackMode(cursor.session, legacyTick) === 'tick') return
     pause()
     clockRef.current = null
     const timeframe = stepPeriod(cursor.session, supportsTicks, stepTimeframe)
-    while (cursor.session.status !== 'completed') {
+    while (true) {
       const moved = await advance(cursor, timeframe, signal)
       signal.throwIfAborted()
       if (!moved) break
       // Save the cursor after each durable simulation update.
       await queueSave(cursor.session)
     }
-    await publish(cursor, true)
+    await publish(cursor)
   }, `正在读取剩余的 ${sourceLabel} K 线…`), [advance, legacyTick, pause, publish, queueSave, run, sourceLabel, stepTimeframe, supportsTicks])
 
   const setSpeed = useCallback((speed: ReplaySpeed) => {
@@ -509,6 +531,7 @@ export function useCTraderReplayController(
     const cursor = cursorRef.current
     if (cursor === null || busy || (playbackMode === 'tick' && !supportsTicks)) return
     pause()
+    setEndNotice('')
     clockRef.current = null
     updateCursor(cursor, { playbackMode })
     setView(current => current?.session.id === cursor.session.id
@@ -565,19 +588,24 @@ export function useCTraderReplayController(
       }
       clock.wallTime ??= performance.now()
     }
+    setWaiting(undefined)
     setIsPlaying(true)
   }, [legacyTick, supportsTicks])
 
+  const autoPeriod = session && (mode === 'tick' ? 'tick' : stepPeriod(session, supportsTicks, stepTimeframe))
+  const waitingForHistory = waiting !== undefined && waiting.period === autoPeriod && waiting.revision === historyRevision
+
   useEffect(() => {
-    if (mode !== 'kline' || !isPlaying || busy || session?.status !== 'paused') return
+    if (mode !== 'kline' || !isPlaying || busy || waitingForHistory || session?.status !== 'paused') return
     const timeout = window.setTimeout(() => void next(), 1000 / session.speed)
     return () => window.clearTimeout(timeout)
-  }, [busy, isPlaying, mode, next, session])
+  }, [busy, isPlaying, mode, next, session, waitingForHistory])
 
   useEffect(() => {
     const clock = clockRef.current
-    if (mode !== 'tick' || !isPlaying || !clock) return
+    if (mode !== 'tick' || !isPlaying || waitingForHistory || !clock) return
     const { cursor } = clock
+    clock.wallTime ??= performance.now()
     let cancelled = false
     let timer: number
     let buffered: { revision: number | undefined; candle: ReplayPriceCandle | undefined } | undefined
@@ -595,8 +623,7 @@ export function useCTraderReplayController(
             const revision = service.historyRevision
             if (!buffered || revision !== buffered.revision) {
               const requestedAt = performance.now()
-              const candle = await waitForStep(followingStep(cursor, 'tick', signal), signal)
-              buffered = { revision, candle }
+              buffered = await waitForStep(followingStep(cursor, 'tick', signal), signal)
               const loadedAt = performance.now()
               if (clock.wallTime !== null && loadedAt - requestedAt > FRAME_MS) {
                 // A slow history read stalls the replay clock, so the next trades
@@ -606,22 +633,21 @@ export function useCTraderReplayController(
             }
             signal.throwIfAborted()
             if (!playing()) break
-            if (revision !== service.historyRevision) {
+            if (buffered.revision !== service.historyRevision) {
               buffered = undefined
               break
             }
             const candle = buffered.candle
-            const target = candle ? tickTime(candle) : before.endTime + 1
+            if (candle === undefined) {
+              clock.marketTime = cursor.candle.tickIndex === undefined ? sessionVisibleUntil(cursor.session) : tickTime(cursor.candle)
+              clock.wallTime = null
+              waitForHistory('tick', buffered.revision)
+              break
+            }
+            const target = tickTime(candle)
             const due = clockTime(clock)
             if (target > due) {
               delay = Math.max(FRAME_MS, (target - due) / clock.speed)
-              break
-            }
-            if (candle === undefined) {
-              if (cursor.session.currentIndex === before.currentIndex) {
-                updateCursor(cursor, { status: 'completed' })
-                pause()
-              }
               break
             }
             await applyStep(cursor, candle, signal, playing)
@@ -637,8 +663,7 @@ export function useCTraderReplayController(
             let saved = before
             while (cursor.session !== saved) {
               saved = cursor.session
-              await publish(cursor, true)
-              if (cursor.session.status === 'completed') break
+              await publish(cursor)
             }
           }
         }
@@ -649,10 +674,12 @@ export function useCTraderReplayController(
     }
     timer = window.setTimeout(() => void frame(), 0)
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [applyStep, followingStep, isPlaying, mode, notify, pause, publish, run, service, session?.tickSpeed])
+  }, [applyStep, followingStep, historyRevision, isPlaying, mode, notify, publish, run, service, session?.tickSpeed,
+    waitingForHistory, waitForHistory])
 
   return {
     session, sessions, busy, isPlaying, error, preparationStatus, mode, supportsTicks, tradeUntilUs: view?.tradeUntilUs,
+    endNotice, dismissEndNotice: () => setEndNotice(''),
     createSession, loadSession, deleteSession, endSession, next, previous, reset, jumpToEnd,
     play, pause, setSpeed, setMode, setTickSpeed, setHasTrades, subscribeCandle, clearError: () => setError(''), getCurrentCandle,
   }

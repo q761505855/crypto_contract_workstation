@@ -6,12 +6,13 @@ import { resolveDayDownloadRange, TradeDownloadRange, type DayDownloadSelection 
 import { WorkspaceDialog } from './WorkspaceDialog'
 import './okx-local-data.css'
 
-export function DatabentoDataDialog({ files, revision, symbol, loadedDays, anchor, onClose, onFolderChange, onLoad }: {
+export function DatabentoDataDialog({ files, revision, symbol, loadedDays, anchor, appendOnly = false, onClose, onFolderChange, onLoad }: {
   files: DatabentoFiles
   revision: number
   symbol: string
   loadedDays: readonly string[]
   anchor?: string | null
+  appendOnly?: boolean
   onClose(): void
   onFolderChange(replaced: boolean): void
   onLoad(symbol: string, days: readonly string[], append: boolean): Promise<void>
@@ -109,8 +110,8 @@ export function DatabentoDataDialog({ files, revision, symbol, loadedDays, ancho
         {!products ? !error && <p role="status" className="okx-local-note">正在扫描文件夹…</p>
           : entries.length === 0 && <p className="okx-local-note">暂无可用的 CME Trades DBN 日档。</p>}
         <DatabentoArchivePicker key={`${symbol}:${selectionVersion}`} entries={entries} loadedDays={loadedDays}
-          busy={busy} onLoad={days => void run(async () => {
-            await onLoad(symbol, days, false)
+          busy={busy} appendOnly={appendOnly} onLoad={days => void run(async () => {
+            await onLoad(symbol, days, appendOnly)
             onClose()
           })} />
       </section>}

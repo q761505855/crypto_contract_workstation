@@ -35,7 +35,6 @@ import { WorkspaceTools } from '../components/WorkspaceTools'
 import { PanelToggle } from '../components/PanelToggle'
 import { loadWorkspacePreferences, saveWorkspacePreferences, DEFAULT_WORKSPACE_PREFERENCES, type WorkspacePreferences } from '../workspace/preferences'
 import type { MarketSelection } from '../market-data/models'
-import { BYBIT_DAY_MS } from '../market-data/bybit/trades'
 import { OkxLocalDownloads } from '../market-data/okx/local-downloads'
 import { readSelectedDatabentoSymbol, readSelectedOkxSymbol, readSelectedSymbol, saveSelectedSymbol } from '../market-data/symbol-preferences'
 import { isOkxPriceSource, priceSourceLabel, readPriceSource, savePriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
@@ -221,7 +220,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
   const [stepPeriod, setStepPeriod] = useState(() => activeStepPeriod(source))
   const [showTradeOverlays, setShowTradeOverlays] = useState(readShowTradeOverlays)
-  const replay = useCTraderReplayController(marketRuntime, stepPeriod)
+  const replay = useCTraderReplayController(marketRuntime, stepPeriod, localDataRevision)
   const mode = replay.session === null ? 'live' : 'history'
   const sessionId = replay.session?.id
   const sessionSymbol = replay.session?.symbol
@@ -248,27 +247,28 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   replaySessionRef.current = replay.session
   const loadLocalArchives = useCallback(async (symbol: string, days: readonly string[], append: boolean, report = true) => {
     if (!localMarket) return
+    const datafeed = marketRuntime.replayDatafeed
+    const replaying = datafeed.getReplayContext() !== null || replaySessionRef.current !== null
+    if (databento && replaying && report) append = true
     const previous = localMarket.activeDays(symbol)
     const directoryRevision = databento?.files.revision
     const toLoad = databento ? [...days].filter(day => !append || !previous.includes(day)).sort() : days
-    const changed = localMarket.setActiveDays(symbol, days, append)
+    let changed = false
     setMarketWarning('')
     setLocalLoadStatus(undefined)
     try {
-      const datafeed = marketRuntime.replayDatafeed
+      let loadedRange: LoadedArchiveRange | undefined
+      const minutes = databento && replaying && report && toLoad.length
+        ? await databento.loadArchiveMinutes(symbol, toLoad) : undefined
+      if (minutes?.length === 0) throw new Error('所选日档中没有此品种的可用成交。')
       const context = datafeed.getReplayContext()
       const replaySession = replaySessionRef.current
-      const replaying = context !== null || replaySession !== null
-      let loadedRange: LoadedArchiveRange | undefined
+      changed = localMarket.setActiveDays(symbol, days, append)
       if (replaying) {
         if (changed) {
-          if (databento && toLoad.length && report) {
-            const first = databento.archiveDayStart(toLoad[0])
-            const last = databento.archiveDayStart(toLoad.at(-1)!) + BYBIT_DAY_MS - 1
-            const bars = await databento.loadCandles('trade', symbol, '1m', first, last)
-            if (!bars.length) throw new Error('所选日档中没有此品种的可用成交。')
+          if (minutes && (context || replaySession)) {
             const visibleUntil = context ? replayVisibleUntil(context) : sessionVisibleUntil(replaySession!)
-            const visible = bars.filter(bar => bar.closeTime < visibleUntil)
+            const visible = minutes.filter(bar => bar.closeTime < visibleUntil)
             if (visible.length) loadedRange = {
               first: visible[0].openTime, last: visible.at(-1)!.openTime, timeZone: DEFAULT_CHART_TIMEZONE,
             }
@@ -710,12 +710,17 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         <button type="button" className="dialog-done" onClick={() => { setWorkspaceMenu(false); setChartSizeOpen(true) }}>调整图表与指标高度</button>
         {layoutError && <p role="alert" className="panel-error">{layoutError}</p>}
       </WorkspaceDialog>
+      <WorkspaceDialog open={!!replay.endNotice} title="回放数据提示" onClose={replay.dismissEndNotice}>
+        <p>{replay.endNotice}</p>
+        <button type="button" className="dialog-done" onClick={replay.dismissEndNotice}>确定</button>
+      </WorkspaceDialog>
       {dataManagerOpen && <DataManager onClose={() => setDataManagerOpen(false)} runtime={marketRuntime} />}
       {localDataOpen && okxLocalMarket && localDownloads && <OkxLocalDataDialog files={okxLocalMarket.files}
         downloads={localDownloads} symbol={marketSelection.symbol.ticker} loadedDays={okxLocalMarket.activeDays(marketSelection.symbol.ticker)}
         onClose={() => setLocalDataOpen(false)} onFolderChange={refreshLocalFolder} onLoad={loadLocalArchives} />}
       {localDataOpen && databento && <DatabentoDataDialog files={databento.files} revision={databento.files.revision}
         symbol={marketSelection.symbol.ticker} loadedDays={databento.activeDays(marketSelection.symbol.ticker)}
+        appendOnly={replay.session !== null}
         onClose={() => setLocalDataOpen(false)} onFolderChange={refreshLocalFolder} onLoad={loadLocalArchives} />}
     </main>
   )

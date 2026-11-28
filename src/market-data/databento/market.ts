@@ -240,6 +240,14 @@ export class DatabentoMarket implements LocalArchiveMarket {
     return this.candlesFromFiles(selected, all, symbol, timeframe, start, end, signal)
   }
 
+  async loadArchiveMinutes(symbol: string, days: readonly string[]): Promise<MarketCandle[]> {
+    const signal = this.cancelled.signal
+    const { all } = await this.archives(symbol, signal)
+    const selected = all.filter(file => days.includes(file.day))
+    if (!selected.length) return []
+    return this.candlesFromFiles(selected, all, symbol, '1m', selected[0].start, selected.at(-1)!.start + DAY, signal)
+  }
+
   private async candlesFromFiles(files: DatabentoArchive[], all: DatabentoArchive[], symbol: string, timeframe: string,
     start: number, end: number, signal?: AbortSignal): Promise<MarketCandle[]> {
     const rows: LocalBar[] = []

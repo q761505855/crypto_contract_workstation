@@ -433,13 +433,56 @@ describe('cTrader replay', () => {
     await act(() => result.current.createSession({ symbol, period: m1, startTime: monday, endTime: monday + 2 * minute - 1 }))
     await act(() => result.current.next('1h'))
     expect(result.current.session).toMatchObject({ status: 'paused', currentTime: monday })
+    expect(result.current.endNotice).toContain('更小的步进周期')
     await act(() => result.current.next('1m'))
-    expect(result.current.session).toBeNull()
-    const finished = result.current.sessions[0]
-    expect(finished).toMatchObject({ status: 'completed', active: false, currentTime: monday + minute })
-    await expect(runtime.replaySessions.list()).resolves.toEqual([finished])
-    await act(() => result.current.loadSession(finished.id))
-    expect(result.current.session).toEqual(expect.objectContaining({ status: 'completed', active: false }))
+    expect(result.current.endNotice).toBe('')
+    await act(() => result.current.next('1m'))
+    const last = result.current.session
+    expect(last).toMatchObject({ status: 'paused', active: true, currentTime: monday + minute })
+    expect(result.current.endNotice).toContain('当前回放数据末尾')
+    await expect(runtime.replaySessions.list()).resolves.toEqual([last])
+  })
+
+  it('keeps automatic playback at the last Tick and resumes from it when Databento archives change', async () => {
+    const at = monday + minute
+    const market = {
+      ...service([{ ...mondayFirst, source: 'databento-cme' }]),
+      source: 'databento-cme' as const,
+      historyRevision: 0,
+      historyBounds: vi.fn(async () => ({ from: monday, to: at + (market.historyRevision === 0 ? 249 : 500) })),
+      loadTicks: vi.fn(async () => [
+        { timestamp: at + 100, price: '100' },
+        ...(market.historyRevision === 0 ? [] : [{ timestamp: at + 250, price: '101' }]),
+      ]),
+    }
+    const replaySessions = stores()
+    const { result, rerender, unmount } = renderHook(({ revision }) => useCTraderReplayController({ service: market, replaySessions }, '1m', revision),
+      { initialProps: { revision: 0 } })
+    await waitFor(() => expect(result.current.busy).toBe(false))
+    await act(() => result.current.createSession({ symbol, period: m1, startTime: monday, playbackMode: 'tick' }))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    try {
+      act(() => result.current.play())
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(result.current.endNotice).toContain('当前回放数据末尾')
+      expect(result.current.isPlaying).toBe(true)
+      expect(result.current.session).toMatchObject({ currentIndex: 1, active: true, currentTime: at + 100 })
+      act(() => result.current.dismissEndNotice())
+      const reads = market.loadTicks.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(result.current.endNotice).toBe('')
+      expect(market.loadTicks).toHaveBeenCalledTimes(reads)
+
+      market.historyRevision++
+      rerender({ revision: market.historyRevision })
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(result.current.isPlaying).toBe(true)
+      expect(await replaySessions.get()).toMatchObject({ status: 'paused', active: true, currentIndex: 2,
+        currentTime: at + 250, endTime: at + 500 })
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
   })
 
   it('drops a chart response that finishes after the replay period is switched', async () => {

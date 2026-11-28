@@ -2,10 +2,11 @@ import { useState } from 'react'
 import type { DatabentoArchive } from '../market-data/databento/files'
 import './databento-archive-picker.css'
 
-export function DatabentoArchivePicker({ entries, loadedDays, busy, onLoad }: {
+export function DatabentoArchivePicker({ entries, loadedDays, busy, appendOnly, onLoad }: {
   entries: readonly DatabentoArchive[]
   loadedDays: readonly string[]
   busy: boolean
+  appendOnly: boolean
   onLoad(days: readonly string[]): void
 }) {
   const [changes, setChanges] = useState<Record<string, boolean>>({})
@@ -25,17 +26,21 @@ export function DatabentoArchivePicker({ entries, loadedDays, busy, onLoad }: {
   const rangeStatus = !hasRange ? '' : !validDates ? '请选择有效的起止日期。'
     : start > end ? '开始日期不能晚于结束日期。' : visible.length === 0 ? '区间内没有本地日档。' : ''
   const loaded = new Set(loadedDays)
-  const selected = new Set(entries.filter(file => changes[file.day] ?? loaded.has(file.day)).map(file => file.day))
+  const locked = (day: string) => appendOnly && loaded.has(day)
+  const selected = new Set(entries.filter(file => locked(file.day) || (changes[file.day] ?? loaded.has(file.day))).map(file => file.day))
+  const daysToLoad = [...selected].filter(day => !locked(day))
   const selectedInList = visible.filter(file => selected.has(file.day)).length
   const selectedOutside = selected.size - selectedInList
-  const allInListSelected = visible.length > 0 && selectedInList === visible.length
+  const editable = visible.filter(file => !locked(file.day))
+  const selectedEditable = editable.filter(file => selected.has(file.day)).length
+  const allInListSelected = editable.length > 0 && selectedEditable === editable.length
 
   function setChecked(files: readonly DatabentoArchive[], checked: boolean) {
-    setChanges(current => ({ ...current, ...Object.fromEntries(files.map(file => [file.day, checked])) }))
+    setChanges(current => ({ ...current, ...Object.fromEntries(files.filter(file => !locked(file.day)).map(file => [file.day, checked])) }))
   }
 
   return <>
-    <p className="okx-local-note">日档日期按 UTC 显示。</p>
+    <p className="okx-local-note">日档日期按 UTC 显示。{appendOnly && '回放中可追加日档，已加载的日期会保留。'}</p>
     <div className="okx-local-dates databento-archive-range">
       <label>开始日期<input type="date" value={start} disabled={busy}
         onChange={event => setStart(event.target.value)} /></label>
@@ -52,10 +57,10 @@ export function DatabentoArchivePicker({ entries, loadedDays, busy, onLoad }: {
         {months.map(value => <option key={value} value={value}>{value}</option>)}
       </select></label>
       <label className="okx-local-archive-choice"><input type="checkbox" checked={allInListSelected}
-        ref={input => { if (input) input.indeterminate = selectedInList > 0 && !allInListSelected }}
-        disabled={busy || visible.length === 0}
-        onChange={event => setChecked(visible, event.target.checked)} />全选当前列表</label>
-      <button type="button" disabled={busy || !selected.size} onClick={() => setChecked(entries, false)}>清空选择</button>
+        ref={input => { if (input) input.indeterminate = selectedEditable > 0 && !allInListSelected }}
+        disabled={busy || editable.length === 0}
+        onChange={event => setChecked(editable, event.target.checked)} />全选当前列表</label>
+      <button type="button" disabled={busy || !daysToLoad.length} onClick={() => setChecked(entries, false)}>清空选择</button>
     </div>
     {rangeStatus && <p className="okx-local-note" role="status">{rangeStatus}</p>}
     <ul key={hasRange ? `${start}:${end}` : month} aria-label="本地 DBN 文件" className="okx-local-list databento-archive-list">
@@ -63,7 +68,7 @@ export function DatabentoArchivePicker({ entries, loadedDays, busy, onLoad }: {
         <li key={file.day}>
           <label>
             <input type="checkbox" aria-label={file.day}
-              disabled={busy} checked={selected.has(file.day)}
+              disabled={busy || locked(file.day)} checked={selected.has(file.day)}
               onChange={event => setChecked([file], event.target.checked)} />
             <time dateTime={file.day}>{file.day}</time>
             <span title={file.filename}>{file.filename}</span>
@@ -76,8 +81,8 @@ export function DatabentoArchivePicker({ entries, loadedDays, busy, onLoad }: {
         当前列表已选 {selectedInList} / {visible.length} 个日档
         {selectedOutside > 0 && `，另有 ${selectedOutside} 个已选日档在列表外`}
       </p>
-      <button type="button" className="okx-local-primary" disabled={busy || (!selected.size && !loadedDays.length)}
-        onClick={() => onLoad([...selected])}>{busy ? '正在加载…' : '加载所选日期'}</button>
+      <button type="button" className="okx-local-primary" disabled={busy || (!daysToLoad.length && (appendOnly || !loadedDays.length))}
+        onClick={() => onLoad(daysToLoad)}>{busy ? '正在加载…' : '加载所选日期'}</button>
     </div>
   </>
 }
