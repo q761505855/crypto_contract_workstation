@@ -479,7 +479,7 @@ function indicatorPreferences(): ChartIndicatorPreferences {
       visibleProfile: { placement: 'left', offset: 0, width: 18, rows: 52, type: 'delta', showHeaders: false, showDelta: false,
         showPoc: true, showValueArea: false, valueArea: 86, showLabels: false, pocColor: '#ff8321', levelColor: '#abcdef',
         volumeColor: '#12345600', valueAreaColor: '#23457800', positiveColor: '#23456780', negativeColor: '#345678' },
-      cvd: { reset: 'continuous', showZero: false },
+      cvd: { reset: 'continuous', showZero: false, plot: 'candlestick' },
     },
     main: [
       {
@@ -840,6 +840,7 @@ describe('WorkstationBackupService', () => {
     delete legacyIndicators.orderFlow!.profile!.rowSizePercent
     delete legacyIndicators.orderFlow!.profile!.showDelta
     delete legacyIndicators.orderFlow!.visibleProfile!.showDelta
+    delete legacyIndicators.orderFlow!.cvd!.plot
     archive.data.preferences!.chartIndicators = legacyIndicators
     await target.import(archive)
     expect((await target.exportPreferences()).data.preferences!.chartIndicators)
@@ -881,7 +882,9 @@ describe('WorkstationBackupService', () => {
       await expect(target.import(archive)).rejects.toThrow(/orderFlow.visibleProfile/)
       expect((await target.exportAll()).data).toEqual(before)
     }
-    for (const [group, value] of Object.entries({ profile: { showDelta: null }, visibleProfile: { showDelta: 0 }, candleProfile: { rows: 0 } })) {
+    for (const [group, value] of Object.entries({
+      profile: { showDelta: null }, visibleProfile: { showDelta: 0 }, candleProfile: { rows: 0 }, cvd: { plot: null },
+    })) {
       archive.data.preferences!.chartIndicators = { ...invalid, orderFlow: { [group]: value } }
       await expect(target.import(archive)).rejects.toThrow(`orderFlow.${group}`)
       expect((await target.exportAll()).data).toEqual(before)

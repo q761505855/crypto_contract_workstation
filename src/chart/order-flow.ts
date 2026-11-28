@@ -26,7 +26,8 @@ export function tradeThresholdValue(trade: BybitTrade, unit: BigTradeThresholdUn
     case 'quantity': return trade.size
     case 'contracts': return trade.venue === 'CME' ? trade.size
       : trade.venue === 'OKX' && units.contractValue ? trade.size / units.contractValue : undefined
-    case 'lots': return units.lotSize && (trade.venue === 'OKX' || !units.projectToCandle) ? trade.size / units.lotSize : undefined
+    case 'lots': return trade.venue !== 'CME' && units.lotSize && (trade.venue === 'OKX' || !units.projectToCandle)
+      ? trade.size / units.lotSize : undefined
   }
 }
 

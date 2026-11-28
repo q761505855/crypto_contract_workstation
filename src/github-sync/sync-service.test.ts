@@ -103,7 +103,7 @@ function backup(): BackupEnvelope {
         visibleProfile: { placement: 'left', offset: 0, width: 30, rows: 56, type: 'volumeDelta', showHeaders: false, showDelta: false,
           showPoc: false, showValueArea: true, valueArea: 83, showLabels: false, pocColor: '#ffe192', levelColor: '#aabbcc00',
           volumeColor: '#12345600', valueAreaColor: '#13568080', positiveColor: '#23456780', negativeColor: '#345678' },
-        cvd: { reset: 'continuous', showZero: false, plot: 'histogram' },
+        cvd: { reset: 'continuous', showZero: false, plot: 'candlestick' },
       },
       main: [
         { name: 'MA', calcParams: [7, 25, 99], visible: true, styles: null },
@@ -1098,6 +1098,7 @@ describe('GitHubSyncService', () => {
     delete legacyDefaults.orderFlow!.profile!.rowSizePercent
     delete legacyDefaults.orderFlow!.profile!.showDelta
     delete legacyDefaults.orderFlow!.visibleProfile!.showDelta
+    delete legacyDefaults.orderFlow!.cvd!.plot
     legacyDefaults.main.find(i => i.name === 'BIG_TRADES')!.styles = null
     legacyDefaults.main.find(i => i.name === 'PIVOTS')!.calcParams = PIVOTS_DEFAULT_PARAMS.slice(0, 30)
     const legacySessions = legacyDefaults.main.find(i => i.name === 'MARKET_SESSIONS')!
@@ -1154,6 +1155,11 @@ describe('GitHubSyncService', () => {
     await rewrite({ ...remotePreferences, chartIndicators: { ...indicators, orderFlow: { cvd: { lineWidth: 0 } } } })
     await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.cvd.lineWidth/)
     expect((await targetBackups.exportAll()).data).toEqual(before)
+    for (const plot of [null, '', false, 'ohlc']) {
+      await rewrite({ ...remotePreferences, chartIndicators: { ...indicators, orderFlow: { cvd: { plot } } } })
+      await expect(target.pull(client(remote))).rejects.toThrow(/orderFlow.cvd.plot/)
+      expect((await targetBackups.exportAll()).data).toEqual(before)
+    }
     invalidBubbles.main.find(i => i.name === 'BIG_TRADES')!.styles = { bubbleColors: [] }
     await rewrite({ ...remotePreferences, binanceRestBaseUrl: 'https://changed.test', chartIndicators: invalidBubbles })
     await expect(target.pull(client(remote))).rejects.toThrow(/BIG_TRADES.*bubbleColors/)

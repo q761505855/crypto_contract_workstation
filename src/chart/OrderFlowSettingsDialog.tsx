@@ -134,9 +134,10 @@ function OrderFlowColorField({ label, value, onChange }: {
   </div>
 }
 
-export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }: {
+export function OrderFlowSettingsDialog({ group, preferences, cme = false, onClose, onSave }: {
   group: OrderFlowGroup
   preferences?: OrderFlowPreferences
+  cme?: boolean
   onClose(): void
   onSave(preferences: OrderFlowPreferences): void
 }) {
@@ -194,6 +195,7 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
     if (key !== error?.field && (!matchesThreshold || visibility[group][key]?.(values) === false)) return null
     const setValue = (value: string | number | boolean) => setValues(current => ({ ...current, [key]: value }))
     const value = values[key]
+    const cmeThreshold = cme && key === 'thresholdUnit'
     if (field.kind === 'color') {
       return <OrderFlowColorField key={key} label={field.label} value={String(value)} onChange={setValue} />
     }
@@ -201,7 +203,9 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
       <span>{field.label}</span>
       {field.kind === 'select' ? (
         <select aria-label={field.label} value={String(value)} onChange={event => setValue(event.target.value)}>
-          {Object.entries(field.options).map(([option, label]) => <option key={option} value={option}>{label}</option>)}
+          {Object.entries(cmeThreshold ? { ...field.options, quantity: '成交数量（张）', contracts: 'CME 期货张数（张）' }
+            : field.options).map(([option, label]) =>
+            <option key={option} value={option} disabled={cmeThreshold && (option === 'notional' || option === 'lots')}>{label}</option>)}
         </select>
       ) : field.kind === 'boolean' ? (
         <input type="checkbox" checked={value === true} onChange={event => setValue(event.target.checked)} />
@@ -220,7 +224,8 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
     </>}>
     <form id={formId} className="order-flow-form" noValidate onSubmit={submit}>
       {group === 'profile' && <p className="order-flow-hint">适用于左侧绘图工具创建的成交分布选区。</p>}
-      {isProfile && <p className="order-flow-hint">档宽按最新价乘以比例计算，三种成交分布共用档宽比例和价值区比例。</p>}
+      {isProfile && <p className="order-flow-hint">{group === 'candleProfile' ? '逐根分布按各根 K 线自己的开盘价计算档宽。'
+        : '档宽按最新价乘以比例计算。'}三种成交分布共用档宽比例和价值区比例。</p>}
       {group === 'footprint' && <p className="order-flow-hint">放大图表可查看价位数值。缺少历史逐笔时，可从图表工具栏下载。</p>}
       {groupSections.map((section, index) => {
         const open = expanded[section.title]
@@ -233,8 +238,10 @@ export function OrderFlowSettingsDialog({ group, preferences, onClose, onSave }:
           <div className="order-flow-section-body" id={bodyId} hidden={!open}>
             {open && <>
               <div className="order-flow-fields">{section.fields.map(renderField)}</div>
-              {group === 'bubbles' && index === 0 && unit === 'contracts' && <p className="order-flow-hint">张数筛选适用于 OKX 成交。</p>}
-              {group === 'bubbles' && index === 0 && unit === 'lots' && <p className="order-flow-hint">手数按当前 cTrader 品种规格换算，ETF 代理成交无法换算为该品种手数。</p>}
+              {group === 'bubbles' && index === 0 && (cme || unit === 'contracts') && <p className="order-flow-hint">
+                {cme ? 'CME 期货张数直接使用 Databento 日档的成交张数。' : '张数筛选适用于 OKX 成交。'}
+              </p>}
+              {group === 'bubbles' && index === 0 && !cme && unit === 'lots' && <p className="order-flow-hint">手数按当前 cTrader 品种规格换算，ETF 代理成交无法换算为该品种手数。</p>}
             </>}
           </div>
         </section>

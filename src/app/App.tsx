@@ -75,6 +75,7 @@ function tradeOverlay(trade: SimulationTrade): SimulationTradeLabel {
   }
   return {
     timestamp: trade.timestamp,
+    price: Number(trade.price),
     label: labels[trade.action],
     color: trade.side === 'buy' ? SIMULATION_BUY_COLOR : SIMULATION_SELL_COLOR,
   }

@@ -823,7 +823,7 @@ export function ChartWorkspace({
         />
       ) : null}
       {orderFlowDialog && <OrderFlowSettingsDialog key={orderFlowDialog} group={orderFlowDialog}
-        preferences={orderFlowSettings}
+        preferences={orderFlowSettings} cme={symbol.exchange === 'CME'}
         onClose={() => setOrderFlowDialog(null)} onSave={preferences => {
           const adapter = adapterRef.current
           adapter?.setOrderFlowPreferences?.(preferences)

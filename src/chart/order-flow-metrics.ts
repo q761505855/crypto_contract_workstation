@@ -96,29 +96,44 @@ export function footprintRowsFromLevels(totals: ReadonlyMap<number, FootprintLev
   return ordered.map(([, { row }]) => row)
 }
 
-const signedVolumes = new WeakMap<readonly TradeBubble[], number[]>()
+export interface CvdCandle { open: number; high: number; low: number; close: number }
 
-function tradeDelta(bar: TradeBar): number {
-  let delta = 0
+const deltaRanges = new WeakMap<readonly TradeBubble[], Map<number, Omit<CvdCandle, 'open'> & { until: number }>>()
+
+function tradeDeltaCandle(bar: TradeBar, open: number): CvdCandle {
+  let close = open
+  let high = open
+  let low = open
   for (const { points, from, until } of bar.pointRanges) {
-    let sums = signedVolumes.get(points)
-    if (!sums) {
-      sums = [0]
-      signedVolumes.set(points, sums)
+    let ranges = deltaRanges.get(points)
+    if (!ranges) {
+      ranges = new Map()
+      deltaRanges.set(points, ranges)
     }
-    for (let index = sums.length - 1; index < until; index++) {
+    let range = ranges.get(from)
+    if (!range || range.until > until) {
+      range = { until: from, close: 0, high: 0, low: 0 }
+      ranges.set(from, range)
+    }
+    // A forming candle extends the same trade range as new ticks become visible.
+    for (let index = range.until; index < until; index++) {
       const { trade } = points[index]
-      sums.push(sums[index] + (trade.side === 'buy' ? trade.size : -trade.size))
+      range.close += trade.side === 'buy' ? trade.size : -trade.size
+      range.high = Math.max(range.high, range.close)
+      range.low = Math.min(range.low, range.close)
     }
-    delta += sums[until] - sums[from]
+    range.until = until
+    high = Math.max(high, close + range.high)
+    low = Math.min(low, close + range.low)
+    close += range.close
   }
-  return delta
+  return { open, high, low, close }
 }
 
 export function cumulativeVolumeDelta(candles: readonly Pick<KLineData, 'timestamp'>[],
   read: (timestamp: number) => TradeBar | undefined, daily: boolean,
-  dayOf = (timestamp: number) => Math.floor(timestamp / BYBIT_DAY_MS)): Map<number, number> {
-  const values = new Map<number, number>()
+  dayOf = (timestamp: number) => Math.floor(timestamp / BYBIT_DAY_MS)): Map<number, CvdCandle> {
+  const values = new Map<number, CvdCandle>()
   let delta = 0
   let lastDay: number | undefined
   for (const { timestamp } of candles) {
@@ -130,8 +145,9 @@ export function cumulativeVolumeDelta(candles: readonly Pick<KLineData, 'timesta
       delta = 0
       continue
     }
-    delta += tradeDelta(bar)
-    values.set(timestamp, delta)
+    const candle = tradeDeltaCandle(bar, delta)
+    delta = candle.close
+    values.set(timestamp, candle)
   }
   return values
 }

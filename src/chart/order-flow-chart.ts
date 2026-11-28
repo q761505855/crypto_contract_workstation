@@ -40,8 +40,12 @@ const notional = (trade: BybitTrade) => trade.price * trade.size
 const errorText = (error: unknown) => error instanceof Error ? error.message : '读取逐笔成交失败'
 const unavailable = '此品种暂无逐笔成交'
 
-function sameValues<T>(a: ReadonlyMap<number, T> | undefined, b: ReadonlyMap<number, T> | undefined): boolean {
-  return a === b || (a?.size === b?.size && !!a && !!b && [...a].every(([key, value]) => b.get(key) === value))
+function sameValues<T>(a: ReadonlyMap<number, T> | undefined, b: ReadonlyMap<number, T> | undefined,
+  equal: (left: T, right: T) => boolean = (left, right) => left === right): boolean {
+  return a === b || (a?.size === b?.size && !!a && !!b && [...a].every(([key, value]) => {
+    const other = b.get(key)
+    return other !== undefined && equal(value, other)
+  }))
 }
 
 function bybitVolumeCalc(native: Indicator['calc'], volumes?: ReadonlyMap<number, number>): Indicator['calc'] {
@@ -97,7 +101,7 @@ export class OrderFlowChart {
   private cvdSettings = orderFlowSettings('cvd')
   private profileReferencePrice?: number
   private footprintRows = new WeakMap<TradeBar, { open: number; precision: number; projected: boolean; targetRows: number; rows: FootprintRow[] }>()
-  private candleProfiles = new WeakMap<VolumeProfileLevels, VolumeProfile | undefined>()
+  private candleProfiles = new WeakMap<VolumeProfileLevels, { referencePrice: number; profile?: VolumeProfile }>()
   private readonly footprintWorkers = new CandleWorkerResults<FootprintRow[]>(() => this.schedule())
   private readonly bubbleWorkers = new CandleWorkerResults<DisplayedTradeBubble[]>(() => this.schedule())
   private previousBarSpace?: number
@@ -370,7 +374,6 @@ export class OrderFlowChart {
     const price = latestDisplayCandle(this.chart)?.close
     if (price === this.profileReferencePrice) return
     this.profileReferencePrice = price
-    this.candleProfiles = new WeakMap()
     this.redrawProfiles()
   }
 
@@ -646,7 +649,9 @@ export class OrderFlowChart {
     if (!item?.[1].visible) return
     const [pane, indicator] = item
     const previous = indicator.extendData as CvdDisplay | undefined
-    if (previous?.settings === this.cvdSettings && previous?.message === message && sameValues(previous.values, values)) return
+    if (previous?.settings === this.cvdSettings && previous?.message === message &&
+        sameValues(previous.values, values, (a, b) =>
+          a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close)) return
     const display: CvdDisplay = { values, message, settings: this.cvdSettings }
     this.overrideIndicator.call(this.chart, { name: CVD, extendData: display }, pane)
   }
@@ -831,11 +836,14 @@ export class OrderFlowChart {
       partial ||= !bar.complete
       if (candleProfileEnabled && bar.firstPrice !== undefined) {
         const levels = tradeBarProfileLevels(bar, open, projected)
-        if (!this.candleProfiles.has(levels)) {
-          this.candleProfiles.set(levels, levels.profile(this.profileReferencePrice, this.profileSettings))
+        // A candle trading only at zero still needs a positive width for its single level.
+        const referencePrice = open || Math.max(Math.abs(high), Math.abs(low)) || 1
+        let cached = this.candleProfiles.get(levels)
+        if (cached?.referencePrice !== referencePrice) {
+          cached = { referencePrice, profile: levels.profile(referencePrice, this.profileSettings) }
+          this.candleProfiles.set(levels, cached)
         }
-        const profile = this.candleProfiles.get(levels)
-        if (profile) candleProfiles.set(timestamp, profile)
+        if (cached.profile) candleProfiles.set(timestamp, cached.profile)
       }
       if (footprintEnabled && bar.firstPrice !== undefined) {
         const settings = this.footprintSettings
@@ -869,7 +877,7 @@ export class OrderFlowChart {
     const unit = this.bubbleSettings.thresholdUnit
     const contractValue = this.feed.mapping?.okx?.contractValue
     const lotSize = unit === 'lots' ? this.getLotSize() : undefined
-    const unitMessage = cme && unit === 'notional' ? 'CME 日档仅含成交张数，请选择张数阈值'
+    const unitMessage = cme && (unit === 'notional' || unit === 'lots') ? '请在大单气泡设置中选择 CME 期货张数'
       : unit === 'contracts' && !contractValue && !cme ? '此品种暂无 OKX 合约张数'
       : unit === 'lots' && !lotSize ? '此品种暂无可用于换算手数的 cTrader 规格'
         : unit === 'lots' && projected && !contractValue ? 'ETF 代理成交无法换算为当前品种手数' : undefined
@@ -1051,11 +1059,14 @@ export class OrderFlowChart {
     if (!nearest) { this.hideTooltip(); return }
     const { trade, count, amount } = nearest
     const aggregation = mode === 'aggregate' ? ` · ${count ?? 1} 笔` : ''
-    const quantity = threshold.unit === 'contracts' || threshold.unit === 'lots'
-      ? `${amount.toLocaleString('zh-CN', { maximumSignificantDigits: 10 })} ${bigTradeThresholdUnits[threshold.unit]} · ` : ''
+    let quantity = String(trade.size)
+    if (trade.venue === 'CME') quantity = `${trade.size.toLocaleString('zh-CN')} 张`
+    else if (threshold.unit === 'contracts' || threshold.unit === 'lots') {
+      quantity = `${amount.toLocaleString('zh-CN', { maximumSignificantDigits: 10 })} ${bigTradeThresholdUnits[threshold.unit]} · ${quantity}`
+    }
     const suffix = trade.venue === 'CME' ? '' : ` · ${notional(trade).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} USDT`
     const price = trade.venue === 'CME' ? trade.price.toFixed(DATABENTO_CHART_PRICE_PRECISION) : trade.price
-    this.tooltip.textContent = `${trade.venue ?? 'Bybit'} ${trade.side === 'buy' ? '主动买入' : '主动卖出'}${aggregation} · ${quantity}${trade.size} @ ${price}${suffix}`
+    this.tooltip.textContent = `${trade.venue ?? 'Bybit'} ${trade.side === 'buy' ? '主动买入' : '主动卖出'}${aggregation} · ${quantity} @ ${price}${suffix}`
     this.tooltip.style.left = `${Math.max(4, Math.min(width - 260, cursorX + 12))}px`
     this.tooltip.style.top = `${Math.max(4, cursorY - 30)}px`
     this.tooltip.hidden = false

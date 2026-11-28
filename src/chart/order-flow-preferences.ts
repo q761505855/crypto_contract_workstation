@@ -124,7 +124,7 @@ export const orderFlowFields = {
   },
   cvd: {
     reset: select('累计方式', 'daily', { daily: 'UTC 日切', continuous: '连续累计' }),
-    plot: select('显示样式', 'line', { line: '折线', histogram: '柱形' }),
+    plot: select('显示样式', 'candlestick', { candlestick: '蜡烛图', line: '折线', histogram: '柱形' }),
     showZero: toggle('显示零线', true),
     lineWidth: number('线宽', 2, 1, 5),
     positiveColor: color('正值色', '#35c6a1'),

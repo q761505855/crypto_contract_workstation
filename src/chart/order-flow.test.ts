@@ -49,13 +49,18 @@ describe('Bybit 成交指标', () => {
     expect(ctx.fillText).toHaveBeenCalledTimes(2)
   })
 
-  it('大单阈值按所选单位换算，张数只来自 OKX，ETF 代理不换算手数', () => {
+  it('大单阈值使用 CME 原始张数、换算 OKX 张数并排除 Bybit 张数', () => {
     const bybit = trade(100, 2, 'buy')
     const okx = { ...bybit, venue: 'OKX' as const }
+    const cme = { ...bybit, venue: 'CME' as const }
     const terms = { contractValue: 0.1, lotSize: 100 }
     expect(tradeThresholdValue(okx, 'notional', terms)).toBe(200)
     expect(tradeThresholdValue(okx, 'quantity', terms)).toBe(2)
     expect(tradeThresholdValue(okx, 'contracts', terms)).toBe(20)
+    expect(tradeThresholdValue(cme, 'contracts', terms)).toBe(2)
+    expect(tradeThresholdValue(cme, 'quantity', terms)).toBe(2)
+    expect(tradeThresholdValue(cme, 'notional', terms)).toBeUndefined()
+    expect(tradeThresholdValue(cme, 'lots', terms)).toBeUndefined()
     expect(tradeThresholdValue(bybit, 'contracts', terms)).toBeUndefined()
     expect(tradeThresholdValue(bybit, 'lots', terms)).toBe(0.02)
     expect(tradeThresholdValue(bybit, 'lots', { ...terms, projectToCandle: true })).toBeUndefined()
@@ -73,6 +78,17 @@ describe('Bybit 成交指标', () => {
     expect([...filteredTradeBubbles(bar, 'aggregate', filter)].map(({ trade, count }) => [trade.id, count])).toEqual([['first', 2]])
     expect([...filteredTradeBubbles(bar, 'aggregate', { ...filter, minimum: 0, maximum: 2 })]).toEqual([])
     expect([...filteredTradeBubbles(bar, 'aggregate', { ...filter, minimum: 0, maximum: 0 })]).toHaveLength(1)
+  })
+
+  it('CME 负价成交仍按原始张数筛选', () => {
+    const samples = new AccumulatedHour()
+    samples.add({ ...trade(-10, 2, 'buy'), venue: 'CME', id: 'first' }, 0, 0)
+    samples.add({ ...trade(-10, 3, 'buy'), venue: 'CME', id: 'second' }, 0, 0)
+    const bar: TradeBar = { cursor: 2000, volume: 0, complete: true, pointRanges: [] }
+    includeHour(bar, samples, 0, 0, bar.cursor)
+    const filter = { unit: 'contracts' as const, minimum: 2, maximum: 0 }
+    expect([...filteredTradeBubbles(bar, 'volume', filter)].map(({ amount }) => amount)).toEqual([2, 3])
+    expect([...filteredTradeBubbles(bar, 'aggregate', filter)].map(({ amount, count }) => [amount, count])).toEqual([[5, 2]])
   })
 
   it('在整个可见范围内按筛选单位保留最大气泡，逐笔与聚合共用上限', () => {
@@ -152,7 +168,7 @@ describe('Bybit 成交指标', () => {
     expect(tradeBarProfileLevels(bar, 200, true, 1050, 1200).pack()).toEqual(new Float64Array([210, 7, 0]))
   })
 
-  it('同一段逐笔成交的框选、逐根和可见范围使用相同分档和价位', () => {
+  it('用同一基准价分档时，整根、框选切片和可见成交得到相同价位', () => {
     const points = [trade(100.25, 1, 'buy'), trade(100.75, 8, 'sell'), trade(101.25, 7, 'buy'), trade(105.5, 2, 'buy')]
       .map((trade, index) => ({ trade: { ...trade, timeUs: 1000 + index * 100 } }))
     const bar: TradeBar = { cursor: 1400, volume: 18, complete: true, pointRanges: [{ points, from: 0, until: points.length }] }
@@ -388,13 +404,31 @@ describe('Bybit 成交指标', () => {
     const start = Date.UTC(2026, 10, 20)
     const timestamps = [start, start + 60_000, start + 86_400_000, start + 86_460_000, start + 86_520_000]
     const samples = new AccumulatedHour()
-    samples.add(trade(100, 2, 'buy'), 0, 0)
+    const ticks = [trade(100, 4, 'buy'), trade(101, 9, 'sell'), trade(102, 7, 'buy')]
+    ticks.forEach((tick, index) => samples.add({ ...tick, timeUs: 1000 + index }, 0, 0))
     const bar: TradeBar = { cursor: 2000, volume: 0, pointRanges: [], complete: true }
     includeHour(bar, samples, 0, 0, bar.cursor)
     const candles = timestamps.map(timestamp => ({ timestamp }))
     const read = (timestamp: number) => timestamp === timestamps[3] ? undefined : bar
-    expect([...cumulativeVolumeDelta(candles, read, true).values()]).toEqual([2, 4, 2, 2])
-    expect([...cumulativeVolumeDelta(candles, read, false).values()]).toEqual([2, 4, 6, 2])
+    const first = { open: 0, high: 4, low: -5, close: 2 }
+    const second = { open: 2, high: 6, low: -3, close: 4 }
+    expect([...cumulativeVolumeDelta(candles, read, true).values()]).toEqual([first, second, first, first])
+    expect([...cumulativeVolumeDelta(candles, read, false).values()]).toEqual([
+      first, second, { open: 4, high: 8, low: -1, close: 6 }, first,
+    ])
+    const partial: TradeBar = { ...bar, cursor: 1002, pointRanges: [] }
+    includeHour(partial, samples, 0, 0, partial.cursor)
+    expect(cumulativeVolumeDelta(candles, () => partial, true).get(start)).toEqual({ ...first, close: -5 })
+    expect(cumulativeVolumeDelta(candles, () => bar, true).get(start)).toEqual(first)
+  })
+
+  it('CVD 在没有已保存样式时默认用蜡烛，保留已保存的折线与柱形', () => {
+    expect(orderFlowSettings('cvd').plot).toBe('candlestick')
+    for (const plot of ['line', 'histogram', 'candlestick'] as const) {
+      const saved = validateOrderFlowPreferences({ cvd: { plot, showZero: false } })
+      expect(orderFlowSettings('cvd', validateOrderFlowPreferences({ cvd: {} }, saved)))
+        .toMatchObject({ plot, showZero: false })
+    }
   })
 
   it('足迹图单独保存数值与图形内容，旧档缺图形内容时沿用本机或跟随数值', () => {

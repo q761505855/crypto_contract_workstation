@@ -1,6 +1,6 @@
 import { registerIndicator, type IndicatorDrawParams, type IndicatorTooltipData } from 'klinecharts'
 import { paintVolumeProfileRows, volumeProfileBarColor, volumeProfileDisplayType, volumeProfilePriceLines, type VolumeProfile, type VolumeProfilePrices, type VolumeProfileRow } from './order-flow'
-import type { FootprintRow, VwapPoint } from './order-flow-metrics'
+import type { CvdCandle, FootprintRow, VwapPoint } from './order-flow-metrics'
 import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, orderFlowSettings, type FootprintType } from './order-flow-preferences'
 
 export const footprintTitle = '足迹图（Footprint）'
@@ -17,10 +17,12 @@ export interface FootprintDisplay {
 }
 
 export interface CvdDisplay {
-  values?: ReadonlyMap<number, number>
+  values?: ReadonlyMap<number, CvdCandle>
   settings: ReturnType<typeof orderFlowSettings<'cvd'>>
   message?: string
 }
+
+type CvdPoint = Partial<CvdCandle> & { zero?: number }
 
 export interface VwapDisplay {
   values?: ReadonlyMap<number, VwapPoint>
@@ -157,7 +159,7 @@ export function drawFootprintText(params: IndicatorDrawParams): void {
   paintFootprint(params, true)
 }
 
-function drawCvd({ ctx, barSpace, indicator, visibleRange, xAxis, yAxis, bounding }: IndicatorDrawParams<{ delta?: number; zero?: number }>): boolean {
+function drawCvd({ ctx, barSpace, indicator, visibleRange, xAxis, yAxis, bounding }: IndicatorDrawParams<CvdPoint>): boolean {
   const display = indicator.extendData as CvdDisplay | undefined
   if (!display?.values?.size) return true
   const { settings } = display
@@ -172,16 +174,24 @@ function drawCvd({ ctx, barSpace, indicator, visibleRange, xAxis, yAxis, boundin
   }
   let previous: { x: number; y: number } | undefined
   for (let index = Math.max(visibleRange.from - 1, 0); index < Math.min(visibleRange.to + 1, indicator.result.length); index++) {
-    const delta = indicator.result[index]?.delta
-    if (delta === undefined) { previous = undefined; continue }
+    const { open, high, low, close } = indicator.result[index] ?? {}
+    if (close === undefined) { previous = undefined; continue }
     const x = xAxis.convertToPixel(index)
-    const y = yAxis.convertToPixel(delta)
-    const color = delta >= 0 ? settings.positiveColor : settings.negativeColor
-    if (settings.plot === 'histogram') {
+    const y = yAxis.convertToPixel(close)
+    const color = close >= 0 ? settings.positiveColor : settings.negativeColor
+    if (settings.plot === 'candlestick' && open !== undefined && high !== undefined && low !== undefined) {
+      const top = yAxis.convertToPixel(high)
+      const bottom = yAxis.convertToPixel(low)
+      const openY = yAxis.convertToPixel(open)
+      const width = Math.max(1, Math.min(18, barSpace.gapBar))
+      ctx.fillStyle = close >= open ? settings.positiveColor : settings.negativeColor
+      ctx.fillRect(x - 0.5, top, 1, bottom - top)
+      ctx.fillRect(x - width / 2, Math.min(openY, y), width, Math.max(1, Math.abs(openY - y)))
+    } else if (settings.plot === 'histogram') {
       ctx.fillStyle = color
       const width = Math.min(18, barSpace.gapBar)
       ctx.fillRect(x - width / 2, Math.min(y, zero), width, Math.max(1, Math.abs(y - zero)))
-    } else {
+    } else if (settings.plot === 'line') {
       ctx.strokeStyle = color
       ctx.lineWidth = settings.lineWidth
       ctx.beginPath()
@@ -445,20 +455,28 @@ export function registerOrderFlowIndicators(): void {
     },
   })
   registerIndicator({
-    name: CVD, shortName: cvdTitle, precision: 3, figures: [{ key: 'delta' }, { key: 'zero' }],
+    name: CVD, shortName: cvdTitle, precision: 3,
+    figures: [{ key: 'open' }, { key: 'high' }, { key: 'low' }, { key: 'close' }, { key: 'zero' }],
     calc: (candles, indicator) => {
       const display = indicator.extendData as CvdDisplay | undefined
       return candles.map(({ timestamp }) => {
-        const delta = display?.values?.get(timestamp)
-        return delta === undefined ? {} : { delta, zero: display?.settings.showZero || display?.settings.plot === 'histogram' ? 0 : undefined }
+        const candle = display?.values?.get(timestamp)
+        if (!candle || !display) return {}
+        const { plot, showZero } = display.settings
+        const zero = showZero || plot === 'histogram' ? 0 : undefined
+        return { ...(plot === 'candlestick' ? candle : { close: candle.close }), zero }
       })
     },
     draw: drawCvd,
     createTooltipDataSource: ({ indicator, crosshair, defaultStyles }): IndicatorTooltipData => {
       const display = indicator.extendData as CvdDisplay | undefined
-      const delta = indicator.result[crosshair.dataIndex ?? indicator.result.length - 1]?.delta
+      const point = indicator.result[crosshair.dataIndex ?? indicator.result.length - 1] as CvdPoint | undefined
+      const { open, high, low, close } = point ?? {}
       const values: IndicatorTooltipData['values'] = []
-      if (delta !== undefined) values.push({ title: '', value: formatFlowAmount(delta) })
+      if (open !== undefined && high !== undefined && low !== undefined && close !== undefined) {
+        values.push({ title: '开 ', value: formatFlowAmount(open) }, { title: '高 ', value: formatFlowAmount(high) },
+          { title: '低 ', value: formatFlowAmount(low) }, { title: '收 ', value: formatFlowAmount(close) })
+      } else if (close !== undefined) values.push({ title: '', value: formatFlowAmount(close) })
       if (display?.message) values.push({ title: '', value: display.message })
       return { name: cvdTitle, calcParamsText: '', icons: defaultStyles.tooltip.icons.filter(icon => icon.id !== (indicator.visible ? 'visible' : 'invisible')),
         values }

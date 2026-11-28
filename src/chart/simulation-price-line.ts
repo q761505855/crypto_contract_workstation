@@ -1,5 +1,6 @@
-import { registerOverlay, utils, type Chart, type KLineData, type OverlayFigure, type OverlayTemplate } from 'klinecharts'
+import { registerOverlay, utils, type Chart, type OverlayFigure, type OverlayTemplate } from 'klinecharts'
 import { alignOpenTime } from '../market-data/intervals'
+import { cashRanges, displayCandles, isCashChart } from './new-york-cash'
 
 export const SIMULATION_PRICE_LINE = 'simulationPriceLine'
 export const SIMULATION_TRADE_LABEL = 'simulationTradeLabel'
@@ -8,6 +9,7 @@ export const SIMULATION_SELL_COLOR = '#ff7f79'
 
 export interface SimulationTradeLabel {
   timestamp: number
+  price: number
   label: string
   color: string
 }
@@ -15,7 +17,6 @@ export interface SimulationTradeLabel {
 interface SimulationTradeLabelData {
   chart: Chart
   trades: SimulationTradeLabel[]
-  displayCandle: (index: number, candle: KLineData, timestamp: number) => KLineData | undefined
   timeframe: string
 }
 
@@ -75,7 +76,7 @@ const simulationTradeLabel: OverlayTemplate = {
   totalStep: 2,
   createPointFigures: ({ overlay, bounding, xAxis, yAxis, defaultStyles }) => {
     if (xAxis === null || yAxis === null) return []
-    const { chart, trades, displayCandle, timeframe } = overlay.extendData as SimulationTradeLabelData
+    const { chart, trades, timeframe } = overlay.extendData as SimulationTradeLabelData
     const candles = chart.getDataList()
     const { from, to } = chart.getVisibleRange()
     const visible = new Map<number, number>()
@@ -84,50 +85,54 @@ const simulationTradeLabel: OverlayTemplate = {
     }
     const style = { size: 11, family: defaultStyles.text.family, weight: 600, paddingLeft: 5, paddingRight: 5, paddingTop: 3, paddingBottom: 3 }
     const height = style.size + style.paddingTop + style.paddingBottom
-    const { candle: candleStyles, yAxis: axis } = chart.getStyles()
+    const axis = chart.getStyles().yAxis
+    const cashCandles = isCashChart(chart) ? displayCandles(chart) : undefined
     const insideAxisWidth = axis.inside && typeof axis.size === 'number' ? axis.size : 0
     const plotLeft = axis.position === 'left' ? insideAxisWidth : 0
     const plotRight = bounding.width - (axis.position === 'right' ? insideAxisWidth : 0)
-    const labels: { trade: SimulationTradeLabel; x: number; wick: number; center: number; width: number; bottom: number }[] = []
-    // Place the newest marker nearest its candle. Move earlier labels above
-    // any overlapping later labels, including fills on neighbouring candles.
+    const labels: { trade: SimulationTradeLabel; x: number; y: number; center: number; width: number; top: number }[] = []
+    // Newer fills get the nearest free label position.
     for (let index = trades.length - 1; index >= 0; index--) {
       const trade = trades[index]
       const candleIndex = visible.get(alignOpenTime(trade.timestamp, timeframe, 'floor'))
       if (candleIndex === undefined) continue
-      const candle = displayCandle(candleIndex, candles[candleIndex], trade.timestamp)
-      if (!candle) continue
+      if (cashCandles && (!cashCandles[candleIndex] || !cashRanges(trade.timestamp, trade.timestamp + 1).length)) continue
+      if (!Number.isFinite(trade.price)) continue
       const x = xAxis.convertToPixel(candleIndex)
-      const wick = candleStyles.type === 'area' ? yAxis.convertToPixel(Number(candle[candleStyles.area.value])) :
-        Math.min(yAxis.convertToPixel(candle.high), yAxis.convertToPixel(candle.low))
-      if (x < 0 || x > bounding.width || !Number.isFinite(wick) || wick < 0 || wick > bounding.height) continue
+      const y = yAxis.convertToPixel(trade.price)
+      if (x < 0 || x > bounding.width || !Number.isFinite(y) || y < 0 || y > bounding.height) continue
       const width = utils.calcTextWidth(trade.label, style.size, style.weight, style.family) + style.paddingLeft + style.paddingRight
       const center = Math.max(plotLeft + width / 2 + 2, Math.min(x, plotRight - width / 2 - 2))
-      let bottom = wick - 9
-      for (const label of labels) {
-        if (Math.abs(center - label.center) < (width + label.width) / 2 + 3 &&
-            bottom - height < label.bottom + 3 && bottom > label.bottom - height - 3) {
-          bottom = label.bottom - height - 3
+      const place = (below: boolean) => {
+        let top = below ? y + 9 : y - 9 - height
+        for (const label of below ? labels : [...labels].reverse()) {
+          if (Math.abs(center - label.center) < (width + label.width) / 2 + 3 &&
+              top < label.top + height + 3 && top + height + 3 > label.top) {
+            top = below ? label.top + height + 3 : label.top - height - 3
+          }
         }
+        return top >= 0 && top + height <= bounding.height ? top : undefined
       }
-      // Bottom-to-top traversal still works when candles have different highs.
-      const next = labels.findIndex(label => label.bottom < bottom)
-      labels.splice(next < 0 ? labels.length : next, 0, { trade, x, wick, center, width, bottom })
+      const preferBelow = y < bounding.height / 2
+      const top = place(preferBelow) ?? place(!preferBelow)
+      if (top === undefined) continue
+      const next = labels.findIndex(label => label.top > top)
+      labels.splice(next < 0 ? labels.length : next, 0, { trade, x, y, center, width, top })
     }
     const figures: OverlayFigure[] = []
-    for (const { trade, x, wick, center, bottom } of labels) {
-      if (bottom < height) continue
+    for (const { trade, x, y, center, top } of labels) {
+      const below = top > y
+      const arrowBase = y + (below ? 5 : -5)
       figures.push(
-        { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: center, y: bottom }, { x, y: wick - 5 }] }, styles: { color: trade.color, size: 1 } },
-        { type: 'polygon', ignoreEvent: true, attrs: { coordinates: [{ x: x - 3, y: wick - 5 }, { x: x + 3, y: wick - 5 }, { x, y: wick }] }, styles: { style: 'fill', color: trade.color } },
+        { type: 'line', ignoreEvent: true, attrs: { coordinates: [{ x: center, y: below ? top : top + height }, { x, y: arrowBase }] }, styles: { color: trade.color, size: 1 } },
+        { type: 'polygon', ignoreEvent: true, attrs: { coordinates: [{ x: x - 3, y: arrowBase }, { x: x + 3, y: arrowBase }, { x, y }] }, styles: { style: 'fill', color: trade.color } },
       )
     }
-    for (const { trade, center, bottom } of labels) {
-      if (bottom < height) continue
+    for (const { trade, center, top } of labels) {
       figures.push({
         type: 'text',
         ignoreEvent: true,
-        attrs: { x: center, y: bottom, text: trade.label, align: 'center', baseline: 'bottom' },
+        attrs: { x: center, y: top + height, text: trade.label, align: 'center', baseline: 'bottom' },
         styles: { ...style, style: 'stroke_fill', color: trade.color, backgroundColor: '#141d29', borderColor: trade.color, borderSize: 1, borderRadius: 3 },
       })
     }

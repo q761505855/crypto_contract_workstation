@@ -353,7 +353,68 @@ test('Databento filters archive results and selects all only in the current resu
   await expect.poll(async () => (await chart()).timestamps).toEqual([tradeTime('2026-10-29'), tradeTime('2026-11-02')])
 })
 
-test('matches Databento profiles across chart views and regroups when the latest price changes', async ({ page }) => {
+test('filters Databento bubbles by raw CME contract counts in volume and aggregate modes', async ({ page }) => {
+  const day = '2026-11-23'
+  const time = Date.parse(`${day}T15:00:00Z`)
+  const { dialog, chart } = await connectDirectory(page, {
+    [filename(day)]: zstdCompressSync(tradeDbn([
+      ['NQZ6', time, 26_000, 2, 'B'],
+      ['NQZ6', time, 26_000, 3, 'B'],
+      ['NQZ6', time + 1_000, 26_001, 7, 'A'],
+    ])),
+  })
+  await expect(dialog.getByRole('heading', { name: 'ES.FUT 日档' })).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭Databento-CME 本地数据' }).click()
+  const host = page.getByTestId('chart-host')
+  await host.getByText('ES.FUT', { exact: true }).first().click()
+  await page.getByRole('dialog', { name: '选择交易对' }).getByText('NQ.FUT', { exact: true }).first().click()
+  await page.getByRole('button', { name: '本地数据管理', exact: true }).click()
+  await dialog.getByRole('checkbox', { name: day }).check()
+  await dialog.getByRole('button', { name: '加载所选日期' }).click()
+  await expect.poll(async () => (await chart()).last?.volume).toBe(12)
+
+  await host.getByText('指标', { exact: true }).click()
+  const list = page.locator('.klinecharts-pro-indicator-modal-list')
+  const indicatorName = '大单气泡（Big Trades）'
+  await list.getByRole('button', { name: indicatorName, exact: true }).click()
+  const settingsButton = list.getByRole('button', { name: `${indicatorName}设置`, exact: true })
+  const settings = page.getByRole('dialog', { name: `${indicatorName}设置`, exact: true })
+  await settingsButton.click()
+  const unit = settings.getByLabel('阈值单位')
+  await expect(unit.getByRole('option', { name: 'CME 期货张数（张）', exact: true })).toBeEnabled()
+  await unit.selectOption({ label: 'CME 期货张数（张）' })
+  await settings.getByLabel('最低成交张数', { exact: true }).fill('5')
+  await settings.getByRole('button', { name: '保存', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+
+  const bubbles = () => page.evaluate(stamp => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const indicator = coreChart.getIndicatorByPaneId('candle_pane', 'BIG_TRADES') as import('klinecharts').Indicator
+    const display = indicator?.extendData as import('../src/chart/order-flow-renderers').BubbleDisplay | undefined
+    return display?.points?.get(stamp)?.map(({ trade, amount, count }) => ({ venue: trade.venue, amount, count }))
+  }, time)
+  await expect.poll(bubbles).toEqual([{ venue: 'CME', amount: 7 }])
+  await host.getByText('指标', { exact: true }).click()
+  await settingsButton.click()
+  await expect(unit).toHaveValue('contracts')
+  await expect(settings.getByLabel('最低成交张数', { exact: true })).toHaveValue('5')
+  await settings.getByLabel('大单模式').selectOption('aggregate')
+  await settings.getByLabel('最高成交张数（0 为不限）').fill('5')
+  await settings.getByRole('button', { name: '保存', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  await expect.poll(bubbles).toEqual([{ venue: 'CME', amount: 5, count: 2 }])
+  const point = await page.evaluate(stamp => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const pane = coreChart.getDom('candle_pane', 'main' as import('klinecharts').DomPosition)!.getBoundingClientRect()
+    const index = coreChart.getDataList().findIndex(candle => candle.timestamp === stamp)
+    const { x, y } = coreChart.convertToPixel({ dataIndex: index - 0.5, value: 26_000 }, { paneId: 'candle_pane' }) as { x: number; y: number }
+    return { x: pane.left + x, y: pane.top + y }
+  }, time)
+  await page.mouse.move(point.x, point.y)
+  await expect(host.locator('.bybit-trade-tooltip')).toHaveText('CME 主动买入 · 2 笔 · 5 张 @ 26000.00')
+})
+
+test('keeps each Databento candle profile fixed when a later archive changes the latest price', async ({ page }) => {
   const day = '2026-11-23'
   const nextDay = '2026-11-24'
   const from = Date.parse(`${day}T15:00:00Z`)
@@ -403,6 +464,11 @@ test('matches Databento profiles across chart views and regroups when the latest
   const both = { poc: 50_000, val: 50_000, vah: 50_000, rows: [
     ...single.rows.slice(0, 2), { ...single.rows[2], high: 50_000 }, { low: 50_000, high: 50_000, buy: 100, sell: 0 },
   ] }
+  const candle = { poc: 49_998.25, val: 49_998.25, vah: 49_998.75, rows: [
+    { low: 49_998.25, high: 49_998.7499825, buy: 6, sell: 4 },
+    { low: 49_998.7499825, high: 49_999.249965, buy: 3, sell: 0 },
+    { low: 49_999.7499475, high: 49_999.75, buy: 2, sell: 0 },
+  ] }
   const readProfiles = () => page.evaluate(({ ids, from }) => {
     const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
     const indicator = (name: string) => (coreChart.getIndicatorByPaneId('candle_pane', name) as import('klinecharts').Indicator)?.extendData
@@ -428,7 +494,7 @@ test('matches Databento profiles across chart views and regroups when the latest
   await settings.getByLabel('档宽比例（%）').fill('0.001')
   await settings.getByRole('button', { name: '保存', exact: true }).click()
   await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
-  await expect.poll(readProfiles).toEqual({ perCandle: single, visible: both, drawn: [single, both] })
+  await expect.poll(readProfiles).toEqual({ perCandle: candle, visible: both, drawn: [single, both] })
 
   await openAnchor.click()
   await anchor.getByLabel('锚点日期').fill(nextDay)
@@ -441,7 +507,7 @@ test('matches Databento profiles across chart views and regroups when the latest
   await expect.poll(async () => {
     const profiles = await readProfiles()
     return { candle: profiles.perCandle, drawn: profiles.drawn[0] }
-  }).toEqual({ candle: rebinned, drawn: rebinned })
+  }).toEqual({ candle, drawn: rebinned })
 })
 
 test('loads the supplied CME sample in Chromium', async ({ page }) => {
@@ -541,6 +607,17 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   const mode = controls.getByLabel('回放模式')
   await mode.selectOption('tick')
   await controls.getByRole('button', { name: '创建回放', exact: true }).click()
+  await page.getByTestId('chart-host').getByText('指标', { exact: true }).click()
+  await page.locator('.klinecharts-pro-indicator-modal-list')
+    .getByRole('button', { name: '累计成交量差（CVD）', exact: true }).click()
+  await page.locator('.klinecharts-pro-modal .close-icon').click({ position: { x: 1, y: 1 } })
+  const cvdCandles = () => page.evaluate(() => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const panes = coreChart.getIndicatorByPaneId() as Map<string, Map<string, import('klinecharts').Indicator>>
+    return [...panes.values()].find(pane => pane.has('CVD'))?.get('CVD')?.result
+  })
+  const initialCvd = { open: 0, high: 1, low: 0, close: 1, zero: 0 }
+  await expect.poll(cvdCandles).toEqual([initialCvd])
   const speed = controls.getByRole('spinbutton', { name: '逐笔回放速度' })
   const slider = controls.getByRole('slider', { name: '逐笔速度滑块' })
   await expect(speed).toHaveValue('1')
@@ -550,6 +627,7 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   await expect(controls).toContainText('第 3 步')
   await controls.getByRole('button', { name: '暂停', exact: true }).click()
   await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26020, close: 26002, volume: 5 })
+  await expect.poll(cvdCandles).toEqual([initialCvd, { open: 1, high: 1, low: -1, close: -1, zero: 0 }])
   await expect.poll(() => page.evaluate(() => {
     const { source } = (window as unknown as { __viewportTestAdapter: {
       source: import('../src/market-data/bybit/combined-source').CombinedBybitSource
@@ -571,6 +649,7 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   await endNotice.getByRole('button', { name: '确定' }).click()
   await controls.getByRole('button', { name: '暂停', exact: true }).click()
   await expect.poll(async () => (await chart()).last).toMatchObject({ timestamp: at, high: 26020, close: 26003, volume: 9 })
+  await expect.poll(cvdCandles).toEqual([initialCvd, { open: 1, high: 3, low: -1, close: 3, zero: 0 }])
   await speed.fill('1.25')
   await speed.press('Enter')
   await expect(slider).toHaveAttribute('aria-valuetext', '1.25×')
@@ -625,6 +704,36 @@ test('Databento plays each trade with snapped and typed speeds and restores the 
   await position.getByRole('button', { name: '减仓 / 平仓', exact: true }).click()
   await page.getByRole('button', { name: '全部平仓', exact: true }).click()
   await expect(position).toBeHidden()
+  await expect.poll(() => page.evaluate(stamp => {
+    const { coreChart } = (window as unknown as { __viewportTestAdapter: { coreChart: import('klinecharts').Chart } }).__viewportTestAdapter
+    const marker = coreChart.getOverlayById('simulation-trade-markers')
+    if (!marker?.createPointFigures) return null
+    const paneId = 'candle_pane'
+    const convert = (point: { dataIndex?: number; value?: number }) => coreChart.convertToPixel(point, { paneId }) as { x: number; y: number }
+    const candles = coreChart.getDataList()
+    const candleIndex = candles.findIndex(candle => candle.timestamp === stamp)
+    if (candleIndex === -1) return null
+    const drawn = marker.createPointFigures({
+      overlay: marker,
+      bounding: coreChart.getSize(paneId, 'main' as import('klinecharts').DomPosition),
+      defaultStyles: coreChart.getStyles().overlay,
+      xAxis: { convertToPixel: (dataIndex: number) => convert({ dataIndex }).x },
+      yAxis: { convertToPixel: (value: number) => convert({ value }).y },
+    } as import('klinecharts').OverlayCreateFiguresCallbackParams)
+    const tips = (Array.isArray(drawn) ? drawn : [drawn]).filter(figure => figure.type === 'polygon')
+      .map(figure => figure.attrs.coordinates.at(-1))
+    const fill = convert({ dataIndex: candleIndex, value: 26003 })
+    const wick = convert({ dataIndex: candleIndex, value: candles[candleIndex].high })
+    return {
+      trades: (marker.extendData.trades as { label: string; price: number }[]).map(({ label, price }) => ({ label, price })),
+      count: tips.length,
+      atFill: tips.every(tip => tip.x === fill.x && tip.y === fill.y),
+      belowWick: fill.y > wick.y,
+    }
+  }, at)).toEqual({
+    trades: [{ label: '开多', price: 26003 }, { label: '平多', price: 26003 }],
+    count: 2, atFill: true, belowWick: true,
+  })
   await page.getByRole('tab', { name: '账户流水', exact: true }).click()
   await expect(page.getByRole('tabpanel', { name: '账户流水' }).getByText('-5.7400 USD', { exact: true })).toHaveCount(2)
 })

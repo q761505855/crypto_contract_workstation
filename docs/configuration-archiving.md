@@ -61,6 +61,8 @@ Databento-CME 会话保存 `marketSource: "databento-cme"`、CME 产品、步进
 
 订单流的足迹图和大单气泡选择保存在 `chartIndicators.main`，CVD 选择保存在 `chartIndicators.sub`。足迹图与 CVD 使用显式空 `calcParams`。新增的足迹图、气泡样式、Profile 和 CVD 参数保存在可选的 `chartIndicators.orderFlow` 中。大单气泡启用时，模式、最低成交额和买卖颜色保存在既有主图指标字段。关闭时移入 `orderFlow.bubbles`，重新开启会应用已保存的值。因为显示半径、成交额上下限成对校验，自动同步以足迹图和大单气泡的各自设置组为单位检测并处理并发冲突。Profile 选区保存在既有绘图存档中，设置属于应用配置。
 
+CVD 的显示样式保存在 `chartIndicators.orderFlow.cvd.plot`，接受 `candlestick`、`line`、`histogram`。旧档缺字段时保留本机样式，本机缺省使用蜡烛图。显式折线或柱形按存档恢复，`showZero: false` 原样保留。空值、空字符串和未知样式在写入前拒绝。样式随本机、应用配置／完整 JSON 和 GitHub「应用配置」往返，沿用现有校验和冲突处理。自动恢复会重建图表，手动恢复按提示刷新。CVD 蜡烛由已加载且已揭示的逐笔成交重算。
+
 VWAP 和可见范围成交分布以 `VWAP` 和 `VISIBLE_VOLUME_PROFILE` 加入 `chartIndicators.main`，默认为关闭。二者保存选择和 `visible`，使用显式空 `calcParams` 和空样式。`visible: false` 原样保留。旧档缺少整个 `chartIndicators` 时保留本机指标设置，有指标清单时按清单恢复，其中没有这两项就不启用。空主图列表原样恢复，重复项、副图配置和非法值在任何写入前拒绝。应用配置／完整 JSON 和 GitHub「应用配置」沿用现有差异、校验和及冲突流程。自动恢复会重建图表，手动恢复后按提示刷新。计算结果和图表可见范围属于运行状态。
 
 可见范围 Profile 的独立显示参数以 `chartIndicators.orderFlow.visibleProfile` 保存。位置接受 `left` 或 `right`，偏移 0–40% 和宽度 5–50% 为整数。内容接受 `volumeDelta`、`volume` 或 `delta`。默认靠右、偏移 0%、宽度 26%、双列且显示标题。`showPoc`、`showValueArea` 和 `showLabels` 默认开启。`valueAreaColor`、`pocColor` 和 `levelColor` 分别保存价值区成交量、POC 线和 VAH／VAL 线的颜色。旧档缺字段时保留本机值，本机无值时使用默认值。显式偏移 0、`false` 和透明色原样恢复，空值和非法值在任何写入前拒绝。关闭指标后仍保留设置。本地、配置／完整 JSON 和 GitHub「应用配置」沿用现有流程。框选 Profile 的独立显示设置位于 `chartIndicators.orderFlow.profile`。
@@ -69,7 +71,7 @@ K线成交量分布图以 `CANDLE_VOLUME_PROFILE` 保存在 `chartIndicators.mai
 
 三种 Profile 共用 `chartIndicators.orderFlow.profile.valueArea`，接受 1–100 的整数百分比，默认 70。任一设置窗口修改价值区比例都会保存到该字段，并随本机、应用配置／完整 JSON 和 GitHub「应用配置」比较、上传和恢复。未保存共享比例时依次采用旧版逐根、可见范围的 `valueArea`，最后使用默认值。旧字段仍按原范围严格校验并原样往返。`rows` 仅用于兼容 Schema 1 中的历史档数，接受 4–200 的整数并原样往返。
 
-三种 Profile 的「档宽比例（%）」共用 `chartIndicators.orderFlow.profile.rowSizePercent`，默认 `0.01`（0.01%），接受 0.000001–100 范围内的有限数字。任一分布设置中保存后，框选、逐根和可见范围一同重算。该比例随本机、应用配置／完整 JSON 和 GitHub「应用配置」比较、上传、冲突处理与恢复。旧档缺字段时保留本机值，本机缺省采用 0.01%。空值、字符串、零和越界值在写入前拒绝。计算使用的最新价与实际档宽属于运行数据。自动恢复随图表重建生效，手动导入或拉取后按提示刷新。
+三种 Profile 的「档宽比例（%）」共用 `chartIndicators.orderFlow.profile.rowSizePercent`，默认 `0.01`（0.01%），接受 0.000001–100 范围内的有限数字。任一分布设置中保存后，框选、逐根和可见范围一同重算。该比例随本机、应用配置／完整 JSON 和 GitHub「应用配置」比较、上传、冲突处理与恢复。旧档缺字段时保留本机值，本机缺省采用 0.01%。空值、字符串、零和越界值在写入前拒绝。逐根分布以该根 K 线的开盘价为计算基准，框选和可见范围使用图表最新价。基准价与实际档宽属于运行数据。自动恢复随图表重建生效，手动导入或拉取后按提示刷新。
 
 逐根分布的配色缺省时沿用框选分布的同名颜色，两处均无值时采用默认色。已有的逐根分布自定义颜色和透明色会原样恢复，保存其他参数时未修改的继承色继续沿用框选配置。旧档缺少逐根分布的价格标签开关时先保留本机值，本机无值时默认隐藏标签。各档数字和价格标签可独立控制。价值区底色与 VAH、VAL 线由「显示 VAH / VAL」控制，两者随现有设置组参与本机、应用配置／完整 JSON 和 GitHub「应用配置」往返。
 
@@ -95,7 +97,7 @@ Schema 1 及云端文件路径保持原格式。旧档缺少订单流设置或�
 
 大单气泡的 `styles.bubbleMode` 接受 `volume` 和 `aggregate`。两者随 `chartIndicators` 在本机、应用配置／完整 JSON 和 GitHub“应用配置”中往返，沿用现有差异、校验和与冲突处理。旧档缺少模式时保留本机选择，本机无值时使用 `volume`。显式 `volume` 可以覆盖 `aggregate`，空字符串、`null` 和其他非法值在写入前拒绝。自动恢复随图表重建生效，手动恢复后按界面提示刷新。配置仍使用 Schema 1。
 
-大单气泡的阈值单位 `thresholdUnit` 和新增上下限 `minQuantity`／`maxQuantity`、`minContracts`／`maxContracts`、`minLots`／`maxLots` 保存在 `chartIndicators.orderFlow.bubbles`，关闭指标后仍保留。单位接受 `notional`、`quantity`、`contracts` 和 `lots`。旧档缺少这些字段时保留本机值，本机无值时使用 `notional` 和原 USDT 阈值。其他单位默认下限为 1，上限为 0。显式 0 原样恢复，代表不设对应限制。提供的数值须非负且有限，非零上限须大于或等于对应下限。空值、非法单位或非法上下限在任何写入前拒绝。本地、应用配置／完整 JSON、GitHub「应用配置」沿用同一校验。云端仍以整个大单气泡设置组为单位合并与处理冲突，自动恢复重建图表，手动恢复按提示刷新。合约面值和每手规格由行情规格提供，属于运行时数据。
+大单气泡的阈值单位 `thresholdUnit` 和上下限 `minQuantity`／`maxQuantity`、`minContracts`／`maxContracts`、`minLots`／`maxLots` 保存在 `chartIndicators.orderFlow.bubbles`，关闭指标后仍保留。单位接受 `notional`、`quantity`、`contracts` 和 `lots`。Databento-CME 的「CME 期货张数（张）」与 OKX 的「OKX 合约张数（张）」共用 `contracts` 和对应上下限，按当前成交来源决定换算方式。旧档缺少这些字段时保留本机值，本机无值时使用 `notional` 和原 USDT 阈值。其他单位默认下限为 1，上限为 0。显式 0 原样恢复，代表不设对应限制。提供的数值须非负且有限，非零上限须大于或等于对应下限。空值、非法单位或非法上下限在任何写入前拒绝。本地、应用配置／完整 JSON、GitHub「应用配置」沿用同一校验。云端仍以整个大单气泡设置组为单位合并与处理冲突，自动恢复重建图表，手动恢复按提示刷新。合约面值和每手规格由行情规格提供，属于运行时数据。
 
 大单气泡的动态大小 `sizeByVolume`、动态透明度 `opacityByVolume` 和固定半径 `fixedRadius` 随 `chartIndicators.orderFlow.bubbles` 在本地、配置／完整 JSON 和 GitHub「应用配置」中往返。旧档缺字段时保留本机值，本机无值时默认动态大小开启、动态透明度关闭、固定半径 8 像素。开关接受布尔值，显式 `false` 原样恢复，固定半径接受 1–40 的整数。空值和非法值在任何写入前拒绝。形状 `marker` 和数字显隐 `showText` 继续使用已有字段，旧档的菱形仍可恢复。自动恢复后图表重建，手动恢复后按提示刷新。订单流设置分组的展开状态只在本次打开弹窗时生效。
 

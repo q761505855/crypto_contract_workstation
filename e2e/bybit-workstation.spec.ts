@@ -343,6 +343,7 @@ test('订单流分组和设置可独立使用并随配置恢复', async ({ page 
     await expect(list.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true')
   }
   const cvdDialog = await settings(cvd)
+  await expect(cvdDialog.getByLabel('显示样式', { exact: true })).toHaveValue('candlestick')
   await section(cvdDialog, '配色').click()
   await expect(cvdDialog.getByLabel('正值色', { exact: true })).toHaveAttribute('type', 'color')
   await cvdDialog.getByLabel('显示零线', { exact: true }).uncheck()
@@ -848,9 +849,10 @@ test('IC 主图叠加 Bybit 成交量和气泡，按回放进度揭示成交', a
     return {
       spacing: coreChart.getBarSpace(),
       volume: rows?.reduce((total, row) => total + row.buy + row.sell, 0),
-      delta: cvd?.result.at(-1)?.delta,
+      cvd: cvd?.result.at(-1),
     }
-  }, start)).toMatchObject({ spacing: 110, volume: 90, delta: -9 })
+  }, start)).toMatchObject({ spacing: 110, volume: 90,
+    cvd: { open: expect.any(Number), high: expect.any(Number), low: expect.any(Number), close: -9 } })
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __footprintTextLayers: Record<string, number> }
   ).__footprintTextLayers), { timeout: 3000 }).toEqual({ '40': 1 })

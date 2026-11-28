@@ -491,6 +491,7 @@ describe('ProChartAdapter', () => {
       trades: [
         {
           timestamp: 60_000,
+          price: 103,
           label: '开多',
           color: '#00ff00',
         },
@@ -511,11 +512,12 @@ describe('ProChartAdapter', () => {
         expect.objectContaining({
           id: 'simulation-trade-markers',
           name: 'simulationTradeLabel',
-          extendData: expect.objectContaining({ trades: [{ timestamp: 60_000, label: '开多', color: '#00ff00' }] }),
+          extendData: expect.objectContaining({ trades: [{ timestamp: 60_000, price: 103, label: '开多', color: '#00ff00' }] }),
         }),
       ]),
       'candle_pane',
     )
+    expect(coreChart.setPaneOptions).not.toHaveBeenCalled()
     expect(pane.querySelector('#simulation-long-entry .simulation-label-pnl')).toHaveTextContent('+5.00')
     expect(pane.querySelector('#simulation-long-take-profit .simulation-label-pnl')).toHaveTextContent('+10.00 (+25.00%)')
     expect(pane.querySelector('#simulation-long-stop-loss .simulation-label-pnl')).toHaveTextContent('-10.00 (-25.00%)')

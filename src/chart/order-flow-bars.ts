@@ -54,7 +54,7 @@ export function* aggregateTradeBubbles(trades: Iterable<TradeBubble>, minimum: n
   let millisecond: number | undefined
   function* flush() {
     for (const point of groups.values()) {
-      if (point.trade.price * point.trade.size >= minimum) yield point
+      if (minimum === 0 || point.trade.price * point.trade.size >= minimum) yield point
     }
     groups.clear()
   }
@@ -78,7 +78,7 @@ export function* aggregateTradeBubbles(trades: Iterable<TradeBubble>, minimum: n
 
 function* tradesAboveMinimum(bar: TradeBar, minimum: number): Iterable<TradeBubble> {
   for (const point of tradeBubbles(bar)) {
-    if (point.trade.price * point.trade.size >= minimum) yield point
+    if (minimum === 0 || point.trade.price * point.trade.size >= minimum) yield point
   }
 }
 
@@ -106,7 +106,7 @@ export class AccumulatedHour implements HourSamples {
       this.bybitTimes.push(offset)
       this.bybitPrices.push(trade.price)
     }
-    if (trade.price * trade.size >= minimum) this.points.push({ trade })
+    if (minimum === 0 || trade.price * trade.size >= minimum) this.points.push({ trade })
   }
 
   append(other: HourSamples): void {

@@ -58,7 +58,7 @@ import { formatDisplayTime } from '../format-display-time'
 import { CANDLE_VOLUME_PROFILE, CVD, FOOTPRINT, VISIBLE_VOLUME_PROFILE, VWAP, type OrderFlowGroup, type OrderFlowPreferences } from './order-flow-preferences'
 import { BIG_TRADES } from './order-flow'
 import { CashCandleHistory } from './cash-candle-history'
-import { candleIntersectsCash, cashRanges, displayCandles, isCashChart } from './new-york-cash'
+import { candleIntersectsCash, isCashChart } from './new-york-cash'
 
 type OrderFlowChartOptions = ChartProOptions & {
   orderFlowCloud?: GitHubContentsClient
@@ -221,7 +221,6 @@ export class ProChartAdapter implements ChartAdapterPort {
   private source?: CombinedBybitSource
   private stopCursor?: () => void
   private stopArchivePan?: () => void
-  private tradeMarkerGap = 0.08
   private readonly responsivePaneHeights = new Map<string, number>()
   private readonly responsiveDisplayHeights = new Map<string, number>()
   private subPaneMinimumHeight = 0
@@ -249,7 +248,6 @@ export class ProChartAdapter implements ChartAdapterPort {
     this.clearPosition()
     this.priceLabels?.dispose()
     this.priceLabels = undefined
-    this.tradeMarkerGap = 0.08
     this.chart?.dispose?.()
     this.chart = null
     this.coreChart = null
@@ -1056,19 +1054,6 @@ export class ProChartAdapter implements ChartAdapterPort {
     }
     const overlays: OverlayCreate[] = []
     const timeframe = this.getPeriod().text
-    const counts = new Map<number, number>()
-    let maxTradesPerBar = 0
-    for (const trade of state.trades) {
-      const open = alignOpenTime(trade.timestamp, timeframe, 'floor')
-      const count = (counts.get(open) ?? 0) + 1
-      counts.set(open, count)
-      maxTradesPerBar = Math.max(maxTradesPerBar, count)
-    }
-    const topGap = maxTradesPerBar === 0 ? 0.08 : Math.min(0.9, 0.24 + 0.15 * maxTradesPerBar)
-    if (this.tradeMarkerGap !== topGap) {
-      this.tradeMarkerGap = topGap
-      chart.setPaneOptions({ id: 'candle_pane', gap: { top: topGap, bottom: 0.08 } })
-    }
     const line = (label: PriceLabel) => {
       if (!Number.isFinite(label.price)) return
       overlays.push({
@@ -1140,20 +1125,13 @@ export class ProChartAdapter implements ChartAdapterPort {
 
     if (state.trades.length > 0) {
       const trades = [...state.trades].sort((first, second) => first.timestamp - second.timestamp)
-      const displayCandle = (index: number, candle: KLineData, timestamp: number): KLineData | undefined => {
-        if (isCashChart(chart)) return cashRanges(timestamp, timestamp + 1).length ? displayCandles(chart)[index] : undefined
-        if (chart.getStyles().candle.type !== 'heikin_ashi') return candle
-        // The patched renderer caches the same Heikin Ashi series used by the axis.
-        const core = chart as Chart & { getChartStore(): { getHeikinAshiData(index: number): KLineData } }
-        return core.getChartStore().getHeikinAshiData(index)
-      }
       overlays.push({
         id: 'simulation-trade-markers',
         groupId: 'simulation',
         name: SIMULATION_TRADE_LABEL,
         lock: true,
         points: [{ dataIndex: 0 }],
-        extendData: { chart, trades, displayCandle, timeframe },
+        extendData: { chart, trades, timeframe },
       })
     }
     if (overlays.length > 0) {
