@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import Decimal from 'decimal.js'
-import { isLocalPriceSource, isOkxPriceSource, isPriceSource, priceSourceLabel, type PriceSource } from '../market-data/price-source-preferences'
+import { isLocalPriceSource, isOkxPriceSource, isPriceSource, type PriceSource } from '../market-data/price-source-preferences'
 import type { MarketSelection } from '../market-data/models'
 import { CTRADER_TIMEFRAMES, nextOpenTime } from '../market-data/intervals'
 import type {
-  ReplaySession,
   ReplayMode,
   ReplaySpeed,
 } from '../replay/models'
@@ -36,14 +35,7 @@ interface ReplayControlsProps {
   onJumpToTime: (timestamp: number) => void
   onLocateLatest: () => void
   onChartStep: (direction: -1 | 1) => void
-}
-
-function sessionName(session: ReplaySession): string {
-  const { marketSource } = session
-  const time = formatDisplayTime(session.startTime)
-  const label = (isOkxPriceSource(marketSource) || marketSource === 'databento-cme') ? priceSourceLabel(marketSource)
-    : marketSource !== 'ctrader' ? '币安存档' : session.tradingConfig.ctrader ? undefined : '旧模拟规则'
-  return `${session.symbol.ticker} ${session.period.text} · ${time}${label === undefined ? '' : ` · ${label}`}`
+  onManageSessions: () => void
 }
 
 const HOLD_TO_PLAY_MS = 450
@@ -192,9 +184,9 @@ export function ReplayControls({
   onJumpToTime,
   onLocateLatest,
   onChartStep,
+  onManageSessions,
 }: ReplayControlsProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [selectedSessionId, setSelectedSessionId] = useState('')
   const [initialBalance, setInitialBalance] = useState(
     DEFAULT_TRADING_CONFIG.initialBalance,
   )
@@ -264,7 +256,6 @@ export function ReplayControls({
     return () => request.abort()
   }, [cme, settingsOpen, session?.id, ticker, chartStartTime, market])
 
-  const selectedSession = replay.sessions.find((session) => session.id === selectedSessionId) ?? replay.sessions[0]
 
   useEffect(() => setLeverageDraft(null), [ticker])
   useEffect(() => setCmeFeeDraft(''), [ticker, session?.id])
@@ -348,11 +339,7 @@ export function ReplayControls({
     {[1, 2, 5, 10].map(speed => <option key={speed} value={speed}>{speed}x</option>)}
   </select>
 
-  function deleteSelectedSession(session: ReplaySession): void {
-    if (window.confirm(`删除本机回放会话「${sessionName(session)}」及其模拟账户、持仓、成交和流水？`)) {
-      void replay.deleteSession(session.id)
-    }
-  }
+  const manageSessions = <button type="button" onClick={() => { pauseViewport(); onManageSessions() }}>会话管理</button>
 
   if (session === null) {
     const startLabel = chartStartTime === null ? '等待图表 K 线' : formatDisplayTime(
@@ -374,6 +361,7 @@ export function ReplayControls({
       </>}
       <span className="replay-start-time">{tickMode ? '逐笔起点' : '起点'}：{startLabel}</span>
       {modeSelect}
+      {manageSessions}
       <button type="button" onClick={openSettings}>回放设置</button>
       <button type="button" disabled={interactionLocked || !validCreation} onClick={createSession}>{replay.busy ? '准备中…' : '创建回放'}</button>
       {replay.busy && replay.preparationStatus && <span className="replay-preparation" role="status">{replay.preparationStatus}</span>}
@@ -401,40 +389,6 @@ export function ReplayControls({
             </label>
           : <ReplayTradingTerms terms={terms ?? undefined} source={priceSource}
             waiting={termsError || (chartStartTime === null ? '请先在图表上选定回放起点。' : '正在读取账户和品种规格…')} />}
-        {selectedSession && (
-          <>
-            <select
-              aria-label="已有回放会话"
-              disabled={replay.busy}
-              onChange={(event) => setSelectedSessionId(event.target.value)}
-              value={selectedSession.id}
-            >
-              {replay.sessions.map((session) => (
-                <option key={session.id} value={session.id}>
-                  {sessionName(session)}
-                </option>
-              ))}
-            </select>
-            <div className="button-row">
-              <button
-                disabled={replay.busy || selectedSession.marketSource !== priceSource}
-                onClick={() => { void replay.loadSession(selectedSession.id); setSettingsOpen(false) }}
-                type="button"
-              >
-                加载会话
-              </button>
-              <button
-                className="danger-button"
-                disabled={replay.busy}
-                onClick={() => deleteSelectedSession(selectedSession)}
-                type="button"
-              >
-                删除会话
-              </button>
-            </div>
-          </>
-        )}
-
         {replay.error && <span className="replay-error" role="alert">{replay.error}</span>}
         <div className="button-row"><button type="button" onClick={() => setSettingsOpen(false)}>应用设置</button><button type="button" disabled={interactionLocked || !validCreation} onClick={createSession}>开始历史回放</button></div>
       </WorkspaceDialog>
@@ -493,6 +447,7 @@ export function ReplayControls({
         disabled={session.status === 'completed'} onChange={replay.setTickSpeed} /> : speedSelect}
       <button type="button" className="trade-overlays-toggle" aria-pressed={showTradeOverlays}
         onClick={() => onTradeOverlaysChange(!showTradeOverlays)} title={showTradeOverlays ? '隐藏图表交易标记' : '显示图表交易标记'}>交易标记</button>
+      {manageSessions}
       <button type="button" className="replay-settings-actions" onClick={openSettings}>回放设置</button>
       <WorkspaceDialog open={settingsOpen} title="回放会话设置" onClose={() => setSettingsOpen(false)}>
         <p className="muted-text">{session.symbol.ticker} · {session.period.text} · 起点 {formatDisplayTime(session.startTime)}</p>

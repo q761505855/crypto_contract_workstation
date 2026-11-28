@@ -45,7 +45,8 @@ import type {
   MarketCandle,
   MarketSymbol,
 } from '../market-data/models'
-import { isTickSpeed, replaySourceTimeframe, type ReplaySession } from '../replay/models'
+import { isTickSpeed, replaySourceTimeframe, validateReplayDetails, type ReplaySession } from '../replay/models'
+import { bybitDayStart } from '../market-data/bybit/trades'
 import { REPLAY_STEP_PERIOD_KEY, readReplayStepPeriod, validateReplayStepPeriod } from '../replay/step-preferences'
 import { isCTraderReplayStepPeriod, isFineStepPeriod, SECOND_STEP_MS, type ReplayStepPeriod } from '../replay/step-periods'
 import { validateSimulationConfig } from '../simulation/simulation-engine'
@@ -67,7 +68,7 @@ import { IndexedDbSimulationStateStore } from './simulation-state-store'
 import { ctraderStorage } from './ctrader-storage'
 import { CTRADER_ACCOUNT_KEY, readCTraderAccount, validateCTraderAccount } from '../market-data/ctrader-account-preferences'
 import { CTRADER_PERIODS } from '../chart/chart-config'
-import { isOkxPriceSource, isPriceSource, PRICE_SOURCE_KEY, readPriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
+import { isLocalPriceSource, isOkxPriceSource, isPriceSource, PRICE_SOURCE_KEY, readPriceSource, validatePriceSource, type PriceSource } from '../market-data/price-source-preferences'
 
 export const BACKUP_FILE_TYPE = 'crypto-contract-workstation-backup'
 export const BACKUP_SCHEMA_VERSION = 1
@@ -369,6 +370,15 @@ function validateSession(value: unknown, index: number): ReplaySession {
     throw new Error(`${field}.marketSource 无效`)
   }
   const native = isPriceSource(marketSource)
+  const details = validateReplayDetails(item.name, item.notes)
+  const archiveDays = item.archiveDays
+  if (archiveDays !== undefined) {
+    if (!isLocalPriceSource(marketSource) || !Array.isArray(archiveDays) || !archiveDays.length ||
+        new Set(archiveDays).size !== archiveDays.length || archiveDays.some(day => {
+          if (typeof day !== 'string') return true
+          try { bybitDayStart(day); return false } catch { return true }
+        })) throw new Error(`${field}.archiveDays 必须包含不重复的有效本地日档日期`)
+  }
   const cmeSource = marketSource === 'databento-cme'
   const nativeSymbol = cmeSource
     ? validateDatabentoReplaySymbol(symbol)
@@ -493,6 +503,8 @@ function validateSession(value: unknown, index: number): ReplaySession {
   return {
     id: stringValue(item.id, `${field}.id`),
     schemaVersion: 2,
+    ...details,
+    ...(archiveDays === undefined ? {} : { archiveDays: [...archiveDays].sort() }),
     ...(marketSource === undefined ? {} : { marketSource }),
     ...(cursorPeriod === undefined ? {} : { cursorTimeframe: cursorPeriod }),
     ...(cursorTickIndex === undefined ? {} : { cursorTickIndex }),

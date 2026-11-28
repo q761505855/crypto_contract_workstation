@@ -1,10 +1,11 @@
-import type { ReplaySession } from '../replay/models'
+import { validateReplayDetails, type ReplaySession, type ReplaySessionDetails } from '../replay/models'
 import { openWorkstationDatabase } from './market-data-store'
 import { simulationSessionRange } from './simulation-state-store'
 
 export interface ReplaySessionStore {
   put(session: ReplaySession): Promise<void>
   update(session: ReplaySession): Promise<void>
+  updateDetails(id: string, details: ReplaySessionDetails): Promise<ReplaySession>
   delete(id: string): Promise<void>
   get(id: string): Promise<ReplaySession | undefined>
   list(): Promise<ReplaySession[]>
@@ -23,11 +24,27 @@ export class IndexedDbReplaySessionStore implements ReplaySessionStore {
     const database = await openWorkstationDatabase(this.databaseName)
     const transaction = database.transaction('replaySessions', 'readwrite')
     // Autosaves from another tab may arrive after the session was deleted.
-    if (await transaction.store.getKey(session.id) !== undefined) {
-      await Promise.all([transaction.store.put(session), transaction.done])
+    const previous = await transaction.store.get(session.id)
+    if (previous !== undefined) {
+      // A replay cursor may predate a name or notes edit from another tab.
+      const { name: _name, notes: _notes, ...progress } = session
+      const updated = { ...progress, ...validateReplayDetails(previous.name, previous.notes),
+        updatedAt: Math.max(previous.updatedAt, session.updatedAt) }
+      await Promise.all([transaction.store.put(updated), transaction.done])
     } else {
       await transaction.done
     }
+  }
+
+  async updateDetails(id: string, details: ReplaySessionDetails): Promise<ReplaySession> {
+    const fields = validateReplayDetails(details.name, details.notes)
+    const database = await openWorkstationDatabase(this.databaseName)
+    const transaction = database.transaction('replaySessions', 'readwrite')
+    const existing = await transaction.store.get(id)
+    if (!existing) throw new Error('找不到所选回放会话')
+    const session = { ...existing, ...fields, updatedAt: Date.now() }
+    await Promise.all([transaction.store.put(session), transaction.done])
+    return session
   }
 
   async delete(id: string): Promise<void> {

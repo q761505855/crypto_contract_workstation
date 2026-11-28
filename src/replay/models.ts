@@ -37,6 +37,24 @@ export interface ReplayTradingConfig {
 
 export type ReplayOrderSettings = Pick<ReplayTradingConfig, 'leverage' | 'slippageRate'>
 
+export const REPLAY_NAME_LIMIT = 80
+export const REPLAY_NOTES_LIMIT = 4000
+
+export interface ReplaySessionDetails {
+  name?: string
+  notes?: string
+}
+
+export function validateReplayDetails(name: unknown, notes: unknown): ReplaySessionDetails {
+  if (name !== undefined && (typeof name !== 'string' || name.length > REPLAY_NAME_LIMIT || /[\r\n]/.test(name))) {
+    throw new Error(`会话名称须为最多 ${REPLAY_NAME_LIMIT} 个字符的单行文字`)
+  }
+  if (notes !== undefined && (typeof notes !== 'string' || notes.length > REPLAY_NOTES_LIMIT)) {
+    throw new Error(`会话备注须为最多 ${REPLAY_NOTES_LIMIT} 个字符的文字`)
+  }
+  return { ...(name === undefined ? {} : { name }), ...(notes === undefined ? {} : { notes }) }
+}
+
 export const DEFAULT_TRADING_CONFIG: ReplayTradingConfig = Object.freeze({
   initialBalance: '10000',
   leverage: 10,
@@ -46,7 +64,7 @@ export const DEFAULT_TRADING_CONFIG: ReplayTradingConfig = Object.freeze({
   liquidationFeeRate: '0.005',
 })
 
-export interface ReplaySession {
+export interface ReplaySession extends ReplaySessionDetails {
   schemaVersion: 2
   id: string
   symbol: SymbolInfo
@@ -58,6 +76,8 @@ export interface ReplaySession {
   visibleUntil?: number
   /** Missing on legacy Binance sessions. */
   marketSource?: PriceSource | 'binance'
+  /** Local archive dates used by this session, in the source's archive calendar. */
+  archiveDays?: string[]
   /** Replay step that produced the current cursor. */
   cursorTimeframe?: CTraderReplayStepPeriod
   /** Zero-based quote order within currentTime when the cursor is on a Tick. */

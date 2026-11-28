@@ -103,6 +103,13 @@ export class DatabentoMarket implements LocalArchiveMarket {
 
   activeDays(symbol: string) { return [...(this.selected.get(symbol) ?? [])].sort() }
 
+  async availableArchiveDays(symbol: string, signal?: AbortSignal): Promise<readonly string[]> {
+    const all = (await this.files.list(true)).get(symbol) ?? []
+    signal?.throwIfAborted()
+    if (!this.files.ready) throw new Error('请先在本地数据管理中选择 Databento-CME 文件夹或允许读取')
+    return all.map(file => file.day)
+  }
+
   setActiveDays(symbol: string, days: readonly string[], append = false): boolean {
     const previous = this.selected.get(symbol)
     const next = new Set(append ? [...(previous ?? []), ...days] : days)

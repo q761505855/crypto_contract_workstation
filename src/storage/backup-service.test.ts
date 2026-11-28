@@ -369,15 +369,21 @@ it('round-trips fine replay settings and Tick cursors while validating them befo
   expect((await target.exportAll()).data.sessions).toEqual([archivedSeconds])
 })
 
-it('round-trips Databento playback mode and speed in session and full archives', async () => {
+it('round-trips Databento playback, details and local archive dates in session and full backups', async () => {
   const db = `databento-ticks-${crypto.randomUUID()}`
   const source = new WorkstationBackupService(db, new MemoryPreferences())
   const tick = {
     ...session(), symbol: { exchange: 'CME', ticker: 'NQ.FUT', type: 'FUTURES', pricePrecision: 9, volumePrecision: 0 },
     marketSource: 'databento-cme', playbackMode: 'tick', tickSpeed: 0.125,
+    archiveDays: ['1970-01-01'], name: '', notes: '逐笔\n复盘',
     cursorTimeframe: 'tick', cursorTickIndex: 1, currentTime: 60_123, currentIndex: 1, visibleUntil: 60_124, endTime: 120_000,
   } satisfies ReplaySession
-  await new IndexedDbReplaySessionStore(db).put(tick)
+  const store = new IndexedDbReplaySessionStore(db)
+  await store.put(tick)
+  await store.updateDetails(tick.id, { name: '更名后的会话', notes: '暂定备注' })
+  await store.update(tick)
+  expect(await store.get(tick.id)).toMatchObject({ name: '更名后的会话', notes: '暂定备注' })
+  await store.put(tick)
   for (const archive of [await source.exportSession(tick.id), await source.exportAll()]) {
     const target = new WorkstationBackupService(`databento-restored-${crypto.randomUUID()}`, new MemoryPreferences())
     for (const invalid of [{ playbackMode: null }, { playbackMode: 'ticks' }, { tickSpeed: null },
@@ -386,8 +392,17 @@ it('round-trips Databento playback mode and speed in session and full archives',
         .rejects.toThrow(/playbackMode|tickSpeed/)
       expect((await target.exportAll()).data.sessions).toEqual([])
     }
+    for (const invalid of [{ archiveDays: [] }, { archiveDays: null }, { archiveDays: ['2026-02-30'] },
+      { archiveDays: ['1970-01-01', '1970-01-01'] }, { name: '换\n行' }, { name: null }, { notes: false }]) {
+      await expect(target.import({ ...archive, data: { ...archive.data, sessions: [{ ...tick, ...invalid }] } }))
+        .rejects.toThrow(/archiveDays|名称|备注/)
+      expect((await target.exportAll()).data.sessions).toEqual([])
+    }
     await target.import(archive)
     expect((await target.exportSession(tick.id)).data.sessions).toEqual([tick])
+    const { name: _name, notes: _notes, archiveDays: _days, ...legacy } = tick
+    await target.import({ ...archive, data: { ...archive.data, sessions: [legacy] } })
+    expect((await target.exportSession(tick.id)).data.sessions).toEqual([legacy])
   }
 })
 

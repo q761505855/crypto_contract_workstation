@@ -6,6 +6,7 @@ export interface LocalArchiveMarket extends ChartPriceMarket {
   readonly historyRevision: number
   subscribeArchives(listener: () => void): () => void
   activeDays(symbol: string): readonly string[]
+  availableArchiveDays(symbol: string, signal?: AbortSignal): Promise<readonly string[]>
   setActiveDays(symbol: string, days: readonly string[], append?: boolean): boolean
   clearActiveDays(): void
   archiveDay(timestamp: number): string

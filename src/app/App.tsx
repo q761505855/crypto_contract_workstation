@@ -28,6 +28,7 @@ import { CTraderAccountPicker } from '../components/CTraderAccountPicker'
 import { ConfigSyncStatus } from '../components/ConfigSyncStatus'
 import { PREFERENCES_RESTORED } from '../storage/preference-events'
 import { ReplayControls } from '../components/ReplayControls'
+import { ReplaySessionManager } from '../components/ReplaySessionManager'
 import { LiveStatus } from '../components/panels'
 import { AccountStrip, SimulationOrder, SimulationDock, type TradingTab } from '../components/TradingWorkspace'
 import { WorkspaceDialog } from '../components/WorkspaceDialog'
@@ -198,6 +199,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   }, [mobile, mobilePanel])
   const [dataManagerOpen, setDataManagerOpen] = useState(false)
   const [localDataOpen, setLocalDataOpen] = useState(false)
+  const [sessionsOpen, setSessionsOpen] = useState(false)
   const [chartWindows] = useState(() => new ChartWindowHost(marketRuntime))
   const [popupBlocked, setPopupBlocked] = useState(false)
   const [configEpoch, setConfigEpoch] = useState(0)
@@ -221,7 +223,8 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
   const previousReplayContextRef = useRef<ReplayContext | null>(null)
   const [stepPeriod, setStepPeriod] = useState(() => activeStepPeriod(source))
   const [showTradeOverlays, setShowTradeOverlays] = useState(readShowTradeOverlays)
-  const replay = useCTraderReplayController(marketRuntime, stepPeriod, localDataRevision)
+  const replay = useCTraderReplayController(marketRuntime, stepPeriod, localDataRevision, localMarket)
+  const { saveSessionArchiveDays } = replay
   const mode = replay.session === null ? 'live' : 'history'
   const sessionId = replay.session?.id
   const sessionSymbol = replay.session?.symbol
@@ -297,6 +300,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         }
         setLocalLoadStatus({ symbol, message })
       }
+      if (changed && replaying && report) await saveSessionArchiveDays(symbol)
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === 'AbortError'
       const message = aborted ? '加载已中断，请重试。'
@@ -307,7 +311,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         if (report) throw new Error(message)
       }
     }
-  }, [databento, localMarket, marketRuntime])
+  }, [databento, localMarket, marketRuntime, saveSessionArchiveDays])
   const refreshLocalFolder = useCallback((replaced: boolean) => {
     if (replaced) localMarket?.clearActiveDays()
     const symbol = marketSelection.symbol.ticker
@@ -667,6 +671,7 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
                 onJumpToTime={jumpChartToTime}
                 onLocateLatest={locateLatestChartTime}
                 onChartStep={stepChart}
+                onManageSessions={() => { replay.pause(); replay.clearError(); setSessionsOpen(true) }}
                 replay={replay}
                 selection={marketSelection}
                 simulation={simulation}
@@ -716,6 +721,14 @@ function MarketWorkspace({ marketRuntime, source, onSourceChange, sourceError }:
         <button type="button" className="dialog-done" onClick={replay.dismissEndNotice}>确定</button>
       </WorkspaceDialog>
       {dataManagerOpen && <DataManager onClose={() => setDataManagerOpen(false)} runtime={marketRuntime} />}
+      {sessionsOpen && <ReplaySessionManager replay={replay} source={source} onClose={() => setSessionsOpen(false)}
+        onLoaded={() => {
+          setMarketWarning('')
+          setLocalLoadStatus(undefined)
+          if (localMarket) setChartReloadKey(current => current + 1)
+          setSessionsOpen(false)
+        }}
+        onOpenLocalData={localMarket ? () => { setSessionsOpen(false); setLocalDataOpen(true) } : undefined} />}
       {localDataOpen && okxLocalMarket && localDownloads && <OkxLocalDataDialog files={okxLocalMarket.files}
         downloads={localDownloads} symbol={marketSelection.symbol.ticker} loadedDays={okxLocalMarket.activeDays(marketSelection.symbol.ticker)}
         onClose={() => setLocalDataOpen(false)} onFolderChange={refreshLocalFolder} onLoad={loadLocalArchives} />}

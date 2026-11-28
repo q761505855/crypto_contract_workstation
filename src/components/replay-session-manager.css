@@ -1,0 +1,83 @@
+.workspace-dialog.replay-session-manager {
+  width: min(800px, 100%);
+}
+
+.replay-session-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 18px;
+}
+
+.replay-session-list,
+.replay-session-detail,
+.replay-session-form {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.replay-session-detail h3,
+.replay-session-archives p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.replay-session-list ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 2px;
+  list-style: none;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.replay-session-list li button {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.replay-session-list button[aria-pressed="true"] {
+  border-color: #65b7ff;
+  background: #203953;
+}
+
+.replay-session-list button span {
+  color: #a9bed8;
+  font-size: 12px;
+}
+
+.replay-session-list label,
+.replay-session-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.replay-session-manager input,
+.replay-session-manager textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #34465f;
+  border-radius: 5px;
+  background: #0c1420;
+  color: #dae6f7;
+  font: inherit;
+}
+
+.replay-session-manager textarea {
+  resize: vertical;
+}
+
+.replay-session-archives summary { cursor: pointer; }
+.replay-session-actions { flex-wrap: wrap; }
+.replay-session-actions .dialog-done { margin: 0; }
+
+@media (max-width: 620px) {
+  .replay-session-layout { grid-template-columns: minmax(0, 1fr); }
+  .replay-session-list ul { max-height: 24vh; }
+  .replay-session-manager textarea { font-size: 16px; }
+}

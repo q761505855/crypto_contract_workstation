@@ -54,11 +54,57 @@ function stores(saved?: ReplaySession) {
     getLatestActive: vi.fn(async () => stored?.active ? stored : undefined),
     put: vi.fn(async (session: ReplaySession) => { stored = session }),
     update: vi.fn(async (session: ReplaySession) => { stored = session }),
+    updateDetails: vi.fn(async (_id: string, details: { name?: string; notes?: string }) => {
+      if (!stored) throw new Error('Missing session')
+      return stored = { ...stored, ...details }
+    }),
     delete: vi.fn(async () => { stored = undefined }),
   }
 }
 
 describe('cTrader replay', () => {
+  it('finds local days for a legacy session, saves the selection, and reports missing saved archives without replacing it', async () => {
+    const day = '2026-01-12'
+    let selected: readonly string[] = [day]
+    let available = [day]
+    let revision = 0
+    const localArchives = {
+      get historyRevision() { return revision },
+      activeDays: () => selected,
+      availableArchiveDays: async () => available,
+      archiveDay: (time: number) => new Date(time).toISOString().slice(0, 10),
+      setActiveDays: (_symbol: string, days: readonly string[]) => { selected = days; revision++; return true },
+    }
+    const market = { ...service([{ ...mondayFirst, source: 'databento-cme' }]), source: 'databento-cme' as const }
+    const replaySessions = stores()
+    const { result } = renderHook(() => useCTraderReplayController({ service: market, replaySessions }, '1m', revision, localArchives))
+    await waitFor(() => expect(result.current.busy).toBe(false))
+    await act(() => result.current.createSession({ symbol, period: m1, startTime: monday, endTime: monday + hour }))
+    const original = (await replaySessions.get())!
+    expect(original.archiveDays).toEqual([day])
+    await act(() => result.current.endSession())
+    const { archiveDays: _days, ...legacy } = (await replaySessions.get())!
+    await replaySessions.put(legacy)
+    selected = []
+    await act(() => result.current.loadSession(original.id))
+    expect(result.current.session?.archiveDays).toEqual([day])
+    expect((await replaySessions.get())?.archiveDays).toEqual([day])
+
+    await act(() => result.current.endSession())
+    available = []
+    selected = ['2026-01-13']
+    await act(() => result.current.loadSession(original.id))
+    expect(result.current.error).toContain(`缺少 1 个会话日档（${day}）`)
+    expect(result.current.session).toBeNull()
+    expect(selected).toEqual(['2026-01-13'])
+    available = [day]
+    market.loadCandles.mockResolvedValueOnce([])
+    await act(() => result.current.loadSession(original.id))
+    expect(result.current.error).toContain('未返回与存档一致')
+    expect(result.current.session).toBeNull()
+    expect(selected).toEqual(['2026-01-13'])
+  })
+
   it('uses real trade gaps, pauses the replay clock and processes every same-time trade', async () => {
     const at = monday + minute
     const cmeSymbol = { ticker: 'UNLISTED.FUT', exchange: 'CME', type: 'FUTURES' }

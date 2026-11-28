@@ -105,6 +105,13 @@ export class OkxLocalMarket implements LocalArchiveMarket {
     return [...(this.selectedDays.get(symbol) ?? [])].sort()
   }
 
+  async availableArchiveDays(symbol: string, signal?: AbortSignal): Promise<readonly string[]> {
+    this.index = undefined
+    const files = await this.archives(symbol, signal)
+    if (!this.files.ready) throw new Error('请先在本地数据管理中选择 OKX 文件夹或允许读取')
+    return [...new Set(files.map(file => file.day))]
+  }
+
   setActiveDays(symbol: string, days: readonly string[], append = false): boolean {
     const previous = this.selectedDays.get(symbol)
     const next = new Set(append ? [...(previous ?? []), ...days] : days)

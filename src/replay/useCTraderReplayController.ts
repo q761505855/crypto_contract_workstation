@@ -8,12 +8,15 @@ import { defaultCmeFeePerContractSide } from '../simulation/cme-fees'
 import type { ReplaySessionStore } from '../storage/replay-session-store'
 import { CTraderReplayBars, loadClosedReplayBars, type CTraderReplayMarket } from './ctrader-replay-bars'
 import { CTraderReplayTicks, type ReplayPriceCandle } from './ctrader-replay-ticks'
-import { DEFAULT_TRADING_CONFIG, isTickSpeed, sessionPlaybackMode, sessionVisibleUntil, type CreateReplaySessionInput, type ReplayMode, type ReplaySession, type ReplaySpeed } from './models'
+import { DEFAULT_TRADING_CONFIG, isTickSpeed, sessionPlaybackMode, sessionVisibleUntil, type CreateReplaySessionInput, type ReplayMode, type ReplaySession, type ReplaySessionDetails, type ReplaySpeed } from './models'
 import { isCTraderReplayStepPeriod, isFineStepPeriod, type CTraderReplayStepPeriod, type ReplayStepPeriod } from './step-periods'
 import type { ReplayCandleEvent, ReplayCandleListener, ReplayController } from './useReplayController'
 import type { MarketCandle } from '../market-data/models'
 import { isLocalPriceSource, isOkxPriceSource, isPriceSource, priceSourceLabel } from '../market-data/price-source-preferences'
 import type { SimulationStateStore } from '../storage/simulation-state-store'
+import type { LocalArchiveMarket } from '../market-data/local-archive-market'
+
+type ReplayArchives = Pick<LocalArchiveMarket, 'historyRevision' | 'activeDays' | 'availableArchiveDays' | 'setActiveDays' | 'archiveDay'>
 
 interface CTraderReplayRuntime {
   service: CTraderReplayMarket & {
@@ -101,12 +104,16 @@ export function useCTraderReplayController(
   runtime: CTraderReplayRuntime,
   stepTimeframe?: ReplayStepPeriod,
   historyRevision = runtime.service.historyRevision,
+  localArchives?: ReplayArchives,
 ): ReplayController<ReplayStepPeriod> & {
   supportsTicks: boolean
   mode: ReplayMode
   tradeUntilUs?: number
   endNotice: string
   dismissEndNotice(): void
+  loadSession(id: string, onLoaded?: () => void): Promise<void>
+  editSessionDetails(id: string, details: ReplaySessionDetails): Promise<void>
+  saveSessionArchiveDays(symbol: string): Promise<void>
   setMode(mode: ReplayMode): void
   setTickSpeed(speed: number): void
 } {
@@ -248,7 +255,7 @@ export function useCTraderReplayController(
     void run('恢复回放会话失败', async signal => {
       const saved = await replaySessions.list()
       signal.throwIfAborted()
-      setSessions(saved.filter(item => source === 'ctrader' ? !isPriceSource(item.marketSource) || item.marketSource === 'ctrader' : item.marketSource === source))
+      setSessions(saved)
       if (isLocalPriceSource(source)) return
       const active = saved.find(item => item.active && item.status !== 'completed' && item.marketSource === source)
       if (active !== undefined) {
@@ -271,7 +278,7 @@ export function useCTraderReplayController(
     const prior = cursorRef.current
     signal.throwIfAborted()
     if (create) await replaySessions.put(cursor.session)
-    else await queueSave(cursor.session)
+    else await replaySessions.update(cursor.session)
     signal.throwIfAborted()
     if (prior !== null && prior.session.id !== cursor.session.id) {
       updateCursor(prior, { active: false })
@@ -321,9 +328,11 @@ export function useCTraderReplayController(
       validateSimulationConfig(tradingConfig)
       signal.throwIfAborted()
       const now = Date.now()
+      const archiveDays = localArchives?.activeDays(input.symbol.ticker)
       const next: ReplaySession = {
         schemaVersion: 2,
         marketSource: source,
+        ...(archiveDays?.length && { archiveDays: [...archiveDays] }),
         cursorTimeframe: candle.timeframe as CTraderReplayStepPeriod,
         id: crypto.randomUUID(),
         symbol: { ...input.symbol },
@@ -351,18 +360,66 @@ export function useCTraderReplayController(
     },
     source === 'databento-cme' ? '正在准备 CME 历史回放…'
       : `正在准备回放行情和 ${isOkxPriceSource(source) ? 'OKX' : 'IC Markets'} 交易规格…`,
-  ), [activate, history, pause, run, service, source, supportsTicks])
+  ), [activate, history, localArchives, pause, run, service, source, supportsTicks])
 
-  const loadSession = useCallback((id: string) => run('加载回放会话失败', async signal => {
+  const loadSession = useCallback((id: string, onLoaded?: () => void) => run('加载回放会话失败', async signal => {
     pause()
     await saveQueue.current
     const saved = await replaySessions.get(id)
     if (saved === undefined) throw new Error('找不到所选回放会话')
-    const cursor = await hydrate(saved, signal)
-    // An archived result can be opened explicitly for review or reset.
-    updateCursor(cursor, { active: saved.status !== 'completed' })
-    await activate(cursor, signal)
-  }, `正在读取会话的 ${sourceLabel} K 线…`), [activate, hydrate, pause, replaySessions, run, sourceLabel])
+    const symbol = saved.symbol.ticker
+    const archives = saved.marketSource === source ? localArchives : undefined
+    const previous = archives?.activeDays(symbol)
+    let days = saved.archiveDays
+    let selectionRevision: number | undefined
+    if (archives) {
+      const available = new Set(await archives.availableArchiveDays(symbol, signal))
+      signal.throwIfAborted()
+      if (days === undefined) {
+        const from = archives.archiveDay(saved.startTime)
+        const to = archives.archiveDay(saved.endTime)
+        days = [...available].filter(day => day >= from && day <= to).sort()
+      }
+      const missing = days.filter(day => !available.has(day))
+      if (missing.length) throw new Error(`${symbol} 缺少 ${missing.length} 个会话日档（${missing.slice(0, 5).join('、')}）`)
+      if (!days.length) throw new Error(`本地目录中找不到 ${symbol} 在会话区间内的日档`)
+      if (archives.setActiveDays(symbol, days)) selectionRevision = archives.historyRevision
+    }
+    try {
+      const cursor = await hydrate(saved, signal)
+      // An archived result can be opened explicitly for review or reset.
+      updateCursor(cursor, { active: saved.status !== 'completed', ...(days && { archiveDays: days }) })
+      await activate(cursor, signal)
+    } catch (reason) {
+      if (archives && previous && selectionRevision === archives.historyRevision) archives.setActiveDays(symbol, previous)
+      throw reason
+    }
+    onLoaded?.()
+  }, `正在重新加载会话的 ${sourceLabel} 行情…`), [activate, hydrate, localArchives, pause, replaySessions, run, source, sourceLabel])
+
+  const editSessionDetails = useCallback((id: string, details: ReplaySessionDetails) => run('保存会话信息失败', async signal => {
+    await saveQueue.current
+    signal.throwIfAborted()
+    const saved = await replaySessions.updateDetails(id, details)
+    if (signal.aborted) return
+    const cursor = cursorRef.current
+    if (cursor?.session.id === id) {
+      cursor.session = { ...cursor.session, ...details, updatedAt: saved.updatedAt }
+      setView({ session: cursor.session, tradeUntilUs: cursor.candle.tradeUntilUs })
+    }
+    remember(saved)
+  }), [remember, replaySessions, run])
+
+  const saveSessionArchiveDays = useCallback(async (symbol: string) => {
+    const cursor = cursorRef.current
+    const selected = localArchives?.activeDays(symbol)
+    if (cursor?.session.symbol.ticker !== symbol || !selected?.length) return
+    const recorded = cursor.session.archiveDays ?? []
+    const archiveDays = [...new Set([...recorded, ...selected])].sort()
+    if (archiveDays.length === recorded.length) return
+    updateCursor(cursor, { archiveDays })
+    await publish(cursor)
+  }, [localArchives, publish])
 
   const endSession = useCallback(async () => {
     const activeLifecycle = lifecycle.current
@@ -389,7 +446,7 @@ export function useCTraderReplayController(
   }, [pause, queueSave, remember])
 
   const deleteSession = useCallback((id: string) => run('删除回放会话失败', async () => {
-    if (cursorRef.current !== null) return
+    if (cursorRef.current?.session.id === id) return
     await saveQueue.current
     await replaySessions.delete(id)
     setSessions(current => current.filter(item => item.id !== id))
@@ -681,6 +738,7 @@ export function useCTraderReplayController(
     session, sessions, busy, isPlaying, error, preparationStatus, mode, supportsTicks, tradeUntilUs: view?.tradeUntilUs,
     endNotice, dismissEndNotice: () => setEndNotice(''),
     createSession, loadSession, deleteSession, endSession, next, previous, reset, jumpToEnd,
+    editSessionDetails, saveSessionArchiveDays,
     play, pause, setSpeed, setMode, setTickSpeed, setHasTrades, subscribeCandle, clearError: () => setError(''), getCurrentCandle,
   }
 }

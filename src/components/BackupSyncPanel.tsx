@@ -246,7 +246,7 @@ export function BackupSyncPanel({
             {sessions.length === 0 && <option value="">暂无会话</option>}
             {sessions.map((session) => (
               <option key={session.id} value={session.id}>
-                {session.symbol.ticker} {session.period.text} ·{' '}
+                {session.name?.trim() && `${session.name.trim()} · `}{session.symbol.ticker} {session.period.text} ·{' '}
                 {formatDisplayTime(session.startTime)} · {session.marketSource === undefined || session.marketSource === 'binance' ? '旧会话' : priceSourceLabel(session.marketSource)}
               </option>
             ))}

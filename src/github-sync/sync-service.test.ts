@@ -607,7 +607,7 @@ describe('GitHubSyncService', () => {
     }
   })
 
-  it('preserves the Databento fee snapshot and charged fees in GitHub session sync', async () => {
+  it('preserves Databento details, archive dates and fees in GitHub session sync', async () => {
     const sourceDb = `cme-cloud-${crypto.randomUUID()}`
     const storage = { getItem: () => null, setItem: () => undefined }
     const source = new GitHubSyncService(new WorkstationBackupService(sourceDb, storage))
@@ -617,6 +617,7 @@ describe('GitHubSyncService', () => {
     const symbol = { ticker: row.symbol, exchange: 'CME', type: 'FUTURES', pricePrecision: 9, volumePrecision: 0 }
     const original = ReplayEngine.create({ symbol, period: SUPPORTED_PERIODS[0], startTime: 0, endTime: 60_000 }, [row], { buffered: true }).snapshot()
     const replay: ReplaySession = { ...original, marketSource: 'databento-cme', cursorTimeframe: '1m', visibleUntil: 60_000, hasTrades: true,
+      name: 'NQ 逐笔复盘', notes: '', archiveDays: ['1970-01-01'],
       tradingConfig: { ...original.tradingConfig, feeRate: '0', liquidationFeeRate: '0', cmeFeePerContractSide: '2.87' } }
     await new IndexedDbReplaySessionStore(sourceDb).put(replay)
     const engine = SimulationEngine.create(replay)
@@ -626,6 +627,17 @@ describe('GitHubSyncService', () => {
     const remote = new MemoryGitHubClient()
     await source.upload(client(remote), 'stop', { config: false, sessions: true, marketData: false })
     await target.pull(client(remote))
+    expect((await targetBackups.exportSession(replay.id)).data).toMatchObject({ sessions: [replay], simulations: [engine.snapshot()] })
+    const path = `sessions/${replay.id}.json`
+    const manifestFile = remote.files.get('manifest.json')!
+    const manifest = JSON.parse(decoder.decode(manifestFile.bytes))
+    const entry = manifest.files.find((item: { path: string }) => item.path === path)
+    const file = remote.files.get(path)!
+    file.bytes = encoder.encode(JSON.stringify({ ...replay, archiveDays: ['1970-02-30'], notes: '不可恢复的远端记录' }))
+    entry.checksum = await sha256(file.bytes)
+    entry.size = file.bytes.byteLength
+    manifestFile.bytes = encoder.encode(JSON.stringify(manifest))
+    await expect(target.pull(client(remote))).rejects.toThrow('archiveDays')
     expect((await targetBackups.exportSession(replay.id)).data).toMatchObject({ sessions: [replay], simulations: [engine.snapshot()] })
   })
 
